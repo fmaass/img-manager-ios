@@ -5,7 +5,7 @@ import Testing
 
 /// P3 fold item 3: the resolver is a pure function of measured width AND
 /// `horizontalSizeClass` — never idiom. See `LayoutMode.swift`'s doc comment for the full
-/// measurement account (raw evidence in `.phase-ledger.md`).
+/// measurement account (raw evidence in `.phase-ledger.md`, geomlog-run10/run12.txt).
 @Suite("Layout mode resolution (P3 measured-space resolver)")
 struct LayoutModeTests {
 
@@ -21,7 +21,7 @@ struct LayoutModeTests {
   @Test("Real measured iPhone 17 Pro readings resolve Compact, portrait and landscape")
   func measuredIPhoneReadingsResolveCompact() {
     // width=402 portrait, width=750 landscape — both hSizeClass=compact, measured live
-    // on the household iPhone 17 Pro simulator (ledger evidence, WP8-P3).
+    // on the household iPhone 17 Pro simulator (ledger evidence, WP8-P3 Pass 1).
     #expect(LayoutResolver.resolve(width: 402, horizontalSizeClass: .compact) == .compact)
     #expect(LayoutResolver.resolve(width: 750, horizontalSizeClass: .compact) == .compact)
   }
@@ -42,6 +42,18 @@ struct LayoutModeTests {
     #expect(LayoutResolver.columnVisibility(for: mode) == .all)
   }
 
+  @Test("B2: real captured trait/width pairs bracketing the closed-loop measured crossing")
+  func b2RealCapturedReadingsBracketTheCrossing() {
+    // Replays actual `.onGeometryChange` samples from the Pass 2 closed-loop sweep
+    // (geomlog-run10.txt / geomlog-run12.txt), not hypothetical widths: width=664 was
+    // the last-observed-compact sample, width=667 the first-observed-regular sample,
+    // in the tightest of three independent sweeps. horizontalSizeClass governs the
+    // resolver outright, so both assertions are really about the trait — the widths
+    // are the real evidence that the trait crossing and this resolver's behaviour agree.
+    #expect(LayoutResolver.resolve(width: 664, horizontalSizeClass: .compact) == .compact)
+    #expect(LayoutResolver.resolve(width: 667, horizontalSizeClass: .regular) == .regular2)
+  }
+
   @Test("B3 boundary: exclusive below, inclusive at and above")
   func b3BoundaryInclusiveExclusive() {
     let b3 = LayoutResolver.regular3Threshold
@@ -50,13 +62,17 @@ struct LayoutModeTests {
     #expect(LayoutResolver.resolve(width: b3 + 1, horizontalSizeClass: .regular) == .regular3)
   }
 
-  @Test("B3 sits strictly between the two confirmed regular readings")
-  func b3IsBoundedByConfirmedReadings() {
-    // Not itself measured (see LayoutMode.swift) — but it must never fall outside the
-    // bracket the two REAL regular readings establish, or it would misclassify one of
-    // them.
-    #expect(LayoutResolver.regular3Threshold > 1032)
-    #expect(LayoutResolver.regular3Threshold < 1376)
+  @Test("B3: real captured widths bracketing the closed-loop measured crossing")
+  func b3RealCapturedReadingsBracketTheCrossing() {
+    // Replays the actual `.onGeometryChange` samples that bracket the real OS crossing
+    // (geomlog-run12.txt, landscape-shrink sweep): width=1190 was the
+    // last-observed-regular2 sample, width=1204 the first-observed-regular3 sample —
+    // a 14pt-wide real bracket, not the previous 344pt-wide "somewhere between the two
+    // full-screen anchors" placeholder. `regular3Threshold` (1197) sits inside it.
+    #expect(LayoutResolver.resolve(width: 1190, horizontalSizeClass: .regular) == .regular2)
+    #expect(LayoutResolver.resolve(width: 1204, horizontalSizeClass: .regular) == .regular3)
+    #expect(LayoutResolver.regular3Threshold > 1190)
+    #expect(LayoutResolver.regular3Threshold <= 1204)
   }
 
   @Test("Resolution never reads device idiom — width and sizeClass only")

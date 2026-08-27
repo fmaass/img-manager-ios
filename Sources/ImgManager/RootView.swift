@@ -1,3 +1,4 @@
+import OpenAPIRuntime
 import SwiftUI
 
 /// One layout declaration, adaptive by measured space — "so there is no 'iPhone layout'
@@ -16,8 +17,9 @@ struct RootView: View {
   @State private var connectivity: ConnectivityState
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-  init(transport: any ImgManagerTransport = UnauthenticatedPlaceholderTransport()) {
-    _connectivity = State(initialValue: ConnectivityState(transport: transport))
+  init(transport: any ClientTransport = UnauthenticatedPlaceholderClientTransport()) {
+    let client = ImgManagerAPIClient.make(transport: transport)
+    _connectivity = State(initialValue: ConnectivityState(service: ImgManagerAPIService(client: client)))
   }
 
   var body: some View {
@@ -28,6 +30,7 @@ struct RootView: View {
     } detail: {
       detailColumn
     }
+    .navigationSplitViewStyle(.prominentDetail)
     .onGeometryChange(for: CGFloat.self) { proxy in
       proxy.size.width
     } action: { width in

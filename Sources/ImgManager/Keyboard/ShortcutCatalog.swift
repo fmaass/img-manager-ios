@@ -28,17 +28,21 @@ enum ShortcutID: String, CaseIterable, Sendable {
 }
 
 /// Which WP8 phase owns the persistent-chrome surface a shortcut attaches to. Assigned
-/// from the plan's own phase titles and scope lines, not invented:
-/// - `.p4` ("Shoot grid, inspector, selection") owns grid navigation, the Pick/Dislike/
-///   Clear marks (Pick Lock's "Dislike Lock parity" amendment confirms P4 owns the mark
-///   buttons), the tag popover, and the grid->loupe "open" action.
-/// - `.p5` ("Loupe / cull") — no P3 shortcut is assigned here; loupe-local arrow/space
-///   reuse is P5's own chrome surface, out of this catalog's scope until P5 lands.
-/// - `.p6` ("Marks, undo, shared-state refresh") owns undo (`Z`) — the plan's phase title
-///   names undo explicitly.
+/// from each phase's own Approach text (not the phase titles alone — the diff-gate
+/// reconciliation below caught two entries assigned from title/scope-line guesswork
+/// that disagreed with the actual persistent-bar contents written into the phases
+/// themselves):
+/// - `.p4` ("Shoot grid, inspector, selection") owns grid navigation, the Pick/Dislike
+///   marks and **undo** (P4's Approach text: "persistent bottom action bar (Pick ·
+///   Dislike · Undo · Tag · More)" — undo's chrome surface exists starting here, not
+///   P6; Pick Lock's "Dislike Lock parity" amendment additionally confirms P4 owns the
+///   mark buttons), the tag popover, and the grid->loupe "open" action.
+/// - `.p5` ("Loupe / cull") owns **clear** (P5's Approach text: "persistent bottom mark
+///   bar (Pick · Dislike · Clear · Undo)" — Clear's chrome surface is P5's bar; P4's own
+///   bar has no Clear button).
 enum OwningPhase: String, Sendable {
   case p4 = "P4 — Shoot grid, inspector, selection"
-  case p6 = "P6 — Marks, undo, shared-state refresh"
+  case p5 = "P5 — Loupe / cull"
   /// `?` (help) is infrastructure, not a product action — its natural home is the
   /// dispatcher/menu-bar surface P3 itself builds (fold item 1), not a downstream
   /// screen. It stays PLANNED rather than ACTIVE here even so: P3's own chrome is the
@@ -75,10 +79,10 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .openSpaceEnter, owningPhase: .p4, hasChromeSurface: false),
     ShortcutCatalogEntry(id: .pick, owningPhase: .p4, hasChromeSurface: false),
     ShortcutCatalogEntry(id: .dislike, owningPhase: .p4, hasChromeSurface: false),
-    ShortcutCatalogEntry(id: .clear, owningPhase: .p4, hasChromeSurface: false),
+    ShortcutCatalogEntry(id: .clear, owningPhase: .p5, hasChromeSurface: false),
     ShortcutCatalogEntry(id: .shiftAdvance, owningPhase: .p4, hasChromeSurface: false),
     ShortcutCatalogEntry(id: .tag, owningPhase: .p4, hasChromeSurface: false),
-    ShortcutCatalogEntry(id: .undo, owningPhase: .p6, hasChromeSurface: false),
+    ShortcutCatalogEntry(id: .undo, owningPhase: .p4, hasChromeSurface: false),
     ShortcutCatalogEntry(id: .help, owningPhase: .p3, hasChromeSurface: false),
   ]
 

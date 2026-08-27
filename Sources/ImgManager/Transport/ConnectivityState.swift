@@ -1,4 +1,5 @@
 import Foundation
+import ImgManagerAPI
 import Observation
 
 /// The one degraded state P3 owns (fold item 3; [/link/3220] §4.1): "Not connected to the
@@ -11,10 +12,12 @@ enum DegradedStateCopy {
 }
 
 /// Drives the shell's one connectivity-dependent surface (the sidebar/Queue placeholder)
-/// from the injected `ImgManagerTransport`. `status` NEVER carries the underlying error —
-/// `.unreachable` has no associated value — which is the structural half of fold item 4's
-/// suppression guarantee: there is no stored property here `localizedDescription`, a
-/// server body, a hostname or raw transport text could occupy even by mistake. See
+/// from the injected `ImgManagerAPIService`, which itself wraps the REAL generated client
+/// (diff-gate blocker 1 fold). `check()` maps the decoded `ApiHealthResponse.status` field
+/// into this closed state. `status` NEVER carries the underlying error — `.unreachable` has
+/// no associated value — which is the structural half of fold item 4's suppression
+/// guarantee: there is no stored property here `localizedDescription`, a server body, a
+/// hostname or raw transport text could occupy even by mistake. See
 /// `DegradedStateTests.swift` for the sentinel-based proof.
 @MainActor
 @Observable
@@ -26,10 +29,10 @@ final class ConnectivityState {
   }
 
   private(set) var status: Status = .checking
-  private let transport: any ImgManagerTransport
+  private let service: ImgManagerAPIService
 
-  init(transport: any ImgManagerTransport) {
-    self.transport = transport
+  init(service: ImgManagerAPIService) {
+    self.service = service
   }
 
   /// Fires on `RootView`'s `.task` (launch) and is safe to call again on any later
@@ -38,8 +41,8 @@ final class ConnectivityState {
   func check() async {
     status = .checking
     do {
-      let health = try await transport.health()
-      status = health.ok ? .connected : .unreachable
+      let health = try await service.health()
+      status = health.status == "ok" ? .connected : .unreachable
     } catch {
       status = .unreachable
     }
