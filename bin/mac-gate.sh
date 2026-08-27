@@ -134,7 +134,7 @@ trap release_lock EXIT
 rsync -a --delete -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' \
   --exclude '.git' --exclude 'signing.local.yml' --exclude '.build' \
   --exclude 'DerivedData' --exclude '*.xcodeproj' --exclude '*.xcresult' \
-  --exclude '.gate-artifacts' --exclude '.tools' \
+  --exclude '.gate-artifacts' --exclude '.tools' --exclude '.phase-ledger.md' \
   ./ "$host:${target_dir#$HOME/}/work/" 2>&1 | tee -a "$log"
 record rsync "${PIPESTATUS[0]}"
 [ "$first_fail" -eq 0 ] || summary_and_exit
