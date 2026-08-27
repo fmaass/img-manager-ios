@@ -1,0 +1,8 @@
+*.xcodeproj
+.build/
+DerivedData/
+.gate-artifacts/
+signing.local.yml
+.tools/
+.gate-artifacts-probe-*
+.DS_Store

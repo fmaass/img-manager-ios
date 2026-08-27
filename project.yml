@@ -1,0 +1,86 @@
+# The Xcode project is generated from this file; ImgManager.xcodeproj is not committed.
+# Pattern ported from the estate's reference project (memos-ng-ios/project.yml — "A
+# hand-maintained .xcodeproj is an opaque, merge-hostile artefact: the agents that write
+# this code work on a Linux machine and cannot author or review one, and two people
+# touching the same project file conflict on generated UUIDs. This file is the project.").
+#
+# P0a scope only: one universal SwiftUI app, simulator ad-hoc signing, no entitlements,
+# no app groups, no signing team — those are P0b's job (device enablement).
+include:
+  - path: signing.default.yml
+  - path: signing.local.yml    # per-machine; bin/generate.sh stubs it when absent
+
+name: ImgManager
+
+options:
+  bundleIdPrefix: live.discomarder
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SUPPORTED_PLATFORMS: iphoneos iphonesimulator
+    # Universal app — iPhone AND iPad from one target, one layout declaration (plan
+    # invariant: "no idiom branching", [/link/3220] §1.3). TARGETED_DEVICE_FAMILY "1,2"
+    # is the family declaration only; the layout code itself never reads idiom.
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+packages:
+  ImgManagerAPI:
+    path: Packages/ImgManagerAPI
+
+# The test bundle is hosted in the app (mirrors memos-ng-ios: a host-less bundle has no
+# keychain entitlement in the simulator, and P1's native-auth lane will need one).
+targets:
+  ImgManager:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/ImgManager
+    dependencies:
+      - package: ImgManagerAPI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.discomarder.imgmanager
+        PRODUCT_NAME: ImgManager
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: img-manager
+        # NO is the truthful answer — HTTPS through the system's own TLS is exempt.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: >-
+          UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
+          UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+  ImgManagerTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/ImgManagerTests
+    dependencies:
+      - target: ImgManager
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ImgManager:
+    build:
+      targets:
+        ImgManager: all
+        ImgManagerTests: [test]
+    test:
+      targets:
+        - ImgManagerTests
+      commandLineArguments: {}

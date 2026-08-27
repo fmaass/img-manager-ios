@@ -1,0 +1,9 @@
+# Committed default: ad-hoc signing, no team — enough for every simulator build and for
+# bin/mac-gate.sh. Device signing needs signing.local.yml (see its .example) — P0b's job.
+# Ported from memos-ng-ios/signing.default.yml (identical rationale, one target here).
+targets:
+  ImgManager:
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
