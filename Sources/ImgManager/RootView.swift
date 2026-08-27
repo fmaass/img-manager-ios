@@ -1,8 +1,11 @@
 import SwiftUI
 
 /// One layout declaration, adaptive by measured space — "so there is no 'iPhone layout'
-/// that could be enlarged" (plan Goal). Empty scaffold only (P0a Do-NOT: no product
-/// screens); the sidebar/content/detail placeholders are replaced by P3–P5.
+/// that could be enlarged" (plan Goal). Grid/Inspector are still empty placeholders (P0a
+/// Do-NOT, carried into P3: "no grid, inspector, compare or loupe content yet") — P4/P5
+/// replace them. The sidebar/Queue area is the one exception: P3 fold item 3 requires the
+/// degraded/unreachable state to actually work, so it is wired to `ConnectivityState`
+/// rather than a bare placeholder.
 ///
 /// System glass only (ADR-N1, docs/adr/ADR-N1-native-glass-boundary.md): nothing here
 /// requests a custom `glassEffect` — the chrome is whatever NavigationSplitView and its
@@ -10,6 +13,12 @@ import SwiftUI
 struct RootView: View {
   @State private var layoutMode: LayoutMode = .compact
   @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
+  @State private var connectivity: ConnectivityState
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+  init(transport: any ImgManagerTransport = UnauthenticatedPlaceholderTransport()) {
+    _connectivity = State(initialValue: ConnectivityState(transport: transport))
+  }
 
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -24,18 +33,28 @@ struct RootView: View {
     } action: { width in
       applyWidth(width)
     }
+    .task {
+      await connectivity.check()
+    }
   }
 
   private func applyWidth(_ width: CGFloat) {
-    let mode = LayoutResolver.resolve(width: width)
+    let mode = LayoutResolver.resolve(width: width, horizontalSizeClass: horizontalSizeClass)
     guard mode != layoutMode else { return }
     layoutMode = mode
     columnVisibility = LayoutResolver.columnVisibility(for: mode)
   }
 
   private var sidebar: some View {
-    Text("Queue")
-      .navigationTitle("img-manager")
+    Group {
+      switch connectivity.status {
+      case .checking, .connected:
+        Text("Queue")
+      case .unreachable:
+        Text(DegradedStateCopy.notConnected)
+      }
+    }
+    .navigationTitle("img-manager")
   }
 
   private var contentColumn: some View {

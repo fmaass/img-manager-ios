@@ -6,5 +6,8 @@ struct ImgManagerApp: App {
     WindowGroup {
       RootView()
     }
+    .commands {
+      AppCommands()
+    }
   }
 }
