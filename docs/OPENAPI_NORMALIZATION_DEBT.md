@@ -97,18 +97,36 @@ release checkpoint is deployed and read back:**
 
 ## Evidence
 
-`docs/evidence/p0a-probe/`:
+`docs/evidence/p0a-probe/` (corrected 2026-08-27, round 3 — an earlier round's hand-
+extracted "excerpt" files here truncated mid-struct and were brace-unbalanced; they are
+GONE, replaced by the complete generator output, independently auditable rather than
+trusted):
 - `failing-field-list.txt` — the 29 component-schema properties, with the reproducing
   Python one-liner.
-- `Types-RAW-unbridged-excerpt.swift` — the 11 struct definitions (covering all 29
-  properties) as generated from the RAW, unbridged schema. All 29 are absent.
-- `Types-BRIDGED-excerpt.swift` — the same 11 structs generated from the bridged schema.
-  All 29 present, each carrying its `- Remark: Generated from` provenance comment.
-- `greps.txt` — the actual survival-check commands and their real output (0/29 survived
-  raw, 29/29 survived bridged), plus the `userInterfaceIdiom` absence grep with its
-  positive control.
+- `Types-RAW-unbridged-COMPLETE.swift.gz` — the ENTIRE generated `Types.swift` (5511
+  lines, gzip -9; exact sha256 of both the compressed file and its decompressed content
+  in `SHA256SUMS.txt` — not reproduced here as a truncated fragment, to avoid a
+  transcription error), from a fresh `swift build` against the RAW (unbridged) vendored
+  schema. All 29 target properties are absent — verifiable with `gunzip -c … | grep -F
+  '#/components/schemas/ImagePage/next_cursor'` (0 hits) or with
+  `check-nullable-survival.sh` below.
+- `Types-BRIDGED-COMPLETE.swift.gz` — the ENTIRE generated `Types.swift` (6326 lines,
+  gzip -9, same hash-recording convention in `SHA256SUMS.txt`), same build against the
+  bridged schema. All 29 present, each with its `- Remark: Generated from` provenance
+  comment.
+- `check-nullable-survival.sh` — the exact, committed, executable checker: for each
+  `<Schema>/<property>` line in `failing-field-list.txt`, greps the given `Types.swift`
+  for that property's exact provenance-comment marker and reports SURVIVED/DROPPED plus a
+  `SURVIVED: n/N` summary. Reproducible by anyone: `gunzip -k
+  Types-BRIDGED-COMPLETE.swift.gz && ./check-nullable-survival.sh
+  Types-BRIDGED-COMPLETE.swift failing-field-list.txt`.
+- `SHA256SUMS.txt` — sha256 of both COMPLETE files, compressed and uncompressed.
+- `greps.txt` — the checker's REAL, literal output run against both COMPLETE files (0/29
+  survived raw, 29/29 survived bridged, every one of the 29 lines individually), plus the
+  `userInterfaceIdiom` absence grep with its positive control.
 
 These replace an earlier reference to `.phase-ledger.md` as the evidence location — that
 file is operational (gitignored, never committed, never part of what a gate reviews), so a
 reader of the committed tree could never actually reach it. The evidence now lives in the
-tree the bridge itself lives in.
+tree the bridge itself lives in, and it is the complete generator output rather than a
+hand-extracted excerpt, so nothing about its completeness needs to be taken on trust.

@@ -1,0 +1,41 @@
+# Real transcript: the mac-gate fail-fast skip path, deliberately triggered once.
+# (P0a round 3, 2026-08-27) — a disposable copy of NullableSurvivalTests.swift on a
+# merkur MIRROR ONLY (~/build/img-manager-ios-probe3/, since removed) had one extra
+# @Test appended that asserts Bool(false); this file, the local repo, and the
+# committed test file were never touched. The exact remote script fragment from
+# bin/mac-gate.sh's build_script heredoc was extracted and run standalone over SSH.
+
+--- api-nullable-tests exit=1 ---
+warning: Schema "null" is not supported, reason: "schema type", skipping [context: foundIn=Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query (#/paths/api/images/{image_id}/neighbours/GET/query)/sidecar]
+File Client.swift already up to date.
+File Types.swift already up to date.
+File Server.swift already up to date.
+[17/20] Running swift-openapi-generator
+[19/22] Emitting module ImgManagerAPITests
+[20/22] Compiling ImgManagerAPITests NullableSurvivalTests.swift
+[21/24] Emitting module ImgManagerAPIPackageTests
+[22/24] Compiling ImgManagerAPIPackageTests runner.swift
+[22/24] Write Objects.LinkFileList
+[23/24] Linking ImgManagerAPIPackageTests
+Build complete! (12.82s)
+Test Suite 'All tests' started at 2026-08-27 15:55:19.987.
+Test Suite 'All tests' passed at 2026-08-27 15:55:19.989.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Test "DELIBERATE injected failure (P0a round-3 skip-path drill)" started.
+◇ Suite "Nullable property survival (OpenAPI generation probe)" started.
+◇ Test "ImagePage round-trips a present and an absent next_cursor through Codable" started.
+◇ Test "ImagePage.next_cursor — named explicitly by the plan gate's unasked finding" started.
+◇ Test "Every other inline-type anyOf-nullable component-schema property (28 remaining)" started.
+✔ Test "ImagePage.next_cursor — named explicitly by the plan gate's unasked finding" passed after 0.001 seconds.
+✔ Test "ImagePage round-trips a present and an absent next_cursor through Codable" passed after 0.001 seconds.
+✔ Test "Every other inline-type anyOf-nullable component-schema property (28 remaining)" passed after 0.001 seconds.
+✔ Suite "Nullable property survival (OpenAPI generation probe)" passed after 0.001 seconds.
+✘ Test "DELIBERATE injected failure (P0a round-3 skip-path drill)" recorded an issue at NullableSurvivalTests.swift:103:103: Expectation failed: Bool(false)
+✘ Test "DELIBERATE injected failure (P0a round-3 skip-path drill)" failed after 0.001 seconds with 1 issue.
+✘ Test run with 4 tests in 1 suite failed after 0.001 seconds with 1 issue.
+api-nullable-tests failed (exit 1) — skipping xcodegen/build/test/lint/pins (fail-fast)
+MAC_GATE_REMOTE_SUMMARY: api-nullable-tests=1 xcodegen=skipped build=skipped test-iphone=skipped test-ipad=skipped idiom-grep=skipped lint=skipped pins=skipped
+SCRIPT_EXIT=0
