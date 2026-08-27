@@ -154,6 +154,31 @@ def prepare_signing(key)
          output_path: "#{ROOT}/fastlane/certs")
   end
 
+  # A raw .p12 import carries ONLY the leaf cert+key -- no issuer chain. With the search list
+  # pinned to this keychain alone, trust-chain validation then fails and codesign reports zero
+  # identities even though find-identity-by-path sees the cert (root-caused 2026-08-27: the
+  # sibling memosng-ci keychain holds 5 WWDR intermediates installed by fastlane `cert`; a
+  # fresh import-strategy keychain holds none). Copy the sibling's PUBLIC certificates -- the
+  # demonstrably sufficient chain for this team's certs; no private key travels in a `-p` dump.
+  wwdr_present = sh(
+    "security find-certificate -a -c 'Apple Worldwide Developer Relations' " \
+    "#{KEYPATH.shellescape} 2>/dev/null | grep -c 'keychain' || true", log: false
+  ).strip.to_i
+  if wwdr_present.zero?
+    source_kc = File.expand_path("~/Library/Keychains/memosng-ci.keychain-db")
+    UI.user_error!(
+      "prepare_signing: #{KEYCHAIN} has no WWDR intermediates and the sibling keychain " \
+      "(#{source_kc}) is absent -- import Apple's WWDR CA certificates into #{KEYCHAIN} " \
+      "manually (https://www.apple.com/certificateauthority/) before retrying."
+    ) unless File.exist?(source_kc)
+    chain_pem = "#{ROOT}/build/wwdr-chain.pem"
+    FileUtils.mkdir_p(File.dirname(chain_pem))
+    File.write(chain_pem, sh("security find-certificate -a -p #{source_kc.shellescape}", log: false))
+    sh("security", "import", chain_pem, "-k", KEYPATH, "-T", "/usr/bin/codesign", log: false)
+    File.delete(chain_pem)
+    UI.message("prepare_signing: issuer chain imported from the sibling keychain (public certs only)")
+  end
+
   # A freshly imported private key is ACL-locked to the importing tool: without an explicit
   # partition-list grant, codesign/xcodebuild see "no identities" although find-identity lists
   # the cert (the reference pipeline never hits this because `cert` grants internally on the
