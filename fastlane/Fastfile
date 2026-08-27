@@ -1,3 +1,4 @@
+require "cgi"
 # Headless TestFlight pipeline. Ported from the estate's reference project
 # (memos-ng-ios/fastlane/Fastfile) per the WP8 P0b premise-gate fold — adapted for
 # img-manager-ios's single app target (no share extension, no EXT_ID, no app-group
@@ -154,6 +155,46 @@ def prepare_signing(key)
          output_path: "#{ROOT}/fastlane/certs")
   end
 
+  # A raw .p12 import carries ONLY the leaf cert+key -- no issuer chain. With the search list
+  # pinned to this keychain alone, trust-chain validation then fails and codesign reports zero
+  # identities even though find-identity-by-path sees the cert (root-caused 2026-08-27: the
+  # sibling memosng-ci keychain holds 5 WWDR intermediates installed by fastlane `cert`; a
+  # fresh import-strategy keychain holds none). Copy the sibling's PUBLIC certificates -- the
+  # demonstrably sufficient chain for this team's certs; no private key travels in a `-p` dump.
+  wwdr_present = sh(
+    "security find-certificate -a -c 'Apple Worldwide Developer Relations' " \
+    "#{KEYPATH.shellescape} 2>/dev/null | grep -c 'keychain' || true", log: false
+  ).strip.to_i
+  if wwdr_present.zero?
+    source_kc = File.expand_path("~/Library/Keychains/memosng-ci.keychain-db")
+    UI.user_error!(
+      "prepare_signing: #{KEYCHAIN} has no WWDR intermediates and the sibling keychain " \
+      "(#{source_kc}) is absent -- import Apple's WWDR CA certificates into #{KEYCHAIN} " \
+      "manually (https://www.apple.com/certificateauthority/) before retrying."
+    ) unless File.exist?(source_kc)
+    chain_pem = "#{ROOT}/build/wwdr-chain.pem"
+    FileUtils.mkdir_p(File.dirname(chain_pem))
+    begin
+      File.write(chain_pem, sh(
+        "security find-certificate -a -c 'Apple Worldwide Developer Relations' -p " \
+        "#{source_kc.shellescape}", log: false
+      ))
+      sh("security", "import", chain_pem, "-k", KEYPATH, "-T", "/usr/bin/codesign", log: false)
+    ensure
+      File.delete(chain_pem) if File.exist?(chain_pem)
+    end
+    UI.message("prepare_signing: WWDR issuer chain imported from the sibling keychain")
+  end
+
+  # A freshly imported private key is ACL-locked to the importing tool: without an explicit
+  # partition-list grant, codesign/xcodebuild see "no identities" although find-identity lists
+  # the cert (the reference pipeline never hits this because `cert` grants internally on the
+  # keychains it populates). Idempotent; runs for both strategies; log: false keeps the
+  # keychain password out of lane output.
+  sh("security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s",
+     "-k", kc_pw, KEYPATH, log: false)
+  UI.message("prepare_signing: partition-list grant applied (apple-tool:,apple:)")
+
   prof_app = get_provisioning_profile(
     api_key: key, app_identifier: APP_ID, force: true,
     output_path: "#{ROOT}/fastlane/profiles", filename: "app.mobileprovision",
@@ -278,10 +319,25 @@ end
 # plutil's JSON extraction distinguishes a real Boolean from a String the way Apple's own
 # reader does -- a plain PlistBuddy Print cannot (it stringifies everything), which is exactly
 # the class of bug fold item 5 exists to catch (a string "NO" satisfying nothing at upload time).
+# plutil's `json` extraction errors on BARE SCALARS ("Invalid object in plist for JSON
+# format") -- it only serializes containers -- which made correct Boolean false facts read as
+# nil (fail-closed, run 3). xml1 preserves the type tags for scalars (<false/> vs
+# <string>NO</string>), so scalars parse from xml1 and containers still go through json.
 def plist_json_value(plist, key)
-  raw = sh("/usr/bin/plutil -extract #{key.shellescape} json -o - #{plist.shellescape} 2>&1",
+  raw = sh("/usr/bin/plutil -extract #{key.shellescape} xml1 -o - #{plist.shellescape} 2>&1",
            log: false)
-  JSON.parse(raw)
+  body = raw[%r{<plist[^>]*>\s*(.*?)\s*</plist>}m, 1]
+  return nil if body.nil?
+  case body
+  when %r{\A<true\s*/>\z} then true
+  when %r{\A<false\s*/>\z} then false
+  when %r{\A<integer>(-?\d+)</integer>\z} then Regexp.last_match(1).to_i
+  when %r{\A<real>(-?[\d.]+)</real>\z} then Regexp.last_match(1).to_f
+  when %r{\A<string>(.*)</string>\z}m then CGI.unescapeHTML(Regexp.last_match(1))
+  else
+    JSON.parse(sh("/usr/bin/plutil -extract #{key.shellescape} json -o - #{plist.shellescape} 2>&1",
+                  log: false))
+  end
 rescue StandardError
   nil
 end
@@ -376,10 +432,17 @@ def archive_facts(archive, previous_build)
   bundle_id = sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' #{info_plist.shellescape}",
                  log: false).strip
   version, build_number = archive_version(archive)
+  # Asset-catalog builds nest the icon name under CFBundleIcons/CFBundlePrimaryIcon; the
+  # top-level key exists only in some configurations (run-3 false positive read only top-level).
   icon_name = begin
     sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' #{info_plist.shellescape}", log: false).strip
   rescue StandardError
-    nil
+    begin
+      sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' " \
+         "#{info_plist.shellescape}", log: false).strip
+    rescue StandardError
+      nil
+    end
   end
 
   codesign_out = sh("codesign -dv --verbose=4 #{app.shellescape} 2>&1", log: false)
