@@ -173,10 +173,16 @@ def prepare_signing(key)
     ) unless File.exist?(source_kc)
     chain_pem = "#{ROOT}/build/wwdr-chain.pem"
     FileUtils.mkdir_p(File.dirname(chain_pem))
-    File.write(chain_pem, sh("security find-certificate -a -p #{source_kc.shellescape}", log: false))
-    sh("security", "import", chain_pem, "-k", KEYPATH, "-T", "/usr/bin/codesign", log: false)
-    File.delete(chain_pem)
-    UI.message("prepare_signing: issuer chain imported from the sibling keychain (public certs only)")
+    begin
+      File.write(chain_pem, sh(
+        "security find-certificate -a -c 'Apple Worldwide Developer Relations' -p " \
+        "#{source_kc.shellescape}", log: false
+      ))
+      sh("security", "import", chain_pem, "-k", KEYPATH, "-T", "/usr/bin/codesign", log: false)
+    ensure
+      File.delete(chain_pem) if File.exist?(chain_pem)
+    end
+    UI.message("prepare_signing: WWDR issuer chain imported from the sibling keychain")
   end
 
   # A freshly imported private key is ACL-locked to the importing tool: without an explicit
