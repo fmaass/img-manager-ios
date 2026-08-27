@@ -1,0 +1,59 @@
+# The 29 component-schema anyOf-nullable properties this probe tracked individually.
+# Regenerated 2026-08-27 directly from Packages/ImgManagerAPI/Sources/ImgManagerAPI/
+# openapi.vendored.json (the byte-identical raw vendor, v0.9.0 SHA
+# 4b952701ac79a6ec7ac245e8f1bf3b9657ca64c6) — this file is reproducible, not hand-copied:
+#
+#   python3 -c "
+#   import json
+#   doc = json.load(open('openapi.vendored.json'))
+#   def is_null(m): return isinstance(m, dict) and m.get('type')=='null' and len(m)==1
+#   for name, schema in doc['components']['schemas'].items():
+#       for prop, node in schema.get('properties', {}).items():
+#           anyof = node.get('anyOf')
+#           if isinstance(anyof, list) and len(anyof)==2 and any(is_null(m) for m in anyof):
+#               keep = next(m for m in anyof if not is_null(m))
+#               if '\$ref' not in keep: print(f'{name}/{prop}')
+#   "
+#
+# Against the RAW (unbridged) schema, every one of these 29 is silently DROPPED from the
+# generated Types.swift (build exit 0; properties simply absent — no error, no warning
+# naming these specifically). Against the BRIDGED schema (tools/normalize-openapi.py
+# applied by scripts/sync-openapi.sh) all 29 survive — see Types-BRIDGED-excerpt.swift.
+#
+# SCOPE NOTE (corrected this round): 29 is the COMPONENT-SCHEMA count only. The same
+# generator behavior also affects 88 anyOf-nullable PATH/QUERY PARAMETER schemas in the
+# same document (117 total inline-type anyOf-nullable nodes; 12 more are `$ref`+null and
+# are correctly left alone by the bridge — see docs/OPENAPI_NORMALIZATION_DEBT.md). The
+# 88 parameter cases are fixed by the same bridge run (same nullable_rewritten=117
+# counter in Packages/ImgManagerAPI/OPENAPI_SOURCE) but are NOT individually regression-
+# tested by NullableSurvivalTests.swift — that gap is P1-ios's to close (debt doc, below).
+
+ApiHealthResponse/tier_mounted
+FolderNode/parent_id
+ImageDetail/aspect_ratio
+ImageDetail/aspect_source
+ImageDetail/captured_at
+ImageDetail/source_kind
+ImageDetail/source_label
+ImageDetail/source_unavailable_reason
+ImagePage/next_cursor
+ImageSummary/aspect_ratio
+ImageSummary/aspect_source
+ImageSummary/captured_at
+ImageSummary/source_kind
+ImageSummary/source_label
+LightroomMeta/good
+LightroomMeta/label
+LightroomMeta/rating
+MaintenanceRunView/error
+MaintenanceRunView/finished_at
+MaintenanceStatus/next_run_at
+MaintenanceStatus/note
+MaintenanceStatus/tier_detail
+MaintenanceStatus/tier_mounted
+ProxyState/height
+ProxyState/url
+ProxyState/width
+StatusResponse/last_indexed_at
+StoreMountHealth/detail
+StoreMountHealth/mounted

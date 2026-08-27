@@ -5,12 +5,28 @@
 # Swift cannot be built on the Linux machine this repo is developed on, so every build,
 # test, lint and dependency check runs on a Mac build host over SSH. This script is the
 # ONLY sanctioned way to get there. Pattern ported from the estate's reference project
-# (memos-ng-ios/bin/mac-gate.sh) — the lock discipline, the rsync-mirror-never-checkout
-# rule, and the DEVELOPER_DIR build path are adopted verbatim; the per-package memos
-# mechanics (entitlement greps, keychain-group checks, the MemosFeatures warnings-canary,
-# the layering dependency-rule greps, markdown parity) are NOT ported because
-# img-manager-ios has no equivalent architecture yet — they get added when a phase
-# introduces the thing they check.
+# (memos-ng-ios/bin/mac-gate.sh) — the rsync-mirror-never-checkout rule and the
+# DEVELOPER_DIR build path are adopted verbatim. The per-package memos mechanics
+# (entitlement greps, keychain-group checks, the MemosFeatures warnings-canary, the
+# layering dependency-rule greps, markdown parity) are NOT ported because img-manager-ios
+# has no equivalent architecture yet — they get added when a phase introduces the thing
+# they check.
+#
+# LOCK DISCIPLINE — NOT VERBATIM (corrected 2026-08-27, P0a fix round; an earlier
+# revision of this file claimed "verbatim" and that claim was false). What IS ported: an
+# owner token is written on acquire and READ BACK before the run proceeds (the reference
+# gate's own reasoning, memos-ng-ios/bin/mac-gate.sh ~line 589: "Read back, because the
+# claim is only as good as what the next run will find in there"), and release compares
+# the token before removing the lock and reads back that the removal actually took,
+# recording the outcome as a gate leg (`lock-release=<rc>`) rather than swallowing it.
+# What is DELIBERATELY NOT ported: the reference gate's dead-holder reaping — a remote
+# liveness probe (a canary process plus `pgrep` against the branch's own gate/work paths)
+# that lets a NEW run take over a lock whose holder process is provably gone
+# (memos-ng-ios/bin/mac-gate.sh ~lines 644-721). This script's lock is strictly
+# non-reentrant: a live OR a stale lock both refuse (exit 3) and both require a human to
+# clear them (`ssh <host> rm -rf '<lockdir>'`), which is safe (never wrongly steals a
+# lock) but less convenient than the reference gate's self-healing behaviour. Porting the
+# full reaping logic is future work if orphaned locks turn out to recur in practice.
 #
 # NEW versus the reference gate (WP8 plan round-2 delta, adopted advisory): the gate
 # directory on merkur is a MIRROR with no .git — same as memos-ng-ios's — so this script
@@ -35,7 +51,8 @@
 #
 # Exit codes: 2 = refusal (unsafe/unusable inputs, nothing was copied or run);
 #             3 = another run of this branch holds the gate lock;
-#             otherwise the exit code of the first failing step.
+#             otherwise the exit code of the first failing step (which now includes
+#             `copyback` and `lock-release` — see the leg list below).
 
 set -uo pipefail
 
@@ -83,7 +100,41 @@ record() { # $1=name $2=exit-code
 }
 step_summary=""
 
+# Set once the lock is genuinely ours (after acquire AND its readback both succeed) —
+# release_lock is a no-op before that, and idempotent after (guarded by lock_released),
+# since it runs both explicitly (inside summary_and_exit, so its own result is recorded
+# in the printed summary) and via the EXIT trap as a safety net for early-refusal paths
+# that never reach summary_and_exit at all.
+lock_held=0
+lock_released=0
+lock_owner=""
+target_dir=""
+
+release_lock() {
+  [ "$lock_held" = 1 ] || return 0
+  [ "$lock_released" = 1 ] && return 0
+  lock_released=1
+  local out rc
+  out="$(timeout 20 ssh -o BatchMode=yes "$host" "
+    lockdir='$target_dir/.lock'
+    if [ ! -d \"\$lockdir\" ]; then echo 'ALREADY-GONE'; exit 0; fi
+    owner=\"\$(cat \"\$lockdir/holder\" 2>/dev/null)\"
+    if [ \"\$owner\" != '$lock_owner' ]; then
+      echo \"OWNER-MISMATCH wrote=$lock_owner found=\$owner\"; exit 1
+    fi
+    rm -rf \"\$lockdir\"
+    if [ -d \"\$lockdir\" ]; then echo 'REMOVE-FAILED'; exit 1; fi
+    echo 'RELEASED'
+  " 2>&1)"
+  rc=$?
+  printf '%s\n' "$out" >> "$log" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || say "LOCK RELEASE WARNING (recorded as lock-release leg): $out"
+  record lock-release "$rc"
+}
+trap release_lock EXIT
+
 summary_and_exit() {
+  release_lock
   printf 'mac-gate SUMMARY:%s | exit=%s\n' "$step_summary" "$first_fail" | tee -a "$log"
   exit "$first_fail"
 }
@@ -96,6 +147,8 @@ say "controller manifest: $manifest_count tracked files at HEAD $head_sha, worki
 
 # --- Gate lock + rsync mirror (never a checkout — see header). ---------------------------
 say "--- step: rsync ---"
+lock_owner="ctrl-$$-$(date -u +%s)-$RANDOM"
+esc_owner="$(esc "$lock_owner")"
 remote_prep_script=$(cat <<EOF
 set -e
 target="$GATE_ROOT_REMOTE/$esc_branch"
@@ -110,7 +163,15 @@ if ! mkdir "\$lockdir" 2>/dev/null; then
   echo "mac-gate(remote): LOCKED by \$holder" >&2
   exit 3
 fi
-echo "\$\$ $(hostname) $(date -u +%FT%TZ)" > "\$lockdir/holder"
+printf '%s\n' '$esc_owner' > "\$lockdir/holder"
+# Read back — ported reasoning from the reference gate (see header note): the claim is
+# only as good as what a read of the same file finds.
+readback="\$(cat "\$lockdir/holder" 2>/dev/null)"
+if [ "\$readback" != '$esc_owner' ]; then
+  echo "mac-gate(remote): LOCK MISMATCH wrote='$esc_owner' read='\$readback'" >&2
+  rm -rf "\$lockdir"
+  exit 2
+fi
 echo "\$target"
 EOF
 )
@@ -119,6 +180,7 @@ lock_rc=$?
 if [ $lock_rc -eq 3 ]; then
   echo "$target_dir" >&2
   record lock 3
+  # lock_held stays 0 — this run never acquired anything, so release_lock is correctly a no-op.
   summary_and_exit
 elif [ $lock_rc -ne 0 ]; then
   echo "$target_dir" >&2
@@ -126,10 +188,8 @@ elif [ $lock_rc -ne 0 ]; then
   summary_and_exit
 fi
 target_dir="$(printf '%s' "$target_dir" | tail -1)"
-release_lock() {
-  timeout 20 ssh -o BatchMode=yes "$host" "rm -rf '$target_dir/.lock'" >/dev/null 2>&1 || true
-}
-trap release_lock EXIT
+lock_held=1
+say "gate lock   : taken (owner=$lock_owner)"
 
 rsync -a --delete -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' \
   --exclude '.git' --exclude 'signing.local.yml' --exclude '.build' \
@@ -169,7 +229,7 @@ fi
 [ "$first_fail" -eq 0 ] || summary_and_exit
 
 # --- Remote build: DEVELOPER_DIR is the build path (delta finding 4), not a workaround. --
-say "--- step: xcodegen (strategy-conditional bar: delete + regenerate + build + test) ---"
+say "--- step: api-nullable-tests, then xcodegen (strategy-conditional bar) ---"
 build_script=$(cat <<'REMOTE'
 set -uo pipefail
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -186,6 +246,21 @@ step() { # $1=name -- rest is the command
   tail -30 ".gate-artifacts/${name}.log"
 }
 mkdir -p .gate-artifacts
+
+# FAIL-FAST: the OpenAPI nullable-survival probe (P0a's generation-probe regression
+# guard) needs no xcodegen project at all — plain `swift test` against the SwiftPM
+# package — so it runs FIRST and cheapest, before any simulator is created. A red result
+# here means the bridge (tools/normalize-openapi.py) regressed or was bypassed, and there
+# is no point spending simulator minutes on a client generated from a broken contract.
+step api-nullable-tests swift test --package-path Packages/ImgManagerAPI
+
+api_nullable_rc="$(printf '%s\n' "$summary" | tr ' ' '\n' | sed -n 's/^api-nullable-tests=//p')"
+if [ "$api_nullable_rc" != "0" ]; then
+  echo "api-nullable-tests failed (exit $api_nullable_rc) — skipping xcodegen/build/test/lint/pins (fail-fast)"
+  summary="$summary xcodegen=skipped build=skipped test-iphone=skipped test-ipad=skipped idiom-grep=skipped lint=skipped pins=skipped"
+  echo "MAC_GATE_REMOTE_SUMMARY:$summary"
+  exit 0
+fi
 
 # The strategy-conditional bar for a GENERATED project (plan §Phase 0a (a)): delete the
 # project, regenerate from spec, build and test.
@@ -276,6 +351,13 @@ else
   done
 fi
 
-rsync -a -e 'ssh -o BatchMode=yes' "$host:${target_dir#$HOME/}/work/.gate-artifacts/" "$artifacts/" >/dev/null 2>&1 || true
+# Copyback: previously `|| true`-swallowed, so a failed copy still produced a green
+# summary line with silently missing/incomplete evidence in .gate-artifacts/ — fixed
+# 2026-08-27 (P0a fix round) to record its own exit code as a real leg.
+copyback_out="$(rsync -a -e 'ssh -o BatchMode=yes' "$host:${target_dir#$HOME/}/work/.gate-artifacts/" "$artifacts/" 2>&1)"
+copyback_rc=$?
+[ "$copyback_rc" -eq 0 ] || { echo "$copyback_out" >&2; }
+printf '%s\n' "$copyback_out" >> "$log" 2>/dev/null || true
+record copyback "$copyback_rc"
 
 summary_and_exit

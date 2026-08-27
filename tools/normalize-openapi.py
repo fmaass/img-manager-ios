@@ -12,11 +12,15 @@ retired the same way memos-ng-ios retired its copy at commit 433a3fe.
 
 FastAPI writes an optional field as ``anyOf: [{"type": "string"}, {"type": "null"}]``.
 swift-openapi-generator does not support a bare ``"null"`` schema and DROPS the whole
-property, silently. **Confirmed for img-manager 2026-08-27**: all 29 inline-type
-anyOf-nullable component-schema properties in v0.9.0's frontend/openapi.json (SHA
-4b952701ac79a6ec7ac245e8f1bf3b9657ca64c6) vanish from the generated Types.swift with this
-bug live, `ImagePage.next_cursor` included — see img-manager-ios/.phase-ledger.md for the
-full failing-field list and the grep evidence.
+property, silently. **Confirmed for img-manager 2026-08-27** against v0.9.0's
+frontend/openapi.json (SHA 4b952701ac79a6ec7ac245e8f1bf3b9657ca64c6): this rewrite touches
+117 anyOf-nullable properties total (`nullable_rewritten=117` — see
+Packages/ImgManagerAPI/OPENAPI_SOURCE) — 29 under `#/components/schemas/*` (the data model
+fields the client reads, `ImagePage.next_cursor` included, individually regression-tested
+by Packages/ImgManagerAPI/Tests/ImgManagerAPITests/NullableSurvivalTests.swift) plus 88
+under `#/paths/*` query/path parameters (fixed by the same rewrite, not individually
+tested — a named gap). Full scope, evidence and the P1 disposition:
+docs/OPENAPI_NORMALIZATION_DEBT.md.
 
 ``type: ["string", "null"]`` says exactly the same thing in JSON Schema 2020-12 and
 generates a Swift optional. This rewrite is therefore lossless, and it is applied HERE, at
