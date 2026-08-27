@@ -154,6 +154,15 @@ def prepare_signing(key)
          output_path: "#{ROOT}/fastlane/certs")
   end
 
+  # A freshly imported private key is ACL-locked to the importing tool: without an explicit
+  # partition-list grant, codesign/xcodebuild see "no identities" although find-identity lists
+  # the cert (the reference pipeline never hits this because `cert` grants internally on the
+  # keychains it populates). Idempotent; runs for both strategies; log: false keeps the
+  # keychain password out of lane output.
+  sh("security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s",
+     "-k", kc_pw, KEYPATH, log: false)
+  UI.message("prepare_signing: partition-list grant applied (apple-tool:,apple:)")
+
   prof_app = get_provisioning_profile(
     api_key: key, app_identifier: APP_ID, force: true,
     output_path: "#{ROOT}/fastlane/profiles", filename: "app.mobileprovision",
