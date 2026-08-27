@@ -18,7 +18,7 @@
 # Against the RAW (unbridged) schema, every one of these 29 is silently DROPPED from the
 # generated Types.swift (build exit 0; properties simply absent — no error, no warning
 # naming these specifically). Against the BRIDGED schema (tools/normalize-openapi.py
-# applied by scripts/sync-openapi.sh) all 29 survive — see Types-BRIDGED-excerpt.swift.
+# applied by scripts/sync-openapi.sh) all 29 survive — see Types-BRIDGED-COMPLETE.swift.gz (sha256 in SHA256SUMS.txt).
 #
 # SCOPE NOTE (corrected this round): 29 is the COMPONENT-SCHEMA count only. The same
 # generator behavior also affects 88 anyOf-nullable PATH/QUERY PARAMETER schemas in the
