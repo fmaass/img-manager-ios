@@ -17,7 +17,9 @@ struct DegradedStateTests {
 
   @Test("A sentinel raw transport error never survives into ConnectivityState.status")
   func sentinelRawErrorIsSuppressed() async {
-    let sentinel = "SENTINEL_RAW_TRANSPORT_ERROR host=backend.internal.example status=503 body={\"detail\":\"leak-if-visible\"}"
+    let sentinel =
+      "SENTINEL_RAW_TRANSPORT_ERROR host=backend.internal.example status=503 "
+      + "body={\"detail\":\"leak-if-visible\"}"
     let stub = StubTransport(outcome: .transportFailure(raw: sentinel))
     let state = await ConnectivityState(transport: stub)
     await state.check()
@@ -37,7 +39,9 @@ struct DegradedStateTests {
     #expect(!statusDescription.contains("leak-if-visible"))
   }
 
-  @Test("TransportError.failed carries the raw text, proving the sentinel test has a positive control")
+  @Test(
+    "TransportError.failed carries the raw text, proving the sentinel test has a positive control"
+  )
   func transportErrorDoesCarryTheRawText() {
     // Positive control for the suppression test above: the raw string DOES exist on
     // the error type itself (that's the whole point — it must be stopped at
