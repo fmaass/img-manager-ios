@@ -204,7 +204,7 @@ say "--- step: content manifest (mirror side) ---"
 remote_manifest="$(timeout 30 ssh -o BatchMode=yes "$host" "
   cd '$target_dir/work'
   find . -type f \
-    -not -path './.git/*' -not -path './.build/*' -not -path './DerivedData/*' \
+    -not -path './.git/*' -not -path '*/.build/*' -not -path './.build/*' -not -path '*/DerivedData/*' -not -path './DerivedData/*' \
     -not -name '*.xcodeproj' -not -path '*.xcodeproj/*' -not -path '*.xcresult*' -not -path './.gate-artifacts/*' -not -name '.phase-ledger.md' \
     -not -path './.tools/*' -not -name 'signing.local.yml' \
   | sed 's|^\./||' | sort | while read -r f; do
