@@ -1,3 +1,4 @@
+require "cgi"
 # Headless TestFlight pipeline. Ported from the estate's reference project
 # (memos-ng-ios/fastlane/Fastfile) per the WP8 P0b premise-gate fold — adapted for
 # img-manager-ios's single app target (no share extension, no EXT_ID, no app-group
@@ -318,10 +319,25 @@ end
 # plutil's JSON extraction distinguishes a real Boolean from a String the way Apple's own
 # reader does -- a plain PlistBuddy Print cannot (it stringifies everything), which is exactly
 # the class of bug fold item 5 exists to catch (a string "NO" satisfying nothing at upload time).
+# plutil's `json` extraction errors on BARE SCALARS ("Invalid object in plist for JSON
+# format") -- it only serializes containers -- which made correct Boolean false facts read as
+# nil (fail-closed, run 3). xml1 preserves the type tags for scalars (<false/> vs
+# <string>NO</string>), so scalars parse from xml1 and containers still go through json.
 def plist_json_value(plist, key)
-  raw = sh("/usr/bin/plutil -extract #{key.shellescape} json -o - #{plist.shellescape} 2>&1",
+  raw = sh("/usr/bin/plutil -extract #{key.shellescape} xml1 -o - #{plist.shellescape} 2>&1",
            log: false)
-  JSON.parse(raw)
+  body = raw[%r{<plist[^>]*>\s*(.*?)\s*</plist>}m, 1]
+  return nil if body.nil?
+  case body
+  when %r{\A<true\s*/>\z} then true
+  when %r{\A<false\s*/>\z} then false
+  when %r{\A<integer>(-?\d+)</integer>\z} then Regexp.last_match(1).to_i
+  when %r{\A<real>(-?[\d.]+)</real>\z} then Regexp.last_match(1).to_f
+  when %r{\A<string>(.*)</string>\z}m then CGI.unescapeHTML(Regexp.last_match(1))
+  else
+    JSON.parse(sh("/usr/bin/plutil -extract #{key.shellescape} json -o - #{plist.shellescape} 2>&1",
+                  log: false))
+  end
 rescue StandardError
   nil
 end
@@ -416,10 +432,17 @@ def archive_facts(archive, previous_build)
   bundle_id = sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' #{info_plist.shellescape}",
                  log: false).strip
   version, build_number = archive_version(archive)
+  # Asset-catalog builds nest the icon name under CFBundleIcons/CFBundlePrimaryIcon; the
+  # top-level key exists only in some configurations (run-3 false positive read only top-level).
   icon_name = begin
     sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' #{info_plist.shellescape}", log: false).strip
   rescue StandardError
-    nil
+    begin
+      sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' " \
+         "#{info_plist.shellescape}", log: false).strip
+    rescue StandardError
+      nil
+    end
   end
 
   codesign_out = sh("codesign -dv --verbose=4 #{app.shellescape} 2>&1", log: false)
