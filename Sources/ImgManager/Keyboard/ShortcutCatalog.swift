@@ -25,7 +25,6 @@ enum ShortcutID: String, CaseIterable, Sendable {
   case tag = "T"
   case undo = "Z"
   case help = "?"
-  case compare = "C"  // DELIBERATE RED-CHECK — reverted before GREEN
 }
 
 /// Which WP8 phase owns the persistent-chrome surface a shortcut attaches to. Assigned
