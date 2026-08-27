@@ -315,6 +315,29 @@ if [ -d ImgManager.xcodeproj ]; then
     echo "idiom-grep exit=1"; summary="$summary idiom-grep=1"
   fi
 
+  # `C` (compare) absence in SHIPPED code, WITH a positive control (same doctrine as the
+  # idiom grep above): native compare is cancelled outright (Amendment 7) and P3's fold
+  # requires it declared NOWHERE, never present-and-dead. Scoped to Sources/+Packages/
+  # only (never Tests/) and to the actual SwiftUI keyboard-binding call shape — the
+  # Swift-level ShortcutCatalogTests already cover the enum's own case list exhaustively
+  # (including proving ITS OWN absence, which would otherwise self-defeat a broader text
+  # scan here); this leg exists so a future hand-rolled `.keyboardShortcut("c")`
+  # bypassing the catalog entirely is still caught — "a check a comment can defeat is not
+  # a check".
+  c_shortcut_hits="$(grep -rniE 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
+  c_control_hits="$(grep -rln 'ShortcutCatalog' Sources/ 2>/dev/null || true)"
+  {
+    echo "C-shortcut/compare hits (expect 0):"
+    echo "$c_shortcut_hits"
+    echo "positive control — ShortcutCatalog hits (expect >=1, proves the grep runs over real content):"
+    echo "$c_control_hits"
+  } > .gate-artifacts/no-c-shortcut-grep.log
+  if [ -z "$c_shortcut_hits" ] && [ -n "$c_control_hits" ]; then
+    echo "no-c-shortcut-grep exit=0"; summary="$summary no-c-shortcut-grep=0"
+  else
+    echo "no-c-shortcut-grep exit=1"; summary="$summary no-c-shortcut-grep=1"
+  fi
+
   step lint swift format lint --strict --recursive Sources Tests Packages/ImgManagerAPI/Sources Packages/ImgManagerAPI/Tests
 
   # Dependency-pin check (mirrors memos-ng-ios's `pins` step): resolve against the restored
