@@ -10,3 +10,10 @@ signing.local.yml
 # operational, never committed (phase evidence; gate artifacts)
 .phase-ledger.md
 .gate-artifacts/
+
+# P0b: fastlane build output + signing material — cert/sigh write these under fastlane/
+# BEFORE any lane runs (premise-gate fold item 2); never commit credentials or artifacts.
+/build/
+*.p8
+*.p12
+*.mobileprovision

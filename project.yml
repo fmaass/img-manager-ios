@@ -51,6 +51,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: live.discomarder.imgmanager
         PRODUCT_NAME: ImgManager
+        # P0b fold item 3: a real 1024x1024 icon binds here — Assets.xcassets/AppIcon.appiconset
+        # under Sources/ImgManager, picked up automatically by XcodeGen's default asset-catalog
+        # detection (no extra `sources:` entry needed — mirrors memos-ng-ios/project.yml).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
