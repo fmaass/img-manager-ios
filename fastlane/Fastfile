@@ -51,7 +51,7 @@ DSYM_PROBE_TIMEOUT = 10
 # a real cross-pipeline mutex, not merely self-protection. `flock` is cooperative: it only works
 # because both Fastfiles agree to take it, which is why the default path (not just the override
 # name) has to match exactly between the two repos.
-RELEASE_LOCK_PATH = ENV.fetch("IMGMGR_RELEASE_LOCK_PATH", File.expand_path("~/.release-lock"))
+RELEASE_LOCK_PATH = File.expand_path("~/.release-lock") # non-overridable: an override would defeat the cross-pipeline mutex
 
 def api_key
   app_store_connect_api_key(

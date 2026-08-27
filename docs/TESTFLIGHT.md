@@ -98,8 +98,8 @@ file together.
 
 ## The release mutex
 
-`fastlane beta`/`archive_ipa` take a merkur-wide lock (`flock` on `~/.release-lock`, overridable
-via `IMGMGR_RELEASE_LOCK_PATH`) around keychain-search-list mutation, certificate/profile prep and
+`fastlane beta`/`archive_ipa` take a merkur-wide lock (`flock` on `~/.release-lock` — deliberately
+non-overridable: both pipelines must lock the same file) around keychain-search-list mutation, certificate/profile prep and
 the archive itself — two releases racing the same host's keychain search list or DerivedData can
 select the wrong signing identity or exhaust disk (16 GiB free measured on merkur 2026-08-27).
 `memos-ng-ios`'s own `Fastfile` (branch `fix/shared-release-lock`, MEMNG-195) takes the same lock
