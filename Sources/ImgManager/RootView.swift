@@ -19,7 +19,8 @@ struct RootView: View {
 
   init(transport: any ClientTransport = UnauthenticatedPlaceholderClientTransport()) {
     let client = ImgManagerAPIClient.make(transport: transport)
-    _connectivity = State(initialValue: ConnectivityState(service: ImgManagerAPIService(client: client)))
+    let service = ImgManagerAPIService(client: client)
+    _connectivity = State(initialValue: ConnectivityState(service: service))
   }
 
   var body: some View {

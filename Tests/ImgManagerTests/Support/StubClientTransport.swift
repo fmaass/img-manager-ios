@@ -88,7 +88,8 @@ actor StubClientTransport: ClientTransport {
         Components.Schemas.ApiHealthResponse(
           db: "unreachable", status: "degraded", version: "0.9.0"))
     case .transportFailure:
-      preconditionFailure("transportFailure is handled before dispatch in send(_:body:baseURL:operationID:)")
+      preconditionFailure(
+        "transportFailure is handled before dispatch in send(_:body:baseURL:operationID:)")
     }
   }
 
@@ -110,7 +111,8 @@ actor StubClientTransport: ClientTransport {
     case .empty, .degraded:
       return try jsonResponse(.ok, Components.Schemas.FolderTree(items: []))
     case .transportFailure:
-      preconditionFailure("transportFailure is handled before dispatch in send(_:body:baseURL:operationID:)")
+      preconditionFailure(
+        "transportFailure is handled before dispatch in send(_:body:baseURL:operationID:)")
     }
   }
 }
