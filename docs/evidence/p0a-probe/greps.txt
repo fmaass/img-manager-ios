@@ -1,0 +1,49 @@
+# Real grep output against the two full generator runs (session 2026-08-27).
+# Full generated files (5511 / 6326 lines) are not committed; the survival check below
+# is fully reproducible from the excerpts in this directory, or from a fresh
+# 'swift build' in Packages/ImgManagerAPI on merkur.
+
+## RAW (unbridged) — expect 0/29 survived
+$ python3 -c "..."  # checks each of the 29 target markers against the RAW output
+SURVIVED: 0/29
+DROPPED: 29/29
+
+## BRIDGED — expect 29/29 survived
+$ python3 -c "..."  # same check against the BRIDGED output
+SURVIVED: 29/29
+  OK ApiHealthResponse/tier_mounted
+  OK FolderNode/parent_id
+  OK ImageDetail/aspect_ratio
+  OK ImageDetail/aspect_source
+  OK ImageDetail/captured_at
+  OK ImageDetail/source_kind
+  OK ImageDetail/source_label
+  OK ImageDetail/source_unavailable_reason
+  OK ImagePage/next_cursor
+  OK ImageSummary/aspect_ratio
+  OK ImageSummary/aspect_source
+  OK ImageSummary/captured_at
+  OK ImageSummary/source_kind
+  OK ImageSummary/source_label
+  OK LightroomMeta/good
+  OK LightroomMeta/label
+  OK LightroomMeta/rating
+  OK MaintenanceRunView/error
+  OK MaintenanceRunView/finished_at
+  OK MaintenanceStatus/next_run_at
+  OK MaintenanceStatus/note
+  OK MaintenanceStatus/tier_detail
+  OK MaintenanceStatus/tier_mounted
+  OK ProxyState/height
+  OK ProxyState/url
+  OK ProxyState/width
+  OK StatusResponse/last_indexed_at
+  OK StoreMountHealth/detail
+  OK StoreMountHealth/mounted
+
+## userInterfaceIdiom absence grep (Sources app scaffold, run on merkur mirror)
+$ grep -rn "userInterfaceIdiom" Sources/ Tests/ Packages/
+(0 hits — see .gate-artifacts/idiom-grep.log from any real gate run for the live version)
+$ grep -rln "NavigationSplitView" Sources/    # positive control, same invocation
+Sources/ImgManager/RootView.swift
+Sources/ImgManager/LayoutMode.swift

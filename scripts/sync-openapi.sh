@@ -9,14 +9,17 @@
 #
 # PINNED DEBT (WP8 P0a): img-manager's schema expresses nullability as
 # anyOf: [X, {"type": "null"}], which swift-openapi-generator silently DROPS (confirmed
-# 2026-08-27: 29/29 inline-type anyOf-nullable component-schema properties vanish,
-# next_cursor included). Until img-manager's P1-backend phase fixes the contract to emit
-# OAS 3.1 type arrays natively, this script writes TWO files: openapi.vendored.json (the
-# byte-identical provenance artifact) and openapi.json (the bridged copy
-# tools/normalize-openapi.py produces from it, which is what the generator plugin actually
-# reads — SwiftPM's OpenAPIGenerator plugin looks for a file literally named openapi.json
-# in the target's source directory, so the bridged copy cannot be renamed). Delete this
-# bridge in the same swipe P1-backend re-vendors: see docs/OPENAPI_NORMALIZATION_DEBT.md.
+# 2026-08-27 against v0.9.0's frontend/openapi.json: 117 anyOf-nullable properties total —
+# 29 component-schema properties, next_cursor included, individually regression-tested;
+# 88 query/path parameter schemas, fixed by the same rewrite, not individually tested —
+# see docs/OPENAPI_NORMALIZATION_DEBT.md for the full breakdown and the P1 disposition).
+# Until img-manager's P1-backend phase fixes the contract to emit OAS 3.1 type arrays
+# natively, this script writes TWO files: openapi.vendored.json (the byte-identical
+# provenance artifact) and openapi.json (the bridged copy tools/normalize-openapi.py
+# produces from it, which is what the generator plugin actually reads — SwiftPM's
+# OpenAPIGenerator plugin looks for a file literally named openapi.json in the target's
+# source directory, so the bridged copy cannot be renamed). Delete this bridge in the same
+# swipe P1-backend re-vendors: see docs/OPENAPI_NORMALIZATION_DEBT.md.
 #
 # Usage:
 #   scripts/sync-openapi.sh <img-manager-full-sha>
