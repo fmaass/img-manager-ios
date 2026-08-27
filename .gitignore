@@ -6,3 +6,7 @@ signing.local.yml
 .tools/
 .gate-artifacts-probe-*
 .DS_Store
+
+# operational, never committed (phase evidence; gate artifacts)
+.phase-ledger.md
+.gate-artifacts/
