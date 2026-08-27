@@ -11,6 +11,8 @@
 # over SSH -> errSecInternalComponent; that is the whole reason this pipeline exists
 # rather than `xcodebuild archive` over ssh — same rationale as the reference).
 
+require "digest"
+require "fileutils"
 require "json"
 require "shellwords"
 require "spaceship"
@@ -42,10 +44,13 @@ ATTACH_INTERVAL = 20
 # A store probe answers in milliseconds when the mount is healthy; anything past this is a hang.
 DSYM_PROBE_TIMEOUT = 10
 
-# Fold item 7: a merkur-wide mutex against the memos-ng-ios pipeline. This lock only protects
-# a run FROM THIS repo -- it is a mutex only if memos-ng-ios's own Fastfile also flocks this
-# exact path. It does not today (verified: no release-lock precedent in that repo as of this
-# port). Recorded as an open cross-repo coordination item, not silently assumed closed.
+# Fold item 7 / diff-gate blocker 2: a merkur-wide mutex against the memos-ng-ios pipeline.
+# memos-ng-ios's own Fastfile (branch fix/shared-release-lock, MEMNG-195) now flocks this SAME
+# path with the SAME default (~/.release-lock) around the same critical section (keychain-
+# search-list mutation, cert/profile prep, the archive) -- once both branches are merged this is
+# a real cross-pipeline mutex, not merely self-protection. `flock` is cooperative: it only works
+# because both Fastfiles agree to take it, which is why the default path (not just the override
+# name) has to match exactly between the two repos.
 RELEASE_LOCK_PATH = ENV.fetch("IMGMGR_RELEASE_LOCK_PATH", File.expand_path("~/.release-lock"))
 
 def api_key
@@ -84,14 +89,37 @@ end
 # cert after a quota check) is a live Apple-portal decision this file cannot make; it is made at
 # merkur first-action (fold item 9) and recorded there. This lane refuses to guess: it requires
 # IMGMGR_CERT_STRATEGY to be set explicitly to the decided value.
+#
+# The keychain itself is meant to be REUSED across every release after the proof, not recreated
+# each time (diff-gate blocker 5: refusing outright on existence made every release after the
+# first impossible). What must never happen is silently adopting a keychain this pipeline did
+# not create -- so reuse is gated on a marker file written the moment this pipeline creates the
+# keychain, and existence WITHOUT that marker is still refused exactly as before.
+KEYCHAIN_MARKER = "#{KEYPATH}.imgmanager-ci-marker".freeze
+KEYCHAIN_MARKER_CONTENT = "imgmanager-ci keychain -- created by fastlane/Fastfile#prepare_signing\n".freeze
+
 def prepare_signing(key)
   kc_pw = ENV.fetch("CI_KEYCHAIN_PW")
+
   if File.exist?(KEYPATH)
+    recognized = File.exist?(KEYCHAIN_MARKER) && File.read(KEYCHAIN_MARKER) == KEYCHAIN_MARKER_CONTENT
     UI.user_error!(
-      "prepare_signing: #{KEYCHAIN} already exists at #{KEYPATH} -- refusing to reuse or " \
-      "overwrite an unknown keychain (fold item 9's first-action check). Remove it " \
-      "deliberately first if this run is meant to replace it."
+      "prepare_signing: #{KEYCHAIN} exists at #{KEYPATH} but carries no recognized " \
+      "#{File.basename(KEYCHAIN_MARKER)} -- refusing to reuse or overwrite a keychain this " \
+      "pipeline did not create. Remove both the keychain and the marker deliberately first " \
+      "if this run is meant to replace it."
+    ) unless recognized
+    UI.message("prepare_signing: reusing the existing #{KEYCHAIN} this pipeline created " \
+               "(recognition marker verified)")
+    unlock_keychain(path: KEYPATH, password: kc_pw)
+  else
+    create_keychain(
+      name: KEYCHAIN, password: kc_pw, default_keychain: false,
+      unlock: true, timeout: 7200, lock_when_sleeps: false, add_to_search_list: true,
     )
+    unlock_keychain(path: KEYPATH, password: kc_pw)
+    File.write(KEYCHAIN_MARKER, KEYCHAIN_MARKER_CONTENT)
+    UI.message("prepare_signing: created #{KEYCHAIN} and wrote its recognition marker")
   end
 
   strategy = ENV.fetch("IMGMGR_CERT_STRATEGY", "").strip
@@ -104,19 +132,24 @@ def prepare_signing(key)
     )
   end
 
-  create_keychain(
-    name: KEYCHAIN, password: kc_pw, default_keychain: false,
-    unlock: true, timeout: 7200, lock_when_sleeps: false, add_to_search_list: true,
-  )
-  unlock_keychain(path: KEYPATH, password: kc_pw)
-
   if strategy == "import"
-    import_certificate(
-      certificate_path: ENV.fetch("IMGMGR_DISTRIBUTION_P12_PATH"),
-      certificate_password: ENV.fetch("IMGMGR_DISTRIBUTION_P12_PASSWORD"),
-      keychain_name: KEYCHAIN, keychain_password: kc_pw,
-    )
+    # Idempotent on purpose: a second release must not fail (or duplicate-import) just because
+    # the first release's identity is still sitting in the reused keychain.
+    existing = sh("security find-identity -v -p codesigning #{KEYPATH.shellescape} 2>&1", log: false)
+    if existing.include?("Apple Distribution")
+      UI.message("prepare_signing: an Apple Distribution identity is already present in " \
+                 "#{KEYCHAIN} -- skipping import (idempotent reuse)")
+    else
+      import_certificate(
+        certificate_path: ENV.fetch("IMGMGR_DISTRIBUTION_P12_PATH"),
+        certificate_password: ENV.fetch("IMGMGR_DISTRIBUTION_P12_PASSWORD"),
+        keychain_name: KEYCHAIN, keychain_password: kc_pw,
+      )
+    end
   else
+    # fastlane's `cert` action already reuses a valid existing certificate instead of minting a
+    # new one unless `force:` is passed (never passed here) -- so a reused keychain's existing
+    # cert from a previous release is picked up rather than re-created.
     cert(api_key: key, keychain_path: KEYPATH, keychain_password: kc_pw,
          output_path: "#{ROOT}/fastlane/certs")
   end
@@ -171,10 +204,45 @@ def assert_provenance!(expected_sha)
   actual_sha
 end
 
+# Diff-gate blocker 3: signing.local.yml is git-ignored, but XcodeGen merges it as an arbitrary
+# project.yml fragment -- it is not limited to the three signing keys it exists for. So a stale
+# or tampered copy on disk could inject ANY build setting or script phase into a release archive
+# while assert_provenance!'s clean-tree/expected-SHA check (which only sees TRACKED content)
+# stays green, because this file is invisible to git entirely.
+#
+# The release lane's own signing is fully determined downstream by prepare_signing's explicit
+# update_code_signing_settings call (the TEAM_ID/APP_ID constants plus the fetched profile) --
+# it never actually reads this file's content, so the release build needs nothing from it. The
+# strongest simple close is therefore to stop trusting the on-disk copy at all for a release:
+# overwrite it, unconditionally, with the canonical empty stub immediately before generation, and
+# record that stub's sha256 in provenance.json so every release's signing.local.yml input is
+# provable after the fact. (Ordinary `bin/generate.sh` usage OUTSIDE this lane -- an Xcode GUI
+# device build -- is untouched: it still stubs only when absent, so a developer's real per-machine
+# team id survives their own local builds.)
+CANONICAL_SIGNING_LOCAL = "{}\n".freeze
+SIGNING_LOCAL_SHA_MARKER = "#{ROOT}/build/signing-local.sha256"
+
+def canonicalize_signing_local!
+  path = "#{ROOT}/signing.local.yml"
+  File.write(path, CANONICAL_SIGNING_LOCAL)
+  written = File.binread(path)
+  UI.user_error!(
+    "archive_ipa: could not canonicalize signing.local.yml before generation -- refusing to " \
+    "release rather than trust whatever was already on disk."
+  ) unless written == CANONICAL_SIGNING_LOCAL
+
+  sha = Digest::SHA256.hexdigest(written)
+  FileUtils.mkdir_p(File.dirname(SIGNING_LOCAL_SHA_MARKER))
+  File.write(SIGNING_LOCAL_SHA_MARKER, "#{sha}\n")
+  UI.message("signing.local.yml canonicalized to the empty stub for this release (sha256 #{sha})")
+  sha
+end
+
 # Fold item 4: runbook prose ("generate first") is not enforcement while archive_ipa remains
 # directly callable -- so the lane performs generation and the pin check itself, in order,
 # every time.
 def run_generate_and_assert_pins!
+  canonicalize_signing_local!
   sh("#{ROOT.shellescape}/bin/generate.sh")
 
   root_pins = "#{ROOT}/Package.resolved"
@@ -228,21 +296,74 @@ def binary_entitlements_plist(app)
   path
 end
 
-# Which build the newest previous release under this store's provenance records claims -- the
-# authority the version/build check advances past. project.yml's numbers are NOT this authority:
-# they are the intent, not what was actually uploaded. Absent entirely (bootstrap, or the store
-# just went through and found nothing) means this is the first proof.
-def previous_build_number
-  status, root, message = DsymStore.choose(DSYM_STORES) { |candidate| dsym_store_reachable?(candidate) }
-  UI.user_error!("previous_build_number: #{message}") if status == :none
-  status == :fallback ? UI.important(message) : UI.message(message)
+# The authoritative App Store Connect build listing -- the second, independent source
+# previous_build_number unions against the dSYM stores' provenance records (diff-gate blocker
+# 4). Unlike asc_attach_status this is not scoped to one version/build: it lists every build ASC
+# holds for the app, because the question here is "what is the highest build number ANY store
+# claims was ever uploaded", not "did one specific build attach".
+def asc_all_build_numbers
+  app = Spaceship::ConnectAPI::App.find(APP_ID)
+  UI.user_error!("previous_build_number: App Store Connect has no app #{APP_ID}") if app.nil?
 
-  builds = Dir.glob(File.join(root, DSYM_SUBPATH, "*", "provenance.json")).filter_map do |path|
-    Integer(JSON.parse(File.read(path))["build"].to_s, exception: false)
-  rescue StandardError
-    nil
+  builds = Spaceship::ConnectAPI::Build.all(app_id: app.id)
+  builds.map do |build|
+    n = Integer(build.version.to_s, exception: false)
+    UI.user_error!(
+      "previous_build_number: App Store Connect returned a build with a non-numeric build " \
+      "number (#{build.version.inspect}) -- refusing to treat unreadable ASC history as bootstrap."
+    ) if n.nil?
+    n
   end
-  builds.max
+rescue StandardError => e
+  UI.user_error!(
+    "previous_build_number: could not read App Store Connect's build history (#{e.class}: " \
+    "#{e.message}) -- refusing to treat an unreachable authoritative source as bootstrap."
+  )
+end
+
+# Which build the highest previous release ANYWHERE claims -- the authority the version/build
+# check advances past. project.yml's numbers are NOT this authority: they are the intent, not
+# what was actually uploaded.
+#
+# Diff-gate blocker 4: the earlier version asked only the FIRST reachable dSYM store (primary,
+# or fallback if primary was down) and silently discarded any record it could not parse. Both
+# were data-loss bugs wearing a bootstrap hat: a build preserved to lexosaurus while janus was
+# briefly down became invisible the moment janus came back (nobody unions the two), and a
+# corrupt or hand-edited provenance.json quietly became "no history at all" -- either one could
+# let 0.1.0 (1) pass a second time. This version UNIONS every reachable store's records with
+# ASC's own authoritative listing and takes the max; a store that is merely unreachable is
+# skipped (matching DsymStore's own reachability semantics elsewhere), but a record that IS
+# present and unreadable, or an unreachable ASC, fails the lane outright rather than resolving
+# to nil. nil is returned ONLY when every reachable source was consulted and genuinely held no
+# history at all -- the real first-proof bootstrap case.
+def previous_build_number
+  reachable_stores = DSYM_STORES.select { |_name, root| dsym_store_reachable?(root) }
+  UI.user_error!(
+    "previous_build_number: no dSYM store is reachable (tried #{DSYM_STORES.map(&:first).join(', ')}) " \
+    "-- cannot establish release history; refusing to guess bootstrap."
+  ) if reachable_stores.empty?
+
+  store_builds = reachable_stores.flat_map do |name, root|
+    Dir.glob(File.join(root, DSYM_SUBPATH, "*", "provenance.json")).map do |path|
+      parsed = JSON.parse(File.read(path))
+      n = Integer(parsed["build"].to_s, exception: false)
+      UI.user_error!(
+        "previous_build_number: #{path} (store #{name}) has an unreadable or non-numeric " \
+        "\"build\" field (#{parsed["build"].inspect}) -- refusing to treat corrupt release " \
+        "history as bootstrap. Fix or deliberately remove the record before releasing again."
+      ) if n.nil?
+      n
+    rescue JSON::ParserError => e
+      UI.user_error!(
+        "previous_build_number: #{path} (store #{name}) is not valid JSON (#{e.message}) -- " \
+        "refusing to treat corrupt release history as bootstrap."
+      )
+    end
+  end
+
+  asc_builds = asc_all_build_numbers
+  all_builds = store_builds + asc_builds
+  all_builds.empty? ? nil : all_builds.max
 end
 
 # Fold item 5: read the BUILT archive, never project.yml -- a green generate only proves the
@@ -313,8 +434,13 @@ def run_archive_checks!(archive, previous_build)
 end
 
 def write_provenance!(dest:, sha:, version:, build_number:)
+  # Diff-gate blocker 3: the exact signing.local.yml content this build was generated against
+  # (the canonical empty stub -- see canonicalize_signing_local!) is provable after the fact,
+  # not merely asserted at build time.
+  signing_local_sha = File.exist?(SIGNING_LOCAL_SHA_MARKER) ? File.read(SIGNING_LOCAL_SHA_MARKER).strip : nil
   record = {
     "sha" => sha, "version" => version, "build" => build_number,
+    "signing_local_sha256" => signing_local_sha,
     "written_at" => Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
   }
   path = File.join(dest, "provenance.json")

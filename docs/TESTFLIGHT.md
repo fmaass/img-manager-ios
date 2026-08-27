@@ -26,11 +26,12 @@ only — nothing here submits to the App Store, and no step starts a review.
     export IMGMGR_CERT_STRATEGY=import   # or: create — see "Certificate decision" below
     fastlane beta expected_sha:<the exact commit HEAD must be at>
 
-`archive_ipa` (which `beta` calls first) runs, in this order: `bin/generate.sh`, an assertion
+`archive_ipa` (which `beta` calls first) runs, in this order: canonicalize `signing.local.yml`
+to the empty stub (see "The `signing.local.yml` input" below), `bin/generate.sh`, an assertion
 that the project's `Package.resolved` is byte-equal to the tracked root file, signing, the
 archive itself (`-onlyUsePackageVersionsFromResolvedFile`), and the archive/pre-upload check
-below — before any IPA is assembled. `beta` then uploads, preserves dSYMs with a provenance
-record beside them, and reads App Store Connect back.
+below — before any IPA is assembled. `beta` then **preserves dSYMs with a provenance record
+beside them BEFORE it uploads**, and finally reads App Store Connect back.
 
 **`expected_sha:` is required, not optional.** The lane refuses a dirty working tree and refuses
 to build any commit other than the one named — `verify_attach` proves a build reached the
@@ -41,15 +42,41 @@ written as `provenance.json` next to that build's dSYMs.
 
 Before the IPA is assembled, `fastlane/lib/archive_check.rb` verdicts on facts read off the
 **built** `.xcarchive` — never off `project.yml`, which is the intent, not what Xcode emitted:
-bundle id; `0.1.0 (1)` for the first proof, a strictly increasing build number after that (read
-from the newest `provenance.json` under the dSYM store, not guessed); `ITSAppUsesNonExemptEncryption`
+bundle id; `0.1.0 (1)` for the first proof, a strictly increasing build number after that (the
+max of every `provenance.json` under EVERY reachable dSYM store, unioned with App Store
+Connect's own build listing — never just the first store that happened to answer, and never
+guessed); `ITSAppUsesNonExemptEncryption`
 is a real Boolean `false` (a string `"NO"` satisfies nothing at upload time); all four orientations;
 the icon asset and its compiled `Assets.car` are present; the code signature is a valid Apple
 Distribution signature; the embedded profile's application identifier and team match; `get-task-allow`
-is `false`; and at least one `dSYM` UUID matches the built binary. Every branch is a pure function,
-unit-tested without a Mac: `ruby -Ifastlane/lib fastlane/test/archive_check_test.rb`.
+is `false`; and at least one `dSYM` UUID matches the built binary. `get-task-allow` is checked as
+`false` — and ONLY `false`; a failed or missing extraction (`nil`) fails the check too, never
+passes as an implicit false. Every branch is a pure function, unit-tested without a Mac:
+`ruby -Ifastlane/lib fastlane/test/archive_check_test.rb`.
 
-## Certificate decision
+Build-number history is read from two independent sources and unioned — every reachable dSYM
+store's `provenance.json` files, and App Store Connect's own build listing — and the higher of
+the two is what the next build must strictly exceed. A store that is simply unreachable is
+skipped (another store or ASC can still supply the history), but a `provenance.json` that IS
+present and does not parse, or an App Store Connect that cannot be read at all, **fails the
+release** rather than being treated as "no history" — a corrupt or partial record must never let
+`0.1.0 (1)` pass a second time.
+
+## The `signing.local.yml` input
+
+`signing.local.yml` is git-ignored, but XcodeGen merges it as an arbitrary `project.yml`
+fragment — not limited to the signing keys it exists for. Left alone, a stale or hand-edited
+copy on disk could inject any build setting into a release archive while `expected_sha:`'s
+clean-tree check stays green, because git never sees this file at all. The release lane's own
+signing is fully decided downstream by `prepare_signing`'s explicit `update_code_signing_settings`
+call, so a release build needs nothing from this file's content — `archive_ipa` therefore
+overwrites it, unconditionally, with the canonical empty stub (`{}`) immediately before
+generation, and records that stub's sha256 in `provenance.json` as `signing_local_sha256`. An
+Xcode-GUI device build run directly through `bin/generate.sh` (outside this lane) is untouched —
+it still stubs only when the file is absent, so a developer's real per-machine team id survives
+their own local builds.
+
+## Certificate decision and keychain reuse
 
 `prepare_signing` refuses to run unless `IMGMGR_CERT_STRATEGY` is set to `import` or `create` —
 there is no default, and `cert` against a freshly created, empty `imgmanager-ci` keychain is never
@@ -57,7 +84,17 @@ allowed to silently mint a certificate nobody decided to mint. Which one applies
 Developer Portal decision (existing certificate count, expiry, whether its private key is
 exportable) made at the merkur first-action census, not guessed here. `import` reads
 `IMGMGR_DISTRIBUTION_P12_PATH` / `IMGMGR_DISTRIBUTION_P12_PASSWORD`; `create` calls `cert` as the
-reference pipeline does.
+reference pipeline does — reusing an already-valid certificate rather than minting one, since
+`force:` is never passed.
+
+The `imgmanager-ci.keychain-db` keychain itself is **reused across every release after the
+proof**, not recreated each time: `prepare_signing` writes a recognition marker file
+(`imgmanager-ci.keychain-db.imgmanager-ci-marker`, beside the keychain in
+`~/Library/Keychains/`) the moment it creates the keychain, and a later run that finds the
+keychain already present reuses it only when that marker is also present and matches — an
+existing keychain WITHOUT the marker is still refused exactly as before, on the theory it is not
+this pipeline's. To deliberately replace the keychain, remove both the keychain and its marker
+file together.
 
 ## The release mutex
 
@@ -65,9 +102,10 @@ reference pipeline does.
 via `IMGMGR_RELEASE_LOCK_PATH`) around keychain-search-list mutation, certificate/profile prep and
 the archive itself — two releases racing the same host's keychain search list or DerivedData can
 select the wrong signing identity or exhaust disk (16 GiB free measured on merkur 2026-08-27).
-**This only protects a run from this repository.** It is a mutex against the `memos-ng-ios`
-pipeline only once that repository's own `Fastfile` takes the same lock — it does not yet as of
-this port; that is a cross-repo follow-up, not assumed closed here.
+`memos-ng-ios`'s own `Fastfile` (branch `fix/shared-release-lock`, MEMNG-195) takes the same lock
+at the same default path around the same critical section, so once both branches are merged this
+is a real cross-pipeline mutex, not merely self-protection — `flock` is cooperative and only
+works because both sides agree to take it.
 
 While the lock is held, the signing keychain search list is also narrowed to only
 `imgmanager-ci.keychain-db` for the duration of signing and archiving, and restored afterward —

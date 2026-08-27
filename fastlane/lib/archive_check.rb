@@ -172,8 +172,17 @@ module ArchiveCheck
   # A distribution build with get-task-allow true is debuggable -- Apple's own definition of a
   # development-signed binary -- and TestFlight/App Store both refuse an upload carrying it, so
   # this check exists to fail fast on the archive rather than wait for ASC's rejection e-mail.
+  #
+  # nil is NOT treated as false. A failed entitlement extraction (a bad codesign invocation, a
+  # missing entitlements plist, plutil choking on it) also reads as nil, and letting that pass
+  # silently as "false" would make a broken read-back indistinguishable from a genuinely correct
+  # distribution entitlement -- exactly the class of bug this whole check exists to catch.
   def self.check_get_task_allow(value)
-    if value == false || value.nil?
+    if value.nil?
+      Result.new(false, "get_task_allow",
+                "get-task-allow could not be read (nil) -- a failed or missing extraction is " \
+                "never treated as an implicit false")
+    elsif value == false
       Result.new(true, "get_task_allow", "get-task-allow is false")
     else
       Result.new(false, "get_task_allow", "get-task-allow is #{value.inspect}, expected false")

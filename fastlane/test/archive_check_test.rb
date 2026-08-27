@@ -146,9 +146,15 @@ class ArchiveCheckTest < Minitest::Test
     assert_equal(["get_task_allow"], ArchiveCheck.failures(results).map(&:name))
   end
 
-  def test_get_task_allow_absent_is_treated_as_false
+  # Diff-gate blocker 1: a failed/missing entitlement extraction must never pass as an implicit
+  # false -- it must be distinguishable from a genuinely correct distribution entitlement.
+  def test_get_task_allow_missing_extraction_fails_distinctly_from_false
     results = verdict(get_task_allow: nil)
-    assert(ArchiveCheck.pass?(results))
+    refute(ArchiveCheck.pass?(results))
+    failure = ArchiveCheck.failures(results).find { |r| r.name == "get_task_allow" }
+    refute_nil(failure)
+    assert_match(/could not be read/, failure.message)
+    refute_match(/expected false/, failure.message, "a failed extraction must read differently than a wrong value")
   end
 
   def test_no_matching_dsym_fails
