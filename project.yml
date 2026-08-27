@@ -64,8 +64,8 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: >-
           UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
           UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "2"
   ImgManagerTests:
     type: bundle.unit-test
     platform: iOS
