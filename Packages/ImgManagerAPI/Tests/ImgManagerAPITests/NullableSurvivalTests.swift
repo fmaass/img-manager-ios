@@ -27,72 +27,75 @@ import Testing
 @Suite("Nullable property survival (OpenAPI generation probe)")
 struct NullableSurvivalTests {
 
-    @Test("ImagePage.next_cursor — named explicitly by the plan gate's unasked finding")
-    func imagePageNextCursor() {
-        let _: WritableKeyPath<Components.Schemas.ImagePage, Swift.String?> = \.nextCursor
-        #expect(Bool(true))  // reaching here means the keypath above type-checked
-    }
+  @Test("ImagePage.next_cursor — named explicitly by the plan gate's unasked finding")
+  func imagePageNextCursor() {
+    let _: WritableKeyPath<Components.Schemas.ImagePage, Swift.String?> = \.nextCursor
+    #expect(Bool(true))  // reaching here means the keypath above type-checked
+  }
 
-    @Test("Every other inline-type anyOf-nullable component-schema property (28 remaining)")
-    func remainingNullableProperties() {
-        let _: WritableKeyPath<Components.Schemas.ApiHealthResponse, Swift.Bool?> = \.tierMounted
-        let _: WritableKeyPath<Components.Schemas.FolderNode, Swift.Int?> = \.parentId
+  @Test("Every other inline-type anyOf-nullable component-schema property (28 remaining)")
+  func remainingNullableProperties() {
+    let _: WritableKeyPath<Components.Schemas.ApiHealthResponse, Swift.Bool?> = \.tierMounted
+    let _: WritableKeyPath<Components.Schemas.FolderNode, Swift.Int?> = \.parentId
 
-        let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.Double?> = \.aspectRatio
-        let aspectSourceKP1: WritableKeyPath<
-            Components.Schemas.ImageDetail, Components.Schemas.ImageDetail.AspectSourcePayload?
-        > = \Components.Schemas.ImageDetail.aspectSource
-        _ = aspectSourceKP1
-        let _: WritableKeyPath<Components.Schemas.ImageDetail, Foundation.Date?> = \.capturedAt
-        let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.String?> = \.sourceKind
-        let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.String?> = \.sourceLabel
-        let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.String?> = \.sourceUnavailableReason
+    let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.Double?> = \.aspectRatio
+    let aspectSourceKP1:
+      WritableKeyPath<
+        Components.Schemas.ImageDetail, Components.Schemas.ImageDetail.AspectSourcePayload?
+      > = \Components.Schemas.ImageDetail.aspectSource
+    _ = aspectSourceKP1
+    let _: WritableKeyPath<Components.Schemas.ImageDetail, Foundation.Date?> = \.capturedAt
+    let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.String?> = \.sourceKind
+    let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.String?> = \.sourceLabel
+    let _: WritableKeyPath<Components.Schemas.ImageDetail, Swift.String?> =
+      \.sourceUnavailableReason
 
-        let _: WritableKeyPath<Components.Schemas.ImageSummary, Swift.Double?> = \.aspectRatio
-        let aspectSourceKP2: WritableKeyPath<
-            Components.Schemas.ImageSummary, Components.Schemas.ImageSummary.AspectSourcePayload?
-        > = \Components.Schemas.ImageSummary.aspectSource
-        _ = aspectSourceKP2
-        let _: WritableKeyPath<Components.Schemas.ImageSummary, Foundation.Date?> = \.capturedAt
-        let _: WritableKeyPath<Components.Schemas.ImageSummary, Swift.String?> = \.sourceKind
-        let _: WritableKeyPath<Components.Schemas.ImageSummary, Swift.String?> = \.sourceLabel
+    let _: WritableKeyPath<Components.Schemas.ImageSummary, Swift.Double?> = \.aspectRatio
+    let aspectSourceKP2:
+      WritableKeyPath<
+        Components.Schemas.ImageSummary, Components.Schemas.ImageSummary.AspectSourcePayload?
+      > = \Components.Schemas.ImageSummary.aspectSource
+    _ = aspectSourceKP2
+    let _: WritableKeyPath<Components.Schemas.ImageSummary, Foundation.Date?> = \.capturedAt
+    let _: WritableKeyPath<Components.Schemas.ImageSummary, Swift.String?> = \.sourceKind
+    let _: WritableKeyPath<Components.Schemas.ImageSummary, Swift.String?> = \.sourceLabel
 
-        let _: WritableKeyPath<Components.Schemas.LightroomMeta, Swift.Bool?> = \.good
-        let _: WritableKeyPath<Components.Schemas.LightroomMeta, Swift.String?> = \.label
-        let _: WritableKeyPath<Components.Schemas.LightroomMeta, Swift.Int?> = \.rating
+    let _: WritableKeyPath<Components.Schemas.LightroomMeta, Swift.Bool?> = \.good
+    let _: WritableKeyPath<Components.Schemas.LightroomMeta, Swift.String?> = \.label
+    let _: WritableKeyPath<Components.Schemas.LightroomMeta, Swift.Int?> = \.rating
 
-        let _: WritableKeyPath<Components.Schemas.MaintenanceRunView, Swift.String?> = \.error
-        let _: WritableKeyPath<Components.Schemas.MaintenanceRunView, Foundation.Date?> = \.finishedAt
+    let _: WritableKeyPath<Components.Schemas.MaintenanceRunView, Swift.String?> = \.error
+    let _: WritableKeyPath<Components.Schemas.MaintenanceRunView, Foundation.Date?> = \.finishedAt
 
-        let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Foundation.Date?> = \.nextRunAt
-        let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Swift.String?> = \.note
-        let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Swift.String?> = \.tierDetail
-        let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Swift.Bool?> = \.tierMounted
+    let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Foundation.Date?> = \.nextRunAt
+    let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Swift.String?> = \.note
+    let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Swift.String?> = \.tierDetail
+    let _: WritableKeyPath<Components.Schemas.MaintenanceStatus, Swift.Bool?> = \.tierMounted
 
-        let _: WritableKeyPath<Components.Schemas.ProxyState, Swift.Int?> = \.height
-        let _: WritableKeyPath<Components.Schemas.ProxyState, Swift.String?> = \.url
-        let _: WritableKeyPath<Components.Schemas.ProxyState, Swift.Int?> = \.width
+    let _: WritableKeyPath<Components.Schemas.ProxyState, Swift.Int?> = \.height
+    let _: WritableKeyPath<Components.Schemas.ProxyState, Swift.String?> = \.url
+    let _: WritableKeyPath<Components.Schemas.ProxyState, Swift.Int?> = \.width
 
-        let _: WritableKeyPath<Components.Schemas.StatusResponse, Foundation.Date?> = \.lastIndexedAt
+    let _: WritableKeyPath<Components.Schemas.StatusResponse, Foundation.Date?> = \.lastIndexedAt
 
-        let _: WritableKeyPath<Components.Schemas.StoreMountHealth, Swift.String?> = \.detail
-        let _: WritableKeyPath<Components.Schemas.StoreMountHealth, Swift.Bool?> = \.mounted
+    let _: WritableKeyPath<Components.Schemas.StoreMountHealth, Swift.String?> = \.detail
+    let _: WritableKeyPath<Components.Schemas.StoreMountHealth, Swift.Bool?> = \.mounted
 
-        #expect(Bool(true))  // reaching here means every keypath above type-checked
-    }
+    #expect(Bool(true))  // reaching here means every keypath above type-checked
+  }
 
-    @Test("ImagePage round-trips a present and an absent next_cursor through Codable")
-    func imagePageRoundTrip() throws {
-        let withCursor = Components.Schemas.ImagePage(
-            items: [], limit: 50, nextCursor: "abc123")
-        let encoded = try JSONEncoder().encode(withCursor)
-        let decoded = try JSONDecoder().decode(Components.Schemas.ImagePage.self, from: encoded)
-        #expect(decoded.nextCursor == "abc123")
+  @Test("ImagePage round-trips a present and an absent next_cursor through Codable")
+  func imagePageRoundTrip() throws {
+    let withCursor = Components.Schemas.ImagePage(
+      items: [], limit: 50, nextCursor: "abc123")
+    let encoded = try JSONEncoder().encode(withCursor)
+    let decoded = try JSONDecoder().decode(Components.Schemas.ImagePage.self, from: encoded)
+    #expect(decoded.nextCursor == "abc123")
 
-        let withoutCursor = Components.Schemas.ImagePage(items: [], limit: 50, nextCursor: nil)
-        let encodedNil = try JSONEncoder().encode(withoutCursor)
-        let decodedNil = try JSONDecoder().decode(
-            Components.Schemas.ImagePage.self, from: encodedNil)
-        #expect(decodedNil.nextCursor == nil)
-    }
+    let withoutCursor = Components.Schemas.ImagePage(items: [], limit: 50, nextCursor: nil)
+    let encodedNil = try JSONEncoder().encode(withoutCursor)
+    let decodedNil = try JSONDecoder().decode(
+      Components.Schemas.ImagePage.self, from: encodedNil)
+    #expect(decodedNil.nextCursor == nil)
+  }
 }
