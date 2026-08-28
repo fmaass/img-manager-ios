@@ -77,6 +77,16 @@ final class GridStore {
   private(set) var lastMutationError: GridMutationError?
   private(set) var lastPageLoadError: GridMutationError?
 
+  /// WP8 P7 (coexistence adjudication 7c): increments on every COMMITTED mark/undo/tag mutation
+  /// — never on a rollback/conflict/refusal (each success branch below sets this alongside its
+  /// own `lastMutationError = nil`). The ONE signal `RootView` watches (`.onChange`) to invalidate
+  /// the queue's own summary cache — GridStore itself carries no reference to `QueueStore` and
+  /// no knowledge that a queue even exists (P6 coexistence: "no second mutation lane; queue
+  /// reads stay read-only and separate"). `applyConflictAgain`'s resubmission increments this
+  /// too, for free — it resubmits through this SAME `applyMark`/`addTag`, hitting the same
+  /// success branch, not a separate code path.
+  private(set) var mutationCommitCount = 0
+
   private(set) var query = GridImagesQuery()
   private(set) var rowHeight: GridRowHeight = .step200
   /// Set by the view after every justified-packing pass (`JustifiedRowLayout.pack`) — the
@@ -239,15 +249,26 @@ final class GridStore {
 
   // MARK: - Loading
 
-  func selectShoot(folderID: Int) async {
-    guard query.folderID != folderID else {
-      // P6: genuine re-entry into the ALREADY-selected shoot — no scope change, so none of the
-      // resets below apply, but the plan requires this to refresh rather than the prior bare
-      // no-op (`selectShoot`'s own doc history: "P6 changes this for genuine re-entry").
+  /// `sourceTier` (WP8 P7, Q5): the COMPLETE destination is `(folderID, sourceTier)`, set
+  /// atomically in this one call — never `selectShoot` followed by a separate
+  /// `applyFilterChange` to set the tier, which would double-reload and briefly publish the
+  /// wrong scope. Defaulting to `nil` keeps every pre-P7 caller behavior-preserving: `query.
+  /// sourceTier` was never set anywhere in the app before this phase (verified: no call site,
+  /// no test, sets it), so an omitted `sourceTier` here reproduces the exact prior behavior
+  /// bit-for-bit, not merely "close enough".
+  func selectShoot(folderID: Int, sourceTier: GridSourceTier? = nil) async {
+    guard query.folderID != folderID || query.sourceTier != sourceTier else {
+      // P6: genuine re-entry into the ALREADY-selected shoot (same folder AND same tier) — no
+      // scope change, so none of the resets below apply, but the plan requires this to refresh
+      // rather than the prior bare no-op (`selectShoot`'s own doc history: "P6 changes this for
+      // genuine re-entry"). P7 extends the equality check to `sourceTier` too: a same-folder-
+      // different-tier destination (e.g. re-tapping a tree row under a different tier branch
+      // than the queue last selected) IS a real scope change, never a mere refresh.
       await authoritativeRefresh()
       return
     }
     query.folderID = folderID
+    query.sourceTier = sourceTier
     pickLock.exit()
     selection.reset(.shootChange)
     focusedImageID = nil
@@ -854,6 +875,7 @@ final class GridStore {
       undo.record(UndoEntry(appliedState: state, priorStates: priors))
       if priors.count > 1 { selection.bulkActionSucceeded() }
       lastMutationError = nil
+      mutationCommitCount += 1
     } catch {
       guard generation == loadGeneration else { return }
       rollback(priors)
@@ -944,6 +966,7 @@ final class GridStore {
         // unloaded sibling in the same group was never attempted and stays pending.
         remaining.removeAll { loadedIDs.contains($0.imageID) }
         lastMutationError = nil
+        mutationCommitCount += 1
       } catch {
         guard generation == loadGeneration else { return }
         rollback(priors)
@@ -1036,6 +1059,7 @@ final class GridStore {
       guard generation == loadGeneration else { return }
       reconcileRevisions(applied.revisions ?? [])
       lastMutationError = nil
+      mutationCommitCount += 1
     } catch {
       guard generation == loadGeneration else { return }
       rollbackTag(tag, priors: priors)

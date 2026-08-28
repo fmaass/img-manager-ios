@@ -37,6 +37,39 @@ actor GridStubTransport: ClientTransport {
   /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
   var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
 
+  // MARK: - P7 folder-summaries (QueueService/QueueStore tests)
+
+  var folderSummariesResult: [Components.Schemas.FolderSummary] = []
+  /// Self-disarming, single-slot — same discipline as `listImagesShouldFail`/`detailShouldFail`.
+  var folderSummariesShouldFail = false
+  func setFolderSummariesResult(_ items: [Components.Schemas.FolderSummary]) {
+    folderSummariesResult = items
+  }
+  func setFolderSummariesShouldFail(_ fail: Bool) { folderSummariesShouldFail = fail }
+
+  /// Same hold/release pattern as `listImages`/`neighbours`/`markState` above — lets a
+  /// `QueueStore` test prove `isRefreshing`/debounce-coalescing behaviour deterministically
+  /// rather than by sleeping.
+  private var folderSummariesHoldEnabled = false
+  private var folderSummariesHasStarted = false
+  private var folderSummariesStartedContinuation: CheckedContinuation<Void, Never>?
+  private var folderSummariesReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdFolderSummariesRequests(_ hold: Bool) { folderSummariesHoldEnabled = hold }
+
+  func waitUntilFolderSummariesStarted() async {
+    if folderSummariesHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.folderSummariesStartedContinuation = continuation
+    }
+  }
+
+  func releaseFolderSummaries() {
+    folderSummariesReleaseContinuation?.resume()
+    folderSummariesReleaseContinuation = nil
+    folderSummariesHasStarted = false
+  }
+
   // MARK: - P5 rapid-double-mutation race (BINDING fold addendum)
 
   /// When armed, a `SetMarkStateApiMarksStatePost` call suspends inside `send(...)` — same
@@ -185,6 +218,25 @@ actor GridStubTransport: ClientTransport {
     switch operationID {
     case Operations.FolderTreeApiFoldersGet.id:
       return try jsonResponse(.ok, Components.Schemas.FolderTree(items: []))
+
+    case Operations.FolderSummariesApiFolderSummariesGet.id:
+      // Resolved BEFORE any hold-suspend, same discipline as `listImages` above: a held call
+      // truthfully returns what was configured at REQUEST time, so a test can prove a stale
+      // (slower) response never clobbers a newer one even after the config changed mid-flight.
+      let resolvedItems = folderSummariesResult
+      if folderSummariesHoldEnabled {
+        folderSummariesHasStarted = true
+        folderSummariesStartedContinuation?.resume()
+        folderSummariesStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.folderSummariesReleaseContinuation = continuation
+        }
+      }
+      if folderSummariesShouldFail {
+        folderSummariesShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced folderSummaries failure")
+      }
+      return try jsonResponse(.ok, Components.Schemas.FolderSummaryList(items: resolvedItems))
 
     case Operations.ListImagesApiImagesGet.id:
       let cursorValue = request.path.flatMap(URLComponents.init(string:))?

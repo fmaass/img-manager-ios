@@ -33,11 +33,17 @@ struct GridService: Sendable {
   /// VIEW-layer discipline (no view here reads `.path`), not something this method can enforce
   /// by omission without also breaking `folder_id` derivation elsewhere that legitimately needs
   /// the tree's other fields.
-  func folders() async throws -> Components.Schemas.FolderTree {
+  ///
+  /// `sourceTier` generalized (WP8 P7, Q5): P4 hardcoded `.local` here because the sidebar only
+  /// ever browsed the local tree — P7's iPad secondary "Folders" disclosure needs BOTH tier
+  /// branches (`FolderTreeSection`), so the caller now names which tree it wants. Defaulting to
+  /// `.local` keeps the one pre-existing call site (`RootView`'s old sidebar `.task`)
+  /// byte-for-byte behavior-preserving.
+  func folders(sourceTier: GridSourceTier = .local) async throws -> Components.Schemas.FolderTree {
     let output: Operations.FolderTreeApiFoldersGet.Output
     do {
       output = try await client.folderTreeApiFoldersGet(
-        .init(query: .init(sourceTier: .local, tree: nil)))
+        .init(query: .init(sourceTier: sourceTier.folderTreePayload, tree: nil)))
     } catch {
       throw GridServiceError.unreachable
     }
@@ -320,6 +326,16 @@ struct GridImagesQuery: Sendable, Equatable {
 enum GridSourceTier: String, Sendable, Equatable {
   case local
   case archive
+
+  /// WP8 P7 (Q5): the folder-TREE endpoint's own distinct generated payload type — added
+  /// alongside the three images/facets/neighbours mappings already here when `folders(
+  /// sourceTier:)` stopped hardcoding `.local`.
+  var folderTreePayload: Operations.FolderTreeApiFoldersGet.Input.Query.SourceTierPayload {
+    switch self {
+    case .local: return .local
+    case .archive: return .archive
+    }
+  }
 
   var listImagesPayload: Operations.ListImagesApiImagesGet.Input.Query.SourceTierPayload {
     switch self {
