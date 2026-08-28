@@ -122,8 +122,13 @@ struct GridViewPointerGestureWiringTests {
       let gesture = firstPrimaryPointerDragGesture(in: attached)
       #expect(gesture != nil)
 
+      // Two probe points with no coordinate value in common (round-5 delta blocker): a single
+      // fixed point cannot distinguish exact forwarding from a transform that happens to fix
+      // one coordinate at the probed value — with distinct x AND y across both probes, any
+      // hardcoded or partial coordinate mapping inside `.live` fails the sequence equality.
       gesture?.onChanged(CGPoint(x: 3, y: 4))
-      #expect(changedPoints == [CGPoint(x: 3, y: 4)])
+      gesture?.onChanged(CGPoint(x: -7.5, y: 12.25))
+      #expect(changedPoints == [CGPoint(x: 3, y: 4), CGPoint(x: -7.5, y: 12.25)])
       #expect(endedCount == 0)
       gesture?.onEnded()
       #expect(endedCount == 1)
