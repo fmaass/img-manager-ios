@@ -26,7 +26,9 @@ struct LoupeFidelityLabelTests {
     #expect(!LoupeFidelityLabel.label(sourceKind: nil).isEmpty)
   }
 
-  @Test("An unrecognized value (schema drift) falls back the same way as nil -- never crashes, never blank")
+  @Test(
+    "An unrecognized value (schema drift) falls back the same way as nil -- never crashes, never blank"
+  )
   func unrecognizedValueFallsBack() {
     #expect(LoupeFidelityLabel.label(sourceKind: "future_kind_not_yet_known") == "Unavailable")
   }

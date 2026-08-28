@@ -2,8 +2,8 @@ import ImgManagerAPI
 import SwiftUI
 
 /// The culling surface itself, presented differently per `LayoutMode` BY DESIGN (spec §"Loupe /
-/// cull"). One view, branched only on `layoutMode` (never `userInterfaceIdiom` — plan invariant
-/// (i), mac-gate-enforced absence grep):
+/// cull"). One view, branched only on `layoutMode` — never on the device-idiom API, whose very
+/// NAME is banned from this tree by a mac-gate absence grep (plan invariant (i)):
 ///
 /// - `.compact`: no filmstrip, no full-screen toggle control (the presenting view —
 ///   `RootView` — always shows this full-screen here already).

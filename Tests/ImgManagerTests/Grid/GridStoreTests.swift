@@ -499,7 +499,8 @@ struct GridStoreTests {
 
   // MARK: - P5: loupe entry (second tap / Space/Enter), selection reset, Pick Lock untouched
 
-  @Test("A second tap on the ALREADY-focused tile opens the loupe; a different tile just moves focus")
+  @Test(
+    "A second tap on the ALREADY-focused tile opens the loupe; a different tile just moves focus")
   func secondTapOnFocusedTileOpensLoupe() async {
     let (store, transport) = makeStore()
     await transport.setListImagesPage(
@@ -556,7 +557,8 @@ struct GridStoreTests {
     #expect(store.focusedImageID == 1)
     #expect(store.selection.mode == .browse)
     #expect(store.selection.members.isEmpty)
-    #expect(store.pickLock.state == .latched)  // PickLockState.exit() is "grid-only, never the loupe"
+    // PickLockState.exit() is "grid-only, never the loupe".
+    #expect(store.pickLock.state == .latched)
   }
 
   @Test("closeLoupe() also resets the full-screen toggle")
@@ -572,7 +574,9 @@ struct GridStoreTests {
     #expect(!store.isLoupeFullScreen)
   }
 
-  @Test("Space/Enter (handleOpenShortcut) opens the loupe on the focused image; a no-op with nothing focused")
+  @Test(
+    "Space/Enter (handleOpenShortcut) opens the loupe on the focused image; a no-op with nothing focused"
+  )
   func handleOpenShortcutOpensLoupeOnFocusedImage() async {
     let (store, transport) = makeStore()
     let (store2, _) = makeStore()
@@ -683,6 +687,66 @@ struct GridStoreTests {
     #expect(store.focusedImageID == 3)
     #expect(store.loupeExhausted)
     #expect(!store.canLoupeGoNext)
+  }
+
+  @Test(
+    "a neighbours response landing after a shoot switch is discarded whole -- no old-scope rows, no stale focus (diff-gate round)"
+  )
+  func staleNeighboursResponseFromAPriorScopeIsDiscarded() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+
+    await transport.setNeighboursPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 5, nextCursor: nil))
+    await transport.holdNeighboursRequests(true)
+    let inFlight = Task { await store.loupeNext() }
+    await transport.waitUntilNeighboursStarted()
+
+    // The shoot changes while the neighbours request is genuinely in flight.
+    await transport.holdNeighboursRequests(false)
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 10, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    await transport.releaseNeighbours()
+    await inFlight.value
+
+    #expect(store.images.map(\.id) == [10])  // the stale response appended nothing
+    #expect(store.focusedImageID != 2)  // and restored no old-scope focus
+  }
+
+  @Test(
+    "a neighbours response fully deduped by a concurrent grid merge is NOT exhaustion -- Next stays enabled, focus advances locally"
+  )
+  func overlappingNeighboursResponseDoesNotLatchExhaustion() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: "cursor-a"))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+
+    await transport.setNeighboursPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 5, nextCursor: nil))
+    await transport.holdNeighboursRequests(true)
+    let inFlight = Task { await store.loupeNext() }
+    await transport.waitUntilNeighboursStarted()
+
+    // While the neighbours request is in flight, the grid's own page fetch merges id 2 first.
+    await transport.holdNeighboursRequests(false)
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.loadMoreIfNeeded(currentItemID: 1)
+    #expect(store.images.map(\.id) == [1, 2])
+
+    await transport.releaseNeighbours()
+    await inFlight.value
+
+    #expect(!store.loupeExhausted)  // dedup-empty is not the server saying "nothing further"
+    #expect(store.canLoupeGoNext)
+    #expect(store.focusedImageID == 2)  // advanced to the locally-present next image
   }
 
   @Test(

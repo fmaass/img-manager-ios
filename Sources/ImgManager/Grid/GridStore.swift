@@ -89,8 +89,7 @@ final class GridStore {
   /// maintains, never a filmstrip-local page.
   func loupeNext() async {
     guard let current = focusedImageID else { return }
-    if let idx = images.firstIndex(where: { $0.id == current }), images.indices.contains(idx + 1)
-    {
+    if let idx = images.firstIndex(where: { $0.id == current }), images.indices.contains(idx + 1) {
       focusedImageID = images[idx + 1].id
       return
     }
@@ -131,15 +130,29 @@ final class GridStore {
   /// "one paging path" pivot) via `mergeImages`, the SAME dedup point `loadMoreIfNeeded` uses,
   /// so the two sources can never produce a duplicate tile even when their ranges overlap.
   private func fetchAndMergeNeighbours(after imageID: Int) async {
+    // Diff-gate round (2026-08-28): the same generation guard every other paging await here
+    // carries — a neighbours response that lands after the shoot/filter changed must be
+    // discarded whole, or it appends old-scope rows into the new scope and can focus the
+    // loupe on an id the new scope does not contain.
+    let generation = loadGeneration
     do {
       let page = try await service.neighbours(after: imageID, query: query, limit: 5)
+      guard generation == loadGeneration else { return }
       let added = mergeImages(page.items)
       images.append(contentsOf: added)
-      if let first = added.first {
-        focusedImageID = first.id
-        loupeExhausted = false
-      } else {
+      if page.items.isEmpty {
+        // Exhaustion is the SERVER's word only. `added` emptying through dedup merely means a
+        // concurrent merge (the filmstrip's page fetch) got the same rows in first — the next
+        // image exists locally, and latching exhausted here would wrongly disable Next.
         loupeExhausted = true
+      } else {
+        loupeExhausted = false
+        if focusedImageID == imageID,
+          let idx = images.firstIndex(where: { $0.id == imageID }),
+          images.indices.contains(idx + 1)
+        {
+          focusedImageID = images[idx + 1].id
+        }
       }
       lastPageLoadError = nil
     } catch {

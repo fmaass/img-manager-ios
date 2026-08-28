@@ -42,7 +42,9 @@ struct ShortcutCatalogTests {
     #expect(ShortcutCatalog.entries.allSatisfy { !$0.isActive || $0.hasChromeSurface })
   }
 
-  @Test("P4's OWN entries (owningPhase == .p4) are all active — scoped by owner, durable across later phases")
+  @Test(
+    "P4's OWN entries (owningPhase == .p4) are all active — scoped by owner, durable across later phases"
+  )
   func p4OwnEntriesAreActive() {
     // Plan §Phase 4 fold item 3 + Amendment: "P4 activates: arrows, P, X, Shift+advance, T,
     // Z(Undo)." Scoped to `owningPhase == .p4` (rather than the raw global active set) so a
@@ -58,7 +60,9 @@ struct ShortcutCatalogTests {
     #expect(p4Owned.allSatisfy { $0.isActive })
   }
 
-  @Test("WP8 P5: Space/Enter (open) and U (Clear) are now active — the loupe destination and its mark bar both ship")
+  @Test(
+    "WP8 P5: Space/Enter (open) and U (Clear) are now active — the loupe destination and its mark bar both ship"
+  )
   func p5ActivatesOpenAndClear() {
     let open = ShortcutCatalog.entries.first { $0.id == .openSpaceEnter }
     #expect(open?.hasChromeSurface == true)
@@ -70,7 +74,8 @@ struct ShortcutCatalogTests {
     #expect(clear?.isActive == true)
   }
 
-  @Test("`?` (help) is the ONE entry still inactive — P3's own unresolved item, untouched by P4 or P5")
+  @Test(
+    "`?` (help) is the ONE entry still inactive — P3's own unresolved item, untouched by P4 or P5")
   func onlyHelpStaysInactive() {
     let inactive = Set(ShortcutCatalog.entries.filter { !$0.isActive }.map(\.id))
     #expect(inactive == [.help])

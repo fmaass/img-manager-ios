@@ -62,6 +62,33 @@ actor GridStubTransport: ClientTransport {
     markStateHasStarted = false
   }
 
+  // MARK: - P5 stale-neighbours race (diff-gate round, 2026-08-28)
+
+  /// The same hold pattern for `GET /api/images/{id}/neighbours`: lets a test land a
+  /// shoot/filter switch (or a concurrent grid merge) while a neighbours response is
+  /// genuinely in flight, proving stale-response discard and dedup-vs-exhaustion behaviour
+  /// deterministically rather than by sleeping.
+  private var neighboursHoldEnabled = false
+  private var neighboursHasStarted = false
+  private var neighboursStartedContinuation: CheckedContinuation<Void, Never>?
+  private var neighboursReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdNeighboursRequests(_ hold: Bool) { neighboursHoldEnabled = hold }
+
+  /// Suspends until a held neighbours call has genuinely entered `send(...)`.
+  func waitUntilNeighboursStarted() async {
+    if neighboursHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.neighboursStartedContinuation = continuation
+    }
+  }
+
+  func releaseNeighbours() {
+    neighboursReleaseContinuation?.resume()
+    neighboursReleaseContinuation = nil
+    neighboursHasStarted = false
+  }
+
   enum ProxyOutcome: Sendable {
     case ok(Data)
     case notModified
@@ -114,6 +141,14 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, facetsResult)
 
     case Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id:
+      if neighboursHoldEnabled {
+        neighboursHasStarted = true
+        neighboursStartedContinuation?.resume()
+        neighboursStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.neighboursReleaseContinuation = continuation
+        }
+      }
       return try jsonResponse(.ok, neighboursPage)
 
     case Operations.GetImageApiImagesImageIdGet.id:
