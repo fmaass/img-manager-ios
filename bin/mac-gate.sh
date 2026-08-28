@@ -248,10 +248,12 @@ step() { # $1=name -- rest is the command
 mkdir -p .gate-artifacts
 
 # FAIL-FAST: the OpenAPI nullable-survival probe (P0a's generation-probe regression
-# guard) needs no xcodegen project at all — plain `swift test` against the SwiftPM
+# guard, still enforced after WP8 P1-ios retired the bridge — docs/OPENAPI_NORMALIZATION_
+# DEBT.md) needs no xcodegen project at all — plain `swift test` against the SwiftPM
 # package — so it runs FIRST and cheapest, before any simulator is created. A red result
-# here means the bridge (tools/normalize-openapi.py) regressed or was bypassed, and there
-# is no point spending simulator minutes on a client generated from a broken contract.
+# here means img-manager's OpenAPI schema regressed back to the anyOf-nullable idiom
+# swift-openapi-generator drops, and there is no point spending simulator minutes on a
+# client generated from a broken contract.
 step api-nullable-tests swift test --package-path Packages/ImgManagerAPI
 
 api_nullable_rc="$(printf '%s\n' "$summary" | tr ' ' '\n' | sed -n 's/^api-nullable-tests=//p')"

@@ -1,7 +1,22 @@
-# OpenAPI normalization bridge — pinned debt
+# OpenAPI normalization bridge — pinned debt (RESOLVED)
 
-**Status:** active debt, P0a-scoped. Owner of the fix: P1-backend (img-manager repo).
-Owner of the deletion: P1-ios (this repo, P1's ios sub-branch).
+**Status:** CLOSED, WP8 P1-ios, re-vendor at img-manager commit
+`eff6a12ddf3c7e2a6f748625747345ca57c86349` (v0.9.2 tag). P1-backend fixed the schema to emit
+OAS 3.1 `type: [X, "null"]` natively; re-vendoring measured `bridge_nullable_rewritten=0`
+(the condition named below as the retirement trigger). `tools/normalize-openapi.py`,
+`Sources/ImgManagerAPI/openapi.vendored.json` and `scripts/sync-openapi.sh`'s bridge
+invocation are deleted; `openapi.json` is now the single, byte-identical vendored file
+(`cmp` against `git show eff6a12d…:frontend/openapi.json` exits 0). Disposition items 1–4
+below are done; `NullableSurvivalTests.swift` covers the parameter-schema gap (item 4) with
+`GET /api/folders`'s `tree` parameter and additionally proves the native-auth operations
+(`NativeAuthOperationsExposedTests`) are exposed by the unbridged client. The rest of this
+document is kept as the historical record the evidence in `docs/evidence/p0a-probe/` refers
+to — the P0a probe findings below are still true of the schema AS IT WAS, not stale claims
+about the current one.
+
+**Original status (P0a, superseded by the above):** active debt, P0a-scoped. Owner of the
+fix: P1-backend (img-manager repo). Owner of the deletion: P1-ios (this repo, P1's ios
+sub-branch).
 
 ## What this is
 

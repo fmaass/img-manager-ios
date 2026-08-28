@@ -7,19 +7,15 @@
 # committed file is byte-for-byte `git show <sha>:frontend/openapi.json` in img-manager, so
 # provenance is checkable with one command rather than trusted.
 #
-# PINNED DEBT (WP8 P0a): img-manager's schema expresses nullability as
-# anyOf: [X, {"type": "null"}], which swift-openapi-generator silently DROPS (confirmed
-# 2026-08-27 against v0.9.0's frontend/openapi.json: 117 anyOf-nullable properties total —
-# 29 component-schema properties, next_cursor included, individually regression-tested;
-# 88 query/path parameter schemas, fixed by the same rewrite, not individually tested —
-# see docs/OPENAPI_NORMALIZATION_DEBT.md for the full breakdown and the P1 disposition).
-# Until img-manager's P1-backend phase fixes the contract to emit OAS 3.1 type arrays
-# natively, this script writes TWO files: openapi.vendored.json (the byte-identical
-# provenance artifact) and openapi.json (the bridged copy tools/normalize-openapi.py
-# produces from it, which is what the generator plugin actually reads — SwiftPM's
-# OpenAPIGenerator plugin looks for a file literally named openapi.json in the target's
-# source directory, so the bridged copy cannot be renamed). Delete this bridge in the same
-# swipe P1-backend re-vendors: see docs/OPENAPI_NORMALIZATION_DEBT.md.
+# RETIRED BRIDGE (WP8 P1-ios, docs/OPENAPI_NORMALIZATION_DEBT.md): this script used to write a
+# second, rewritten copy (openapi.vendored.json -> tools/normalize-openapi.py -> openapi.json)
+# because img-manager's schema expressed nullability as anyOf: [X, {"type": "null"}], which
+# swift-openapi-generator silently dropped. img-manager's v0.9.2 (P1-backend) now emits the OAS
+# 3.1 `type: [X, "null"]` idiom natively — re-vendoring at eff6a12ddf3c7e2a6f748625747345ca57c86349
+# measured bridge_nullable_rewritten=0 — so the bridge has nothing left to do and is deleted,
+# exactly the way memos-ng-ios retired its own copy of the identical fix (memos-ng-ios commit
+# dfc2545, "Vendor openapi.json verbatim now that memos-ng emits nullable type arrays"). This file
+# is now that same single-fetch shape.
 #
 # Usage:
 #   scripts/sync-openapi.sh <img-manager-full-sha>
@@ -27,8 +23,7 @@
 # Environment:
 #   IMG_MANAGER_REPO  path to an img-manager clone that contains the commit (default: ../img-manager)
 #
-# Exit codes: 2 = refusal (bad arguments, unusable repo, unknown commit); 1 = a fetch or the
-#             bridge failed (a genuine anyOf collision, not merely present).
+# Exit codes: 2 = refusal (bad arguments, unusable repo, unknown commit); 1 = the fetch failed.
 
 set -uo pipefail
 
@@ -46,12 +41,9 @@ src="${IMG_MANAGER_REPO:-$repo_root/../img-manager}"
 git -C "$src" rev-parse --git-dir >/dev/null 2>&1 || die "$src is not a git repository"
 git -C "$src" cat-file -e "$sha^{commit}" 2>/dev/null || die "commit $sha is not in $src (fetch it first)"
 
-vendored_dest="$repo_root/Packages/ImgManagerAPI/Sources/ImgManagerAPI/openapi.vendored.json"
-bridged_dest="$repo_root/Packages/ImgManagerAPI/Sources/ImgManagerAPI/openapi.json"
-normalizer="$repo_root/tools/normalize-openapi.py"
+dest="$repo_root/Packages/ImgManagerAPI/Sources/ImgManagerAPI/openapi.json"
 provenance="$repo_root/Packages/ImgManagerAPI/OPENAPI_SOURCE"
-mkdir -p "$(dirname "$vendored_dest")" || die "cannot create the destination directory"
-[ -f "$normalizer" ] || die "missing $normalizer"
+mkdir -p "$(dirname "$dest")" || die "cannot create the destination directory"
 
 fetch() {
   local path="$1" dest="$2"
@@ -62,13 +54,7 @@ fetch() {
 }
 
 echo "syncing from $src at $sha"
-fetch frontend/openapi.json "$vendored_dest"
-
-bridge_output="$(python3 "$normalizer" "$vendored_dest" "$bridged_dest")" \
-  || die "normalize-openapi bridge failed: $bridge_output" 1
-echo "$bridge_output" | sed 's/^/  bridge: /'
-rewritten="$(printf '%s\n' "$bridge_output" | sed -n 's/^nullable_rewritten=//p')"
-left="$(printf '%s\n' "$bridge_output" | sed -n 's/^nullable_left_as_anyof_ref=//p')"
+fetch frontend/openapi.json "$dest"
 
 {
   echo "# Provenance of the img-manager artefact vendored into this package."
@@ -77,9 +63,7 @@ left="$(printf '%s\n' "$bridge_output" | sed -n 's/^nullable_left_as_anyof_ref=/
   echo "commit=$sha"
   echo "subject=$(git -C "$src" log -1 --pretty=%s "$sha")"
   echo "committed=$(git -C "$src" log -1 --pretty=%cI "$sha")"
-  echo "files=Sources/ImgManagerAPI/openapi.vendored.json (byte-identical to source) Sources/ImgManagerAPI/openapi.json (bridged, see tools/normalize-openapi.py)"
-  echo "bridge_nullable_rewritten=$rewritten"
-  echo "bridge_nullable_left_as_anyof_ref=$left"
+  echo "files=Sources/ImgManagerAPI/openapi.json (byte-identical to source)"
 } > "$provenance" || die "cannot write $provenance" 1
 
 echo "recorded $provenance:"

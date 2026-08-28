@@ -7,6 +7,11 @@ signing.local.yml
 .gate-artifacts-probe-*
 .DS_Store
 
+# XcodeGen-generated (entitlements: path:/info: properties: — mirrors memos-ng-ios's
+# .gitignore for the same generated-file mechanism; project.yml is the source of truth).
+ImgManager.entitlements
+Support/Info.plist
+
 # operational, never committed (phase evidence; gate artifacts)
 .phase-ledger.md
 .gate-artifacts/
