@@ -496,4 +496,319 @@ struct GridStoreTests {
     #expect(store.lastPageLoadError == nil)
     #expect(store.images.map(\.id) == [1])  // restarted with the real page-one data, not empty
   }
+
+  // MARK: - P5: loupe entry (second tap / Space/Enter), selection reset, Pick Lock untouched
+
+  @Test("A second tap on the ALREADY-focused tile opens the loupe; a different tile just moves focus")
+  func secondTapOnFocusedTileOpensLoupe() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await store.tapTile(1)
+    #expect(store.focusedImageID == 1)
+    #expect(!store.isLoupeOpen)  // first tap only focuses
+
+    await store.tapTile(1)
+    #expect(store.isLoupeOpen)  // second tap on the SAME tile opens
+
+    store.closeLoupe()
+    await store.tapTile(2)
+    #expect(store.focusedImageID == 2)
+    #expect(!store.isLoupeOpen)  // a DIFFERENT tile is a fresh focus move, not an "open"
+  }
+
+  @Test("A tap in Select mode never opens the loupe, even on the already-selected tile twice")
+  func tapTileInSelectModeNeverOpensLoupe() async {
+    let (store, _) = makeStore()
+    store.selection.enterSelectExplicitly()
+    await store.tapTile(1)
+    await store.tapTile(1)
+    #expect(!store.isLoupeOpen)
+    #expect(store.selection.members == [])  // toggled on then off
+  }
+
+  @Test(
+    "openLoupe(on:) resets selection to browse/empty (the `.enteredLoupe` trigger SelectionState already reserved) but leaves Pick Lock untouched"
+  )
+  func openLoupeResetsSelectionNotPickLock() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.selection.enterSelectExplicitly()
+    store.selection.toggle(1)
+    #expect(!store.selection.members.isEmpty)
+    // Latched via the discoverable menu path (never reachable through a latched TAP, since
+    // that branch returns before ever calling `openLoupe` -- this proves the "untouched" claim
+    // by giving Pick Lock real non-default state to preserve, not just leaving it at its
+    // already-idle default).
+    store.selection.reset(.doneOrEsc)  // Lock entry is disabled while Select is active
+    store.lockPickFromMenu()
+    #expect(store.pickLock.state == .latched)
+
+    store.openLoupe(on: 1)
+
+    #expect(store.isLoupeOpen)
+    #expect(store.focusedImageID == 1)
+    #expect(store.selection.mode == .browse)
+    #expect(store.selection.members.isEmpty)
+    #expect(store.pickLock.state == .latched)  // PickLockState.exit() is "grid-only, never the loupe"
+  }
+
+  @Test("closeLoupe() also resets the full-screen toggle")
+  func closeLoupeResetsFullScreenToo() {
+    let (store, _) = makeStore()
+    store.openLoupe(on: 1)
+    store.toggleLoupeFullScreen()
+    #expect(store.isLoupeFullScreen)
+
+    store.closeLoupe()
+
+    #expect(!store.isLoupeOpen)
+    #expect(!store.isLoupeFullScreen)
+  }
+
+  @Test("Space/Enter (handleOpenShortcut) opens the loupe on the focused image; a no-op with nothing focused")
+  func handleOpenShortcutOpensLoupeOnFocusedImage() async {
+    let (store, transport) = makeStore()
+    let (store2, _) = makeStore()
+    store2.handleOpenShortcut()
+    #expect(!store2.isLoupeOpen)  // nothing focused -- no-op
+
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+    store.handleOpenShortcut()
+    #expect(store.isLoupeOpen)
+  }
+
+  // MARK: - P5: U (Clear)
+
+  @Test("U applies Clear (.none) to the focused image; Shift+U also advances")
+  func clearShortcutWithShiftAdvances() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, mark: .pick, revision: "r0"), makeImage(id: 2, revision: "r0")],
+        limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+
+    await store.handleClearShortcut(shiftHeld: true)
+
+    // Type-qualified `.none` -- a bare `.none` on the right of `==` here would be inferred as
+    // `Optional<StatePayload>.none` (nil), not `.some(StatePayload.none)`, since `mark.state`'s
+    // type is `StatePayload?` and `StatePayload` itself has a case literally named `none` (the
+    // same footgun `MarkStateValue.init(_:)`'s own doc comment names, and the exact form
+    // `conflictRollsBackOptimisticState` above already sidesteps this same way).
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.first { $0.id == 1 }?.mark.state == none)
+    #expect(store.focusedImageID == 2)
+  }
+
+  // MARK: - P5: dedicated flat previous/next over the shared paging state
+
+  @Test("loupeNext/loupePrevious walk the local flat order; previous is disabled at index 0")
+  func loupeNextPreviousWalkLocalOrder() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: (1...3).map { makeImage(id: $0, revision: "r0") }, limit: 100, nextCursor: nil)
+    )
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+
+    #expect(!store.canLoupeGoPrevious)
+    #expect(store.canLoupeGoNext)
+
+    await store.loupeNext()
+    #expect(store.focusedImageID == 2)
+    #expect(store.canLoupeGoPrevious)
+
+    await store.loupeNext()
+    #expect(store.focusedImageID == 3)
+
+    store.loupePrevious()
+    store.loupePrevious()
+    store.loupePrevious()  // one call past index 0 -- must stay put, never underflow
+    #expect(store.focusedImageID == 1)
+    #expect(!store.canLoupeGoPrevious)
+
+    // Neither call ever touched the network -- purely the retained-prefix local walk.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+    #expect(
+      await transport.callCount(Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id) == 0)
+  }
+
+  @Test(
+    "loupeNext at the loaded tail fetches the forward-neighbour endpoint and MERGES the result into store.images -- never a filmstrip-local page"
+  )
+  func loupeNextFetchesAndMergesNeighboursAtTail() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+    // Optimistic until PROVEN exhausted (matches `canLoupeGoNext`'s own doc comment: true
+    // unless a neighbours fetch already confirmed nothing further) -- at the tail with nothing
+    // yet confirmed, the control stays enabled so the tap itself can do the check, rather than
+    // disabling before we actually know.
+    #expect(store.canLoupeGoNext)
+
+    await transport.setNeighboursPage(
+      .init(
+        items: [makeImage(id: 2, revision: "r0"), makeImage(id: 3, revision: "r0")], limit: 5,
+        nextCursor: nil))
+
+    await store.loupeNext()
+
+    #expect(store.images.map(\.id) == [1, 2, 3])  // merged into the SAME array, in order
+    #expect(store.focusedImageID == 2)  // advanced to the first newly-merged image
+    #expect(!store.loupeExhausted)
+    #expect(store.canLoupeGoNext)
+    #expect(
+      await transport.callCount(Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id) == 1)
+
+    // Now genuinely at the tail again, with nothing further -- an empty neighbours page marks
+    // exhaustion and leaves focus untouched.
+    store.focusedImageID = 3
+    await transport.setNeighboursPage(.init(items: [], limit: 5, nextCursor: nil))
+    await store.loupeNext()
+    #expect(store.focusedImageID == 3)
+    #expect(store.loupeExhausted)
+    #expect(!store.canLoupeGoNext)
+  }
+
+  @Test(
+    "mergeImages dedup: a grid page fetched via loadMoreIfNeeded never re-adds an id the loupe's neighbours-merge already loaded"
+  )
+  func loadMoreIfNeededDedupsAgainstAnEarlierNeighboursMerge() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: "cursor-a"))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+
+    // The loupe's own forward prefetch adds id 2 ahead of any grid scroll.
+    await transport.setNeighboursPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 5, nextCursor: nil))
+    await store.loupeNext()
+    #expect(store.images.map(\.id) == [1, 2])
+
+    // The grid's OWN cursor-paged fetch later returns a page whose range OVERLAPS (id 2 again)
+    // plus one genuinely new id (3) -- id 2 must not be duplicated.
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 2, revision: "r0"), makeImage(id: 3, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.loadMoreIfNeeded(currentItemID: 2)
+
+    #expect(store.images.map(\.id) == [1, 2, 3])  // id 2 appears exactly once
+  }
+
+  @Test("selectShoot resets loupe state: closed, not full-screen, exhaustion cleared")
+  func selectShootResetsLoupeState() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+    store.toggleLoupeFullScreen()
+    await transport.setNeighboursPage(.init(items: [], limit: 5, nextCursor: nil))
+    await store.loupeNext()
+    #expect(store.loupeExhausted)
+
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    #expect(!store.isLoupeOpen)
+    #expect(!store.isLoupeFullScreen)
+    #expect(!store.loupeExhausted)
+  }
+
+  // MARK: - P5 BINDING: rapid double-mutation is refused, never interleaved (fold addendum)
+
+  @Test(
+    "A mark call while one is already in flight is REFUSED -- no snapshot, no second network call, no interleaved state"
+  )
+  func rapidDoubleMutationIsRefused() async throws {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await transport.holdMarkStateRequests(true)
+
+    async let firstCall: Void = store.applyMark(.pick, to: [1])
+    // Deterministic: only returns once the FIRST call's network request has genuinely started,
+    // which can only happen after `isMutatingMark` was already set (that assignment strictly
+    // precedes the awaited network call).
+    await transport.waitUntilMarkStateStarted()
+    #expect(store.isMutatingMark)
+
+    // The rapid second tap: a DIFFERENT target state on the SAME image, while the first is
+    // still in flight.
+    await store.applyMark(.dislike, to: [1])
+
+    // Refused: no second network call, no interleaved snapshot -- the image still shows only
+    // the FIRST call's optimistic value, never dislike.
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
+    #expect(store.images.first?.mark.state == .pick)
+
+    await transport.releaseMarkState()
+    _ = await firstCall
+
+    // The first call completed normally once released -- proving the guard blocked only the
+    // SECOND call, never the first's own eventual completion.
+    #expect(!store.isMutatingMark)
+    #expect(store.images.first?.mark.state == .pick)
+    #expect(store.images.first?.mark.revision == "r1")
+    #expect(store.undo.canUndo)
+
+    // Guard released: a THIRD call now goes through normally.
+    await transport.holdMarkStateRequests(false)
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])))
+    await store.applyMark(.dislike, to: [1])
+    #expect(store.images.first?.mark.state == .dislike)
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 2)
+  }
+
+  @Test("undoLastMark() is refused too while a mark mutation is in flight (same guard, same slot)")
+  func undoRefusedWhileMarkInFlight() async throws {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .dislike, revision: "r0")], limit: 100, nextCursor: nil)
+    )
+    await store.selectShoot(folderID: 1)
+    // Prime the undo slot with a completed, unrelated prior mutation.
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.applyMark(.pick, to: [1])
+    #expect(store.undo.canUndo)
+
+    await transport.holdMarkStateRequests(true)
+    async let secondCall: Void = store.applyMark(.dislike, to: [1])
+    await transport.waitUntilMarkStateStarted()
+
+    await store.undoLastMark()  // refused: a mark mutation is in flight
+
+    // 2, not 3: the priming `applyMark` above (1) plus the held second `applyMark` having
+    // already ENTERED `send()` (2, counted at transport entry regardless of the hold) -- the
+    // refused `undoLastMark()` must add NO third call.
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 2)
+    #expect(store.undo.canUndo)  // untouched -- undo never even read the slot
+
+    await transport.releaseMarkState()
+    _ = await secondCall
+  }
 }

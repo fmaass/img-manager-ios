@@ -79,6 +79,31 @@ struct GridService: Sendable {
     }
   }
 
+  // MARK: - Neighbours (P5 loupe forward prefetch)
+
+  /// `GET /api/images/{id}/neighbours` — the images immediately after `imageID` in the CURRENT
+  /// filter's order (fold-verified premise: this endpoint already existed server-side; P5 adds
+  /// only this app-layer wrapper). Distinct from `images(_:cursor:limit:)`: this is the loupe's
+  /// own small, targeted forward-look from a specific image, never a backward variant (the
+  /// endpoint has none — fold: "NEVER a new/backward server endpoint"), and never a
+  /// filmstrip-local paging path (its result is merged into `GridStore.images`, never kept
+  /// separately).
+  func neighbours(after imageID: Int, query: GridImagesQuery, limit: Int) async throws
+    -> GridImagesPage
+  {
+    let output: Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Output
+    do {
+      output = try await client.imageNeighboursApiImagesImageIdNeighboursGet(
+        .init(path: .init(imageId: imageID), query: query.asNeighboursQuery(limit: limit)))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    guard case .ok(let ok) = output, let page = try? ok.body.json else {
+      throw GridServiceError.unreachable
+    }
+    return GridImagesPage(items: page.items, nextCursor: page.nextCursor)
+  }
+
   // MARK: - Facets (Stats tab filter rows)
 
   func facets(_ query: GridImagesQuery) async throws -> Components.Schemas.ImageFacets {
@@ -277,6 +302,19 @@ struct GridImagesQuery: Sendable, Equatable {
       mark: mark, dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly,
       missing: missing)
   }
+
+  /// P5's own forward-neighbour call shape — the same filter surface as `asListImagesQuery`,
+  /// minus `cursor` (the endpoint has none) and with its own `limit` (the loupe's small
+  /// prefetch window, never the grid's page size).
+  func asNeighboursQuery(limit: Int)
+    -> Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query
+  {
+    .init(
+      limit: limit, folderId: folderID, ratingMin: ratingMin, good: good, label: label,
+      keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.neighboursPayload, tree: tree,
+      ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+  }
 }
 
 enum GridSourceTier: String, Sendable, Equatable {
@@ -291,6 +329,15 @@ enum GridSourceTier: String, Sendable, Equatable {
   }
 
   var facetsPayload: Operations.ImageFacetsApiFacetsGet.Input.Query.SourceTierPayload {
+    switch self {
+    case .local: return .local
+    case .archive: return .archive
+    }
+  }
+
+  var neighboursPayload:
+    Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.SourceTierPayload
+  {
     switch self {
     case .local: return .local
     case .archive: return .archive

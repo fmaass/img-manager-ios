@@ -46,6 +46,12 @@
         return try jsonResponse(
           .ok,
           Components.Schemas.ImageFacets(mark: [.init(count: 3, value: "pick")], total: 12))
+      case Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id:
+        // P5: no more stub images beyond the fixed dozen `fixtureImages()` already returns —
+        // an empty page is the truthful "nothing further" answer, keeping the loupe's own
+        // exhaustion path exercisable from the screenshot fixture instead of silently 404ing.
+        return try jsonResponse(
+          .ok, Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil))
       case Operations.GetImageApiImagesImageIdGet.id:
         return try jsonResponse(.ok, Self.fixtureDetail())
       case Operations.GetProxyApiImagesImageIdProxyTierGet.id:
