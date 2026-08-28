@@ -30,6 +30,7 @@ struct LoupeView: View {
       if layoutMode != .compact {
         FilmstripView(store: store)
       }
+      ConflictRecoveryBanner(store: store)
       LoupeMarkBar(store: store)
     }
     .task(id: store.focusedImageID) {
@@ -245,16 +246,28 @@ struct FilmstripThumbnail: View {
   let store: GridStore
 
   var body: some View {
-    Group {
-      if let proxyImage {
-        PlatformImageView(image: proxyImage)
-          .aspectRatio(contentMode: .fill)
-      } else {
-        Rectangle().fill(.quaternary)
+    ZStack(alignment: .topTrailing) {
+      Group {
+        if let proxyImage {
+          PlatformImageView(image: proxyImage)
+            .aspectRatio(contentMode: .fill)
+        } else {
+          Rectangle().fill(.quaternary)
+        }
+      }
+      .frame(width: 64, height: 64)
+      .clipped()
+      // P6 (IMGMGR-116, plan item 3.3): "... and on its filmstrip thumbnail in the loupe" —
+      // the SAME compact, tile-local recovery indicator `TileView`'s own badge uses.
+      if store.changedElsewhereImageIDs.contains(image.id) {
+        Image(systemName: "arrow.triangle.2.circlepath")
+          .font(.caption2)
+          .padding(3)
+          .background(.black.opacity(0.55), in: Circle())
+          .foregroundStyle(.white)
+          .padding(2)
       }
     }
-    .frame(width: 64, height: 64)
-    .clipped()
     .overlay(
       RoundedRectangle(cornerRadius: 2)
         .stroke(isFocused ? Color.accentColor : .clear, lineWidth: 2)

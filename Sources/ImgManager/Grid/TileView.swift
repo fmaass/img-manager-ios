@@ -90,7 +90,7 @@ struct TileView: View {
   }
 
   private enum BadgeItem: Hashable {
-    case selected, pick, dislike, edited, good
+    case selected, pick, dislike, edited, good, changedElsewhere
     var systemImage: String {
       switch self {
       case .selected: return "checkmark.circle.fill"
@@ -98,12 +98,17 @@ struct TileView: View {
       case .dislike: return "hand.thumbsdown.fill"
       case .edited: return "pencil.circle.fill"
       case .good: return "star.fill"
+      case .changedElsewhere: return "arrow.triangle.2.circlepath"
       }
     }
   }
 
   private func badgeItems() -> [BadgeItem] {
     var items: [BadgeItem] = []
+    // P6 (IMGMGR-116): highest priority — a refused write's compact, tile-local recovery
+    // indicator (plan item 3.3, "tile-local in the grid") must never be crowded out by the
+    // ordinary two-badge cap.
+    if store.changedElsewhereImageIDs.contains(image.id) { items.append(.changedElsewhere) }
     if isSelectMode && isSelected { items.append(.selected) }
     switch image.mark.state {
     case .some(.pick): items.append(.pick)

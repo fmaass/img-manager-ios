@@ -87,12 +87,15 @@ struct RootView: View {
     }
     .onChange(of: scenePhase) { _, newPhase in
       guard newPhase == .active else { return }
-      Task { await auth.renewOnForeground() }
-      // Diff-gate round 2, blocker 5: foreground activation performs the pinned grid
-      // reload/reset too (`SelectionResetTrigger.fullReload`), not only auth renewal — only
-      // once a shoot is actually active (nothing to reload before then).
-      if gridStore.query.folderID != nil {
-        Task { await gridStore.fullReload() }
+      // P6 (IMGMGR-116): ONE ordered task, not two independent ones — (a) renew, (b) confirm
+      // still signed in AND a shoot is selected, (c) only then the authoritative refresh. The
+      // prior two-`Task{}` shape ran renewal and the grid reload concurrently/unordered, and
+      // used `fullReload()` (unconditional focus-clear); `authoritativeRefresh()` replaces that
+      // reload with the generation-fenced, multi-page, focus-preserving re-read.
+      Task {
+        await auth.renewOnForeground()
+        guard case .signedIn = auth.status, gridStore.query.folderID != nil else { return }
+        await gridStore.authoritativeRefresh()
       }
     }
   }

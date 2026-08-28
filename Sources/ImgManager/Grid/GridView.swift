@@ -40,6 +40,7 @@ struct GridView: View {
             ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
           }
         }
+      ConflictRecoveryBanner(store: store)
       ActionBarView(store: store)
     }
     .onChange(of: store.images) { _, _ in publishRows() }
@@ -250,6 +251,61 @@ struct ActionBarView: View {
       // the undiscoverable double-tap gesture.
       Button("Lock Pick") { store.lockPickFromMenu() }
         .disabled(store.pickLock.state == .latched || store.selection.mode == .select)
+    }
+  }
+}
+
+/// P6 (IMGMGR-116): the compact, non-modal 409 recovery surface (plan item 3.7 — "no alerts, no
+/// auto-opening popovers, no modality anywhere in this flow"), shown beside the mark bar in BOTH
+/// the grid (here, above `ActionBarView`) and the loupe (`LoupeView.swift`, above
+/// `LoupeMarkBar`). Nil `conflictRecovery` renders nothing.
+struct ConflictRecoveryBanner: View {
+  @Bindable var store: GridStore
+
+  var body: some View {
+    switch store.conflictRecovery {
+    case nil:
+      EmptyView()
+    case .reading:
+      HStack(spacing: 8) {
+        ProgressView().controlSize(.small)
+        Text("Checking for changes elsewhere…")
+          .font(.footnote)
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(.thinMaterial)
+      .accessibilityIdentifier("conflictRecoveryReading")
+    case .identified:
+      HStack(spacing: 12) {
+        Label("Changed elsewhere", systemImage: "arrow.triangle.2.circlepath")
+          .font(.footnote)
+        Spacer()
+        Button("Keep Server Version") { store.dismissConflictRecovery() }
+          .font(.footnote)
+        Button("Apply Again") { Task { await store.applyConflictAgain() } }
+          .font(.footnote)
+          .buttonStyle(.borderedProminent)
+          .disabled(store.isMutatingMark)
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .background(.orange.opacity(0.15))
+      .accessibilityIdentifier("conflictRecoveryIdentified")
+    case .readFailed:
+      HStack(spacing: 12) {
+        Label("Couldn't refresh", systemImage: "exclamationmark.triangle")
+          .font(.footnote)
+        Spacer()
+        Button("Retry Refresh") { Task { await store.retryConflictRefresh() } }
+          .font(.footnote)
+          .disabled(store.isMutatingMark)
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .background(.red.opacity(0.12))
+      .accessibilityIdentifier("conflictRecoveryReadFailed")
     }
   }
 }
