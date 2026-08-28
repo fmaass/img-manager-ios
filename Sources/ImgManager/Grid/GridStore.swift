@@ -753,26 +753,37 @@ final class GridStore {
     let freshMarkByID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0.mark) })
     var freshMarkViews: [Int: FreshMarkSnapshot] = [:]
     var changed = Set<Int>()
+    // Diff-gate round 3, B6: a FAILED per-id detail() read must never produce a silent PARTIAL
+    // `.identified` -- that let Apply Again clear the recovery and either issue NO write at all
+    // (a singleton batch, since `freshMarkViews` would have nothing to resubmit) or a silent
+    // partial retry (a mixed batch, quietly dropping just the failed id). Any such failure aborts
+    // the WHOLE attempt to `.readFailed` instead, retryable via Retry Refresh, exactly like a
+    // failure of the list re-read itself above.
+    var requiredReadFailed = false
     for entry in batch {
       if let mark = freshMarkByID[entry.imageID] {
         freshMarkViews[entry.imageID] = FreshMarkSnapshot(
           state: MarkStateValue(mark.state), tags: mark.tags ?? [], revision: mark.revision)
         if mark.revision != entry.revisionSubmitted { changed.insert(entry.imageID) }
-      } else if let detail = try? await service.detail(imageID: entry.imageID),
-        generation == loadGeneration
-      {
-        freshMarkViews[entry.imageID] = FreshMarkSnapshot(
-          state: MarkStateValue(detail.mark.state), tags: detail.mark.tags ?? [],
-          revision: detail.mark.revision)
-        if detail.mark.revision != entry.revisionSubmitted { changed.insert(entry.imageID) }
       } else {
-        // Truly unreachable (deleted, or the detail fetch itself failed) -- still visibly
-        // flagged as changed, but carries no fresh precondition; Apply Again silently skips it,
-        // the same discipline `capturePriorSnapshots` already uses for an unloaded id.
-        changed.insert(entry.imageID)
+        do {
+          let detail = try await service.detail(imageID: entry.imageID)
+          guard generation == loadGeneration else { return }
+          freshMarkViews[entry.imageID] = FreshMarkSnapshot(
+            state: MarkStateValue(detail.mark.state), tags: detail.mark.tags ?? [],
+            revision: detail.mark.revision)
+          if detail.mark.revision != entry.revisionSubmitted { changed.insert(entry.imageID) }
+        } catch {
+          requiredReadFailed = true
+          break
+        }
       }
     }
     guard generation == loadGeneration else { return }  // a scope change raced the detail fetches
+    guard !requiredReadFailed else {
+      conflictRecovery = .readFailed(intent: intent, batch: batch)
+      return
+    }
     // Item 3.3's named fallback: "If the diff finds no differing image -- e.g. a revision raced
     // back -- fall back to marking the whole batch" rather than silently showing nothing refused.
     if changed.isEmpty { changed = Set(batch.map(\.imageID)) }

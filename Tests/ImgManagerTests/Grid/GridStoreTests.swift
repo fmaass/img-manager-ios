@@ -1465,4 +1465,53 @@ struct GridStoreTests {
     #expect(store.images.map(\.id) == [99])
     #expect(!store.undo.canUndo)
   }
+
+  @Test(
+    "Diff-gate round 3, B6: a FAILED per-id detail() read for a filtered-out id never produces a silent partial `.identified` -- the whole recovery becomes .readFailed (retryable), Apply Again stays unavailable (no write at all) until the retry succeeds"
+  )
+  func detailFetchFailureForVanishedIDBecomesReadFailedNotSilentPartial() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    // The re-read's query no longer shows id 1 at all, AND the detail() fallback itself fails.
+    await transport.setListImagesPage(.init(items: [], limit: 200, nextCursor: nil))
+    await transport.setDetailShouldFail(true)
+
+    await store.applyMark(.pick, to: [1])
+
+    guard case .readFailed(let intent, let batch) = store.conflictRecovery else {
+      Issue.record("expected .readFailed, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(intent == .setState(.pick))
+    #expect(batch.first?.imageID == 1)
+
+    // Apply Again is unavailable from .readFailed -- singleton batch, so a silent partial would
+    // otherwise mean literally NO write at all.
+    let callsBefore = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    await store.applyConflictAgain()
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == callsBefore)
+    #expect(store.conflictRecovery != nil)
+
+    // Retry Refresh: the detail() fetch now succeeds.
+    await transport.setDetailShouldFail(false)
+    await transport.setDetailResult(
+      .init(
+        ext: "jpg", filename: "vanished.jpg", folderId: 1, id: 1,
+        lightroom: .init(sidecarPresent: false),
+        mark: .init(revision: "r9", state: .none, tags: []),
+        proxies: .init(additionalProperties: [:]), sourceTier: "local"))
+    await store.retryConflictRefresh()
+
+    guard case .identified(_, let freshMarkViews, let changedIDs) = store.conflictRecovery else {
+      Issue.record(
+        "expected .identified after retry, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(changedIDs == [1])
+    #expect(freshMarkViews[1]?.revision == "r9")
+  }
 }

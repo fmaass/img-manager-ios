@@ -23,6 +23,10 @@ actor GridStubTransport: ClientTransport {
   var listImagesRejectNonNilCursor = false
   var facetsResult = Components.Schemas.ImageFacets(total: 0)
   var detailResult: Components.Schemas.ImageDetail?
+  /// Diff-gate round 3, B6: a `GET /api/images/{id}` failure for the NEXT call (self-disarming
+  /// one-shot, same discipline as `listImagesShouldFail`) — models the per-id detail() fallback
+  /// itself being unreachable, distinct from `detailResult` simply not being configured.
+  var detailShouldFail = false
   var proxyOutcome: ProxyOutcome = .ok(Data([0xFF, 0xD8, 0xFF, 0xD9]))
   var markStateOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
@@ -158,6 +162,7 @@ actor GridStubTransport: ClientTransport {
   func setListImagesRejectNonNilCursor(_ reject: Bool) { listImagesRejectNonNilCursor = reject }
   func setFacetsResult(_ result: Components.Schemas.ImageFacets) { facetsResult = result }
   func setDetailResult(_ result: Components.Schemas.ImageDetail) { detailResult = result }
+  func setDetailShouldFail(_ fail: Bool) { detailShouldFail = fail }
   func setProxyOutcome(_ outcome: ProxyOutcome) { proxyOutcome = outcome }
   func setMarkStateOutcome(_ outcome: MarkMutationOutcome) { markStateOutcome = outcome }
   /// Overrides `markStateOutcome` for requests whose `state` matches — lets a test make ONE
@@ -242,6 +247,10 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, neighboursPage)
 
     case Operations.GetImageApiImagesImageIdGet.id:
+      if detailShouldFail {
+        detailShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced detail failure")
+      }
       guard let detailResult else {
         throw SentinelTransportError(raw: "GridStubTransport: no detailResult configured")
       }

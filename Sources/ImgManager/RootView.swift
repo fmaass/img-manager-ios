@@ -217,20 +217,34 @@ struct RootView: View {
         // modes, Compact included — a plain `Button` calling `selectShoot` mutated the
         // grid's data but never pushed the split view anywhere.
         //
-        // Diff-gate round 2, B3: the store call moved OFF `onChange(of: selectedFolderID)` onto
-        // an explicit `.simultaneousGesture(TapGesture())` on every row. `onChange` never fires
-        // when a tap doesn't change the bound value — i.e. never on a tap of the ALREADY-selected
-        // row — so same-shoot re-entry's own refresh (`GridStore.selectShoot`'s same-id branch)
-        // was unreachable from the real UI despite being directly testable at the store level.
-        // `simultaneousGesture` fires ALONGSIDE the List's own built-in row-selection handling
-        // (never replacing/consuming it, so the selection binding — and the navigation push it
-        // drives — is untouched) on EVERY tap, selected row included, calling the store exactly
-        // once per tap regardless of whether the bound value changes.
+        // Diff-gate round 2, B3, and round 3's follow-up: the store call moved OFF
+        // `onChange(of: selectedFolderID)` (which never fires when a tap doesn't change the
+        // bound value — i.e. never on a tap of the ALREADY-selected row, leaving same-shoot
+        // re-entry's own refresh unreachable from the real UI) onto ONE explicit tap handler.
+        // Round 2's first attempt attached the gesture to the bare `Text`, whose hit-testing
+        // frame is only as wide as its GLYPHS — a tap on the row's own whitespace (everything
+        // else in the row's full width) landed on the List's OWN internal row-selection
+        // recognizer only, updating `selectedFolderID` without ever calling `selectShoot` at
+        // all (a regression: even a FIRST or different-shoot selection via whitespace could
+        // silently no-op). Fixed by giving the row content `.frame(maxWidth: .infinity,
+        // alignment: .leading)` — filling the row's full rendered width — THEN
+        // `.contentShape(Rectangle())`, which replaces Text's default tight-glyph hit-testing
+        // with that WHOLE expanded rectangle; the tap gesture attached after both modifiers
+        // therefore fires for a tap ANYWHERE in the row, whitespace included, with no second
+        // path (onChange or otherwise) left that could reach `selectShoot`. The ONE handler
+        // itself sets `selectedFolderID` (so the visual highlight / `NavigationSplitView` push
+        // is driven deterministically by this same code path, not left to race against the
+        // List's own independent internal recognizer) and then calls `selectShoot` on every
+        // tap unconditionally, same-value or not — `simultaneousGesture` still lets the List's
+        // own built-in handling run alongside rather than being consumed/replaced.
         List(ShootListFilter.shoots(folders), id: \.id, selection: $selectedFolderID) {
           folder in
           Text(folder.name)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .simultaneousGesture(
               TapGesture().onEnded {
+                selectedFolderID = folder.id
                 Task { await gridStore.selectShoot(folderID: folder.id) }
               }
             )
