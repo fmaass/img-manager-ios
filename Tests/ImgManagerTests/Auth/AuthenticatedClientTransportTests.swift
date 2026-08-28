@@ -99,13 +99,15 @@ struct AuthenticatedClientTransportTests {
     let spy = SpyClientTransport(responseStatus: .unauthorized)
     let firedBox = FiredBox()
     let transport = AuthenticatedClientTransport(
-      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+      inner: spy, credentialStore: store,
+      onTerminalUnauthorized: { token in await firedBox.markFired(token: token) })
 
     _ = try await transport.send(
       request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
       operationID: "apiHealthApiHealthGet")
 
     #expect(await firedBox.fired)
+    #expect(await firedBox.firedWithToken == "tok")
     try? await store.clear()
   }
 
@@ -116,7 +118,8 @@ struct AuthenticatedClientTransportTests {
     let spy = SpyClientTransport(responseStatus: .unauthorized)
     let firedBox = FiredBox()
     let transport = AuthenticatedClientTransport(
-      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+      inner: spy, credentialStore: store,
+      onTerminalUnauthorized: { token in await firedBox.markFired(token: token) })
 
     _ = try await transport.send(
       request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
@@ -132,7 +135,8 @@ struct AuthenticatedClientTransportTests {
     let spy = SpyClientTransport(responseStatus: .unauthorized)
     let firedBox = FiredBox()
     let transport = AuthenticatedClientTransport(
-      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+      inner: spy, credentialStore: store,
+      onTerminalUnauthorized: { token in await firedBox.markFired(token: token) })
 
     _ = try await transport.send(
       request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
@@ -148,7 +152,8 @@ struct AuthenticatedClientTransportTests {
     let spy = SpyClientTransport(responseStatus: .ok)
     let firedBox = FiredBox()
     let transport = AuthenticatedClientTransport(
-      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+      inner: spy, credentialStore: store,
+      onTerminalUnauthorized: { token in await firedBox.markFired(token: token) })
 
     _ = try await transport.send(
       request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
@@ -160,8 +165,14 @@ struct AuthenticatedClientTransportTests {
 }
 
 /// A minimal actor-backed flag `onTerminalUnauthorized`'s `@Sendable` closure can set — the
-/// closure itself cannot capture a plain `var` across the actor hop directly.
+/// closure itself cannot capture a plain `var` across the actor hop directly. Also records the
+/// token it was called with, so a test can prove the generation fence carries the RIGHT one.
 private actor FiredBox {
   private(set) var fired = false
-  func markFired() { fired = true }
+  private(set) var firedWithToken: String?
+
+  func markFired(token: String) {
+    fired = true
+    firedWithToken = token
+  }
 }

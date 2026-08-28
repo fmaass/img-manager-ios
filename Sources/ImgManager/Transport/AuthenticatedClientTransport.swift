@@ -28,6 +28,15 @@ import OpenAPIRuntime
 /// EVERY call, so it is where that classification belongs — `onTerminalUnauthorized` is invoked
 /// (never the credential store's own `clear()` directly, so the caller decides how to report
 /// the outcome, mirroring the same clear-with-error-handling path renewal and sign-out use).
+///
+/// Diff-gate round 1, delta: `onTerminalUnauthorized` carries the TOKEN this specific request
+/// presented, not just "some Bearer was presented" — a generation fence, ported from
+/// memos-ng-ios's `PresentedCredential` epoch (`MemosAPI/PresentedCredential.swift`: "a refusal
+/// of a credential this device has already replaced... is about a token that is gone"). Without
+/// it, a request that left with the OLD PAT can return 401 AFTER a renewal already saved its
+/// successor, and the handler would erase the fresh credential on the strength of a refusal
+/// that names a token nobody presents any more. The handler (`AuthSession`) is what compares
+/// the presented token against the CURRENTLY stored one — this transport only carries it.
 struct AuthenticatedClientTransport: ClientTransport {
   /// The three native-auth operations classify their own 401s (renew: token dead, mint no
   /// successor; logout: already revoked). Re-firing the generic handler for them would be
@@ -40,12 +49,12 @@ struct AuthenticatedClientTransport: ClientTransport {
 
   private let inner: any ClientTransport
   private let credentialStore: CredentialStore
-  private let onTerminalUnauthorized: @Sendable () async -> Void
+  private let onTerminalUnauthorized: @Sendable (String) async -> Void
 
   init(
     inner: any ClientTransport = ImgManagerAPI.liveTransport(),
     credentialStore: CredentialStore,
-    onTerminalUnauthorized: @escaping @Sendable () async -> Void = {}
+    onTerminalUnauthorized: @escaping @Sendable (String) async -> Void = { _ in }
   ) {
     self.inner = inner
     self.credentialStore = credentialStore
@@ -56,17 +65,17 @@ struct AuthenticatedClientTransport: ClientTransport {
     _ request: HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String
   ) async throws -> (HTTPResponse, HTTPBody?) {
     var request = request
-    var presentedBearer = false
+    var presentedToken: String?
     if case .present(let credential) = await credentialStore.load() {
       request.headerFields[.authorization] = "Bearer \(credential.token)"
-      presentedBearer = true
+      presentedToken = credential.token
     }
     let (response, responseBody) = try await inner.send(
       request, body: body, baseURL: baseURL, operationID: operationID)
-    if presentedBearer, response.status.code == 401,
+    if let presentedToken, response.status.code == 401,
       !Self.selfManaged401OperationIDs.contains(operationID)
     {
-      await onTerminalUnauthorized()
+      await onTerminalUnauthorized(presentedToken)
     }
     return (response, responseBody)
   }

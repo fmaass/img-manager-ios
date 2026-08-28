@@ -41,12 +41,14 @@ struct RootView: View {
       transport
       ?? AuthenticatedClientTransport(
         credentialStore: credentialStore,
-        onTerminalUnauthorized: { await unauthorizedBox.handler?() })
+        onTerminalUnauthorized: { token in await unauthorizedBox.handler?(token) })
     let client = ImgManagerAPIClient.make(transport: resolvedTransport)
     let service = ImgManagerAPIService(client: client)
     _connectivity = State(initialValue: ConnectivityState(service: service))
     let session = AuthSession(credentialStore: credentialStore, client: client)
-    unauthorizedBox.handler = { [weak session] in await session?.handleTerminalUnauthorized() }
+    unauthorizedBox.handler = { [weak session] token in
+      await session?.handleTerminalUnauthorized(presentedToken: token)
+    }
     _auth = State(initialValue: session)
   }
 
@@ -137,5 +139,5 @@ struct RootView: View {
 /// is safe here specifically because of that ordering — there is no window in which a write and
 /// a concurrent read could race — not because the box is generally thread-safe.
 private final class TerminalUnauthorizedBox: @unchecked Sendable {
-  var handler: (@Sendable () async -> Void)?
+  var handler: (@Sendable (String) async -> Void)?
 }

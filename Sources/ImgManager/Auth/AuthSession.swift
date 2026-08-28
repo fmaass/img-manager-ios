@@ -146,8 +146,23 @@ final class AuthSession {
   /// native-auth operations, which classify their own 401s below) comes back 401 — a revoked
   /// or expired PAT presented on a live request. Diff-gate round 1, blocker 3: this must end
   /// the credential and route to sign-in, not render as a permanent "Not connected".
-  func handleTerminalUnauthorized() async {
+  ///
+  /// Diff-gate round 1, delta: `presentedToken` is a GENERATION FENCE, ported from
+  /// memos-ng-ios's `PresentedCredential` epoch. A request that left with the OLD PAT can come
+  /// back 401 AFTER a renewal already saved its successor — that refusal names a token this
+  /// device no longer presents, and erasing the CURRENT (fresh) credential on its strength
+  /// would be exactly the bug the epoch fence exists to prevent ("a refusal of a credential
+  /// this device has already replaced... is about a token that is gone"). So the stored
+  /// credential is re-read HERE, and only a 401 for the token still actually presented is
+  /// terminal; anything else — the store already moved on, or holds nothing at all — is a
+  /// stale refusal this call must not act on.
+  func handleTerminalUnauthorized(presentedToken: String) async {
     guard case .signedIn = status else { return }
+    guard case .present(let current) = await credentialStore.load(),
+      current.token == presentedToken
+    else {
+      return
+    }
     await clearAndReport(
       fallbackMessage: "Your sign-in has expired. Please sign in again.")
   }
