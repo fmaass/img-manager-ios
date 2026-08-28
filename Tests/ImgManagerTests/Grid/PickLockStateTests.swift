@@ -137,3 +137,27 @@ struct DragPaintSessionTests {
     #expect(second.crossedTile(1) == true)
   }
 }
+
+@Suite("Pick button presentation (diff-gate round 2, blocker 4: caption + unmistakable state)")
+struct PickButtonPresentationTests {
+  @Test("Idle: not prominent, not accessibility-selected, no mode-row caption")
+  func idlePresentation() {
+    let presentation = PickButtonPresentation.for(.idle)
+    #expect(presentation.isProminent == false)
+    #expect(presentation.accessibilitySelected == false)
+    #expect(presentation.modeRowCaption == nil)
+  }
+
+  @Test("Latched: prominent AND accessibility-selected AND the exact pinned caption")
+  func latchedPresentation() {
+    let presentation = PickButtonPresentation.for(.latched)
+    #expect(presentation.isProminent == true)
+    #expect(presentation.accessibilitySelected == true)
+    #expect(presentation.modeRowCaption == "Pick Lock — tap photos to apply Pick")
+  }
+
+  @Test("The exact caption constant matches the pin verbatim")
+  func captionConstantIsExact() {
+    #expect(PickLockCopy.caption == "Pick Lock — tap photos to apply Pick")
+  }
+}

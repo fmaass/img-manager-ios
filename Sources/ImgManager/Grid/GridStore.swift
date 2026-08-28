@@ -217,12 +217,21 @@ final class GridStore {
     selection.enterSelectViaLongPress(imageID: imageID)
   }
 
-  /// iPad pointer drag over the grid: one call per tile the pointer crosses. `session` is
-  /// owned by the CALLER for the lifetime of one drag gesture (a fresh `DragPaintSession` per
-  /// gesture) so "once per crossed tile per drag" is enforced without this store needing to
-  /// know when a drag starts or ends.
-  func pointerDragCrossed(_ imageID: Int, session: inout DragPaintSession) async {
-    guard session.crossedTile(imageID) else { return }
+  /// One drag session, OWNED by the store (not the view) so `PrimaryPointerDragGesture`'s
+  /// SwiftUI closures never need `inout` access across an escaping `Task` boundary. The view
+  /// calls `beginPointerDrag()` on gesture start (and on end, for the next gesture to start
+  /// clean) and `pointerDragCrossed(_:)` for every point the recognizer reports.
+  private var dragSession = DragPaintSession()
+
+  func beginPointerDrag() {
+    dragSession = DragPaintSession()
+  }
+
+  /// iPad pointer drag over the grid (diff-gate round 2, blocker 3): one call per tile the
+  /// pointer crosses, wired to a real `PrimaryPointerDragGesture` in `GridView`. "Once per
+  /// crossed tile per drag" is enforced by `dragSession`, reset at the start of each gesture.
+  func pointerDragCrossed(_ imageID: Int) async {
+    guard dragSession.crossedTile(imageID) else { return }
     if pickLock.state == .latched {
       await applyMark(.pick, to: [imageID])
     } else if selection.mode == .select {
@@ -242,6 +251,14 @@ final class GridStore {
     case .latch, .unlatch:
       break
     }
+  }
+
+  /// The amendment's discoverable "Lock Pick" long-press menu command — gate's unasked issue.
+  /// Same mutual-exclusion guard as the button's own path (pin e); `PickLockState.forceLatch()`
+  /// is itself a no-op if already latched, so this is safe to invoke unconditionally.
+  func lockPickFromMenu() {
+    guard selection.mode != .select else { return }
+    pickLock.forceLatch()
   }
 
   // MARK: - Select mode
@@ -319,18 +336,38 @@ final class GridStore {
     }
   }
 
-  /// Consumes the one undo slot and restores each image's TRUTHFUL prior state — grouped by
-  /// target state, since one `setMarkState` call applies a single state to a batch. Undo is a
-  /// mutation like any other: it re-derives its own precondition from the CURRENTLY loaded
-  /// revision (never the stale `revisionBefore` the original entry recorded), and rolls back to
-  /// what the original mutation actually left in place if the undo write itself is refused.
+  /// Restores each image's TRUTHFUL prior state — grouped by target state, since one
+  /// `setMarkState` call applies a single state to a batch. Undo is a mutation like any other:
+  /// it re-derives its own precondition from the CURRENTLY loaded revision (never the stale
+  /// `revisionBefore` the original entry recorded), and rolls back to what the original
+  /// mutation actually left in place if a given group's undo write is refused.
+  ///
+  /// Atomic from the SLOT's perspective (diff-gate round 2, blocker 6): the slot is NOT
+  /// consumed up front, and groups are processed in a deterministic order, stopping at the
+  /// FIRST failure rather than silently continuing past it. If every group commits, the slot
+  /// is cleared only then. If any group fails, that group's own optimistic apply is rolled
+  /// back (so nothing is left half-applied for THAT group), and the slot is REWRITTEN to
+  /// contain exactly the groups that never successfully committed — never lost, never
+  /// re-attempted for a group that already succeeded — so a subsequent `Z` retries precisely
+  /// the unfinished remainder. `lastMutationError` surfaces the partial failure either way.
   func undoLastMark() async {
-    guard let entry = undo.consume() else { return }
+    guard let entry = undo.entry else { return }
     let groups = Dictionary(grouping: entry.priorStates, by: { $0.state })
+      .sorted { $0.key.rawValue < $1.key.rawValue }
+
+    var remaining = entry.priorStates
+    var encounteredFailure = false
+
     for (targetState, snapshots) in groups {
+      guard !encounteredFailure else { break }
       let ids = snapshots.map(\.imageID)
       let priors = capturePriorSnapshots(for: ids)
-      guard !priors.isEmpty else { continue }
+      guard !priors.isEmpty else {
+        // Nothing currently loaded to restore for this group — there is nothing a retry could
+        // act on either, so it is settled (not a failure) and drops from the remainder.
+        remaining.removeAll { ids.contains($0.imageID) }
+        continue
+      }
       optimisticallyApply(targetState, to: priors.map(\.imageID))
       let preconditions = priors.map {
         Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
@@ -339,13 +376,20 @@ final class GridStore {
         let applied = try await service.setMarkState(
           imageIDs: priors.map(\.imageID), state: targetState, preconditions: preconditions)
         reconcileRevisions(applied.revisions ?? [])
+        remaining.removeAll { ids.contains($0.imageID) }
         lastMutationError = nil
       } catch {
         rollback(priors)
         lastMutationError = (error as? GridServiceError) ?? .unreachable
+        encounteredFailure = true
       }
     }
-    // One slot, already consumed: a second Z with no intervening mutation finds nothing.
+
+    if remaining.isEmpty {
+      undo.clear()
+    } else {
+      undo.record(UndoEntry(appliedState: entry.appliedState, priorStates: remaining))
+    }
   }
 
   // MARK: - Proxy pixels

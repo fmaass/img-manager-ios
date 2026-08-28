@@ -103,6 +103,44 @@ final class PickLockState {
   }
 }
 
+/// The amendment's discoverable VISIBLE alternative to the undiscoverable double-tap gesture
+/// (functional spec, Pick Lock section: "long-press → 'Lock Pick' as the discoverable visible
+/// alternative"; gate's unasked issue). A menu command is an explicit choice, not "the second
+/// tap of a pair" — it always latches immediately, no timing window, and is a no-op if already
+/// latched (the menu's own "Lock Pick" entry is only offered while idle; this guard is the
+/// belt-and-suspenders backstop).
+extension PickLockState {
+  func forceLatch() {
+    guard state == .idle else { return }
+    state = .latched
+    lastPickButtonActivation = nil
+  }
+}
+
+/// The Pick button's presentation, pinned as DATA so a test can assert the exact caption and an
+/// unmistakable visual-state pair without touching SwiftUI (premise.out pin (b): "the Pick
+/// button simultaneously uses an obvious selected/tinted state and an accessibility selected
+/// value"). The view consumes this value directly — `isProminent` drives
+/// `.buttonStyle(.borderedProminent)` (a real, reliably-visible fill-vs-outline difference, not
+/// a tint alone) and `accessibilitySelected` drives `.accessibilityAddTraits(.isSelected)`.
+struct PickButtonPresentation: Equatable {
+  var isProminent: Bool
+  var accessibilitySelected: Bool
+  /// The persistent mode-row caption to show ABOVE the action bar — `nil` when not latched.
+  var modeRowCaption: String?
+
+  static func `for`(_ lockState: PickLockState.LockState) -> PickButtonPresentation {
+    switch lockState {
+    case .idle:
+      return PickButtonPresentation(
+        isProminent: false, accessibilitySelected: false, modeRowCaption: nil)
+    case .latched:
+      return PickButtonPresentation(
+        isProminent: true, accessibilitySelected: true, modeRowCaption: PickLockCopy.caption)
+    }
+  }
+}
+
 /// Pin (d)'s per-drag "apply once per crossed tile" dedup, and the identical rule selection
 /// drag uses ("pointer selection drag adds each crossed tile once"). Shared by both because the
 /// semantics are byte-for-byte the same: a `Set` of ids already acted on THIS drag gesture: a

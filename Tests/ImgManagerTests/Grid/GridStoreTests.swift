@@ -71,22 +71,29 @@ struct GridStoreTests {
   }
 
   @Test(
-    "409: nothing was applied server-side, so the WHOLE optimistic batch rolls back and the error surfaces"
+    "409: nothing was applied server-side, so the WHOLE optimistic batch rolls back and the error surfaces (2 images)"
   )
   func conflictRollsBackOptimisticState() async {
     let (store, transport) = makeStore()
     await transport.setListImagesPage(
-      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+      .init(
+        items: [
+          makeImage(id: 1, mark: .none, revision: "r0"),
+          makeImage(id: 2, mark: .none, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
 
     await transport.setMarkStateOutcome(.conflict)
-    await store.applyMark(.pick, to: [1])
+    await store.applyMark(.pick, to: [1, 2])
 
     // Type-qualified `.none` — bare `.none` here would match `Optional.none` (nil), not
     // `.some(StatePayload.none)`, since `StatePayload` itself has a case literally named
     // `none`.
-    #expect(store.images.first?.mark.state == Components.Schemas.MarkView.StatePayload.none)
-    #expect(store.images.first?.mark.revision == "r0")  // untouched — nothing was applied
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images[0].mark.state == none)
+    #expect(store.images[1].mark.state == none)
+    #expect(store.images[0].mark.revision == "r0")  // untouched — nothing was applied
+    #expect(store.images[1].mark.revision == "r0")
     #expect(store.lastMutationError == .conflict)
     #expect(!store.undo.canUndo)  // a refused mutation never enters the undo slot
   }
@@ -132,6 +139,139 @@ struct GridStoreTests {
     let countAfterSecondUndo = await transport.callCount(
       Operations.SetMarkStateApiMarksStatePost.id)
     #expect(countAfterFirstUndo == countAfterSecondUndo)
+  }
+
+  @Test(
+    "Mixed-state batch undo: one group commits, the other 409s -- the slot is NOT consumed, only the failed remainder survives for retry"
+  )
+  func mixedStateUndoPartialFailureRestoresSlotForRetry() async {
+    let (store, transport) = makeStore()
+    // Image 1 was `.dislike` before, image 2 was `.none` before -- both get Picked together,
+    // so undo must restore two DIFFERENT target states in two separate groups.
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, mark: .dislike, revision: "r0"),
+          makeImage(id: 2, mark: .none, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 2, requested: 2,
+          revisions: [.init(imageId: 1, revision: "r1"), .init(imageId: 2, revision: "r1")])))
+    await store.applyMark(.pick, to: [1, 2])
+    #expect(store.images[0].mark.state == .pick)
+    #expect(store.images[1].mark.state == .pick)
+    #expect(store.undo.canUndo)
+
+    // Groups are processed in deterministic (alphabetical target-state) order: "dislike"
+    // before "none". Let the "dislike" restore (image 1) SUCCEED, and the "none" restore
+    // (image 2) 409.
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])),
+      forState: .dislike)
+    await transport.setMarkStateOutcome(.conflict, forState: .none)
+
+    await store.undoLastMark()
+
+    // Image 1's group committed: restored to its truthful prior state, revision reconciled.
+    #expect(store.images[0].mark.state == .dislike)
+    #expect(store.images[0].mark.revision == "r2")
+    // Image 2's group 409'd: its OWN optimistic apply for THIS undo attempt rolled back to
+    // what the original mutation left it at (`.pick`) -- not silently left inconsistent.
+    #expect(store.images[1].mark.state == .pick)
+    #expect(store.images[1].mark.revision == "r1")
+    #expect(store.lastMutationError == .conflict)
+
+    // The slot was NOT fully consumed -- exactly the failed remainder (image 2) survived for
+    // a retry, and image 1 (already committed) is NOT re-offered.
+    #expect(store.undo.canUndo)
+    #expect(store.undo.entry?.imageIDs == [2])
+    #expect(store.undo.entry?.priorStates.first?.state == MarkStateValue.none)
+
+    // Retry: fix the stub and undo again -- only image 2's group is attempted this time.
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r2")])),
+      forState: .none)
+    let callsBeforeRetry = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    await store.undoLastMark()
+    let callsAfterRetry = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    #expect(callsAfterRetry == callsBeforeRetry + 1)  // exactly one more call -- image 1 not redone
+    #expect(store.images[1].mark.state == Components.Schemas.MarkView.StatePayload.none)
+    #expect(!store.undo.canUndo)
+  }
+
+  // MARK: - Pointer drag (diff-gate round 2, blocker 3)
+
+  @Test("pointerDragCrossed dedups within one drag session -- a re-crossed tile is not re-applied")
+  func pointerDragCrossedDedupsWithinOneSession() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    let t0 = ContinuousClock.now
+    _ = store.pickLock.activateFromPickButton(at: t0)
+    _ = store.pickLock.activateFromPickButton(at: t0.advanced(by: .milliseconds(100)))
+    #expect(store.pickLock.state == .latched)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(1)
+    await store.pointerDragCrossed(1)  // re-entry: must NOT apply a second time
+    let callCount = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    #expect(callCount == 1)
+  }
+
+  @Test(
+    "beginPointerDrag() starts a FRESH session -- a tile crossed in a prior drag can be crossed again"
+  )
+  func beginPointerDragResetsSession() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    let t0 = ContinuousClock.now
+    _ = store.pickLock.activateFromPickButton(at: t0)
+    _ = store.pickLock.activateFromPickButton(at: t0.advanced(by: .milliseconds(100)))
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(1)
+    store.beginPointerDrag()  // a new drag gesture
+    await store.pointerDragCrossed(1)
+    let callCount = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    #expect(callCount == 2)
+  }
+
+  @Test("pointerDragCrossed in Select mode adds to the selection, not a mark")
+  func pointerDragCrossedInSelectModeAddsToSelection() async {
+    let (store, _) = makeStore()
+    store.selection.enterSelectExplicitly()
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(7)
+    #expect(store.selection.members == [7])
+  }
+
+  // MARK: - "Lock Pick" discoverable menu command (gate's unasked issue)
+
+  @Test("lockPickFromMenu() latches immediately -- no timing window, unlike the double-tap path")
+  func lockPickFromMenuLatchesImmediately() {
+    let (store, _) = makeStore()
+    #expect(store.pickLock.state == .idle)
+    store.lockPickFromMenu()
+    #expect(store.pickLock.state == .latched)
+  }
+
+  @Test("lockPickFromMenu() is a no-op while Select is active")
+  func lockPickFromMenuNoopDuringSelect() {
+    let (store, _) = makeStore()
+    store.selection.enterSelectExplicitly()
+    store.lockPickFromMenu()
+    #expect(store.pickLock.state == .idle)
   }
 
   // MARK: - Pick Lock ⟷ Select mutual exclusion (premise.out pin e)

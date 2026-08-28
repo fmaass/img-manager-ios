@@ -26,6 +26,8 @@ actor GridStubTransport: ClientTransport {
   var proxyOutcome: ProxyOutcome = .ok(Data([0xFF, 0xD8, 0xFF, 0xD9]))
   var markStateOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
+  private var markStateOutcomeByState:
+    [Components.Schemas.MarkStateRequest.StatePayload: MarkMutationOutcome] = [:]
   var tagsOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
 
@@ -45,6 +47,14 @@ actor GridStubTransport: ClientTransport {
   func setDetailResult(_ result: Components.Schemas.ImageDetail) { detailResult = result }
   func setProxyOutcome(_ outcome: ProxyOutcome) { proxyOutcome = outcome }
   func setMarkStateOutcome(_ outcome: MarkMutationOutcome) { markStateOutcome = outcome }
+  /// Overrides `markStateOutcome` for requests whose `state` matches — lets a test make ONE
+  /// state-group in a mixed-state batch undo succeed while another 409s (diff-gate round 2,
+  /// blocker 6's mixed-state test needs exactly this to be deterministic).
+  func setMarkStateOutcome(
+    _ outcome: MarkMutationOutcome, forState state: Components.Schemas.MarkStateRequest.StatePayload
+  ) {
+    markStateOutcomeByState[state] = outcome
+  }
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
   func callCount(_ operationID: String) -> Int { callCounts[operationID] ?? 0 }
 
@@ -95,7 +105,9 @@ actor GridStubTransport: ClientTransport {
         lastMarkStateRequest = try? JSONDecoder.grid.decode(
           Components.Schemas.MarkStateRequest.self, from: data)
       }
-      switch markStateOutcome {
+      let effectiveOutcome =
+        lastMarkStateRequest.flatMap { markStateOutcomeByState[$0.state] } ?? markStateOutcome
+      switch effectiveOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
       case .conflict: return (HTTPResponse(status: .conflict), nil)
       }
