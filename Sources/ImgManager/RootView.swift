@@ -1,3 +1,4 @@
+import ImgManagerAPI
 import OpenAPIRuntime
 import SwiftUI
 
@@ -24,6 +25,12 @@ struct RootView: View {
   @State private var connectivity: ConnectivityState
   @State private var auth: AuthSession
   @State private var showAccountSheet = false
+  /// WP8 P4: the grid store and its own API boundary (`GridService`, a sibling of `ImgManagerAPIService`
+  /// — see that type's doc comment for why P4 does not extend P3's).
+  @State private var gridStore: GridStore
+  private let gridService: GridService
+  @State private var folders: [Components.Schemas.FolderNode] = []
+  @State private var showInspectorSheet = false
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
 
@@ -45,6 +52,9 @@ struct RootView: View {
     let client = ImgManagerAPIClient.make(transport: resolvedTransport)
     let service = ImgManagerAPIService(client: client)
     _connectivity = State(initialValue: ConnectivityState(service: service))
+    let gridService = GridService(client: client)
+    self.gridService = gridService
+    _gridStore = State(initialValue: GridStore(service: gridService))
     let session = AuthSession(credentialStore: credentialStore, client: client)
     unauthorizedBox.handler = { [weak session] token in
       await session?.handleTerminalUnauthorized(presentedToken: token)
@@ -104,6 +114,7 @@ struct RootView: View {
     .sheet(isPresented: $showAccountSheet) {
       AccountSheetView(auth: auth)
     }
+    .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
   }
 
   private func applyWidth(_ width: CGFloat) {
@@ -116,8 +127,22 @@ struct RootView: View {
   private var sidebar: some View {
     Group {
       switch connectivity.status {
-      case .checking, .connected:
-        Text("Queue")
+      case .checking:
+        ProgressView()
+      case .connected:
+        // Shoot navigation (P4 endpoint table: `GET /api/folders`; sufficient; never render
+        // `FolderNode.path`). "Day"-kind nodes are the browsable shoot leaves (ADR-0004: shoot
+        // ≡ folder) — this list intentionally shows only those, not the full tree.
+        List(folders.filter { $0.kind == "day" }, id: \.id) { folder in
+          Button(folder.name) {
+            Task { await gridStore.selectShoot(folderID: folder.id) }
+          }
+        }
+        .task {
+          if let tree = try? await gridService.folders() {
+            folders = tree.items
+          }
+        }
       case .unreachable:
         Text(DegradedStateCopy.notConnected)
       }
@@ -126,11 +151,34 @@ struct RootView: View {
   }
 
   private var contentColumn: some View {
-    Text("Grid")
+    GridView(store: gridStore)
+      .toolbar {
+        // Fold item 7: Compact (and, per this pass's simplification, Regular-2) reach the
+        // inspector through a persistent chrome control presenting ONE Info/Stats sheet —
+        // never a second phone-only surface.
+        if layoutMode != .regular3 {
+          ToolbarItem(placement: .primaryAction) {
+            Button {
+              showInspectorSheet = true
+            } label: {
+              Label("Info", systemImage: "info.circle")
+            }
+          }
+        }
+      }
+      .sheet(isPresented: $showInspectorSheet) {
+        InspectorView(store: gridStore, service: gridService)
+      }
   }
 
   private var detailColumn: some View {
-    Text("Inspector")
+    Group {
+      if layoutMode == .regular3 {
+        InspectorView(store: gridStore, service: gridService)
+      } else {
+        EmptyView()
+      }
+    }
   }
 }
 
