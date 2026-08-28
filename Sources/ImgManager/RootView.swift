@@ -193,12 +193,13 @@ struct RootView: View {
         ProgressView()
       case .connected:
         // Shoot navigation (P4 endpoint table: `GET /api/folders`; sufficient; never render
-        // `FolderNode.path`). "Day"-kind nodes are the browsable shoot leaves (ADR-0004: shoot
-        // ≡ folder) — this list intentionally shows only those, not the full tree. Selection-
-        // bound (not a bare `Button`) so `NavigationSplitView` actually navigates into the
-        // content column on ALL layout modes, Compact included — a plain `Button` calling
-        // `selectShoot` mutated the grid's data but never pushed the split view anywhere.
-        List(folders.filter { $0.kind == "day" }, id: \.id, selection: $selectedFolderID) {
+        // `FolderNode.path`). The browsable shoot leaves are the dated kinds — see
+        // `ShootListFilter` for the vocabulary and IMGMGR-173 for why the value is pinned
+        // there, not inlined here. Selection-bound (not a bare `Button`) so
+        // `NavigationSplitView` actually navigates into the content column on ALL layout
+        // modes, Compact included — a plain `Button` calling `selectShoot` mutated the
+        // grid's data but never pushed the split view anywhere.
+        List(ShootListFilter.shoots(folders), id: \.id, selection: $selectedFolderID) {
           folder in
           Text(folder.name)
         }
