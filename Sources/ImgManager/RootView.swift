@@ -216,18 +216,29 @@ struct RootView: View {
         // `NavigationSplitView` actually navigates into the content column on ALL layout
         // modes, Compact included — a plain `Button` calling `selectShoot` mutated the
         // grid's data but never pushed the split view anywhere.
+        //
+        // Diff-gate round 2, B3: the store call moved OFF `onChange(of: selectedFolderID)` onto
+        // an explicit `.simultaneousGesture(TapGesture())` on every row. `onChange` never fires
+        // when a tap doesn't change the bound value — i.e. never on a tap of the ALREADY-selected
+        // row — so same-shoot re-entry's own refresh (`GridStore.selectShoot`'s same-id branch)
+        // was unreachable from the real UI despite being directly testable at the store level.
+        // `simultaneousGesture` fires ALONGSIDE the List's own built-in row-selection handling
+        // (never replacing/consuming it, so the selection binding — and the navigation push it
+        // drives — is untouched) on EVERY tap, selected row included, calling the store exactly
+        // once per tap regardless of whether the bound value changes.
         List(ShootListFilter.shoots(folders), id: \.id, selection: $selectedFolderID) {
           folder in
           Text(folder.name)
+            .simultaneousGesture(
+              TapGesture().onEnded {
+                Task { await gridStore.selectShoot(folderID: folder.id) }
+              }
+            )
         }
         .task {
           if let tree = try? await gridService.folders() {
             folders = tree.items
           }
-        }
-        .onChange(of: selectedFolderID) { _, newValue in
-          guard let newValue else { return }
-          Task { await gridStore.selectShoot(folderID: newValue) }
         }
       case .unreachable:
         Text(DegradedStateCopy.notConnected)

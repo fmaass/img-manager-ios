@@ -11,23 +11,53 @@ enum GridArrowDirection: Sendable, Equatable { case up, down, left, right }
 /// stores that enum verbatim).
 typealias GridMutationError = GridServiceError
 
+/// What a refused write was trying to DO — the two mutation kinds the recovery machine serves.
+/// `applyConflictAgain` branches on this to resubmit the right operation.
+enum ConflictIntent: Sendable, Equatable {
+  case setState(MarkStateValue)
+  case addTag(String)
+}
+
+/// One submitted image id's precondition revision — the "affected batch" a conflict recovery
+/// re-reads and diffs against. Deliberately just id+revision (not a full `PriorMarkSnapshot`):
+/// a tag conflict has no `state` to speak of, and the diff never needs one either.
+struct ConflictBatchEntry: Sendable, Equatable {
+  var imageID: Int
+  var revisionSubmitted: String
+}
+
+/// A conflict recovery's OWN normalized copy of one image's markview at re-read time (diff-gate
+/// round 2, B6) — carried in `ConflictRecovery.identified` so `applyConflictAgain` can build its
+/// resubmission from THIS, never from `images` (which may no longer contain an id the active
+/// filter excluded). Not `Components.Schemas.MarkView` itself only because that type's `tags` is
+/// optional and its `state` is the wire payload type — normalized the same way
+/// `PriorMarkSnapshot`/`PriorTagSnapshot` already are.
+struct FreshMarkSnapshot: Sendable, Equatable {
+  var state: MarkStateValue
+  var tags: [String]
+  var revision: String
+}
+
 /// P6 (IMGMGR-116): the adjudicated 409 recovery state — non-modal by construction (plan item
 /// 3, "no alerts, no auto-opening popovers, no modality anywhere in this flow"). Nil except
 /// while one rejected batch's recovery is live; `handleConflict` creates it, `applyConflictAgain`/
 /// `dismissConflictRecovery` end it, `retryConflictRefresh` re-attempts the read from
 /// `.readFailed`. The 409 body itself is never decoded (backend does not type it, IMGMGR-177) —
-/// every case here is derived purely from a sanctioned re-read (`performAuthoritativeRefresh`)
-/// diffed against the `priors` the REJECTED request itself was built from.
+/// every case here is derived purely from a sanctioned re-read (`performAuthoritativeRefresh`,
+/// falling back to a per-id `service.detail(imageID:)` for an id the re-read's own filtered query
+/// no longer contains) diffed against the revision the REJECTED request's precondition submitted.
 enum ConflictRecovery: Sendable, Equatable {
   /// The re-read is in flight; nothing to show yet beyond "something was refused".
-  case reading(state: MarkStateValue, priors: [PriorMarkSnapshot])
+  case reading(intent: ConflictIntent, batch: [ConflictBatchEntry])
   /// The re-read succeeded: `changedIDs` is the subset whose re-read revision differs from the
   /// precondition the rejected request submitted (or, if the diff found nothing — "a revision
-  /// raced back" — the WHOLE submitted batch, per plan item 3's named fallback).
-  case identified(state: MarkStateValue, priors: [PriorMarkSnapshot], changedIDs: Set<Int>)
+  /// raced back" — the WHOLE submitted batch, per plan item 3's named fallback). `freshMarkViews`
+  /// (B6) is what `applyConflictAgain` resubmits from — never `images` directly.
+  case identified(
+    intent: ConflictIntent, freshMarkViews: [Int: FreshMarkSnapshot], changedIDs: Set<Int>)
   /// The re-read itself failed (network/unreachable) — "Couldn't refresh" + Retry Refresh; Apply
   /// Again is unavailable from this state (no fresh revision exists yet to resubmit with).
-  case readFailed(state: MarkStateValue, priors: [PriorMarkSnapshot])
+  case readFailed(intent: ConflictIntent, batch: [ConflictBatchEntry])
 }
 
 /// P4's orchestrator: owns the loaded page of images, the shoot/filter/tier "query generation",
@@ -290,7 +320,7 @@ final class GridStore {
   /// stale snapshot or a read failure) — `handleConflict`/`retryConflictRefresh` key off this.
   @discardableResult
   func authoritativeRefresh() async -> Bool {
-    await acquireLaneForRefresh()
+    await acquireLaneQueueing()
     defer { releaseLane() }
     return await performAuthoritativeRefresh()
   }
@@ -303,6 +333,15 @@ final class GridStore {
   /// waiting to hand back to itself).
   private func performAuthoritativeRefresh() async -> Bool {
     guard query.folderID != nil else { return false }
+    // Diff-gate round 2, B1: ADVANCE the generation (mirrors `reloadFirstPage`'s own
+    // `loadGeneration += 1`) rather than merely reading the current value — copying it left an
+    // OLDER pending `reloadFirstPage`/`loadMoreIfNeeded` sharing the SAME generation number, so
+    // its own fence (`generation == loadGeneration`) passed trivially and it could overwrite this
+    // refresh's newer, already-published snapshot whenever its response happened to arrive later;
+    // its `defer` could also clear `isLoadingPage` while this refresh was still genuinely active.
+    // Advancing here makes every such older in-flight load fail its own fence once THIS refresh
+    // starts, exactly like any other scope-changing operation already does.
+    loadGeneration += 1
     let generation = loadGeneration
     isLoadingPage = true
     defer { if generation == loadGeneration { isLoadingPage = false } }
@@ -608,27 +647,29 @@ final class GridStore {
   /// own `selection.mode != .select` guard already uses.
   ///
   /// P6: the SAME flag is now the "one ordered mark/refresh lane" (plan item 2) -- `applyMark`/
-  /// `undoLastMark`/`addTag` still REFUSE via `tryAcquireLane()` (unchanged posture), while
-  /// `authoritativeRefresh()` QUEUES via `acquireLaneForRefresh()` instead of refusing (a
-  /// required lifecycle refresh must never become a dropped no-op).
+  /// `undoLastMark` still REFUSE via `tryAcquireLane()` (unchanged posture), while
+  /// `authoritativeRefresh()` and `addTag` (diff-gate round 2, B5: a submitted tag must never be
+  /// silently dropped by a busy lane -- its entry sheet is already dismissed by the time the
+  /// write runs, unlike Pick/Dislike's always-visible, always-re-tappable button) QUEUE via
+  /// `acquireLaneQueueing()` instead of refusing.
   private(set) var isMutatingMark = false
 
-  /// FIFO of refresh calls waiting for a busy lane -- see `acquireLaneForRefresh()`/`releaseLane()`.
+  /// FIFO of calls waiting for a busy lane -- see `acquireLaneQueueing()`/`releaseLane()`.
   private var laneWaiters: [CheckedContinuation<Void, Never>] = []
 
-  /// The REFUSING acquisition every mark/undo/tag mutation uses: `false` (no-op for the caller)
-  /// if the lane is already held by anything (another mutation OR a refresh in progress).
+  /// The REFUSING acquisition `applyMark`/`undoLastMark` use: `false` (no-op for the caller) if
+  /// the lane is already held by anything (another mutation OR a refresh/tag-write in progress).
   private func tryAcquireLane() -> Bool {
     guard !isMutatingMark else { return false }
     isMutatingMark = true
     return true
   }
 
-  /// The QUEUEING acquisition `authoritativeRefresh()` uses: waits for the lane instead of
-  /// refusing. A waiter that is resumed by `releaseLane()` is already holding the lane at that
-  /// point -- the handoff never sets `isMutatingMark` false in between, so nothing else can slip
-  /// in ahead of a queued refresh once the current holder releases.
-  private func acquireLaneForRefresh() async {
+  /// The QUEUEING acquisition `authoritativeRefresh()` and `addTag` use: waits for the lane
+  /// instead of refusing. A waiter that is resumed by `releaseLane()` is already holding the lane
+  /// at that point -- the handoff never sets `isMutatingMark` false in between, so nothing else
+  /// can slip in ahead of a queued caller once the current holder releases.
+  private func acquireLaneQueueing() async {
     guard isMutatingMark else {
       isMutatingMark = true
       return
@@ -638,8 +679,8 @@ final class GridStore {
     }
   }
 
-  /// Releases the lane -- handing it DIRECTLY to the oldest queued refresh waiter if one exists
-  /// (the waiter proceeds already holding it), otherwise actually freeing it.
+  /// Releases the lane -- handing it DIRECTLY to the oldest queued waiter if one exists (the
+  /// waiter proceeds already holding it), otherwise actually freeing it.
   private func releaseLane() {
     guard laneWaiters.isEmpty else {
       laneWaiters.removeFirst().resume()
@@ -662,73 +703,104 @@ final class GridStore {
     return changedIDs
   }
 
-  /// Entered from `applyMark`'s `.conflict` catch, which already rolled the optimistic batch
-  /// back and still HOLDS the lane (its own `defer { releaseLane() }` has not run yet) -- so the
-  /// re-read here goes through the lane-less `performAuthoritativeRefresh()` core, never
-  /// `authoritativeRefresh()` itself (which would try to re-acquire the very lane this call is
-  /// still inside of and deadlock).
-  private func handleConflict(state: MarkStateValue, priors: [PriorMarkSnapshot]) async {
+  /// Entered from `applyMark`/`addTag`'s `.conflict` catch (both still HOLD the lane, their own
+  /// `defer { releaseLane() }` not yet run) and from `undoLastMark`'s per-group catch (diff-gate
+  /// round 2, B4: undo's own stale-precondition refusals now route through this SAME machine
+  /// rather than a bare rollback) -- so the re-read here goes through the lane-less
+  /// `performAuthoritativeRefresh()` core, never `authoritativeRefresh()` itself (which would try
+  /// to re-acquire the very lane this call is still inside of and deadlock).
+  private func handleConflict(intent: ConflictIntent, batch: [ConflictBatchEntry]) async {
     // Item 2: "Clear/invalidate the undo slot ... on refusal recovery" -- unconditionally,
     // before the re-read even starts, since an existing undo entry's priors are already suspect
-    // the instant a write anywhere in this batch was refused for being stale.
+    // the instant a write anywhere in this batch was refused for being stale. Also correctly
+    // abandons an interrupted multi-group undo's OWN slot (B4 scope decision, phase ledger).
     undo.clear()
-    await performRecoveryReread(state: state, priors: priors)
+    await performRecoveryReread(intent: intent, batch: batch)
   }
 
   /// `Retry Refresh` (plan item 6) from `.readFailed` -- a fresh top-level entry point (the
-  /// original `applyMark` call has long since returned), so THIS acquires the lane itself,
-  /// refusing like any other user-initiated mutation action if something else is in flight.
+  /// original mutation call has long since returned), so THIS acquires the lane itself, refusing
+  /// like any other user-initiated mutation action if something else is in flight.
   func retryConflictRefresh() async {
-    guard case .readFailed(let state, let priors) = conflictRecovery else { return }
+    guard case .readFailed(let intent, let batch) = conflictRecovery else { return }
     guard tryAcquireLane() else { return }
     defer { releaseLane() }
-    await performRecoveryReread(state: state, priors: priors)
+    await performRecoveryReread(intent: intent, batch: batch)
   }
 
   /// The shared re-read + diff, run by both `handleConflict` (lane already held by the caller)
-  /// and `retryConflictRefresh` (lane held by ITS OWN acquisition just above).
-  private func performRecoveryReread(state: MarkStateValue, priors: [PriorMarkSnapshot]) async {
-    conflictRecovery = .reading(state: state, priors: priors)
+  /// and `retryConflictRefresh` (lane held by ITS OWN acquisition just above). Builds
+  /// `freshMarkViews` (B6) from the refreshed `images` where present, falling back to a per-id
+  /// `service.detail(imageID:)` (a sanctioned, existing read) for an id the active filter no
+  /// longer shows -- Apply Again must work for that id too, not silently skip it.
+  private func performRecoveryReread(intent: ConflictIntent, batch: [ConflictBatchEntry]) async {
+    conflictRecovery = .reading(intent: intent, batch: batch)
     let refreshed = await performAuthoritativeRefresh()
-    // A newer recovery attempt for this SAME rejected batch may already have superseded this one
-    // (e.g. a concurrent `retryConflictRefresh` -- unlikely under the lane, but checked rather
-    // than assumed); if so, leave whatever it left behind untouched.
-    guard case .reading(let stillState, let stillPriors) = conflictRecovery,
-      stillState == state, stillPriors == priors
-    else { return }
     guard refreshed else {
-      conflictRecovery = .readFailed(state: state, priors: priors)
+      // `performAuthoritativeRefresh` itself discards on a racing scope change (B1) by returning
+      // false without publishing -- in that case the scope change already cleared
+      // `conflictRecovery` to nil directly (`selectShoot`/`applyFilterChange`), so this check
+      // leaves that nil alone rather than overwriting it with a stale `.readFailed`. A GENUINE
+      // read failure (no scope change) leaves `conflictRecovery` untouched at `.reading`, so the
+      // check passes and `.readFailed` is set correctly.
+      guard case .reading = conflictRecovery else { return }
+      conflictRecovery = .readFailed(intent: intent, batch: batch)
       return
     }
-    // Item 3.3: diff the RE-READ revision against the precondition the rejected request
-    // submitted -- this IS "the affected batch", derived purely through the sanctioned list
-    // re-read, never a decode of the untyped 409 body. An id absent from the refreshed query
-    // entirely (it no longer matches the current filter) counts as changed too -- the only way
-    // it could have left the query is a state/tag change on the server.
-    let freshRevisionByID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0.mark.revision) })
+    // The generation THIS successful refresh just published under (B1) -- used below to detect
+    // a scope change racing the per-id detail fetches that can follow.
+    let generation = loadGeneration
+    let freshMarkByID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0.mark) })
+    var freshMarkViews: [Int: FreshMarkSnapshot] = [:]
     var changed = Set<Int>()
-    for prior in priors {
-      if let fresh = freshRevisionByID[prior.imageID] {
-        if fresh != prior.revisionBefore { changed.insert(prior.imageID) }
+    for entry in batch {
+      if let mark = freshMarkByID[entry.imageID] {
+        freshMarkViews[entry.imageID] = FreshMarkSnapshot(
+          state: MarkStateValue(mark.state), tags: mark.tags ?? [], revision: mark.revision)
+        if mark.revision != entry.revisionSubmitted { changed.insert(entry.imageID) }
+      } else if let detail = try? await service.detail(imageID: entry.imageID),
+        generation == loadGeneration
+      {
+        freshMarkViews[entry.imageID] = FreshMarkSnapshot(
+          state: MarkStateValue(detail.mark.state), tags: detail.mark.tags ?? [],
+          revision: detail.mark.revision)
+        if detail.mark.revision != entry.revisionSubmitted { changed.insert(entry.imageID) }
       } else {
-        changed.insert(prior.imageID)
+        // Truly unreachable (deleted, or the detail fetch itself failed) -- still visibly
+        // flagged as changed, but carries no fresh precondition; Apply Again silently skips it,
+        // the same discipline `capturePriorSnapshots` already uses for an unloaded id.
+        changed.insert(entry.imageID)
       }
     }
+    guard generation == loadGeneration else { return }  // a scope change raced the detail fetches
     // Item 3.3's named fallback: "If the diff finds no differing image -- e.g. a revision raced
     // back -- fall back to marking the whole batch" rather than silently showing nothing refused.
-    if changed.isEmpty { changed = Set(priors.map(\.imageID)) }
-    conflictRecovery = .identified(state: state, priors: priors, changedIDs: changed)
+    if changed.isEmpty { changed = Set(batch.map(\.imageID)) }
+    conflictRecovery = .identified(
+      intent: intent, freshMarkViews: freshMarkViews, changedIDs: changed)
   }
 
-  /// `Apply Again` (plan item 5): resubmits the REJECTED intent, but through the ordinary
-  /// `applyMark` path -- since the re-read already replaced `images` with server truth, the
-  /// preconditions `applyMark` builds are the FRESH revisions automatically, with no separate
-  /// resubmission machinery needed. Never called automatically (item 5: "Never auto-reapply") --
-  /// only this explicit call site exists, wired to the banner's button.
+  /// `Apply Again` (plan item 5): resubmits the REJECTED intent using the recovery's OWN
+  /// `freshMarkViews` (B6) -- never `images` directly, so an id the active filter excludes still
+  /// resubmits correctly. Never called automatically (item 5: "Never auto-reapply") -- only this
+  /// explicit call site exists, wired to the banner's button.
   func applyConflictAgain() async {
-    guard case .identified(let state, let priors, _) = conflictRecovery else { return }
+    guard case .identified(let intent, let freshMarkViews, _) = conflictRecovery else { return }
     conflictRecovery = nil
-    await applyMark(state, to: priors.map(\.imageID))
+    switch intent {
+    case .setState(let state):
+      let priors = freshMarkViews.map { id, fresh in
+        PriorMarkSnapshot(imageID: id, state: fresh.state, revisionBefore: fresh.revision)
+      }
+      guard !priors.isEmpty else { return }
+      await applyMark(state, to: priors.map(\.imageID), explicitPriors: priors)
+    case .addTag(let tag):
+      let priors = freshMarkViews.map { id, fresh in
+        PriorTagSnapshot(imageID: id, tags: fresh.tags, revisionBefore: fresh.revision)
+      }
+      guard !priors.isEmpty else { return }
+      await addTag(tag, to: priors.map(\.imageID), explicitPriors: priors)
+    }
   }
 
   /// `Keep Server Version` (plan item 5): dismisses the recovery surface with no further write --
@@ -737,17 +809,28 @@ final class GridStore {
     conflictRecovery = nil
   }
 
-  /// Applies `state` to every id in `imageIDs` that is CURRENTLY loaded (an id not present in
-  /// `images` is silently skipped — there is nothing loaded to snapshot a precondition from,
-  /// and loaded-only membership means the caller should never have passed one anyway).
-  func applyMark(_ state: MarkStateValue, to imageIDs: [Int]) async {
+  /// Applies `state` to every id in `imageIDs`. Preconditions are normally derived from the
+  /// CURRENTLY LOADED `images` (an id not loaded is silently skipped — loaded-only membership
+  /// means the caller should never have passed one anyway) — `explicitPriors` overrides this for
+  /// exactly one caller (`applyConflictAgain`, diff-gate round 2 B6): a conflict-recovery retry
+  /// must resubmit for every originally-rejected id INCLUDING one the active filter no longer
+  /// shows, using the FRESH markview the recovery's own re-read already captured for it.
+  func applyMark(
+    _ state: MarkStateValue, to imageIDs: [Int], explicitPriors: [PriorMarkSnapshot]? = nil
+  ) async {
     guard tryAcquireLane() else { return }
-    let priors = capturePriorSnapshots(for: imageIDs)
+    let priors = explicitPriors ?? capturePriorSnapshots(for: imageIDs)
     guard !priors.isEmpty else {
       releaseLane()
       return
     }
     defer { releaseLane() }
+    // Diff-gate round 2, B2: the generation THIS mutation's priors were captured under. A
+    // shoot/filter reload racing the network await already replaced `images` with fresh server
+    // truth by the time this returns — completing (either branch) against a moved generation
+    // would either stomp that fresh truth with a rollback/reconcile keyed by now-meaningless ids,
+    // or record undo/recovery state that describes a scope the person has already left.
+    let generation = loadGeneration
     optimisticallyApply(state, to: priors.map(\.imageID))
     let preconditions = priors.map {
       Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
@@ -755,11 +838,13 @@ final class GridStore {
     do {
       let applied = try await service.setMarkState(
         imageIDs: priors.map(\.imageID), state: state, preconditions: preconditions)
+      guard generation == loadGeneration else { return }
       reconcileRevisions(applied.revisions ?? [])
       undo.record(UndoEntry(appliedState: state, priorStates: priors))
       if priors.count > 1 { selection.bulkActionSucceeded() }
       lastMutationError = nil
     } catch {
+      guard generation == loadGeneration else { return }
       rollback(priors)
       let mutationError = (error as? GridServiceError) ?? .unreachable
       lastMutationError = mutationError
@@ -768,7 +853,10 @@ final class GridStore {
       // `handleConflict`'s own doc comment for why it must never go through
       // `authoritativeRefresh()`'s own lane acquisition.
       if mutationError == .conflict {
-        await handleConflict(state: state, priors: priors)
+        let batch = priors.map {
+          ConflictBatchEntry(imageID: $0.imageID, revisionSubmitted: $0.revisionBefore)
+        }
+        await handleConflict(intent: .setState(state), batch: batch)
       }
     }
   }
@@ -798,6 +886,14 @@ final class GridStore {
   /// it is never silently dropped either — it stays in `remaining` exactly as recorded, so a
   /// later `Z` (after the id reloads back into view) attempts it for real. A group with zero
   /// loaded members this pass simply carries all of its ids forward untouched.
+  /// Diff-gate round 2, B4: a group's stale-precondition refusal now routes through the SAME
+  /// `handleConflict` machine `applyMark`/`addTag` use (re-read, diff, Apply Again) instead of a
+  /// bare rollback — the rejected intent IS this group's restore (`targetState` applied to
+  /// `priors`). `handleConflict` clears the undo slot unconditionally, which means a conflict on
+  /// one group of a multi-group undo abandons the ORIGINAL entry entirely: an unreached sibling
+  /// group (the loop already stopped at the first failure, per the doc above) loses its own
+  /// retry-via-`Z` along with it — a documented scope decision (phase ledger), not an oversight;
+  /// recovering it would need preserving two independent retry mechanisms over the same slot.
   func undoLastMark() async {
     guard tryAcquireLane() else { return }
     guard let entry = undo.entry else {
@@ -821,6 +917,9 @@ final class GridStore {
         // untouched (never remove) so a retry after a reload can still act on them for real.
         continue
       }
+      // Diff-gate round 2, B2: fence THIS group's completion against a scope change racing the
+      // network await, same reasoning as `applyMark`'s own `generation` capture.
+      let generation = loadGeneration
       optimisticallyApply(targetState, to: priors.map(\.imageID))
       let preconditions = priors.map {
         Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
@@ -828,14 +927,24 @@ final class GridStore {
       do {
         let applied = try await service.setMarkState(
           imageIDs: priors.map(\.imageID), state: targetState, preconditions: preconditions)
+        guard generation == loadGeneration else { return }
         reconcileRevisions(applied.revisions ?? [])
         // Only the ids actually submitted (the loaded subset) come out of the remainder — an
         // unloaded sibling in the same group was never attempted and stays pending.
         remaining.removeAll { loadedIDs.contains($0.imageID) }
         lastMutationError = nil
       } catch {
+        guard generation == loadGeneration else { return }
         rollback(priors)
-        lastMutationError = (error as? GridServiceError) ?? .unreachable
+        let mutationError = (error as? GridServiceError) ?? .unreachable
+        lastMutationError = mutationError
+        if mutationError == .conflict {
+          let batch = priors.map {
+            ConflictBatchEntry(imageID: $0.imageID, revisionSubmitted: $0.revisionBefore)
+          }
+          await handleConflict(intent: .setState(targetState), batch: batch)
+          return  // the slot is now owned by conflictRecovery, not the remaining-tracking below
+        }
         encounteredFailure = true
       }
     }
@@ -889,19 +998,23 @@ final class GridStore {
 
   // MARK: - Tags (T)
 
-  /// P6: joins the SAME serialized mutation lane state/undo already use (`tryAcquireLane()`) —
-  /// previously tags were entirely outside it, so a tag write and a concurrent Pick/Dislike/Undo
-  /// could interleave their optimistic snapshots. A conflict here still just rolls back and
-  /// surfaces `lastMutationError` (the new "Changed elsewhere" recovery state machine is scoped
-  /// to `applyMark`'s state mutations only — see the phase ledger's scope note).
-  func addTag(_ tag: String, to imageIDs: [Int]) async {
-    guard tryAcquireLane() else { return }
-    let priors = capturePriorTagSnapshots(for: imageIDs)
+  /// P6: joins the SAME mutation lane state/undo already use — QUEUEING (diff-gate round 2, B5),
+  /// never refusing: the entry sheet that submits a tag is already dismissed by the time this
+  /// runs, unlike Pick/Dislike's always-visible, always-re-tappable button, so a busy lane must
+  /// never silently drop a submitted tag. `explicitPriors` overrides the normal `images`-derived
+  /// precondition capture for `applyConflictAgain` (B6), same posture as `applyMark`'s own param.
+  /// A 409 here now routes through the SAME recovery machine as state mutations (B5).
+  func addTag(
+    _ tag: String, to imageIDs: [Int], explicitPriors: [PriorTagSnapshot]? = nil
+  ) async {
+    await acquireLaneQueueing()
+    let priors = explicitPriors ?? capturePriorTagSnapshots(for: imageIDs)
     guard !priors.isEmpty else {
       releaseLane()
       return
     }
     defer { releaseLane() }
+    let generation = loadGeneration  // B2: fence completion against a racing scope reload
     optimisticallyAddTag(tag, to: priors.map(\.imageID))
     let preconditions = priors.map {
       Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
@@ -909,11 +1022,20 @@ final class GridStore {
     do {
       let applied = try await service.editMarkTags(
         imageIDs: priors.map(\.imageID), operation: .add, tag: tag, preconditions: preconditions)
+      guard generation == loadGeneration else { return }
       reconcileRevisions(applied.revisions ?? [])
       lastMutationError = nil
     } catch {
+      guard generation == loadGeneration else { return }
       rollbackTag(tag, priors: priors)
-      lastMutationError = (error as? GridServiceError) ?? .unreachable
+      let mutationError = (error as? GridServiceError) ?? .unreachable
+      lastMutationError = mutationError
+      if mutationError == .conflict {
+        let batch = priors.map {
+          ConflictBatchEntry(imageID: $0.imageID, revisionSubmitted: $0.revisionBefore)
+        }
+        await handleConflict(intent: .addTag(tag), batch: batch)
+      }
     }
   }
 
@@ -952,7 +1074,10 @@ final class GridStore {
     }
   }
 
-  private struct PriorTagSnapshot {
+  /// Not `private` (diff-gate round 2, B5/B6): `addTag`'s `explicitPriors` parameter and
+  /// `applyConflictAgain`'s resubmission both need this type at internal visibility, matching
+  /// `PriorMarkSnapshot`'s own (non-private) access level.
+  struct PriorTagSnapshot: Sendable, Equatable {
     var imageID: Int
     var tags: [String]
     var revisionBefore: String
