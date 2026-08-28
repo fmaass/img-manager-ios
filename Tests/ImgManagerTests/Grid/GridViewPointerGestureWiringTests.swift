@@ -10,9 +10,11 @@ import Testing
 /// on `GridView` actually ATTACHING the live gesture bridge to its view hierarchy. Deleting the
 /// old bare `.gesture(PrimaryPointerDragGesture(...))` block left every one of those tests green.
 ///
-/// This suite closes that gap: it substitutes a spy for `GridView.pointerGestureInstaller`,
-/// evaluates `body`, and asserts the spy was actually invoked with the REAL production callbacks
-/// — the one thing a unit test can prove about a SwiftUI gesture modifier without a live device.
+/// This suite closes that gap in two layers: it substitutes a spy for
+/// `GridView.pointerGestureInstaller`, evaluates `body`, and asserts the spy was actually invoked
+/// with the REAL production callbacks (the call-site layer); and it exercises the production
+/// `.live` factory itself, reflectively asserting the real gesture lands in the returned tree
+/// with the given callbacks forwarded (the installer layer — round-4 delta blocker).
 /// Verified causally on the remote mirror per this phase's own doctrine: commenting out the
 /// `pointerGestureInstaller.attach(...)` call site in `GridView.scrollArea` turned
 /// `installerWasInvokedByBody` RED (installCount == 0); restoring it went green again.
@@ -99,4 +101,48 @@ struct GridViewPointerGestureWiringTests {
     let callsAfterReset = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
     #expect(callsAfterReset == callsAfterReCross + 1)
   }
+
+  #if canImport(UIKit)
+    /// Diff-gate round 4, the surviving blocker: the spy-based tests above prove `body` invokes
+    /// AN installer with working callbacks, but nothing ever exercised `.live`'s own body —
+    /// gutting the real `.gesture(...)` attachment inside `.live` (returning the view
+    /// unmodified) left every test green, the round-2 fake-test failure mode reintroduced one
+    /// layer down. This test closes that gap at the only seam a unit test can reach without a
+    /// render host: it invokes the production `.live` factory directly and reflects over the
+    /// view tree it returns. If `.live` stops attaching `PrimaryPointerDragGesture`, the walk
+    /// finds nothing; if it stops forwarding the exact closures it was handed, invoking the
+    /// found gesture's callbacks no longer reaches ours.
+    @Test(".live attaches the real PrimaryPointerDragGesture and forwards the exact callbacks")
+    func liveInstallerAttachesTheRealGesture() {
+      var changedPoints: [CGPoint] = []
+      var endedCount = 0
+      let attached = PointerGestureInstaller.live.attach(
+        AnyView(Color.clear), { changedPoints.append($0) }, { endedCount += 1 })
+
+      let gesture = firstPrimaryPointerDragGesture(in: attached)
+      #expect(gesture != nil)
+
+      gesture?.onChanged(CGPoint(x: 3, y: 4))
+      #expect(changedPoints == [CGPoint(x: 3, y: 4)])
+      #expect(endedCount == 0)
+      gesture?.onEnded()
+      #expect(endedCount == 1)
+    }
+
+    /// Depth-capped reflective search for the gesture value inside an `AnyView`-erased SwiftUI
+    /// view tree. Reflection is the only way to see through `AnyView` without rendering; the
+    /// cap bounds the walk in case SwiftUI's internal shape ever grows a cycle.
+    private func firstPrimaryPointerDragGesture(
+      in value: Any, depth: Int = 0
+    ) -> PrimaryPointerDragGesture? {
+      if let gesture = value as? PrimaryPointerDragGesture { return gesture }
+      guard depth < 16 else { return nil }
+      for child in Mirror(reflecting: value).children {
+        if let found = firstPrimaryPointerDragGesture(in: child.value, depth: depth + 1) {
+          return found
+        }
+      }
+      return nil
+    }
+  #endif
 }
