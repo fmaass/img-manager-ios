@@ -350,6 +350,17 @@ final class GridStore {
   /// contain exactly the groups that never successfully committed — never lost, never
   /// re-attempted for a group that already succeeded — so a subsequent `Z` retries precisely
   /// the unfinished remainder. `lastMutationError` surfaces the partial failure either way.
+  ///
+  /// Truthful remainder, id by id (diff-gate round 3, blocker 1): a group can be PARTIALLY
+  /// loaded — some of its snapshot ids currently in `images`, some not (a filter change or a
+  /// reload can unload members without invalidating the undo slot; `selectShoot`, the one
+  /// change that genuinely invalidates targets, already calls `undo.clear()` explicitly on scope
+  /// change). Only ids that were actually SUBMITTED — i.e. loaded and included in the write —
+  /// ever leave `remaining`. An id with nothing currently loaded to restore is not settled: it
+  /// is not attempted (there is no currently-loaded revision to build a precondition from), but
+  /// it is never silently dropped either — it stays in `remaining` exactly as recorded, so a
+  /// later `Z` (after the id reloads back into view) attempts it for real. A group with zero
+  /// loaded members this pass simply carries all of its ids forward untouched.
   func undoLastMark() async {
     guard let entry = undo.entry else { return }
     let groups = Dictionary(grouping: entry.priorStates, by: { $0.state })
@@ -362,10 +373,10 @@ final class GridStore {
       guard !encounteredFailure else { break }
       let ids = snapshots.map(\.imageID)
       let priors = capturePriorSnapshots(for: ids)
+      let loadedIDs = Set(priors.map(\.imageID))
       guard !priors.isEmpty else {
-        // Nothing currently loaded to restore for this group — there is nothing a retry could
-        // act on either, so it is settled (not a failure) and drops from the remainder.
-        remaining.removeAll { ids.contains($0.imageID) }
+        // Nothing currently loaded for this group — NOT settled. Leave every id in `remaining`
+        // untouched (never remove) so a retry after a reload can still act on them for real.
         continue
       }
       optimisticallyApply(targetState, to: priors.map(\.imageID))
@@ -376,7 +387,9 @@ final class GridStore {
         let applied = try await service.setMarkState(
           imageIDs: priors.map(\.imageID), state: targetState, preconditions: preconditions)
         reconcileRevisions(applied.revisions ?? [])
-        remaining.removeAll { ids.contains($0.imageID) }
+        // Only the ids actually submitted (the loaded subset) come out of the remainder — an
+        // unloaded sibling in the same group was never attempted and stays pending.
+        remaining.removeAll { loadedIDs.contains($0.imageID) }
         lastMutationError = nil
       } catch {
         rollback(priors)

@@ -15,11 +15,63 @@ struct GridView: View {
   @State private var paneWidth: CGFloat = 0
   @State private var tileFrames: [Int: CGRect] = [:]
 
+  /// Injectable factory for the live pointer-drag gesture bridge (diff-gate round 3, blocker 2):
+  /// `.live` is the only installer the running app ever uses; a test substitutes a spy so the
+  /// wiring itself — not just the recognizer/mapper/hit-test/store-routing pieces underneath it,
+  /// which are already independently tested — is provably exercised by `body`. Deleting the call
+  /// site below (the old bare `.gesture(PrimaryPointerDragGesture(...))` block) now turns that
+  /// test RED instead of leaving every existing test green.
+  var pointerGestureInstaller: PointerGestureInstaller = .live
+
   var body: some View {
     VStack(spacing: 0) {
       if store.pickLock.state == .latched {
         PickLockModeRow(store: store)
       }
+      scrollArea
+        .onGeometryChange(for: CGFloat.self) {
+          $0.size.width
+        } action: { width in
+          paneWidth = width
+          publishRows()
+        }
+        .overlay {
+          if store.images.isEmpty && !store.isLoadingPage {
+            ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
+          }
+        }
+      ActionBarView(store: store)
+    }
+    .onChange(of: store.images) { _, _ in publishRows() }
+    .onChange(of: store.rowHeight) { _, _ in publishRows() }
+    .toolbar {
+      ToolbarItem(placement: .secondaryAction) {
+        // Diff-gate round 2, blocker 2: the six native row-height steps must be reachable —
+        // this is their one real UI call site.
+        Menu {
+          ForEach(GridRowHeight.allCases, id: \.self) { step in
+            Button {
+              store.setRowHeight(step)
+            } label: {
+              if store.rowHeight == step {
+                Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
+              } else {
+                Text("\(Int(step.rawValue)) pt")
+              }
+            }
+          }
+        } label: {
+          Label("Zoom", systemImage: "square.grid.2x2")
+        }
+      }
+    }
+  }
+
+  /// The scrollable justified grid, with the live pointer-drag gesture attached through
+  /// `pointerGestureInstaller` rather than a bare `.gesture(...)` call — see that property's doc
+  /// comment.
+  private var scrollArea: some View {
+    let content = AnyView(
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 2) {
           ForEach(packedRows.indices, id: \.self) { rowIndex in
@@ -57,55 +109,15 @@ struct GridView: View {
       }
       .coordinateSpace(name: "gridSpace")
       .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
-      #if canImport(UIKit)
-        .gesture(
-          PrimaryPointerDragGesture(
-            onChanged: { point in
-              guard let hitID = GridHitTest.imageID(at: point, in: tileFrames) else { return }
-              Task { await store.pointerDragCrossed(hitID) }
-            },
-            onEnded: {
-              store.beginPointerDrag()
-            }
-          )
-        )
-      #endif
-      .onGeometryChange(for: CGFloat.self) {
-        $0.size.width
-      } action: { width in
-        paneWidth = width
-        publishRows()
-      }
-      .overlay {
-        if store.images.isEmpty && !store.isLoadingPage {
-          ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
-        }
-      }
-      ActionBarView(store: store)
-    }
-    .onChange(of: store.images) { _, _ in publishRows() }
-    .onChange(of: store.rowHeight) { _, _ in publishRows() }
-    .toolbar {
-      ToolbarItem(placement: .secondaryAction) {
-        // Diff-gate round 2, blocker 2: the six native row-height steps must be reachable —
-        // this is their one real UI call site.
-        Menu {
-          ForEach(GridRowHeight.allCases, id: \.self) { step in
-            Button {
-              store.setRowHeight(step)
-            } label: {
-              if store.rowHeight == step {
-                Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
-              } else {
-                Text("\(Int(step.rawValue)) pt")
-              }
-            }
-          }
-        } label: {
-          Label("Zoom", systemImage: "square.grid.2x2")
-        }
-      }
-    }
+    )
+    return pointerGestureInstaller.attach(
+      content,
+      { point in
+        guard let hitID = GridHitTest.imageID(at: point, in: tileFrames) else { return }
+        Task { await store.pointerDragCrossed(hitID) }
+      },
+      { store.beginPointerDrag() }
+    )
   }
 
   private var imagesByID: [Int: Components.Schemas.ImageSummary] {

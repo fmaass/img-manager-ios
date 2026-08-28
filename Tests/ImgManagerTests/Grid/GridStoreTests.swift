@@ -203,6 +203,61 @@ struct GridStoreTests {
     #expect(!store.undo.canUndo)
   }
 
+  @Test(
+    "Undo remainder truth (diff-gate round 3, blocker 1): within ONE group, an id unloaded at undo time is never silently dropped -- only the id actually submitted leaves the slot"
+  )
+  func undoLeavesUnloadedGroupMemberInRemainder() async {
+    let (store, transport) = makeStore()
+    // Both images were `.dislike` before -- same undo group ("dislike"), so this exercises a
+    // MIXED-LOADED group, not a mixed-STATE one (that's the sibling test above).
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, mark: .dislike, revision: "r0"),
+          makeImage(id: 2, mark: .dislike, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 2, requested: 2,
+          revisions: [.init(imageId: 1, revision: "r1"), .init(imageId: 2, revision: "r1")])))
+    await store.applyMark(.pick, to: [1, 2])
+    #expect(store.undo.entry?.imageIDs.sorted() == [1, 2])
+
+    // A foreground/retry full reload (NOT a scope change -- `selectShoot` is the only thing
+    // that clears the slot) brings back only image 1; image 2 is unloaded, not restored, not
+    // forgotten.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .pick, revision: "r1")], limit: 100, nextCursor: nil))
+    await store.fullReload()
+    #expect(store.images.map(\.id) == [1])
+
+    let callsBeforeUndo = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])),
+      forState: .dislike)
+    await store.undoLastMark()
+    let callsAfterUndo = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+
+    // Only image 1 (loaded, actually submitted) was written.
+    #expect(callsAfterUndo == callsBeforeUndo + 1)
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [1])
+    #expect(store.images[0].mark.state == .dislike)
+    #expect(store.images[0].mark.revision == "r2")
+
+    // Image 2 was NEVER submitted (nothing loaded to restore it from) -- it stays in the
+    // remainder exactly as recorded, not silently declared settled.
+    #expect(store.undo.canUndo)
+    #expect(store.undo.entry?.imageIDs == [2])
+    #expect(store.undo.entry?.priorStates.first?.imageID == 2)
+    #expect(store.undo.entry?.priorStates.first?.state == MarkStateValue.dislike)
+    // Untouched, original snapshot -- never re-derived from a since-vanished current revision.
+    #expect(store.undo.entry?.priorStates.first?.revisionBefore == "r0")
+  }
+
   // MARK: - Pointer drag (diff-gate round 2, blocker 3)
 
   @Test("pointerDragCrossed dedups within one drag session -- a re-crossed tile is not re-applied")

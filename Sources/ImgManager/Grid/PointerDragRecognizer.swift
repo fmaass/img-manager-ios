@@ -85,6 +85,25 @@ import SwiftUI
   }
 #endif
 
+/// Injectable factory that attaches `PrimaryPointerDragGesture` to a view — extracted so
+/// `GridView`'s OWN wiring is directly testable (diff-gate round 3, blocker 2). `.live` performs
+/// the real attachment (the production behavior, byte-identical to the inline `.gesture(...)`
+/// call it replaces); a test substitutes a spy `attach` closure, evaluates `GridView.body`, and
+/// asserts the spy was actually invoked — proving `body` performs the attachment rather than
+/// merely compiling code that nothing exercises.
+@MainActor
+struct PointerGestureInstaller {
+  var attach: (AnyView, @escaping (CGPoint) -> Void, @escaping () -> Void) -> AnyView
+
+  static let live = PointerGestureInstaller { view, onChanged, onEnded in
+    #if canImport(UIKit)
+      AnyView(view.gesture(PrimaryPointerDragGesture(onChanged: onChanged, onEnded: onEnded)))
+    #else
+      AnyView(view)
+    #endif
+  }
+}
+
 /// Pure geometry hit-test: which tile (by image id) contains `point`, from the frames each tile
 /// reports via `TileFramePreferenceKey`. Independently testable without SwiftUI or UIKit.
 enum GridHitTest {

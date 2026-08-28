@@ -20,11 +20,19 @@ final class RegularThreeScreenshotUITests: XCTestCase {
 
     XCUIDevice.shared.orientation = .landscapeLeft
 
+    // Diff-gate round 3, blocker 4: a sign-in screen, a blank screen, or a failed stub
+    // composition must fail THIS test, not merely get logged and screenshotted anyway --
+    // `XCTAssertTrue` on the wait result (not a log-only `runActivity`) is what actually turns
+    // the test RED on absence.
     let dislikeButton = app.buttons["Dislike"]
-    let appeared = dislikeButton.waitForExistence(timeout: 20)
-    XCTContext.runActivity(named: "Action bar appeared before timeout: \(appeared)") { _ in }
+    XCTAssertTrue(
+      dislikeButton.waitForExistence(timeout: 20),
+      "Action bar (Dislike button) never appeared within 20s -- expected the DEBUG fixture "
+        + "composition's populated grid, got something else (sign-in screen, blank screen, or a "
+        + "failed stub composition).")
 
-    // Give the rotation's own layout pass a moment to settle regardless of the wait outcome.
+    // Give the rotation's own layout pass a moment to settle now that the action bar is
+    // confirmed present.
     Thread.sleep(forTimeInterval: 2.0)
 
     let screenshot = XCUIScreen.main.screenshot()

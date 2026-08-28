@@ -112,14 +112,33 @@ struct RootView: View {
   }
 
   private var workspace: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      sidebar
-    } content: {
-      contentColumn
-    } detail: {
-      detailColumn
+    Group {
+      if layoutMode == .regular3 {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+          sidebar
+        } content: {
+          contentColumn
+        } detail: {
+          detailColumn
+        }
+        .navigationSplitViewStyle(.prominentDetail)
+      } else {
+        // Compact and Regular-2 (diff-gate round 3, blocker 3): a genuine 2-column split
+        // (sidebar | grid) — GridView owns the FULL workspace pane, matching fold item 7's
+        // "no permanent inspector column outside Regular-3" pin. Reusing the 3-column
+        // initializer with an EMPTY `detailColumn` (as this view did before this fix) still
+        // reserves a second, always-visible pane under `.doubleColumn` visibility — the grid
+        // was confined to a narrow column beside a wasted blank pane (retained Regular-2
+        // screenshot evidence). The 2-column initializer has no third pane to accidentally
+        // reserve, so `contentColumn` (grid + its own Info-sheet toolbar button) becomes the
+        // sole `detail`.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+          sidebar
+        } detail: {
+          contentColumn
+        }
+      }
     }
-    .navigationSplitViewStyle(.prominentDetail)
     .onGeometryChange(for: CGFloat.self) { proxy in
       proxy.size.width
     } action: { width in
