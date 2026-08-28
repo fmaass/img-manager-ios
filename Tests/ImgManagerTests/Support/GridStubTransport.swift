@@ -23,6 +23,10 @@ actor GridStubTransport: ClientTransport {
   var listImagesRejectNonNilCursor = false
   var facetsResult = Components.Schemas.ImageFacets(total: 0)
   var detailResult: Components.Schemas.ImageDetail?
+  /// Diff-gate round 3, B6: a `GET /api/images/{id}` failure for the NEXT call (self-disarming
+  /// one-shot, same discipline as `listImagesShouldFail`) — models the per-id detail() fallback
+  /// itself being unreachable, distinct from `detailResult` simply not being configured.
+  var detailShouldFail = false
   var proxyOutcome: ProxyOutcome = .ok(Data([0xFF, 0xD8, 0xFF, 0xD9]))
   var markStateOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
@@ -89,6 +93,61 @@ actor GridStubTransport: ClientTransport {
     neighboursHasStarted = false
   }
 
+  /// P6: a `GET /api/images/{id}/neighbours` failure (a non-.ok, non-404 status), so
+  /// `GridService.neighbours` throws `.unreachable` — models the "neighbours-catch guard" fix
+  /// (the FAILURE path needs the same generation guard the success path already had).
+  var neighboursShouldFail = false
+  func setNeighboursShouldFail(_ fail: Bool) { neighboursShouldFail = fail }
+
+  // MARK: - P6 authoritative refresh: multi-page-by-cursor, generation-fence hold, failures
+
+  /// A SECOND (and beyond) page, keyed by the exact cursor value a request carries — lets a
+  /// test model a real multi-page shoot (`listImagesPage` is always page 1, cursor==nil) without
+  /// needing the blanket `listImagesRejectNonNilCursor` refusal for every non-nil cursor.
+  private var listImagesPagesByCursor: [String: Components.Schemas.ImagePage] = [:]
+  func setListImagesPage(_ page: Components.Schemas.ImagePage, forCursor cursor: String) {
+    listImagesPagesByCursor[cursor] = page
+  }
+
+  /// Rejects EXACTLY the next non-nil-cursor request with the same undocumented 400
+  /// `listImagesRejectNonNilCursor` models, then self-disarms — so a SECOND attempt at the same
+  /// cursor value (e.g. `performAuthoritativeRefresh`'s own restart-from-page-one-then-retry
+  /// loop) succeeds normally. Distinct from `listImagesRejectNonNilCursor`, which stays on
+  /// indefinitely until explicitly turned off.
+  private var listImagesRejectNonNilCursorOnceArmed = false
+  func armListImagesRejectNonNilCursorOnce() { listImagesRejectNonNilCursorOnceArmed = true }
+
+  /// A `SentinelTransportError` (network-level failure, never a declared HTTP status) for the
+  /// NEXT `ListImagesApiImagesGet` call — models an authoritative-refresh re-read that itself
+  /// cannot reach the server (`GridServiceError.unreachable`), distinct from the 400
+  /// cursor-fingerprint refusal above.
+  var listImagesShouldFail = false
+  func setListImagesShouldFail(_ fail: Bool) { listImagesShouldFail = fail }
+
+  /// Holds exactly the NEXT `ListImagesApiImagesGet` call (self-disarming, single-slot — same
+  /// discipline as the neighbours/markState holds above) so a test can let a scope change land
+  /// (its OWN, un-held, `ListImagesApiImagesGet` call) while the FIRST call is still suspended,
+  /// then release the first to prove its now-stale result is discarded by the generation fence.
+  private var listImagesHoldArmed = false
+  private var listImagesHasStarted = false
+  private var listImagesStartedContinuation: CheckedContinuation<Void, Never>?
+  private var listImagesReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdNextListImagesRequest() { listImagesHoldArmed = true }
+
+  func waitUntilListImagesStarted() async {
+    if listImagesHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.listImagesStartedContinuation = continuation
+    }
+  }
+
+  func releaseListImages() {
+    listImagesReleaseContinuation?.resume()
+    listImagesReleaseContinuation = nil
+    listImagesHasStarted = false
+  }
+
   enum ProxyOutcome: Sendable {
     case ok(Data)
     case notModified
@@ -103,6 +162,7 @@ actor GridStubTransport: ClientTransport {
   func setListImagesRejectNonNilCursor(_ reject: Bool) { listImagesRejectNonNilCursor = reject }
   func setFacetsResult(_ result: Components.Schemas.ImageFacets) { facetsResult = result }
   func setDetailResult(_ result: Components.Schemas.ImageDetail) { detailResult = result }
+  func setDetailShouldFail(_ fail: Bool) { detailShouldFail = fail }
   func setProxyOutcome(_ outcome: ProxyOutcome) { proxyOutcome = outcome }
   func setMarkStateOutcome(_ outcome: MarkMutationOutcome) { markStateOutcome = outcome }
   /// Overrides `markStateOutcome` for requests whose `state` matches — lets a test make ONE
@@ -129,13 +189,42 @@ actor GridStubTransport: ClientTransport {
     case Operations.ListImagesApiImagesGet.id:
       let cursorValue = request.path.flatMap(URLComponents.init(string:))?
         .queryItems?.first(where: { $0.name == "cursor" })?.value
+      if listImagesShouldFail {
+        listImagesShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced listImages failure")
+      }
       if listImagesRejectNonNilCursor, let cursorValue, !cursorValue.isEmpty {
         // No declared content for this status in the vendored schema (see GridService's own
         // doc comment) — the real backend's actual 400 body is irrelevant to what the
         // generated client can express; only the STATUS CODE is what `.undocumented` exposes.
         return (HTTPResponse(status: .badRequest), nil)
       }
-      return try jsonResponse(.ok, listImagesPage)
+      if listImagesRejectNonNilCursorOnceArmed, let cursorValue, !cursorValue.isEmpty {
+        listImagesRejectNonNilCursorOnceArmed = false
+        return (HTTPResponse(status: .badRequest), nil)
+      }
+      // Resolved BEFORE any hold-suspend below — a held call returns what was configured at
+      // REQUEST time, not whatever the stub's config drifted to while it sat suspended (matches
+      // a real server, which computes its response from state at request time; it is also what
+      // makes the generation-fence test meaningful: the stale call must carry OLD-scope data
+      // for "was it discarded" to be a real question, not `setListImagesPage` called again
+      // afterward silently making the stale and fresh responses identical).
+      let resolvedPage: Components.Schemas.ImagePage
+      if let cursorValue, !cursorValue.isEmpty, let page = listImagesPagesByCursor[cursorValue] {
+        resolvedPage = page
+      } else {
+        resolvedPage = listImagesPage
+      }
+      if listImagesHoldArmed {
+        listImagesHoldArmed = false
+        listImagesHasStarted = true
+        listImagesStartedContinuation?.resume()
+        listImagesStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.listImagesReleaseContinuation = continuation
+        }
+      }
+      return try jsonResponse(.ok, resolvedPage)
 
     case Operations.ImageFacetsApiFacetsGet.id:
       return try jsonResponse(.ok, facetsResult)
@@ -149,9 +238,19 @@ actor GridStubTransport: ClientTransport {
           self.neighboursReleaseContinuation = continuation
         }
       }
+      // Checked AFTER the hold/release above (never before) — a test arms this WHILE the call
+      // is suspended, so the failure is what the RELEASE reveals, not the arrival.
+      if neighboursShouldFail {
+        neighboursShouldFail = false
+        return (HTTPResponse(status: .internalServerError), nil)
+      }
       return try jsonResponse(.ok, neighboursPage)
 
     case Operations.GetImageApiImagesImageIdGet.id:
+      if detailShouldFail {
+        detailShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced detail failure")
+      }
       guard let detailResult else {
         throw SentinelTransportError(raw: "GridStubTransport: no detailResult configured")
       }

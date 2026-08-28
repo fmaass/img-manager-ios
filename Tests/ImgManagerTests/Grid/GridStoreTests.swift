@@ -142,9 +142,9 @@ struct GridStoreTests {
   }
 
   @Test(
-    "Mixed-state batch undo: one group commits, the other 409s -- the slot is NOT consumed, only the failed remainder survives for retry"
+    "Mixed-state batch undo: one group commits, the other 409s -- the 409'd group now routes through the SAME conflict-recovery machine as applyMark (diff-gate round 2, B4), not a bare rollback+remaining-retry"
   )
-  func mixedStateUndoPartialFailureRestoresSlotForRetry() async {
+  func mixedStateUndoConflictRoutesThroughRecoveryMachine() async {
     let (store, transport) = makeStore()
     // Image 1 was `.dislike` before, image 2 was `.none` before -- both get Picked together,
     // so undo must restore two DIFFERENT target states in two separate groups.
@@ -168,39 +168,61 @@ struct GridStoreTests {
 
     // Groups are processed in deterministic (alphabetical target-state) order: "dislike"
     // before "none". Let the "dislike" restore (image 1) SUCCEED, and the "none" restore
-    // (image 2) 409.
+    // (image 2) 409. The recovery's own re-read reports image 2 at a genuinely different
+    // revision ("r5"), so it lands in `.identified`, never the no-diff fallback.
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])),
       forState: .dislike)
     await transport.setMarkStateOutcome(.conflict, forState: .none)
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, mark: .dislike, revision: "r2"),
+          makeImage(id: 2, mark: .pick, revision: "r5"),
+        ], limit: 200, nextCursor: nil))
 
     await store.undoLastMark()
 
     // Image 1's group committed: restored to its truthful prior state, revision reconciled.
     #expect(store.images[0].mark.state == .dislike)
     #expect(store.images[0].mark.revision == "r2")
-    // Image 2's group 409'd: its OWN optimistic apply for THIS undo attempt rolled back to
-    // what the original mutation left it at (`.pick`) -- not silently left inconsistent.
-    #expect(store.images[1].mark.state == .pick)
-    #expect(store.images[1].mark.revision == "r1")
     #expect(store.lastMutationError == .conflict)
 
-    // The slot was NOT fully consumed -- exactly the failed remainder (image 2) survived for
-    // a retry, and image 1 (already committed) is NOT re-offered.
+    // B4: the slot is now owned by conflictRecovery, not the old remaining-retry mechanism --
+    // undo was cleared entirely (including image 1's own already-committed history), and the
+    // recovery identifies image 2 (the 409'd restore) with its FRESH re-read revision.
+    #expect(!store.undo.canUndo)
+    guard case .identified(let intent, let freshMarkViews, let changedIDs) = store.conflictRecovery
+    else {
+      Issue.record("expected .identified, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(intent == .setState(.none))  // the REJECTED restore was "set image 2 back to none"
+    #expect(changedIDs == [2])
+    #expect(freshMarkViews[2]?.revision == "r5")
+
+    // Apply Again resubmits the restore (state .none) using the FRESH "r5" revision. The
+    // per-state `.none` override from the undo attempt above (`.conflict`) is STILL active on
+    // the stub -- it must be overridden again here, or the retry would 409 a second time.
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r6")])),
+      forState: .none)
+    await store.applyConflictAgain()
+
+    // Type-qualified `.none` -- a bare `.none` here would match `Optional<StatePayload>.none`
+    // (nil), not `.some(StatePayload.none)`, since `sent?.state`'s type is `StatePayload?`.
+    let none = Components.Schemas.MarkStateRequest.StatePayload.none
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.state == none)
+    #expect(sent?.preconditions?.first?.revision == "r5")
+    #expect(store.images[1].mark.state == Components.Schemas.MarkView.StatePayload.none)
+    #expect(store.images[1].mark.revision == "r6")
+    #expect(store.conflictRecovery == nil)
+    // Apply Again went through the ordinary applyMark path, which records its OWN fresh undo
+    // entry for this specific recovered write (B4 scope decision: the original multi-group
+    // entry, including image 1's already-committed restore, is not reconstructed).
     #expect(store.undo.canUndo)
     #expect(store.undo.entry?.imageIDs == [2])
-    #expect(store.undo.entry?.priorStates.first?.state == MarkStateValue.none)
-
-    // Retry: fix the stub and undo again -- only image 2's group is attempted this time.
-    await transport.setMarkStateOutcome(
-      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r2")])),
-      forState: .none)
-    let callsBeforeRetry = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
-    await store.undoLastMark()
-    let callsAfterRetry = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
-    #expect(callsAfterRetry == callsBeforeRetry + 1)  // exactly one more call -- image 1 not redone
-    #expect(store.images[1].mark.state == Components.Schemas.MarkView.StatePayload.none)
-    #expect(!store.undo.canUndo)
   }
 
   @Test(
@@ -874,5 +896,622 @@ struct GridStoreTests {
 
     await transport.releaseMarkState()
     _ = await secondCall
+  }
+
+  // MARK: - P6: authoritative refresh (foreground + genuine same-shoot re-entry)
+
+  @Test(
+    "authoritativeRefresh replaces an optimistic mark the server disagrees with (server truth wins) and invalidates the undo slot"
+  )
+  func foregroundRefreshReplacesOptimisticMarkServerDisagreesWith() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.applyMark(.pick, to: [1])
+    #expect(store.images.first?.mark.state == .pick)
+    #expect(store.undo.canUndo)
+
+    // Someone else reverted it on another surface between the local pick and this refresh.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r2")], limit: 100, nextCursor: nil))
+    let refreshed = await store.authoritativeRefresh()
+
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(refreshed)
+    #expect(store.images.first?.mark.state == none)
+    #expect(store.images.first?.mark.revision == "r2")
+    #expect(!store.undo.canUndo)
+  }
+
+  @Test(
+    "authoritativeRefresh preserves loupe presentation AND focus when the focused image survives the refreshed query"
+  )
+  func authoritativeRefreshPreservesLoupeFocusWhenImageSurvives() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, revision: "r0"),
+          makeImage(id: 2, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+    #expect(store.isLoupeOpen)
+
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, revision: "r5"),
+          makeImage(id: 2, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
+    let refreshed = await store.authoritativeRefresh()
+
+    #expect(refreshed)
+    #expect(store.isLoupeOpen)
+    #expect(store.focusedImageID == 1)
+    #expect(store.images.first { $0.id == 1 }?.mark.revision == "r5")
+  }
+
+  @Test(
+    "authoritativeRefresh closes the loupe and clears focus (deterministically) when the focused image no longer matches the refreshed query -- never the prior unconditional clear"
+  )
+  func authoritativeRefreshClosesLoupeWhenFocusedImageVanishes() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+
+    // id 1 no longer matches the current query (e.g. its mark changed elsewhere) -- only id 2
+    // survives the refreshed re-read.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 100, nextCursor: nil))
+    let refreshed = await store.authoritativeRefresh()
+
+    #expect(refreshed)
+    #expect(!store.isLoupeOpen)
+    #expect(store.focusedImageID == nil)
+    #expect(store.images.map(\.id) == [2])
+  }
+
+  @Test(
+    "selectShoot on the ALREADY-selected shoot (genuine re-entry) triggers an authoritative refresh instead of the prior bare no-op"
+  )
+  func sameShootReentryTriggersRefresh() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    #expect(store.images.first?.mark.revision == "r0")
+
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r5")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)  // same id -- genuine re-entry, not a scope change
+
+    #expect(store.images.first?.mark.revision == "r5")
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+  }
+
+  @Test(
+    "A generation-fenced authoritative refresh whose OWN fetch lands AFTER a scope change is discarded whole -- the new scope's data is never overwritten by the stale snapshot"
+  )
+  func staleAuthoritativeRefreshDiscardedByGenerationFence() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.holdNextListImagesRequest()
+    async let refreshResult: Bool = store.authoritativeRefresh()
+    await transport.waitUntilListImagesStarted()
+
+    // The scope changes to folder 2 WHILE the refresh's own fetch is still suspended -- this is
+    // a SEPARATE, un-held call (the hold was single-slot and already consumed by the refresh's
+    // own fetch above), so it completes normally and bumps the generation.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 99, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+    #expect(store.images.map(\.id) == [99])
+
+    // Only now does the STALE folder-1 fetch actually return.
+    await transport.releaseListImages()
+    let refreshed = await refreshResult
+
+    #expect(!refreshed)
+    #expect(store.images.map(\.id) == [99])  // untouched by the discarded stale snapshot
+  }
+
+  @Test(
+    "A lifecycle refresh requested while a mutation is in flight QUEUES behind it (never refused, never dropped) and runs once the mutation completes"
+  )
+  func refreshDeferredBehindInFlightMutationRunsAfterward() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await transport.holdMarkStateRequests(true)
+
+    async let markCall: Void = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+    #expect(store.isMutatingMark)
+
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .pick, revision: "r9")], limit: 100, nextCursor: nil))
+    async let refreshResult: Bool = store.authoritativeRefresh()
+
+    // Let the queued refresh task actually reach its (network-free) await point, then prove it
+    // has NOT issued a network call yet -- it is genuinely queued, not merely "will run later".
+    await Task.yield()
+    await Task.yield()
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+
+    await transport.releaseMarkState()
+    _ = await markCall
+    let refreshed = await refreshResult
+
+    #expect(refreshed)
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(store.images.first?.mark.revision == "r9")
+    #expect(!store.isMutatingMark)
+  }
+
+  @Test(
+    "A cursor-invalid (400) mid-refresh discards the partial snapshot and restarts from page one -- the refresh still completes with the full, real multi-page result"
+  )
+  func cursorInvalidMidRefreshRestartsFromPageOne() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: "c2"))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 3, revision: "r0")], limit: 200, nextCursor: nil),
+      forCursor: "c2")
+    await transport.armListImagesRejectNonNilCursorOnce()
+    let callsBefore = await transport.callCount(Operations.ListImagesApiImagesGet.id)
+
+    let refreshed = await store.authoritativeRefresh()
+
+    #expect(refreshed)
+    #expect(store.images.map(\.id) == [1, 3])
+    #expect(store.lastPageLoadError == nil)
+    // page1 (ok) + page2/"c2" (400, once-armed) + page1 restart (ok) + page2/"c2" (ok) = 4.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == callsBefore + 4)
+  }
+
+  @Test(
+    "A neighbours FAILURE landing after a shoot switch does not surface lastPageLoadError in the new scope (premise-gate advisory (a): the failure path needs the SAME generation guard the success path already had)"
+  )
+  func neighboursCatchGuardDoesNotSurfaceStaleScopeError() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+
+    await transport.holdNeighboursRequests(true)
+    let inFlight = Task { await store.loupeNext() }
+    await transport.waitUntilNeighboursStarted()
+
+    await transport.setNeighboursShouldFail(true)
+    await transport.holdNeighboursRequests(false)
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 10, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    await transport.releaseNeighbours()
+    await inFlight.value
+
+    #expect(store.lastPageLoadError == nil)
+    #expect(store.images.map(\.id) == [10])
+  }
+
+  // MARK: - P6: refused-write (409) recovery -- the adjudicated "Changed elsewhere" state machine
+
+  @Test(
+    "409 conflict: rolls back, re-reads authoritatively, identifies the changed-elsewhere subset by revision-diff, and Apply Again resubmits with FRESH revisions"
+  )
+  func conflictRecoveryIdentifiesChangedElsewhereAndApplyAgainResubmitsFreshRevisions() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    // The automatic re-read sees a DIFFERENT revision than the rejected request submitted --
+    // someone else touched the same image in between.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r5")], limit: 100, nextCursor: nil))
+
+    await store.applyMark(.pick, to: [1])
+
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.first?.mark.state == none)  // rolled back to the truthful appearance
+    #expect(store.images.first?.mark.revision == "r5")  // but revision is now SERVER truth
+    #expect(store.lastMutationError == .conflict)
+    #expect(!store.undo.canUndo)
+
+    guard case .identified(let intent, let freshMarkViews, let changedIDs) = store.conflictRecovery
+    else {
+      Issue.record("expected .identified, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(intent == .setState(.pick))
+    #expect(freshMarkViews[1]?.revision == "r5")
+    #expect(changedIDs == [1])
+
+    // Apply Again: resubmits using the recovery's OWN fresh markview -- the "r5" revision, never
+    // the stale rejected "r0".
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r6")])))
+    await store.applyConflictAgain()
+
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.preconditions?.first?.revision == "r5")
+    #expect(store.images.first?.mark.state == .pick)
+    #expect(store.images.first?.mark.revision == "r6")
+    #expect(store.conflictRecovery == nil)
+  }
+
+  @Test(
+    "409 conflict whose re-read finds NO differing revision (a revision raced back) falls back to marking the WHOLE submitted batch as changed elsewhere"
+  )
+  func conflictRecoveryFallsBackToWholeBatchWhenNoDiffFound() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, mark: .none, revision: "r0"),
+          makeImage(id: 2, mark: .none, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    // listImagesPage is UNCHANGED -- the re-read sees the exact same revisions submitted.
+    await store.applyMark(.pick, to: [1, 2])
+
+    guard case .identified(_, _, let changedIDs) = store.conflictRecovery else {
+      Issue.record("expected .identified, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(changedIDs == [1, 2])
+  }
+
+  @Test(
+    "409 conflict whose OWN re-read fails offers Retry Refresh (readFailed); Apply Again is inert until a fresh revision exists; retrying succeeds"
+  )
+  func conflictRecoveryReadFailureOffersRetryThenIdentifies() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    await transport.setListImagesShouldFail(true)
+    await store.applyMark(.pick, to: [1])
+
+    guard case .readFailed(let intent, let batch) = store.conflictRecovery else {
+      Issue.record("expected .readFailed, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(intent == .setState(.pick))
+    #expect(batch.first?.imageID == 1)
+
+    // Apply Again matches ONLY `.identified` -- from `.readFailed` it is an inert no-op.
+    let callsBefore = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    await store.applyConflictAgain()
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == callsBefore)
+    #expect(store.conflictRecovery != nil)
+
+    // Retry Refresh: the transport is fixed, and now returns a genuinely different revision.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r5")], limit: 100, nextCursor: nil))
+    await store.retryConflictRefresh()
+
+    guard case .identified(_, _, let changedIDs) = store.conflictRecovery else {
+      Issue.record(
+        "expected .identified after retry, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(changedIDs == [1])
+  }
+
+  @Test(
+    "Keep Server Version dismisses the recovery surface with no further write"
+  )
+  func dismissConflictRecoveryIsInert() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await transport.setMarkStateOutcome(.conflict)
+    await store.applyMark(.pick, to: [1])
+    #expect(store.conflictRecovery != nil)
+
+    let callsBefore = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    store.dismissConflictRecovery()
+
+    #expect(store.conflictRecovery == nil)
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == callsBefore)
+  }
+
+  @Test(
+    "Diff-gate round 2, B6: Apply Again still issues the API write for an image the RE-READ's filtered query no longer shows -- its fresh markview comes from a per-id detail() fetch, never silently dropped"
+  )
+  func applyConflictAgainResubmitsForImageVanishedFromFilteredReread() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, mark: .none, revision: "r0"),
+          makeImage(id: 2, mark: .none, revision: "r0"),
+        ], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    // The re-read's query no longer shows id 1 at all (e.g. the active filter now excludes it).
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2, mark: .none, revision: "r0")], limit: 200, nextCursor: nil))
+    await transport.setDetailResult(
+      .init(
+        ext: "jpg", filename: "vanished.jpg", folderId: 1, id: 1,
+        lightroom: .init(sidecarPresent: false),
+        mark: .init(revision: "r9", state: .none, tags: []),
+        proxies: .init(additionalProperties: [:]), sourceTier: "local"))
+
+    await store.applyMark(.pick, to: [1, 2])
+
+    #expect(!store.images.contains { $0.id == 1 })  // gone entirely -- wholesale replace
+    guard case .identified(_, let freshMarkViews, let changedIDs) = store.conflictRecovery else {
+      Issue.record("expected .identified, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(changedIDs == [1])  // id 2's revision matched -- only the vanished id differs
+    #expect(freshMarkViews[1]?.revision == "r9")  // sourced from detail(), not `images`
+
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 2, requested: 2,
+          revisions: [.init(imageId: 1, revision: "r10"), .init(imageId: 2, revision: "r1")])))
+    await store.applyConflictAgain()
+
+    // The write DID go out for id 1 -- with the fresh "r9" precondition -- never silently
+    // skipped just because it is not in `images`.
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds.sorted() == [1, 2])
+    #expect(sent?.preconditions?.first(where: { $0.imageId == 1 })?.revision == "r9")
+    #expect(store.conflictRecovery == nil)
+  }
+
+  // MARK: - P6: tags join the mutation lane / recovery machine (diff-gate round 2, B5)
+
+  @Test(
+    "addTag QUEUES behind an in-flight mark mutation instead of refusing or silently dropping the submitted tag (diff-gate round 2, B5)"
+  )
+  func addTagQueuesBehindInFlightMutation() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await transport.holdMarkStateRequests(true)
+    async let markCall: Void = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+
+    await transport.setTagsOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])))
+    async let tagCall: Void = store.addTag("landscape", to: [1])
+
+    // Let the queued tag write actually reach its (network-free) await point, then prove it has
+    // NOT issued a network call yet -- it is genuinely queued, not refused and not dropped.
+    await Task.yield()
+    await Task.yield()
+    #expect(await transport.callCount(Operations.EditMarkTagsApiMarksTagsPost.id) == 0)
+
+    await transport.releaseMarkState()
+    _ = await markCall
+    _ = await tagCall
+
+    #expect(await transport.callCount(Operations.EditMarkTagsApiMarksTagsPost.id) == 1)
+    #expect(store.images.first?.mark.tags == ["landscape"])
+    #expect(store.images.first?.mark.revision == "r2")
+  }
+
+  @Test(
+    "A tag write's 409 routes through the SAME recovery machine as state mutations (diff-gate round 2, B5): re-reads, identifies, and Apply Again resubmits the TAG with a fresh revision"
+  )
+  func tagConflictRoutesThroughRecoveryMachineAndApplyAgainResubmits() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setTagsOutcome(.conflict)
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r5")], limit: 200, nextCursor: nil))
+
+    await store.addTag("landscape", to: [1])
+
+    #expect(store.images.first?.mark.tags?.isEmpty ?? true)  // rolled back
+    #expect(store.lastMutationError == .conflict)
+    guard case .identified(let intent, let freshMarkViews, let changedIDs) = store.conflictRecovery
+    else {
+      Issue.record("expected .identified, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(intent == .addTag("landscape"))
+    #expect(changedIDs == [1])
+    #expect(freshMarkViews[1]?.revision == "r5")
+
+    await transport.setTagsOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r6")])))
+    await store.applyConflictAgain()
+
+    let sent = await transport.lastTagsRequest
+    #expect(sent?.tag == "landscape")
+    #expect(sent?.preconditions?.first?.revision == "r5")
+    #expect(store.images.first?.mark.tags == ["landscape"])
+    #expect(store.images.first?.mark.revision == "r6")
+    #expect(store.conflictRecovery == nil)
+  }
+
+  // MARK: - P6: diff-gate round 2 B1/B2 -- generation fencing against a racing reload
+
+  @Test(
+    "Diff-gate round 2, B1: authoritativeRefresh ADVANCES the generation (never merely copies it), so an older pending reloadFirstPage cannot overwrite the refresh's newer, already-published snapshot"
+  )
+  func authoritativeRefreshAdvancesGenerationAgainstOlderPendingReload() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    // An older reload (a filter change) starts and gets its OWN fetch held -- it is genuinely
+    // "in flight" when the refresh below starts.
+    await transport.holdNextListImagesRequest()
+    async let filterTask: Void = store.applyFilterChange { $0.mark = "pick" }
+    await transport.waitUntilListImagesStarted()
+
+    // The refresh's OWN fetch is unheld (the single-slot hold was already consumed) and
+    // completes immediately with FRESHER data.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r9")], limit: 100, nextCursor: nil))
+    let refreshed = await store.authoritativeRefresh()
+    #expect(refreshed)
+    #expect(store.images.first?.mark.revision == "r9")
+
+    // NOW the older, still-pending reload's held response finally arrives -- it must NOT be
+    // allowed to overwrite the refresh's newer publish.
+    await transport.releaseListImages()
+    _ = await filterTask
+
+    #expect(store.images.first?.mark.revision == "r9")  // untouched by the stale reload
+  }
+
+  @Test(
+    "Diff-gate round 2, B2: applyMark's CONFLICT completion is fenced against a racing scope reload -- a 409 returning after a filter reload already republished the scope is discarded whole, no rollback, no error, no recovery state"
+  )
+  func applyMarkConflictCompletionDiscardedAfterRacingReload() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.holdMarkStateRequests(true)
+    await transport.setMarkStateOutcome(.conflict)
+    async let markTask: Void = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+
+    // A filter reload runs to completion WHILE the mark write is still held -- it publishes a
+    // DIFFERENT truth for the SAME id.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .dislike, revision: "r2")], limit: 100, nextCursor: nil)
+    )
+    await store.applyFilterChange { $0.mark = "pick" }
+    #expect(store.images.first?.mark.state == .dislike)
+    #expect(store.images.first?.mark.revision == "r2")
+
+    // NOW the held (and now stale) mark write finally returns its 409.
+    await transport.releaseMarkState()
+    _ = await markTask
+
+    // Discarded whole: the reload's published truth is untouched, no error, no recovery state.
+    #expect(store.images.first?.mark.state == .dislike)
+    #expect(store.images.first?.mark.revision == "r2")
+    #expect(store.lastMutationError == nil)
+    #expect(store.conflictRecovery == nil)
+  }
+
+  @Test(
+    "Diff-gate round 2, B2: applyMark's SUCCESS completion is likewise fenced -- a late success returning after selectShoot already moved to a new scope never records undo for the old scope's write"
+  )
+  func applyMarkSuccessCompletionDiscardedAfterRacingScopeChange() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.holdMarkStateRequests(true)
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    async let markTask: Void = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+
+    // The scope changes to a DIFFERENT shoot entirely WHILE the write is still held.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 99, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+    #expect(store.images.map(\.id) == [99])
+    #expect(!store.undo.canUndo)  // selectShoot's own scope-change clear
+
+    // NOW the held (and now stale) write finally succeeds.
+    await transport.releaseMarkState()
+    _ = await markTask
+
+    // Discarded whole: the new scope's images are untouched, and the late success did NOT
+    // resurrect an undo entry for the OLD scope's write after selectShoot cleared the slot.
+    #expect(store.images.map(\.id) == [99])
+    #expect(!store.undo.canUndo)
+  }
+
+  @Test(
+    "Diff-gate round 3, B6: a FAILED per-id detail() read for a filtered-out id never produces a silent partial `.identified` -- the whole recovery becomes .readFailed (retryable), Apply Again stays unavailable (no write at all) until the retry succeeds"
+  )
+  func detailFetchFailureForVanishedIDBecomesReadFailedNotSilentPartial() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .none, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    // The re-read's query no longer shows id 1 at all, AND the detail() fallback itself fails.
+    await transport.setListImagesPage(.init(items: [], limit: 200, nextCursor: nil))
+    await transport.setDetailShouldFail(true)
+
+    await store.applyMark(.pick, to: [1])
+
+    guard case .readFailed(let intent, let batch) = store.conflictRecovery else {
+      Issue.record("expected .readFailed, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(intent == .setState(.pick))
+    #expect(batch.first?.imageID == 1)
+
+    // Apply Again is unavailable from .readFailed -- singleton batch, so a silent partial would
+    // otherwise mean literally NO write at all.
+    let callsBefore = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
+    await store.applyConflictAgain()
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == callsBefore)
+    #expect(store.conflictRecovery != nil)
+
+    // Retry Refresh: the detail() fetch now succeeds.
+    await transport.setDetailShouldFail(false)
+    await transport.setDetailResult(
+      .init(
+        ext: "jpg", filename: "vanished.jpg", folderId: 1, id: 1,
+        lightroom: .init(sidecarPresent: false),
+        mark: .init(revision: "r9", state: .none, tags: []),
+        proxies: .init(additionalProperties: [:]), sourceTier: "local"))
+    await store.retryConflictRefresh()
+
+    guard case .identified(_, let freshMarkViews, let changedIDs) = store.conflictRecovery else {
+      Issue.record(
+        "expected .identified after retry, got \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(changedIDs == [1])
+    #expect(freshMarkViews[1]?.revision == "r9")
   }
 }

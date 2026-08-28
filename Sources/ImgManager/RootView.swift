@@ -87,12 +87,15 @@ struct RootView: View {
     }
     .onChange(of: scenePhase) { _, newPhase in
       guard newPhase == .active else { return }
-      Task { await auth.renewOnForeground() }
-      // Diff-gate round 2, blocker 5: foreground activation performs the pinned grid
-      // reload/reset too (`SelectionResetTrigger.fullReload`), not only auth renewal — only
-      // once a shoot is actually active (nothing to reload before then).
-      if gridStore.query.folderID != nil {
-        Task { await gridStore.fullReload() }
+      // P6 (IMGMGR-116): ONE ordered task, not two independent ones — (a) renew, (b) confirm
+      // still signed in AND a shoot is selected, (c) only then the authoritative refresh. The
+      // prior two-`Task{}` shape ran renewal and the grid reload concurrently/unordered, and
+      // used `fullReload()` (unconditional focus-clear); `authoritativeRefresh()` replaces that
+      // reload with the generation-fenced, multi-page, focus-preserving re-read.
+      Task {
+        await auth.renewOnForeground()
+        guard case .signedIn = auth.status, gridStore.query.folderID != nil else { return }
+        await gridStore.authoritativeRefresh()
       }
     }
   }
@@ -213,18 +216,43 @@ struct RootView: View {
         // `NavigationSplitView` actually navigates into the content column on ALL layout
         // modes, Compact included — a plain `Button` calling `selectShoot` mutated the
         // grid's data but never pushed the split view anywhere.
+        //
+        // Diff-gate round 2, B3, and round 3's follow-up: the store call moved OFF
+        // `onChange(of: selectedFolderID)` (which never fires when a tap doesn't change the
+        // bound value — i.e. never on a tap of the ALREADY-selected row, leaving same-shoot
+        // re-entry's own refresh unreachable from the real UI) onto ONE explicit tap handler.
+        // Round 2's first attempt attached the gesture to the bare `Text`, whose hit-testing
+        // frame is only as wide as its GLYPHS — a tap on the row's own whitespace (everything
+        // else in the row's full width) landed on the List's OWN internal row-selection
+        // recognizer only, updating `selectedFolderID` without ever calling `selectShoot` at
+        // all (a regression: even a FIRST or different-shoot selection via whitespace could
+        // silently no-op). Fixed by giving the row content `.frame(maxWidth: .infinity,
+        // alignment: .leading)` — filling the row's full rendered width — THEN
+        // `.contentShape(Rectangle())`, which replaces Text's default tight-glyph hit-testing
+        // with that WHOLE expanded rectangle; the tap gesture attached after both modifiers
+        // therefore fires for a tap ANYWHERE in the row, whitespace included, with no second
+        // path (onChange or otherwise) left that could reach `selectShoot`. The ONE handler
+        // itself sets `selectedFolderID` (so the visual highlight / `NavigationSplitView` push
+        // is driven deterministically by this same code path, not left to race against the
+        // List's own independent internal recognizer) and then calls `selectShoot` on every
+        // tap unconditionally, same-value or not — `simultaneousGesture` still lets the List's
+        // own built-in handling run alongside rather than being consumed/replaced.
         List(ShootListFilter.shoots(folders), id: \.id, selection: $selectedFolderID) {
           folder in
           Text(folder.name)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+              TapGesture().onEnded {
+                selectedFolderID = folder.id
+                Task { await gridStore.selectShoot(folderID: folder.id) }
+              }
+            )
         }
         .task {
           if let tree = try? await gridService.folders() {
             folders = tree.items
           }
-        }
-        .onChange(of: selectedFolderID) { _, newValue in
-          guard let newValue else { return }
-          Task { await gridStore.selectShoot(folderID: newValue) }
         }
       case .unreachable:
         Text(DegradedStateCopy.notConnected)
