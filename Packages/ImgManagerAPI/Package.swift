@@ -24,13 +24,13 @@ let package = Package(
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),
             ],
-            // openapi.vendored.json is the byte-identical provenance artifact (see
-            // scripts/sync-openapi.sh); it is not a plugin input and is excluded so SwiftPM
-            // does not try to bundle it as a resource. openapi.json (the bridged working
-            // copy the plugin reads) and openapi-generator-config.yaml stay IN sources: they
-            // are the plugin's declared inputs, and excluding them makes the plugin report
-            // that the target has no document to generate from.
-            exclude: ["openapi.vendored.json"],
+            // openapi.json is vendored verbatim (scripts/sync-openapi.sh — byte-identical to
+            // img-manager's frontend/openapi.json at the recorded commit, OPENAPI_SOURCE) and
+            // is the plugin's declared input alongside openapi-generator-config.yaml; no
+            // exclude is needed since the normalization-bridge split (openapi.vendored.json ->
+            // tools/normalize-openapi.py -> openapi.json) was retired in WP8 P1-ios once
+            // img-manager's P1-backend started emitting OAS 3.1 nullable type arrays natively
+            // (docs/OPENAPI_NORMALIZATION_DEBT.md, closed; mirrors memos-ng-ios commit dfc2545).
             swiftSettings: [.swiftLanguageMode(.v6)],
             plugins: [
                 .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")

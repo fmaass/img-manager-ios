@@ -1,9 +1,7 @@
 # Provenance of the img-manager artefact vendored into this package.
 # Written by scripts/sync-openapi.sh — do not edit by hand.
 repo=img-manager
-commit=4b952701ac79a6ec7ac245e8f1bf3b9657ca64c6
-subject=Release v0.9.0: the Workspace UI
-committed=2026-08-27T14:26:27+02:00
-files=Sources/ImgManagerAPI/openapi.vendored.json (byte-identical to source) Sources/ImgManagerAPI/openapi.json (bridged, see tools/normalize-openapi.py)
-bridge_nullable_rewritten=117
-bridge_nullable_left_as_anyof_ref=12
+commit=eff6a12ddf3c7e2a6f748625747345ca57c86349
+subject=Merge fix/release-092-prep: finalize the v0.9.2 changelog
+committed=2026-08-28T08:49:47+02:00
+files=Sources/ImgManagerAPI/openapi.json (byte-identical to source)

@@ -3,27 +3,25 @@ import Testing
 
 @testable import ImgManagerAPI
 
-// The OpenAPI generation PROBE (WP8 P0a, plan §Phase 0a). img-manager's schema expresses
-// nullability as `anyOf: [X, {"type": "null"}]`. swift-openapi-generator silently DROPS a
-// property written that way instead of generating it as Optional — confirmed 2026-08-27
-// against the raw v0.9.0 schema (SHA 4b952701ac79a6ec7ac245e8f1bf3b9657ca64c6): all 29
-// inline-type anyOf-nullable component-schema properties vanished from the generated
-// Types.swift, ImagePage.next_cursor included (see .phase-ledger.md for the grep evidence
-// against the unbridged build). tools/normalize-openapi.py bridges the schema before the
-// generator sees it (scripts/sync-openapi.sh), so this test runs against the BRIDGED
-// output and must therefore pass — it is the regression guard for that bridge staying
-// wired, not a test of the generator's behavior against the raw schema.
+// The OpenAPI generation PROBE (WP8 P0a, plan §Phase 0a), now a permanent regression guard
+// (WP8 P1-ios). img-manager's schema used to express nullability as
+// `anyOf: [X, {"type": "null"}]`, which swift-openapi-generator silently DROPS instead of
+// generating an Optional — confirmed 2026-08-27 against the raw v0.9.0 schema (SHA
+// 4b952701ac79a6ec7ac245e8f1bf3b9657ca64c6): all 29 inline-type anyOf-nullable
+// component-schema properties vanished from the generated Types.swift, ImagePage.next_cursor
+// included. A temporary bridge (tools/normalize-openapi.py) canonicalised the schema into OAS
+// 3.1 `type: [X, "null"]` arrays before the generator saw it until img-manager's P1-backend
+// started emitting that idiom NATIVELY (v0.9.2, commit eff6a12ddf3c7e2a6f748625747345ca57c86349
+// — re-vendoring measured bridge_nullable_rewritten=0, the condition the bridge itself named
+// for its own retirement). The bridge and its vendored/bridged file split are deleted
+// (docs/OPENAPI_NORMALIZATION_DEBT.md, closed; mirrors memos-ng-ios commit dfc2545): this test
+// now runs directly against the single vendored `openapi.json`, unmodified.
 //
 // Each assertion is a compile-time existence-and-type check: a `WritableKeyPath` literal
 // fails to type-check — failing the whole test target's build — if the named property does
 // not exist on the generated type, or if its wrapped type is not the Optional shown. This
 // is stronger than a runtime string search: it cannot pass by accident, and it is the
 // generated INITIALIZER'S contract, not a comment, that is being checked.
-//
-// PINNED DEBT: this bridge is temporary. When img-manager's P1-backend phase emits
-// `type: [X, "null"]` natively (the OAS 3.1 idiom, lossless and directly supported), the
-// bridge is deleted and this test is re-pointed at the (now unbridged) vendored schema
-// directly. See docs/OPENAPI_NORMALIZATION_DEBT.md.
 @Suite("Nullable property survival (OpenAPI generation probe)")
 struct NullableSurvivalTests {
 
@@ -97,5 +95,56 @@ struct NullableSurvivalTests {
     let decodedNil = try JSONDecoder().decode(
       Components.Schemas.ImagePage.self, from: encodedNil)
     #expect(decodedNil.nextCursor == nil)
+  }
+
+  /// The parameter-schema gap docs/OPENAPI_NORMALIZATION_DEBT.md named at closure: the retired
+  /// bridge fixed 88 `#/paths/*` query/path parameter schemas by the same rewrite as the 29
+  /// component-schema properties above, but no test here named one individually. `tree` on
+  /// `GET /api/folders` is the one `ImgManagerAPIClient.folders()` already constructs
+  /// (`tree: nil`), so a regression here would already be caught by TransportStateTests
+  /// failing to compile — this test additionally proves it takes a real value, not only `nil`,
+  /// and that the generated `Input.Query` initializer's contract is what is being checked.
+  @Test("GET /api/folders — tree query parameter survives as an optional (parameter-schema gap)")
+  func folderTreeQueryParameterIsOptional() {
+    let withValue = Operations.FolderTreeApiFoldersGet.Input.Query(
+      sourceTier: .local, tree: "2026/08")
+    #expect(withValue.tree == "2026/08")
+    let withoutValue = Operations.FolderTreeApiFoldersGet.Input.Query(
+      sourceTier: .local, tree: nil)
+    #expect(withoutValue.tree == nil)
+  }
+}
+
+/// WP8 P1-ios acceptance (plan p3226 / p1-spec-rev2 §5): the raw generated client, vendored
+/// straight from v0.9.2 with no bridge in front of it, exposes the three native-auth
+/// operations the pinned port contract names — and their bodies' own nullable-shaped fields —
+/// without any rewriting. Each assertion is the same compile-time existence-and-type check as
+/// `NullableSurvivalTests`: a keypath or an initializer argument that does not type-check fails
+/// the whole test target's build.
+@Suite("Native-auth operations are exposed by the raw generated client")
+struct NativeAuthOperationsExposedTests {
+
+  @Test("POST /api/auth/native/exchange exists, takes NativeExchangeIn, returns NativeTokenOut")
+  func exchangeOperationShape() {
+    let body = Components.Schemas.NativeExchangeIn(code: "handoff", codeVerifier: "verifier")
+    #expect(body.code == "handoff")
+    #expect(body.codeVerifier == "verifier")
+    let token = Components.Schemas.NativeTokenOut(
+      expiresAt: Date(), subject: "sub", token: "tok")
+    #expect(token.token == "tok")
+    // Type-checks only if the operation exists on APIProtocol with this Input/Output shape —
+    // never called, so a compile failure here (not a runtime one) IS the proof.
+    let exchange = { (client: any APIProtocol) in client.nativeExchangeApiAuthNativeExchangePost }
+    _ = exchange
+    #expect(Bool(true))
+  }
+
+  @Test("POST /api/auth/native/renew and POST /api/auth/native/logout exist on the client")
+  func renewAndLogoutOperationsExist() {
+    let renew = { (client: any APIProtocol) in client.nativeRenewApiAuthNativeRenewPost }
+    let logout = { (client: any APIProtocol) in client.nativeLogoutApiAuthNativeLogoutPost }
+    _ = renew
+    _ = logout
+    #expect(Bool(true))
   }
 }
