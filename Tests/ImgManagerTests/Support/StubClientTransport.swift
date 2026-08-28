@@ -105,8 +105,10 @@ actor StubClientTransport: ClientTransport {
   private func foldersResponse() throws -> (HTTPResponse, HTTPBody?) {
     switch outcome {
     case .success:
+      // "dated" is the LIVE vocabulary (IMGMGR-173) — fixtures must use kinds the API
+      // actually emits.
       let node = Components.Schemas.FolderNode(
-        id: 1, kind: "day", name: "2026-08-01", path: "2026-08-01")
+        id: 1, kind: "dated", name: "2026-08-01", path: "2026-08-01")
       return try jsonResponse(.ok, Components.Schemas.FolderTree(items: [node]))
     case .empty, .degraded:
       return try jsonResponse(.ok, Components.Schemas.FolderTree(items: []))

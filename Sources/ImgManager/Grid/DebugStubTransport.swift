@@ -33,8 +33,10 @@
             coverage: .init(imagesActive: 0, imagesMissing: 0, tiers: []),
             maintenance: .init(enabled: false), runs: []))
       case Operations.FolderTreeApiFoldersGet.id:
+        // "dated" is the LIVE vocabulary (IMGMGR-173) — a fixture kind the API never emits
+        // is how the empty-sidebar defect stayed green.
         let node = Components.Schemas.FolderNode(
-          id: 1, kind: "day", name: "2026-08-27 — Stub Shoot", path: "stub")
+          id: 1, kind: "dated", name: "2026-08-27 — Stub Shoot", path: "stub")
         return try jsonResponse(.ok, Components.Schemas.FolderTree(items: [node]))
       case Operations.ListImagesApiImagesGet.id:
         return try jsonResponse(
