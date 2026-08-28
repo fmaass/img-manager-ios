@@ -56,6 +56,29 @@ struct AuthSessionTerminalUnauthorizedTests {
     #expect(await store.clearCallCount == 0)
   }
 
+  @Test("a fence read that fails (.error) surfaces .credentialError, never a silent .signedIn")
+  func fenceReadFailureSurfacesCredentialError() async {
+    // Diff-gate round 1, delta 2: the fence's own re-read can fail too (corruption, missing
+    // entitlement) — that is a READ FAILURE, not evidence the token is fine, and must not
+    // leave the app silently `.signedIn` against a store it cannot actually read.
+    let credential = Credential(token: "tok", expiresAt: Date(), subject: "alice")
+    let store = FakeCredentialStore(loadResults: [.present(credential)])
+    let auth = await AuthSession(credentialStore: store, client: makeClient())
+    await auth.adopt(freshCredential: credential)
+    #expect(await auth.status == .signedIn(subject: "alice"))
+    await store.setNextLoadResult(.error(.corrupted))
+
+    await auth.handleTerminalUnauthorized(presentedToken: "tok")
+
+    guard case .credentialError = await auth.status else {
+      Issue.record("expected .credentialError, got \(await auth.status)")
+      return
+    }
+    // Never cleared — a read failure is not proof the credential is bad, so it must be left
+    // exactly where it is (the same rule `clearAndReport` enforces elsewhere).
+    #expect(await store.clearCallCount == 0)
+  }
+
   @Test("a terminal 401 whose clear fails surfaces .credentialError, never a false .signedOut")
   func terminalUnauthorizedClearFailureSurfacesError() async {
     let credential = Credential(token: "tok", expiresAt: Date(), subject: "alice")

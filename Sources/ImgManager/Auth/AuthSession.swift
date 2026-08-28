@@ -154,17 +154,27 @@ final class AuthSession {
   /// would be exactly the bug the epoch fence exists to prevent ("a refusal of a credential
   /// this device has already replaced... is about a token that is gone"). So the stored
   /// credential is re-read HERE, and only a 401 for the token still actually presented is
-  /// terminal; anything else — the store already moved on, or holds nothing at all — is a
-  /// stale refusal this call must not act on.
+  /// terminal; a present-but-different token (the fence) or an absent one is a stale refusal
+  /// this call must not act on.
+  ///
+  /// Diff-gate round 1, delta 2: a `.error` on THIS re-read is still a read failure and the
+  /// standing "every read failure surfaces an error" rule (blocker 2) applies to it exactly as
+  /// it does everywhere else — an unreadable Keychain here is not evidence the token is fine,
+  /// and must not leave the app silently `.signedIn` against a store it cannot actually read.
   func handleTerminalUnauthorized(presentedToken: String) async {
     guard case .signedIn = status else { return }
-    guard case .present(let current) = await credentialStore.load(),
-      current.token == presentedToken
-    else {
-      return
+    switch await credentialStore.load() {
+    case .present(let current) where current.token == presentedToken:
+      await clearAndReport(
+        fallbackMessage: "Your sign-in has expired. Please sign in again.")
+    case .error(let error):
+      status = .credentialError(Self.message(for: error))
+    case .present, .absent:
+      // Either the fence (a different token — the store already moved on) or nothing stored
+      // at all. Neither is this call's business: not a failure, and not a 401 for the
+      // credential that is actually current.
+      break
     }
-    await clearAndReport(
-      fallbackMessage: "Your sign-in has expired. Please sign in again.")
   }
 
   /// The single renewal join point (blocker 1). A second trigger arriving while one is already

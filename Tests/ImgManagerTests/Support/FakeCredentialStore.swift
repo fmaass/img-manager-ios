@@ -18,6 +18,11 @@ actor FakeCredentialStore: CredentialPersisting {
   private let clearShouldFail: Bool
   private(set) var savedCredentials: [Credential] = []
   private(set) var clearCallCount = 0
+  /// A ONE-SHOT answer for the very next `load()`, taking priority over `loadResults` and then
+  /// clearing itself — for a test that needs to change the answer PARTWAY through (e.g. a
+  /// fence re-read failing after an earlier, successful adopt), without disturbing the
+  /// steady-state repeat-the-last-element behavior `loadResults` gives everyone else.
+  private var nextLoadOverride: CredentialLoadResult?
 
   init(
     loadResults: [CredentialLoadResult] = [.absent],
@@ -30,8 +35,16 @@ actor FakeCredentialStore: CredentialPersisting {
   }
 
   func load() async -> CredentialLoadResult {
+    if let override = nextLoadOverride {
+      nextLoadOverride = nil
+      return override
+    }
     guard loadResults.count > 1 else { return loadResults.first ?? .absent }
     return loadResults.removeFirst()
+  }
+
+  func setNextLoadResult(_ result: CredentialLoadResult) {
+    nextLoadOverride = result
   }
 
   func save(_ credential: Credential) async throws {
