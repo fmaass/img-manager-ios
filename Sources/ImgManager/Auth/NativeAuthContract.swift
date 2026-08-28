@@ -67,18 +67,22 @@ enum NativeAuth {
   /// must come back `false` rather than as a malformed callback: an unrelated tap (a shared
   /// link, another app's own custom scheme) must not resolve a sign-in that is still waiting.
   ///
+  /// EXACTLY `imgmanager://auth-callback` — scheme plus HOST, matching
+  /// `IOS_RETURN_SCHEME_URL` in `app/api/auth.py` byte for byte (verified against the vendored
+  /// v0.9.2 source). Diff-gate round 1, blocker 4: an earlier revision also admitted the
+  /// hostless form `imgmanager:auth-callback` (no slashes) by substituting the path for a
+  /// missing host; the pinned lane is the exact scheme-plus-host form only, and the backend
+  /// never emits anything else, so accepting a wider set only gives an injected URL claiming
+  /// this scheme MORE ways to terminate or interfere with a live sign-in for no real gain.
+  ///
   /// Case-insensitive: iOS lowercases a scheme it opens, and a host is case-insensitive by
-  /// RFC 3986. Handles both `imgmanager://auth-callback?...` (host form) and
-  /// `imgmanager:auth-callback?...` (no slashes — a shape a hand-written link in the
-  /// interstitial's HTML page can take), matching the path form too.
+  /// RFC 3986.
   static func isOurCallback(_ url: URL) -> Bool {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-      let scheme = components.scheme?.lowercased(), scheme == callbackScheme
+      let scheme = components.scheme?.lowercased(), scheme == callbackScheme,
+      let host = components.host?.lowercased()
     else { return false }
-    let trimmedPath = components.percentEncodedPath.trimmingCharacters(
-      in: CharacterSet(charactersIn: "/"))
-    let named = (components.host ?? trimmedPath).lowercased()
-    return named == callbackHost
+    return host == callbackHost
   }
 
   /// Reads the callback the browser view handed back. `.malformed` for any URL that IS on our

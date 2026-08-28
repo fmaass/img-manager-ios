@@ -89,4 +89,79 @@ struct AuthenticatedClientTransportTests {
     #expect(sent?.path == original.path)
     #expect(await spy.callCount == 1)
   }
+
+  // MARK: - Terminal 401 classification (diff-gate round 1, blocker 3)
+
+  @Test("a 401 on an ordinary op with a Bearer attached fires onTerminalUnauthorized")
+  func firesHandlerOnOrdinaryOperation401() async throws {
+    let store = CredentialStore(account: "transport-test-\(UUID().uuidString)")
+    try await store.save(Credential(token: "tok", expiresAt: Date(), subject: "alice"))
+    let spy = SpyClientTransport(responseStatus: .unauthorized)
+    let firedBox = FiredBox()
+    let transport = AuthenticatedClientTransport(
+      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+
+    _ = try await transport.send(
+      request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
+      operationID: "apiHealthApiHealthGet")
+
+    #expect(await firedBox.fired)
+    try? await store.clear()
+  }
+
+  @Test("a 401 on a SELF-MANAGED native-auth op does NOT fire onTerminalUnauthorized")
+  func doesNotFireForSelfManagedOperations() async throws {
+    let store = CredentialStore(account: "transport-test-\(UUID().uuidString)")
+    try await store.save(Credential(token: "tok", expiresAt: Date(), subject: "alice"))
+    let spy = SpyClientTransport(responseStatus: .unauthorized)
+    let firedBox = FiredBox()
+    let transport = AuthenticatedClientTransport(
+      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+
+    _ = try await transport.send(
+      request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
+      operationID: "nativeRenewApiAuthNativeRenewPost")
+
+    #expect(!(await firedBox.fired))
+    try? await store.clear()
+  }
+
+  @Test("a 401 with NO Bearer attached does NOT fire onTerminalUnauthorized")
+  func doesNotFireWithoutBearer() async throws {
+    let store = CredentialStore(account: "transport-test-\(UUID().uuidString)")
+    let spy = SpyClientTransport(responseStatus: .unauthorized)
+    let firedBox = FiredBox()
+    let transport = AuthenticatedClientTransport(
+      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+
+    _ = try await transport.send(
+      request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
+      operationID: "apiHealthApiHealthGet")
+
+    #expect(!(await firedBox.fired))
+  }
+
+  @Test("a 200 with a Bearer attached does NOT fire onTerminalUnauthorized")
+  func doesNotFireOn200() async throws {
+    let store = CredentialStore(account: "transport-test-\(UUID().uuidString)")
+    try await store.save(Credential(token: "tok", expiresAt: Date(), subject: "alice"))
+    let spy = SpyClientTransport(responseStatus: .ok)
+    let firedBox = FiredBox()
+    let transport = AuthenticatedClientTransport(
+      inner: spy, credentialStore: store, onTerminalUnauthorized: { await firedBox.markFired() })
+
+    _ = try await transport.send(
+      request(), body: nil, baseURL: URL(string: "https://img.discomarder.live")!,
+      operationID: "apiHealthApiHealthGet")
+
+    #expect(!(await firedBox.fired))
+    try? await store.clear()
+  }
+}
+
+/// A minimal actor-backed flag `onTerminalUnauthorized`'s `@Sendable` closure can set — the
+/// closure itself cannot capture a plain `var` across the actor hop directly.
+private actor FiredBox {
+  private(set) var fired = false
+  func markFired() { fired = true }
 }

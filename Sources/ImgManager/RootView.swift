@@ -31,12 +31,23 @@ struct RootView: View {
     transport: (any ClientTransport)? = nil,
     credentialStore: CredentialStore = CredentialStore()
   ) {
+    // Breaks an otherwise-circular wire: the transport needs to CALL into `AuthSession` on a
+    // terminal 401 (diff-gate round 1, blocker 3), but `AuthSession` needs the CLIENT, which
+    // needs the transport, to be constructed first. The box's `handler` is written exactly
+    // once, synchronously, before `resolvedTransport` is ever handed a live request — nothing
+    // concurrent can observe it unset.
+    let unauthorizedBox = TerminalUnauthorizedBox()
     let resolvedTransport =
-      transport ?? AuthenticatedClientTransport(credentialStore: credentialStore)
+      transport
+      ?? AuthenticatedClientTransport(
+        credentialStore: credentialStore,
+        onTerminalUnauthorized: { await unauthorizedBox.handler?() })
     let client = ImgManagerAPIClient.make(transport: resolvedTransport)
     let service = ImgManagerAPIService(client: client)
     _connectivity = State(initialValue: ConnectivityState(service: service))
-    _auth = State(initialValue: AuthSession(credentialStore: credentialStore, client: client))
+    let session = AuthSession(credentialStore: credentialStore, client: client)
+    unauthorizedBox.handler = { [weak session] in await session?.handleTerminalUnauthorized() }
+    _auth = State(initialValue: session)
   }
 
   var body: some View {
@@ -119,4 +130,12 @@ struct RootView: View {
   private var detailColumn: some View {
     Text("Inspector")
   }
+}
+
+/// A single settable closure, written once synchronously during `RootView.init` (see its own
+/// comment) before the transport it is handed to ever sees a live request. `@unchecked Sendable`
+/// is safe here specifically because of that ordering — there is no window in which a write and
+/// a concurrent read could race — not because the box is generally thread-safe.
+private final class TerminalUnauthorizedBox: @unchecked Sendable {
+  var handler: (@Sendable () async -> Void)?
 }

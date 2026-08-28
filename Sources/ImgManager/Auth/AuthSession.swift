@@ -23,7 +23,10 @@ enum SignOutOutcome: Sendable, Equatable {
 /// entitlement, corruption or failed reads are errors — not 'signed out'." Routing a missing
 /// entitlement to the sign-in screen would invite a second sign-in that mints a token the
 /// device can never read back, on top of hiding a real device/OS problem behind an ordinary
-/// "please sign in" prompt.
+/// "please sign in" prompt. Diff-gate round 1 (blocker 2) extends the same rule to every OTHER
+/// path that can lose track of a credential: a save that fails after a successful exchange or
+/// renewal, a foreground re-read that fails, and a Keychain clear that fails must all surface
+/// here too — never a silent `.signedOut` a stale or dropped credential would make false.
 enum AuthStatus: Sendable, Equatable {
   case checking
   case signedOut
@@ -44,14 +47,21 @@ final class AuthSession {
   /// signing-in outcome (never shown — see `SignInError.message`).
   private(set) var signInError: SignInError?
 
-  private let credentialStore: CredentialStore
+  private let credentialStore: any CredentialPersisting
   private let client: any APIProtocol
   private let coordinator: SignInCoordinator
   private let baseURL: URL
   private let deviceName: @MainActor () -> String
 
+  /// Diff-gate round 1, blocker 1: the single in-flight renewal every trigger (bootstrap,
+  /// foreground) joins instead of starting a second one. Two concurrent rotations would both
+  /// present the SAME presenting token — the server answers one 200 successor and one 401 — and
+  /// without this join, whichever save landed second could silently clobber the other's result
+  /// (ported from memos-ng-ios `SessionStore.swift:927`'s `renewalInFlight`).
+  private var renewalInFlight: Task<Void, Never>?
+
   init(
-    credentialStore: CredentialStore,
+    credentialStore: any CredentialPersisting,
     client: any APIProtocol,
     coordinator: SignInCoordinator = SignInCoordinator(),
     baseURL: URL = ImgManagerAPIClient.baseURL,
@@ -65,8 +75,9 @@ final class AuthSession {
   }
 
   /// Restores a stored credential at launch. Renewal is attempted inline if the restored
-  /// credential is already inside the renewal window — the same path `renewOnForeground` uses,
-  /// so there is exactly one place that decides whether a renewal is due.
+  /// credential is already inside the renewal window — the same join `renewOnForeground` uses,
+  /// so there is exactly one place that decides whether a renewal is due and exactly one
+  /// renewal may ever be in flight at a time.
   func bootstrap() async {
     switch await credentialStore.load() {
     case .absent:
@@ -75,7 +86,7 @@ final class AuthSession {
       status = .credentialError(Self.message(for: error))
     case .present(let credential):
       status = .signedIn(subject: credential.subject)
-      await renewIfDue(credential)
+      await triggerRenewalIfDue(credential)
     }
   }
 
@@ -88,14 +99,27 @@ final class AuthSession {
       baseURL: baseURL, deviceName: deviceName(), client: client)
     switch result {
     case .success(let credential):
-      do {
-        try await credentialStore.save(credential)
-        status = .signedIn(subject: credential.subject)
-      } catch {
-        signInError = .network("could not save the credential")
-      }
+      await adopt(freshCredential: credential)
     case .failure(let error):
       if error != .alreadySigningIn { signInError = error }
+    }
+  }
+
+  /// Saves a freshly obtained credential (a completed sign-in's result) and reports the
+  /// outcome. Internal, not `private` — diff-gate round 1's pinning test drives this directly
+  /// (`AuthSessionCredentialFailureTests.swift`) rather than fabricating a full
+  /// browser-presented sign-in through `SignInCoordinator` just to reach the save step.
+  func adopt(freshCredential credential: Credential) async {
+    do {
+      try await credentialStore.save(credential)
+      status = .signedIn(subject: credential.subject)
+    } catch {
+      // Diff-gate round 1, blocker 2: a successful exchange whose save then fails must not
+      // read as an ordinary network hiccup on the sign-in screen — the server already minted
+      // a token this device cannot use because it cannot be stored. Surface the pinned error
+      // state, not a mislabeled `signInError`.
+      status = .credentialError(
+        "The sign-in succeeded but could not be saved on this device. Please try again.")
     }
   }
 
@@ -104,11 +128,46 @@ final class AuthSession {
   /// signed out or in an error state.
   func renewOnForeground() async {
     guard case .signedIn = status else { return }
-    guard case .present(let credential) = await credentialStore.load() else { return }
-    await renewIfDue(credential)
+    switch await credentialStore.load() {
+    case .present(let credential):
+      await triggerRenewalIfDue(credential)
+    case .absent:
+      // Diff-gate round 1, blocker 2: a foreground re-read that finds nothing where a moment
+      // ago there was a signed-in credential is not silently "still signed in" — something
+      // removed it outside this session's own paths, and that is worth surfacing.
+      status = .credentialError(
+        "This device's sign-in could not be found. Please sign in again.")
+    case .error(let error):
+      status = .credentialError(Self.message(for: error))
+    }
   }
 
-  private func renewIfDue(_ credential: Credential) async {
+  /// Called by the transport when an ORDINARY authenticated operation (not one of the three
+  /// native-auth operations, which classify their own 401s below) comes back 401 — a revoked
+  /// or expired PAT presented on a live request. Diff-gate round 1, blocker 3: this must end
+  /// the credential and route to sign-in, not render as a permanent "Not connected".
+  func handleTerminalUnauthorized() async {
+    guard case .signedIn = status else { return }
+    await clearAndReport(
+      fallbackMessage: "Your sign-in has expired. Please sign in again.")
+  }
+
+  /// The single renewal join point (blocker 1). A second trigger arriving while one is already
+  /// running awaits the SAME task instead of starting a rotation of its own.
+  private func triggerRenewalIfDue(_ credential: Credential) async {
+    if let renewalInFlight {
+      await renewalInFlight.value
+      return
+    }
+    let task = Task { [weak self] in
+      await self?.performRenewal(credential)
+      self?.renewalInFlight = nil
+    }
+    renewalInFlight = task
+    await task.value
+  }
+
+  private func performRenewal(_ credential: Credential) async {
     guard RenewalWindow.shouldRenew(expiresAt: credential.expiresAt) else { return }
     let output: Operations.NativeRenewApiAuthNativeRenewPost.Output
     do {
@@ -127,15 +186,20 @@ final class AuthSession {
       // Atomic replace only after the response already succeeded (p1-spec-rev2.md §3).
       do {
         try await credentialStore.save(renewed)
+        status = .signedIn(subject: renewed.subject)
       } catch {
-        return
+        // Diff-gate round 1, blocker 2: the server already revoked the PREDECESSOR when it
+        // minted this successor — leaving the predecessor sitting in Keychain (because the
+        // successor's save failed) would silently present a token that no longer works. This
+        // must surface as an error, never a quiet continuation of `.signedIn`.
+        status = .credentialError(
+          "A device sign-in refresh succeeded on the server but could not be saved on this "
+            + "device. Please sign in again.")
       }
-      status = .signedIn(subject: renewed.subject)
     case .undocumented(let statusCode, _):
       guard statusCode == 401 else { return }
       // Terminal: the presenting token is dead server-side. Erase and return to sign-in.
-      try? await credentialStore.clear()
-      status = .signedOut
+      await clearAndReport(fallbackMessage: "Your sign-in has expired. Please sign in again.")
     default:
       break
     }
@@ -154,13 +218,17 @@ final class AuthSession {
     }
     switch output {
     case .noContent:
-      try? await credentialStore.clear()
-      status = .signedOut
+      await clearAndReport(
+        fallbackMessage:
+          "Signed out on the server, but this device could not forget its local copy. Please "
+          + "try again.")
       return .revoked
     case .undocumented(let statusCode, _):
       guard statusCode == 401 else { return .revokeFailed }
-      try? await credentialStore.clear()
-      status = .signedOut
+      await clearAndReport(
+        fallbackMessage:
+          "That sign-in was already gone on the server, but this device could not forget its "
+          + "local copy. Please try again.")
       return .alreadyRevoked
     default:
       return .revokeFailed
@@ -172,8 +240,21 @@ final class AuthSession {
   /// LOCAL credential without another server round trip; the server-token caveat is the
   /// account sheet's copy, not this method's job.
   func forgetDeviceAnyway() async {
-    try? await credentialStore.clear()
-    status = .signedOut
+    await clearAndReport(
+      fallbackMessage: "This device could not forget its stored sign-in. Please try again.")
+  }
+
+  /// Clears the stored credential and reports the outcome. Diff-gate round 1, blocker 2:
+  /// `.signedOut` is published ONLY when the Keychain genuinely cleared — a failed clear
+  /// surfaces `.credentialError` instead of a false signedOut that would leave a stale
+  /// credential silently behind while the UI claims nothing is stored.
+  private func clearAndReport(fallbackMessage: String) async {
+    do {
+      try await credentialStore.clear()
+      status = .signedOut
+    } catch {
+      status = .credentialError(fallbackMessage)
+    }
   }
 
   private static func message(for error: CredentialStoreError) -> String {

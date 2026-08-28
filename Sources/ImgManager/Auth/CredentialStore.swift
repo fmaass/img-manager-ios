@@ -27,6 +27,21 @@ enum CredentialStoreError: Error, Sendable, Equatable {
   case corrupted
 }
 
+/// The narrow surface `AuthSession` needs from credential persistence. A protocol — not the
+/// concrete `CredentialStore` actor directly — purely so `AuthSession`'s error-surfacing paths
+/// (diff-gate round 1, blocker 2) are unit-testable: a real, correctly-entitled Keychain
+/// namespace cannot be made to fail JUST a save or JUST a clear on demand (an access group this
+/// build is not entitled to fails reads and writes symmetrically, which proves nothing about a
+/// save-only or clear-only failure path). Mirrors memos-ng-ios's own `CredentialStore` protocol
+/// (`MemosCore/Security/CredentialVault.swift`) for exactly this reason. `CredentialStore`
+/// (below) is still the only PRODUCTION conformer, and is still exercised directly, for real,
+/// unmocked, by `CredentialStoreTests.swift`.
+protocol CredentialPersisting: Sendable {
+  func load() async -> CredentialLoadResult
+  func save(_ credential: Credential) async throws
+  func clear() async throws
+}
+
 /// The device credential's one home. An ACTOR: a renewal's replace and a sign-out's clear must
 /// not interleave — a clear racing a replace could otherwise land the replace's write after the
 /// clear ran, leaving a revoked token readable, or the clear's delete after the replace's write,
@@ -36,7 +51,7 @@ enum CredentialStoreError: Error, Sendable, Equatable {
 /// `Packages/MemosCore/Sources/MemosCore/Security/CredentialVault.swift`), narrowed to this
 /// app's single pinned namespace — there is no multi-namespace precedence walk here because
 /// there is only one namespace to walk.
-actor CredentialStore {
+actor CredentialStore: CredentialPersisting {
   private let keychain: Keychain
   private let account: String
   private let decoder: JSONDecoder

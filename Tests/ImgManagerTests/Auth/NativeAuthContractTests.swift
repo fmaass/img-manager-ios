@@ -91,9 +91,11 @@ struct NativeAuthCallbackTests {
     #expect(NativeAuth.isOurCallback(url("imgmanager://auth-callback?code=abc")))
   }
 
-  @Test("recognizes the path form imgmanager:auth-callback (no slashes)")
-  func recognizesPathForm() {
-    #expect(NativeAuth.isOurCallback(url("imgmanager:auth-callback?code=abc")))
+  @Test("REJECTS the hostless form imgmanager:auth-callback (no slashes) — spec pins host form")
+  func rejectsHostlessForm() {
+    // The pinned lane is exactly scheme + HOST; the backend's IOS_RETURN_SCHEME_URL never
+    // emits this shape, and admitting it only gives an injected URL more surface, not less.
+    #expect(!NativeAuth.isOurCallback(url("imgmanager:auth-callback?code=abc")))
   }
 
   @Test("is case-insensitive on scheme and host")
