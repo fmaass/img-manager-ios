@@ -176,6 +176,20 @@ struct RootView: View {
     .sheet(isPresented: $showAccountSheet) {
       AccountSheetView(auth: auth)
     }
+    // P5: full-screen loupe takeover — unconditionally on Compact (the loupe is ALWAYS
+    // full-screen there), and on Regular-2/3 only once the explicit toggle is on. The docked
+    // Regular-2/3 presentation (the common case there) lives in `contentColumn` instead, never
+    // here — this cover and that in-place swap are mutually exclusive by construction (see
+    // `contentColumn`'s own condition), so the loupe is never rendered twice at once.
+    .fullScreenCover(
+      isPresented: Binding(
+        get: { gridStore.isLoupeOpen && (layoutMode == .compact || gridStore.isLoupeFullScreen) },
+        set: { presented in
+          if !presented { gridStore.closeLoupe() }
+        })
+    ) {
+      LoupeView(store: gridStore, layoutMode: layoutMode)
+    }
     .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
   }
 
@@ -220,24 +234,35 @@ struct RootView: View {
   }
 
   private var contentColumn: some View {
-    GridView(store: gridStore)
-      .toolbar {
-        // Fold item 7: Compact (and, per this pass's simplification, Regular-2) reach the
-        // inspector through a persistent chrome control presenting ONE Info/Stats sheet —
-        // never a second phone-only surface.
-        if layoutMode != .regular3 {
-          ToolbarItem(placement: .primaryAction) {
-            Button {
-              showInspectorSheet = true
-            } label: {
-              Label("Info", systemImage: "info.circle")
+    Group {
+      // P5: Regular-2/3's DEFAULT loupe presentation — docked in place of the grid, never a
+      // takeover (spec: "not a full-screen takeover by default... the detail pane, with the
+      // grid retained as a filmstrip"). Compact never takes this branch (its loupe is always
+      // the full-screen cover above); once `isLoupeFullScreen` is toggled on, this falls back
+      // to the plain grid branch below so the cover above is the only thing showing the loupe.
+      if gridStore.isLoupeOpen && layoutMode != .compact && !gridStore.isLoupeFullScreen {
+        LoupeView(store: gridStore, layoutMode: layoutMode)
+      } else {
+        GridView(store: gridStore)
+          .toolbar {
+            // Fold item 7: Compact (and, per this pass's simplification, Regular-2) reach the
+            // inspector through a persistent chrome control presenting ONE Info/Stats sheet —
+            // never a second phone-only surface.
+            if layoutMode != .regular3 {
+              ToolbarItem(placement: .primaryAction) {
+                Button {
+                  showInspectorSheet = true
+                } label: {
+                  Label("Info", systemImage: "info.circle")
+                }
+              }
             }
           }
-        }
+          .sheet(isPresented: $showInspectorSheet) {
+            InspectorView(store: gridStore, service: gridService)
+          }
       }
-      .sheet(isPresented: $showInspectorSheet) {
-        InspectorView(store: gridStore, service: gridService)
-      }
+    }
   }
 
   private var detailColumn: some View {

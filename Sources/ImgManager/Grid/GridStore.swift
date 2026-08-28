@@ -45,6 +45,135 @@ final class GridStore {
   let pickLock = PickLockState()
   let undo = UndoStack()
 
+  // MARK: - Loupe (P5)
+
+  /// Whether the loupe is the active surface at all. Compact always presents it full-screen;
+  /// Regular-2/3 present it DOCKED in the content column by default (`isLoupeFullScreen ==
+  /// false`) — see `RootView` for the presentation split, which is the one place this flag and
+  /// `isLoupeFullScreen` are read together.
+  private(set) var isLoupeOpen = false
+  /// Regular-2/3 ONLY: the explicit "go full-screen" toggle (spec: "A full-screen loupe stays
+  /// available as an explicit toggle"). Meaningless on Compact, which is always full-screen
+  /// regardless of this flag's value.
+  private(set) var isLoupeFullScreen = false
+  /// Flips true once a forward-neighbour fetch at the loaded tail returned zero new images —
+  /// i.e., confirmed nothing more to advance to. Reset on every scope change (`reloadFirstPage`)
+  /// so a NEW shoot/filter always starts un-exhausted.
+  private(set) var loupeExhausted = false
+
+  func openLoupe(on imageID: Int) {
+    focusedImageID = imageID
+    // Pin (`SelectionState.swift`'s own `SelectionResetTrigger.enteredLoupe` doc comment,
+    // written ahead of P5 for exactly this call site): entering the loupe resets selection.
+    // Pick Lock is deliberately left UNTOUCHED — `PickLockState.exit()`'s own doc comment pins
+    // it "Grid-only, never the loupe" — and structurally a latched tap never reaches here
+    // anyway (the `pickLock.state == .latched` branch above returns before this switch).
+    selection.reset(.enteredLoupe)
+    isLoupeOpen = true
+  }
+
+  func closeLoupe() {
+    isLoupeOpen = false
+    isLoupeFullScreen = false
+  }
+
+  /// Regular-2/3 only; the view disables/hides this control on Compact (always full-screen
+  /// there), but the guard lives here too so a programmatic call is never a no-op silently
+  /// depending on the caller remembering the layout rule.
+  func toggleLoupeFullScreen() {
+    isLoupeFullScreen.toggle()
+  }
+
+  /// Dedicated flat previous/next (fold advisory: "don't overload row-relative `moveFocus`") —
+  /// the loupe's own notion of "next", over the SAME flat load order the grid's paging already
+  /// maintains, never a filmstrip-local page.
+  func loupeNext() async {
+    guard let current = focusedImageID else { return }
+    if let idx = images.firstIndex(where: { $0.id == current }), images.indices.contains(idx + 1) {
+      focusedImageID = images[idx + 1].id
+      return
+    }
+    await fetchAndMergeNeighbours(after: current)
+  }
+
+  /// Previous is PURELY the retained-prefix local walk (fold-verified premise: GridStore
+  /// retains a prefix of every loaded page through the paging frontier) — never a network call,
+  /// disabled at index 0.
+  func loupePrevious() {
+    guard let current = focusedImageID,
+      let idx = images.firstIndex(where: { $0.id == current }), idx > 0
+    else { return }
+    focusedImageID = images[idx - 1].id
+  }
+
+  /// A filmstrip thumbnail tap: the image is already loaded (it is IN `images`, or the
+  /// filmstrip could not be rendering it), so this is a direct focus move, never a network call.
+  func loupeFocus(on imageID: Int) {
+    focusedImageID = imageID
+  }
+
+  var canLoupeGoPrevious: Bool {
+    guard let current = focusedImageID, let idx = images.firstIndex(where: { $0.id == current })
+    else { return false }
+    return idx > 0
+  }
+
+  var canLoupeGoNext: Bool {
+    guard let current = focusedImageID, let idx = images.firstIndex(where: { $0.id == current })
+    else { return false }
+    if idx + 1 < images.count { return true }
+    return !loupeExhausted
+  }
+
+  /// The loupe's own small, targeted forward-look — distinct from the grid's own large
+  /// cursor-paged `loadMoreIfNeeded`. Merges (never a filmstrip-local page/cursor: fold's
+  /// "one paging path" pivot) via `mergeImages`, the SAME dedup point `loadMoreIfNeeded` uses,
+  /// so the two sources can never produce a duplicate tile even when their ranges overlap.
+  private func fetchAndMergeNeighbours(after imageID: Int) async {
+    // Diff-gate round (2026-08-28): the same generation guard every other paging await here
+    // carries — a neighbours response that lands after the shoot/filter changed must be
+    // discarded whole, or it appends old-scope rows into the new scope and can focus the
+    // loupe on an id the new scope does not contain.
+    let generation = loadGeneration
+    do {
+      let page = try await service.neighbours(after: imageID, query: query, limit: 5)
+      guard generation == loadGeneration else { return }
+      let added = mergeImages(page.items)
+      images.append(contentsOf: added)
+      if page.items.isEmpty {
+        // Exhaustion is the SERVER's word only. `added` emptying through dedup merely means a
+        // concurrent merge (the filmstrip's page fetch) got the same rows in first — the next
+        // image exists locally, and latching exhausted here would wrongly disable Next.
+        loupeExhausted = true
+      } else {
+        loupeExhausted = false
+        if focusedImageID == imageID,
+          let idx = images.firstIndex(where: { $0.id == imageID }),
+          images.indices.contains(idx + 1)
+        {
+          focusedImageID = images[idx + 1].id
+        }
+      }
+      lastPageLoadError = nil
+    } catch {
+      // Reuses the grid's own paging-error surface — a neighbours failure is the same class of
+      // "reachability" concern as a failed grid page fetch, not a new error surface.
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  /// The ONE merge point for every source that can add to `images` after the first page: the
+  /// grid's own cursor-paged `loadMoreIfNeeded` AND the loupe's forward-neighbour prefetch both
+  /// route through this, so neither can ever reintroduce an id the other already loaded (fold's
+  /// "the filmstrip and the grid share exactly one data source" pivot, made an actual
+  /// correctness guarantee rather than just true by convention).
+  private func mergeImages(_ newItems: [Components.Schemas.ImageSummary])
+    -> [Components.Schemas.ImageSummary]
+  {
+    let existingIDs = Set(images.map(\.id))
+    return newItems.filter { !existingIDs.contains($0.id) }
+  }
+
   /// A monotonic counter for a paging request race: a slow first-page fetch that returns AFTER
   /// a second one was already started (shoot changed twice quickly) must not clobber the newer
   /// result with stale data.
@@ -89,6 +218,12 @@ final class GridStore {
     let generation = loadGeneration
     isLoadingPage = true
     defer { isLoadingPage = false }
+    // Any scope change closes the loupe (its focused image is about to be replaced or cleared
+    // by the callers below, all of which already null `focusedImageID`) and clears the
+    // exhaustion flag a NEW scope has not actually earned yet.
+    isLoupeOpen = false
+    isLoupeFullScreen = false
+    loupeExhausted = false
     do {
       let page = try await service.images(query, cursor: nil, limit: 100)
       guard generation == loadGeneration else { return }
@@ -115,7 +250,10 @@ final class GridStore {
     do {
       let page = try await service.images(query, cursor: cursor, limit: 100)
       guard generation == loadGeneration else { return }
-      images.append(contentsOf: page.items)
+      // `mergeImages` (P5): dedups against anything the loupe's own forward-neighbour prefetch
+      // already appended, so a grid page whose range overlaps a prior neighbours-merge never
+      // produces a duplicate tile.
+      images.append(contentsOf: mergeImages(page.items))
       nextCursor = page.nextCursor
       selection.pageAppended()
       lastPageLoadError = nil
@@ -202,9 +340,14 @@ final class GridStore {
     case .select:
       selection.toggle(imageID)
     case .browse:
-      // Tap focuses; a second tap "opens" is DEFERRED to P5 (no loupe destination exists yet —
-      // Amendment/delta fold), so a second tap here is a no-op beyond the focus it already set.
-      focusedImageID = imageID
+      // P5: a tap on the ALREADY-focused tile is the "second tap" that opens the loupe (spec
+      // "3220 §2.2"); a tap on a DIFFERENT tile just moves focus, same as before — so opening
+      // still needs two separate taps, never a system double-tap gesture.
+      if focusedImageID == imageID {
+        openLoupe(on: imageID)
+      } else {
+        focusedImageID = imageID
+      }
     }
   }
 
@@ -273,7 +416,7 @@ final class GridStore {
     selection.reset(.doneOrEsc)
   }
 
-  // MARK: - Shortcuts (P4-active set: arrows, P, X, Shift+advance, T, Z)
+  // MARK: - Shortcuts (P4: arrows, P, X, Shift+advance, T, Z; P5 adds Space/Enter and U)
 
   func handlePickShortcut(shiftHeld: Bool) async {
     guard let id = focusedImageID else { return }
@@ -285,6 +428,24 @@ final class GridStore {
     guard let id = focusedImageID else { return }
     await applyMark(.dislike, to: [id])
     if shiftHeld { advanceToNext() }
+  }
+
+  /// U — active in the grid AND the loupe (same scene-level dispatch either way; `AppCommands`
+  /// does not know or care which screen is currently on top). Shift+U also advances, mirroring
+  /// P/X (`ShortcutCatalog`'s own doc comment: "Shift held on P/X/U means 'mark and advance'").
+  func handleClearShortcut(shiftHeld: Bool) async {
+    guard let id = focusedImageID else { return }
+    await applyMark(.none, to: [id])
+    if shiftHeld { advanceToNext() }
+  }
+
+  /// Space/Enter — opens the loupe on the focused image. Deliberately unconditional on
+  /// Pick-Lock/Select state (unlike the tap path, which a latched tap or a Select-mode tap can
+  /// never reach at all): the keyboard fast path stays a simple, uniform "open what's focused",
+  /// same posture `PickLockState.activateFromKeyboard()` already documents for `P`.
+  func handleOpenShortcut() {
+    guard let id = focusedImageID else { return }
+    openLoupe(on: id)
   }
 
   func handleUndoShortcut() async {
@@ -313,12 +474,27 @@ final class GridStore {
 
   // MARK: - Mark mutation (revision-precondition path; optimistic; 409-rollback)
 
+  /// P5 BINDING (premise-gate fold addendum): `applyMark`/`undoLastMark` each snapshot `images`
+  /// synchronously, then await the network before reconciling or rolling back — a second call
+  /// that starts before the first's await returns would otherwise snapshot the first's still-
+  /// uncommitted optimistic state, and out-of-order responses could make a rollback/undo
+  /// describe a state that never actually committed. This flag makes a concurrent second call a
+  /// REFUSED no-op (no snapshot is ever taken while `true`) — the sanctioned alternative to a
+  /// serialization queue the addendum names ("serialize... or disable mark chrome while one is
+  /// in flight"). The view also disables the mark bar's controls while this is true, same
+  /// "the guard is the source of truth independent of the view" posture `activatePickButton`'s
+  /// own `selection.mode != .select` guard already uses.
+  private(set) var isMutatingMark = false
+
   /// Applies `state` to every id in `imageIDs` that is CURRENTLY loaded (an id not present in
   /// `images` is silently skipped — there is nothing loaded to snapshot a precondition from,
   /// and loaded-only membership means the caller should never have passed one anyway).
   func applyMark(_ state: MarkStateValue, to imageIDs: [Int]) async {
+    guard !isMutatingMark else { return }
     let priors = capturePriorSnapshots(for: imageIDs)
     guard !priors.isEmpty else { return }
+    isMutatingMark = true
+    defer { isMutatingMark = false }
     optimisticallyApply(state, to: priors.map(\.imageID))
     let preconditions = priors.map {
       Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
@@ -362,7 +538,10 @@ final class GridStore {
   /// later `Z` (after the id reloads back into view) attempts it for real. A group with zero
   /// loaded members this pass simply carries all of its ids forward untouched.
   func undoLastMark() async {
+    guard !isMutatingMark else { return }
     guard let entry = undo.entry else { return }
+    isMutatingMark = true
+    defer { isMutatingMark = false }
     let groups = Dictionary(grouping: entry.priorStates, by: { $0.state })
       .sorted { $0.key.rawValue < $1.key.rawValue }
 

@@ -36,6 +36,19 @@ struct AppCommands: Commands {
 
       Divider()
 
+      // P5: Space and Enter are ONE catalog entry (`ShortcutID.openSpaceEnter` — "Space and
+      // Enter both mean 'open' on the web... one catalog entry, not two") but SwiftUI has no
+      // way to bind two physical keys to a single `Button`, so this is two Button declarations
+      // dispatching the SAME `actions?.open()` call.
+      Button("Open") { actions?.open() }
+        .keyboardShortcut(.return, modifiers: [])
+        .disabled(actions == nil)
+      Button("Open") { actions?.open() }
+        .keyboardShortcut(.space, modifiers: [])
+        .disabled(actions == nil)
+
+      Divider()
+
       Button("Pick") { actions?.pick(false) }
         .keyboardShortcut("p", modifiers: [])
         .disabled(actions == nil)
@@ -47,6 +60,15 @@ struct AppCommands: Commands {
         .disabled(actions == nil)
       Button("Dislike and Advance") { actions?.dislike(true) }
         .keyboardShortcut("x", modifiers: [.shift])
+        .disabled(actions == nil)
+      // P5: Clear's chrome surface is the LOUPE's own mark bar (`ShortcutCatalog`'s own doc
+      // comment: "P4's own bar has no Clear button") — the keyboard shortcut itself is
+      // scene-level, so it fires from the grid too, same as every other entry here.
+      Button("Clear") { actions?.clear(false) }
+        .keyboardShortcut("u", modifiers: [])
+        .disabled(actions == nil)
+      Button("Clear and Advance") { actions?.clear(true) }
+        .keyboardShortcut("u", modifiers: [.shift])
         .disabled(actions == nil)
 
       Divider()

@@ -74,19 +74,21 @@ enum ShortcutCatalog {
   /// WP8 P4 (IMGMGR-116): P4's own chrome — the persistent grid, action bar, and
   /// `GridKeyboardActions` wired to real `GridStore` calls — now exists, so P4's OWN entries
   /// flip `hasChromeSurface: true` here in the SAME commit that ships that chrome (the type
-  /// doc comment's own rule). `openSpaceEnter` stays `false`: the plan's P4 fold item 3 and its
-  /// delta round both defer BOTH second-tap and keyboard Open to P5 — no loupe destination
-  /// exists in P4, so there is nothing for `Space`/`Enter` to do yet. `clear` (`U`) stays P5's,
-  /// unchanged, per the same fold.
+  /// doc comment's own rule).
+  ///
+  /// WP8 P5 (IMGMGR-116): the loupe destination now exists, so `openSpaceEnter` (the grid's own
+  /// second-tap AND keyboard Open both land on it) and `clear` (its chrome surface is the
+  /// loupe's own mark bar, `Pick · Dislike · Clear · Undo`) both flip `hasChromeSurface: true`
+  /// here too, in this same commit.
   static let entries: [ShortcutCatalogEntry] = [
     ShortcutCatalogEntry(id: .arrowUp, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowDown, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowLeft, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowRight, owningPhase: .p4, hasChromeSurface: true),
-    ShortcutCatalogEntry(id: .openSpaceEnter, owningPhase: .p4, hasChromeSurface: false),
+    ShortcutCatalogEntry(id: .openSpaceEnter, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .pick, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .dislike, owningPhase: .p4, hasChromeSurface: true),
-    ShortcutCatalogEntry(id: .clear, owningPhase: .p5, hasChromeSurface: false),
+    ShortcutCatalogEntry(id: .clear, owningPhase: .p5, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .shiftAdvance, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .tag, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .undo, owningPhase: .p4, hasChromeSurface: true),

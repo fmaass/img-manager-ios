@@ -89,6 +89,25 @@ struct GridServiceContractProbeTests {
     #expect(page.items.isEmpty)  // stub default page — reaching here at all is the proof
   }
 
+  @Test(
+    "P5 FIRST ACTION: Neighbours — GET /api/images/{id}/neighbours decodes through the real generated ImagePage, merges into the same shape `images()` returns"
+  )
+  func neighboursProbe() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    let image = Components.Schemas.ImageSummary(
+      aspectRatio: 1.5, ext: "jpg", filename: "b.jpg", folderId: 1, id: 2,
+      lightroom: .init(sidecarPresent: false), mark: .init(revision: "r0"),
+      proxies: .init(additionalProperties: [:]), sourceKind: "web_preview", sourceTier: "local")
+    await transport.setNeighboursPage(
+      Components.Schemas.ImagePage(items: [image], limit: 5, nextCursor: nil))
+
+    let page = try await service.neighbours(after: 1, query: GridImagesQuery(folderID: 1), limit: 5)
+
+    #expect(page.items.map(\.id) == [2])
+    #expect(page.items.first?.sourceKind == "web_preview")
+  }
+
   @Test("Facets: GET /api/facets decodes the real ImageFacets shape")
   func facetsProbe() async throws {
     let transport = GridStubTransport()

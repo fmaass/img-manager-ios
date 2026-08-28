@@ -7,8 +7,14 @@ import SwiftUI
 /// other's construction.
 struct GridKeyboardActions {
   var moveFocus: (GridArrowDirection) -> Void
+  /// P5: Space/Enter opens the loupe on the focused image — ONE catalog entry
+  /// (`ShortcutID.openSpaceEnter`), dispatched from two separate `AppCommands` key bindings.
+  var open: () -> Void
   var pick: (_ shiftHeld: Bool) -> Void
   var dislike: (_ shiftHeld: Bool) -> Void
+  /// P5: U — Clear, active in the grid AND the loupe (this closure fires regardless of which
+  /// screen is on top; see `GridStore.handleClearShortcut`'s own doc comment).
+  var clear: (_ shiftHeld: Bool) -> Void
   var tag: () -> Void
   var undo: () -> Void
 }
@@ -32,8 +38,10 @@ extension GridStore {
   var keyboardActions: GridKeyboardActions {
     GridKeyboardActions(
       moveFocus: { [self] direction in moveFocus(direction) },
+      open: { [self] in handleOpenShortcut() },
       pick: { [self] shiftHeld in Task { await handlePickShortcut(shiftHeld: shiftHeld) } },
       dislike: { [self] shiftHeld in Task { await handleDislikeShortcut(shiftHeld: shiftHeld) } },
+      clear: { [self] shiftHeld in Task { await handleClearShortcut(shiftHeld: shiftHeld) } },
       tag: { [self] in handleTagShortcut() },
       undo: { [self] in Task { await handleUndoShortcut() } }
     )

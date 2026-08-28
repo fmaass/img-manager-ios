@@ -30,6 +30,64 @@ actor GridStubTransport: ClientTransport {
     [Components.Schemas.MarkStateRequest.StatePayload: MarkMutationOutcome] = [:]
   var tagsOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
+  /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
+  var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
+
+  // MARK: - P5 rapid-double-mutation race (BINDING fold addendum)
+
+  /// When armed, a `SetMarkStateApiMarksStatePost` call suspends inside `send(...)` — same
+  /// pattern as `JoinableRenewalStubTransport` — until `releaseMarkState()` is called, so a
+  /// test can prove a SECOND mutation attempted while the first is genuinely in flight is
+  /// refused rather than racing it.
+  private var markStateHoldEnabled = false
+  private var markStateHasStarted = false
+  private var markStateStartedContinuation: CheckedContinuation<Void, Never>?
+  private var markStateReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdMarkStateRequests(_ hold: Bool) { markStateHoldEnabled = hold }
+
+  /// Suspends until a held `SetMarkStateApiMarksStatePost` call has genuinely entered
+  /// `send(...)` — deterministic, not a sleep.
+  func waitUntilMarkStateStarted() async {
+    if markStateHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.markStateStartedContinuation = continuation
+    }
+  }
+
+  /// Lets a held `send(...)` proceed to return its configured outcome.
+  func releaseMarkState() {
+    markStateReleaseContinuation?.resume()
+    markStateReleaseContinuation = nil
+    markStateHasStarted = false
+  }
+
+  // MARK: - P5 stale-neighbours race (diff-gate round, 2026-08-28)
+
+  /// The same hold pattern for `GET /api/images/{id}/neighbours`: lets a test land a
+  /// shoot/filter switch (or a concurrent grid merge) while a neighbours response is
+  /// genuinely in flight, proving stale-response discard and dedup-vs-exhaustion behaviour
+  /// deterministically rather than by sleeping.
+  private var neighboursHoldEnabled = false
+  private var neighboursHasStarted = false
+  private var neighboursStartedContinuation: CheckedContinuation<Void, Never>?
+  private var neighboursReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdNeighboursRequests(_ hold: Bool) { neighboursHoldEnabled = hold }
+
+  /// Suspends until a held neighbours call has genuinely entered `send(...)`.
+  func waitUntilNeighboursStarted() async {
+    if neighboursHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.neighboursStartedContinuation = continuation
+    }
+  }
+
+  func releaseNeighbours() {
+    neighboursReleaseContinuation?.resume()
+    neighboursReleaseContinuation = nil
+    neighboursHasStarted = false
+  }
 
   enum ProxyOutcome: Sendable {
     case ok(Data)
@@ -56,6 +114,7 @@ actor GridStubTransport: ClientTransport {
     markStateOutcomeByState[state] = outcome
   }
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
+  func setNeighboursPage(_ page: Components.Schemas.ImagePage) { neighboursPage = page }
   func callCount(_ operationID: String) -> Int { callCounts[operationID] ?? 0 }
 
   func send(
@@ -81,6 +140,17 @@ actor GridStubTransport: ClientTransport {
     case Operations.ImageFacetsApiFacetsGet.id:
       return try jsonResponse(.ok, facetsResult)
 
+    case Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id:
+      if neighboursHoldEnabled {
+        neighboursHasStarted = true
+        neighboursStartedContinuation?.resume()
+        neighboursStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.neighboursReleaseContinuation = continuation
+        }
+      }
+      return try jsonResponse(.ok, neighboursPage)
+
     case Operations.GetImageApiImagesImageIdGet.id:
       guard let detailResult else {
         throw SentinelTransportError(raw: "GridStubTransport: no detailResult configured")
@@ -104,6 +174,17 @@ actor GridStubTransport: ClientTransport {
         let data = try await Data(collecting: body, upTo: 1024 * 1024)
         lastMarkStateRequest = try? JSONDecoder.grid.decode(
           Components.Schemas.MarkStateRequest.self, from: data)
+      }
+      // P5 rapid-double-mutation race test: the request is already captured above (so a test
+      // can inspect it while held), and the hold happens AFTER that capture, mirroring
+      // `JoinableRenewalStubTransport`'s own started/release continuation pair.
+      if markStateHoldEnabled {
+        markStateHasStarted = true
+        markStateStartedContinuation?.resume()
+        markStateStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.markStateReleaseContinuation = continuation
+        }
       }
       let effectiveOutcome =
         lastMarkStateRequest.flatMap { markStateOutcomeByState[$0.state] } ?? markStateOutcome
