@@ -1,0 +1,556 @@
+import Foundation
+import ImgManagerAPI
+
+/// Grid-relative navigation. `.left`/`.right` move one image in the currently-loaded flat
+/// order; `.up`/`.down` move by `columnsPerRow` — a value the VIEW sets from its own measured
+/// layout (this store never guesses a column count).
+enum GridArrowDirection: Sendable, Equatable { case up, down, left, right }
+
+/// The one screen-owned mutable error surface this store exposes — never a raw transport
+/// string (opaque by construction: `GridServiceError` itself carries none, and this property
+/// stores that enum verbatim).
+typealias GridMutationError = GridServiceError
+
+/// P4's orchestrator: owns the loaded page of images, the shoot/filter/tier "query generation",
+/// focus, Pick Lock, Select, and Undo, and is the ONE place that turns a pinned interaction into
+/// a network call. Every leaf type it composes (`SelectionState`, `PickLockState`, `UndoStack`)
+/// stays independently simple and independently tested; this type's own tests prove the
+/// CROSS-CUTTING invariants those leaves deliberately do not know about (Pick Lock ⟷ Select
+/// mutual exclusion, reset-on-query-generation-change, 409 rollback, undo truth).
+@Observable
+@MainActor
+final class GridStore {
+  private let service: GridService
+
+  private(set) var images: [Components.Schemas.ImageSummary] = []
+  private(set) var nextCursor: String?
+  private(set) var isLoadingPage = false
+  private(set) var lastMutationError: GridMutationError?
+  private(set) var lastPageLoadError: GridMutationError?
+
+  private(set) var query = GridImagesQuery()
+  private(set) var rowHeight: GridRowHeight = .step200
+  /// Set by the view after every justified-packing pass (`JustifiedRowLayout.pack`) — the
+  /// packed rows of image ids, in the SAME order as `images`. A justified grid's column count
+  /// varies per row (unlike a uniform `LazyVGrid`), so Up/Down navigation below looks up the
+  /// focused tile's actual row/column position rather than dividing by a single constant.
+  var rows: [[Int]] = []
+
+  var focusedImageID: Int?
+  /// `T`/the action bar's Tag control opens tag entry for the focused image (browse mode) or
+  /// the current selection (Select mode); the actual write happens on submit, via `addTag`.
+  var isTagEntryPresented = false
+
+  let selection = SelectionState()
+  let pickLock = PickLockState()
+  let undo = UndoStack()
+
+  /// A monotonic counter for a paging request race: a slow first-page fetch that returns AFTER
+  /// a second one was already started (shoot changed twice quickly) must not clobber the newer
+  /// result with stale data.
+  private var loadGeneration = 0
+
+  init(service: GridService) {
+    self.service = service
+  }
+
+  // MARK: - Loading
+
+  func selectShoot(folderID: Int) async {
+    guard query.folderID != folderID else { return }
+    query.folderID = folderID
+    pickLock.exit()
+    selection.reset(.shootChange)
+    focusedImageID = nil
+    undo.clear()
+    await reloadFirstPage()
+  }
+
+  /// Any effective filter/tier/tree change (Stats-tab facet taps route through this).
+  func applyFilterChange(_ mutate: (inout GridImagesQuery) -> Void) async {
+    var next = query
+    mutate(&next)
+    guard next != query else { return }
+    query = next
+    selection.reset(.queryGenerationChange)
+    focusedImageID = nil
+    await reloadFirstPage()
+  }
+
+  /// Foreground/retry: same scope, fresh data.
+  func fullReload() async {
+    selection.reset(.fullReload)
+    focusedImageID = nil
+    await reloadFirstPage()
+  }
+
+  private func reloadFirstPage() async {
+    loadGeneration += 1
+    let generation = loadGeneration
+    isLoadingPage = true
+    defer { isLoadingPage = false }
+    do {
+      let page = try await service.images(query, cursor: nil, limit: 100)
+      guard generation == loadGeneration else { return }
+      images = page.items
+      nextCursor = page.nextCursor
+      lastPageLoadError = nil
+    } catch {
+      guard generation == loadGeneration else { return }
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  /// Called by the view when the last loaded row is about to appear. Paging append: per
+  /// selection semantics, this never clears and never implicitly selects the newly-appended
+  /// rows (`SelectionState.pageAppended()` is a documented no-op called here for exactly that
+  /// reason).
+  func loadMoreIfNeeded(currentItemID: Int) async {
+    guard images.last?.id == currentItemID, let cursor = nextCursor, !isLoadingPage else {
+      return
+    }
+    let generation = loadGeneration
+    isLoadingPage = true
+    defer { isLoadingPage = false }
+    do {
+      let page = try await service.images(query, cursor: cursor, limit: 100)
+      guard generation == loadGeneration else { return }
+      images.append(contentsOf: page.items)
+      nextCursor = page.nextCursor
+      selection.pageAppended()
+      lastPageLoadError = nil
+    } catch GridServiceError.cursorInvalid {
+      // Pinned disposition (plan §Phase 4, "v0.9.1-era cursor behavior"): discard the cursor
+      // and restart the SAME scope from page one, rather than surfacing a dead-end paging
+      // error the person can't do anything about.
+      guard generation == loadGeneration else { return }
+      await reloadFirstPage()
+    } catch {
+      guard generation == loadGeneration else { return }
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  // MARK: - Focus / arrow navigation
+
+  func moveFocus(_ direction: GridArrowDirection) {
+    guard !images.isEmpty else { return }
+    guard let current = focusedImageID else {
+      focusedImageID = images.first?.id
+      return
+    }
+    // Fall back to flat left/right-only stepping if the view hasn't published packed rows yet
+    // (e.g. before the first layout pass) — still correct, just without row-relative up/down.
+    guard !rows.isEmpty,
+      let rowIndex = rows.firstIndex(where: { $0.contains(current) }),
+      let colIndex = rows[rowIndex].firstIndex(of: current)
+    else {
+      guard let idx = images.firstIndex(where: { $0.id == current }) else { return }
+      let delta = (direction == .left) ? -1 : (direction == .right ? 1 : 0)
+      let target = idx + delta
+      guard delta != 0, images.indices.contains(target) else { return }
+      focusedImageID = images[target].id
+      return
+    }
+    switch direction {
+    case .left:
+      if colIndex > 0 {
+        focusedImageID = rows[rowIndex][colIndex - 1]
+      } else if rowIndex > 0 {
+        focusedImageID = rows[rowIndex - 1].last
+      }
+    case .right:
+      if colIndex + 1 < rows[rowIndex].count {
+        focusedImageID = rows[rowIndex][colIndex + 1]
+      } else if rowIndex + 1 < rows.count {
+        focusedImageID = rows[rowIndex + 1].first
+      }
+    case .up:
+      guard rowIndex > 0 else { return }
+      let target = min(colIndex, rows[rowIndex - 1].count - 1)
+      focusedImageID = rows[rowIndex - 1][target]
+    case .down:
+      guard rowIndex + 1 < rows.count else { return }
+      let target = min(colIndex, rows[rowIndex + 1].count - 1)
+      focusedImageID = rows[rowIndex + 1][target]
+    }
+  }
+
+  /// Shift+advance's "advance": the next image in flat load order — distinct from the arrow
+  /// keys' grid-relative `.right`, which a caller could reasonably also equate to "next", but
+  /// this stays a separate named step so a culling advance never silently depends on
+  /// `columnsPerRow` being set correctly by the view.
+  private func advanceToNext() {
+    guard !images.isEmpty else { return }
+    guard let current = focusedImageID, let idx = images.firstIndex(where: { $0.id == current })
+    else {
+      focusedImageID = images.first?.id
+      return
+    }
+    guard images.indices.contains(idx + 1) else { return }
+    focusedImageID = images[idx + 1].id
+  }
+
+  // MARK: - Tile interaction (tap / long-press)
+
+  func tapTile(_ imageID: Int) async {
+    if pickLock.state == .latched {
+      await applyMark(.pick, to: [imageID])
+      return
+    }
+    switch selection.mode {
+    case .select:
+      selection.toggle(imageID)
+    case .browse:
+      // Tap focuses; a second tap "opens" is DEFERRED to P5 (no loupe destination exists yet —
+      // Amendment/delta fold), so a second tap here is a no-op beyond the focus it already set.
+      focusedImageID = imageID
+    }
+  }
+
+  func longPressTile(_ imageID: Int) {
+    // Pin (e): entering Select while latched unlatches first; the transition itself never
+    // applies a mark.
+    if pickLock.state == .latched {
+      pickLock.unlatch()
+    }
+    selection.enterSelectViaLongPress(imageID: imageID)
+  }
+
+  /// One drag session, OWNED by the store (not the view) so `PrimaryPointerDragGesture`'s
+  /// SwiftUI closures never need `inout` access across an escaping `Task` boundary. The view
+  /// calls `beginPointerDrag()` on gesture start (and on end, for the next gesture to start
+  /// clean) and `pointerDragCrossed(_:)` for every point the recognizer reports.
+  private var dragSession = DragPaintSession()
+
+  func beginPointerDrag() {
+    dragSession = DragPaintSession()
+  }
+
+  /// iPad pointer drag over the grid (diff-gate round 2, blocker 3): one call per tile the
+  /// pointer crosses, wired to a real `PrimaryPointerDragGesture` in `GridView`. "Once per
+  /// crossed tile per drag" is enforced by `dragSession`, reset at the start of each gesture.
+  func pointerDragCrossed(_ imageID: Int) async {
+    guard dragSession.crossedTile(imageID) else { return }
+    if pickLock.state == .latched {
+      await applyMark(.pick, to: [imageID])
+    } else if selection.mode == .select {
+      selection.addFromDrag(imageID)
+    }
+  }
+
+  // MARK: - Pick Lock
+
+  func activatePickButton() async {
+    // Lock entry disabled while Select is active (pin e) — the view also disables the control
+    // visually; this guard is the source of truth independent of that.
+    guard selection.mode != .select else { return }
+    switch pickLock.activateFromPickButton() {
+    case .applyPick:
+      if let id = focusedImageID { await applyMark(.pick, to: [id]) }
+    case .latch, .unlatch:
+      break
+    }
+  }
+
+  /// The amendment's discoverable "Lock Pick" long-press menu command — gate's unasked issue.
+  /// Same mutual-exclusion guard as the button's own path (pin e); `PickLockState.forceLatch()`
+  /// is itself a no-op if already latched, so this is safe to invoke unconditionally.
+  func lockPickFromMenu() {
+    guard selection.mode != .select else { return }
+    pickLock.forceLatch()
+  }
+
+  // MARK: - Select mode
+
+  func enterSelectExplicitly() {
+    if pickLock.state == .latched { pickLock.unlatch() }
+    selection.enterSelectExplicitly()
+  }
+
+  func done() {
+    pickLock.exit()
+    selection.reset(.doneOrEsc)
+  }
+
+  // MARK: - Shortcuts (P4-active set: arrows, P, X, Shift+advance, T, Z)
+
+  func handlePickShortcut(shiftHeld: Bool) async {
+    guard let id = focusedImageID else { return }
+    await applyMark(.pick, to: [id])
+    if shiftHeld { advanceToNext() }
+  }
+
+  func handleDislikeShortcut(shiftHeld: Bool) async {
+    guard let id = focusedImageID else { return }
+    await applyMark(.dislike, to: [id])
+    if shiftHeld { advanceToNext() }
+  }
+
+  func handleUndoShortcut() async {
+    await undoLastMark()
+  }
+
+  func handleTagShortcut() {
+    guard focusedImageID != nil || !selection.members.isEmpty else { return }
+    isTagEntryPresented = true
+  }
+
+  /// The images a tag action targets right now: the Select-mode membership when non-empty,
+  /// otherwise the single focused tile — mirrors how `T`'s action-bar surface already reads in
+  /// both modes rather than requiring a caller to branch on mode itself.
+  var tagTargetImageIDs: [Int] {
+    selection.mode == .select && !selection.members.isEmpty
+      ? Array(selection.members) : focusedImageID.map { [$0] } ?? []
+  }
+
+  /// Any effective tier change resets selection (pin: "any effective filter/tier/tree change").
+  func setRowHeight(_ newValue: GridRowHeight) {
+    guard rowHeight != newValue else { return }
+    rowHeight = newValue
+    selection.reset(.queryGenerationChange)
+  }
+
+  // MARK: - Mark mutation (revision-precondition path; optimistic; 409-rollback)
+
+  /// Applies `state` to every id in `imageIDs` that is CURRENTLY loaded (an id not present in
+  /// `images` is silently skipped — there is nothing loaded to snapshot a precondition from,
+  /// and loaded-only membership means the caller should never have passed one anyway).
+  func applyMark(_ state: MarkStateValue, to imageIDs: [Int]) async {
+    let priors = capturePriorSnapshots(for: imageIDs)
+    guard !priors.isEmpty else { return }
+    optimisticallyApply(state, to: priors.map(\.imageID))
+    let preconditions = priors.map {
+      Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
+    }
+    do {
+      let applied = try await service.setMarkState(
+        imageIDs: priors.map(\.imageID), state: state, preconditions: preconditions)
+      reconcileRevisions(applied.revisions ?? [])
+      undo.record(UndoEntry(appliedState: state, priorStates: priors))
+      if priors.count > 1 { selection.bulkActionSucceeded() }
+      lastMutationError = nil
+    } catch {
+      rollback(priors)
+      lastMutationError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  /// Restores each image's TRUTHFUL prior state — grouped by target state, since one
+  /// `setMarkState` call applies a single state to a batch. Undo is a mutation like any other:
+  /// it re-derives its own precondition from the CURRENTLY loaded revision (never the stale
+  /// `revisionBefore` the original entry recorded), and rolls back to what the original
+  /// mutation actually left in place if a given group's undo write is refused.
+  ///
+  /// Atomic from the SLOT's perspective (diff-gate round 2, blocker 6): the slot is NOT
+  /// consumed up front, and groups are processed in a deterministic order, stopping at the
+  /// FIRST failure rather than silently continuing past it. If every group commits, the slot
+  /// is cleared only then. If any group fails, that group's own optimistic apply is rolled
+  /// back (so nothing is left half-applied for THAT group), and the slot is REWRITTEN to
+  /// contain exactly the groups that never successfully committed — never lost, never
+  /// re-attempted for a group that already succeeded — so a subsequent `Z` retries precisely
+  /// the unfinished remainder. `lastMutationError` surfaces the partial failure either way.
+  ///
+  /// Truthful remainder, id by id (diff-gate round 3, blocker 1): a group can be PARTIALLY
+  /// loaded — some of its snapshot ids currently in `images`, some not (a filter change or a
+  /// reload can unload members without invalidating the undo slot; `selectShoot`, the one
+  /// change that genuinely invalidates targets, already calls `undo.clear()` explicitly on scope
+  /// change). Only ids that were actually SUBMITTED — i.e. loaded and included in the write —
+  /// ever leave `remaining`. An id with nothing currently loaded to restore is not settled: it
+  /// is not attempted (there is no currently-loaded revision to build a precondition from), but
+  /// it is never silently dropped either — it stays in `remaining` exactly as recorded, so a
+  /// later `Z` (after the id reloads back into view) attempts it for real. A group with zero
+  /// loaded members this pass simply carries all of its ids forward untouched.
+  func undoLastMark() async {
+    guard let entry = undo.entry else { return }
+    let groups = Dictionary(grouping: entry.priorStates, by: { $0.state })
+      .sorted { $0.key.rawValue < $1.key.rawValue }
+
+    var remaining = entry.priorStates
+    var encounteredFailure = false
+
+    for (targetState, snapshots) in groups {
+      guard !encounteredFailure else { break }
+      let ids = snapshots.map(\.imageID)
+      let priors = capturePriorSnapshots(for: ids)
+      let loadedIDs = Set(priors.map(\.imageID))
+      guard !priors.isEmpty else {
+        // Nothing currently loaded for this group — NOT settled. Leave every id in `remaining`
+        // untouched (never remove) so a retry after a reload can still act on them for real.
+        continue
+      }
+      optimisticallyApply(targetState, to: priors.map(\.imageID))
+      let preconditions = priors.map {
+        Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
+      }
+      do {
+        let applied = try await service.setMarkState(
+          imageIDs: priors.map(\.imageID), state: targetState, preconditions: preconditions)
+        reconcileRevisions(applied.revisions ?? [])
+        // Only the ids actually submitted (the loaded subset) come out of the remainder — an
+        // unloaded sibling in the same group was never attempted and stays pending.
+        remaining.removeAll { loadedIDs.contains($0.imageID) }
+        lastMutationError = nil
+      } catch {
+        rollback(priors)
+        lastMutationError = (error as? GridServiceError) ?? .unreachable
+        encounteredFailure = true
+      }
+    }
+
+    if remaining.isEmpty {
+      undo.clear()
+    } else {
+      undo.record(UndoEntry(appliedState: entry.appliedState, priorStates: remaining))
+    }
+  }
+
+  // MARK: - Proxy pixels
+
+  private var proxyCache: [String: Data] = [:]
+
+  /// The `ProxyAvailability` `GridTierResolver.plan` wants for one image's tier, derived from
+  /// the loaded `ProxyState` — never probes the network to answer this.
+  func availability(for image: Components.Schemas.ImageSummary, tier: ProxyTier)
+    -> ProxyAvailability
+  {
+    guard let state = image.proxies.additionalProperties[tier.rawValue] else { return .missing }
+    switch state.verdict {
+    case .pending: return .pending
+    case .permanentFail: return .permanentFail
+    case .ok:
+      guard let width = state.width, let height = state.height else { return .missing }
+      return .ok(width: width, height: height)
+    }
+  }
+
+  /// Fetches (and caches, per-launch, in memory) the proxy bytes for one image/tier. Returns
+  /// `nil` on 404/unreachable — the caller renders a failure placeholder, never retries in a
+  /// loop.
+  func proxyData(imageID: Int, tier: ProxyTier, identityToken: String?) async -> Data? {
+    let key = "\(imageID)|\(tier.rawValue)|\(identityToken ?? "")"
+    if let cached = proxyCache[key] { return cached }
+    do {
+      switch try await service.proxy(imageID: imageID, tier: tier, v: identityToken) {
+      case .ok(let data):
+        proxyCache[key] = data
+        return data
+      case .notModified:
+        return proxyCache[key]
+      case .notFound:
+        return nil
+      }
+    } catch {
+      return nil
+    }
+  }
+
+  // MARK: - Tags (T)
+
+  func addTag(_ tag: String, to imageIDs: [Int]) async {
+    let priors = capturePriorTagSnapshots(for: imageIDs)
+    guard !priors.isEmpty else { return }
+    optimisticallyAddTag(tag, to: priors.map(\.imageID))
+    let preconditions = priors.map {
+      Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
+    }
+    do {
+      let applied = try await service.editMarkTags(
+        imageIDs: priors.map(\.imageID), operation: .add, tag: tag, preconditions: preconditions)
+      reconcileRevisions(applied.revisions ?? [])
+      lastMutationError = nil
+    } catch {
+      rollbackTag(tag, priors: priors)
+      lastMutationError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  // MARK: - Private snapshot / apply / rollback helpers
+
+  private func capturePriorSnapshots(for imageIDs: [Int]) -> [PriorMarkSnapshot] {
+    imageIDs.compactMap { id in
+      guard let img = images.first(where: { $0.id == id }) else { return nil }
+      return PriorMarkSnapshot(
+        imageID: id, state: MarkStateValue(img.mark.state), revisionBefore: img.mark.revision)
+    }
+  }
+
+  private func optimisticallyApply(_ state: MarkStateValue, to imageIDs: [Int]) {
+    let idSet = Set(imageIDs)
+    for i in images.indices where idSet.contains(images[i].id) {
+      images[i].mark.state = state.payload
+    }
+  }
+
+  private func rollback(_ priors: [PriorMarkSnapshot]) {
+    let byID = Dictionary(uniqueKeysWithValues: priors.map { ($0.imageID, $0.state) })
+    for i in images.indices {
+      if let prior = byID[images[i].id] {
+        images[i].mark.state = prior.payload
+      }
+    }
+  }
+
+  private func reconcileRevisions(_ revisions: [Components.Schemas.MarkRevision]) {
+    let byID = Dictionary(uniqueKeysWithValues: revisions.map { ($0.imageId, $0.revision) })
+    for i in images.indices {
+      if let revision = byID[images[i].id] {
+        images[i].mark.revision = revision
+      }
+    }
+  }
+
+  private struct PriorTagSnapshot {
+    var imageID: Int
+    var tags: [String]
+    var revisionBefore: String
+  }
+
+  private func capturePriorTagSnapshots(for imageIDs: [Int]) -> [PriorTagSnapshot] {
+    imageIDs.compactMap { id in
+      guard let img = images.first(where: { $0.id == id }) else { return nil }
+      return PriorTagSnapshot(
+        imageID: id, tags: img.mark.tags ?? [], revisionBefore: img.mark.revision)
+    }
+  }
+
+  private func optimisticallyAddTag(_ tag: String, to imageIDs: [Int]) {
+    let idSet = Set(imageIDs)
+    for i in images.indices where idSet.contains(images[i].id) {
+      var tags = images[i].mark.tags ?? []
+      if !tags.contains(tag) { tags.append(tag) }
+      images[i].mark.tags = tags
+    }
+  }
+
+  private func rollbackTag(_ tag: String, priors: [PriorTagSnapshot]) {
+    let byID = Dictionary(uniqueKeysWithValues: priors.map { ($0.imageID, $0.tags) })
+    for i in images.indices {
+      if let priorTags = byID[images[i].id] {
+        images[i].mark.tags = priorTags
+      }
+    }
+  }
+}
+
+extension MarkStateValue {
+  init(_ payload: Components.Schemas.MarkView.StatePayload?) {
+    // `payload` is `StatePayload?`, and `StatePayload` itself has a case literally named
+    // `none` — a bare `case .none` here would match ONLY `Optional.none` (nil), silently
+    // leaving `.some(.none)` (the wire value "none", not absent) unhandled. Both collapse to
+    // this type's own `.none` on purpose (ADR-0001: the tri-state model does not change).
+    switch payload {
+    case .some(.pick): self = .pick
+    case .some(.dislike): self = .dislike
+    case .some(.none), .none: self = .none
+    }
+  }
+
+  var payload: Components.Schemas.MarkView.StatePayload {
+    switch self {
+    case .pick: return .pick
+    case .dislike: return .dislike
+    case .none: return .none
+    }
+  }
+}

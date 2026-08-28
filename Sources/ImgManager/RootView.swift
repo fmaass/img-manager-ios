@@ -1,5 +1,10 @@
+import ImgManagerAPI
 import OpenAPIRuntime
 import SwiftUI
+
+#if canImport(UIKit)
+  import UIKit
+#endif
 
 /// One layout declaration, adaptive by measured space — "so there is no 'iPhone layout'
 /// that could be enlarged" (plan Goal). Grid/Inspector are still empty placeholders (P0a
@@ -24,6 +29,13 @@ struct RootView: View {
   @State private var connectivity: ConnectivityState
   @State private var auth: AuthSession
   @State private var showAccountSheet = false
+  /// WP8 P4: the grid store and its own API boundary (`GridService`, a sibling of `ImgManagerAPIService`
+  /// — see that type's doc comment for why P4 does not extend P3's).
+  @State private var gridStore: GridStore
+  private let gridService: GridService
+  @State private var folders: [Components.Schemas.FolderNode] = []
+  @State private var selectedFolderID: Int?
+  @State private var showInspectorSheet = false
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
 
@@ -45,6 +57,9 @@ struct RootView: View {
     let client = ImgManagerAPIClient.make(transport: resolvedTransport)
     let service = ImgManagerAPIService(client: client)
     _connectivity = State(initialValue: ConnectivityState(service: service))
+    let gridService = GridService(client: client)
+    self.gridService = gridService
+    _gridStore = State(initialValue: GridStore(service: gridService))
     let session = AuthSession(credentialStore: credentialStore, client: client)
     unauthorizedBox.handler = { [weak session] token in
       await session?.handleTerminalUnauthorized(presentedToken: token)
@@ -54,16 +69,17 @@ struct RootView: View {
 
   var body: some View {
     Group {
-      switch RootRouting.destination(for: auth.status) {
-      case .checking:
-        ProgressView()
-      case .signIn:
-        SignInView(auth: auth)
-      case .credentialError(let message):
-        CredentialErrorView(message: message, auth: auth)
-      case .workspace:
-        workspace
-      }
+      #if DEBUG
+        if DebugStubLaunch.isActive {
+          // Item 9(a): the fixture composition renders the workspace directly — auth is never
+          // exercised (no Keychain write, no token, no routing decision touched) in this path.
+          workspace
+        } else {
+          routedBody
+        }
+      #else
+        routedBody
+      #endif
     }
     .task { await auth.bootstrap() }
     .onOpenURL { url in
@@ -72,18 +88,57 @@ struct RootView: View {
     .onChange(of: scenePhase) { _, newPhase in
       guard newPhase == .active else { return }
       Task { await auth.renewOnForeground() }
+      // Diff-gate round 2, blocker 5: foreground activation performs the pinned grid
+      // reload/reset too (`SelectionResetTrigger.fullReload`), not only auth renewal — only
+      // once a shoot is actually active (nothing to reload before then).
+      if gridStore.query.folderID != nil {
+        Task { await gridStore.fullReload() }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var routedBody: some View {
+    switch RootRouting.destination(for: auth.status) {
+    case .checking:
+      ProgressView()
+    case .signIn:
+      SignInView(auth: auth)
+    case .credentialError(let message):
+      CredentialErrorView(message: message, auth: auth)
+    case .workspace:
+      workspace
     }
   }
 
   private var workspace: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      sidebar
-    } content: {
-      contentColumn
-    } detail: {
-      detailColumn
+    Group {
+      if layoutMode == .regular3 {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+          sidebar
+        } content: {
+          contentColumn
+        } detail: {
+          detailColumn
+        }
+        .navigationSplitViewStyle(.prominentDetail)
+      } else {
+        // Compact and Regular-2 (diff-gate round 3, blocker 3): a genuine 2-column split
+        // (sidebar | grid) — GridView owns the FULL workspace pane, matching fold item 7's
+        // "no permanent inspector column outside Regular-3" pin. Reusing the 3-column
+        // initializer with an EMPTY `detailColumn` (as this view did before this fix) still
+        // reserves a second, always-visible pane under `.doubleColumn` visibility — the grid
+        // was confined to a narrow column beside a wasted blank pane (retained Regular-2
+        // screenshot evidence). The 2-column initializer has no third pane to accidentally
+        // reserve, so `contentColumn` (grid + its own Info-sheet toolbar button) becomes the
+        // sole `detail`.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+          sidebar
+        } detail: {
+          contentColumn
+        }
+      }
     }
-    .navigationSplitViewStyle(.prominentDetail)
     .onGeometryChange(for: CGFloat.self) { proxy in
       proxy.size.width
     } action: { width in
@@ -91,6 +146,23 @@ struct RootView: View {
     }
     .task {
       await connectivity.check()
+      #if DEBUG
+        if DebugStubLaunch.isActive {
+          // Auto-select the fixture shoot so the grid is already populated for screenshots —
+          // no manual navigation step in the fixture harness. Sets `selectedFolderID` too (not
+          // just calling the store directly) so the List's own selection state agrees and the
+          // split view actually navigates, exactly as a real tap would.
+          selectedFolderID = 1
+          await gridStore.selectShoot(folderID: 1)
+        }
+        #if canImport(UIKit)
+          if DebugStubLaunch.forceLandscape,
+            let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+          {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+          }
+        #endif
+      #endif
     }
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
@@ -104,6 +176,7 @@ struct RootView: View {
     .sheet(isPresented: $showAccountSheet) {
       AccountSheetView(auth: auth)
     }
+    .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
   }
 
   private func applyWidth(_ width: CGFloat) {
@@ -116,8 +189,28 @@ struct RootView: View {
   private var sidebar: some View {
     Group {
       switch connectivity.status {
-      case .checking, .connected:
-        Text("Queue")
+      case .checking:
+        ProgressView()
+      case .connected:
+        // Shoot navigation (P4 endpoint table: `GET /api/folders`; sufficient; never render
+        // `FolderNode.path`). "Day"-kind nodes are the browsable shoot leaves (ADR-0004: shoot
+        // ≡ folder) — this list intentionally shows only those, not the full tree. Selection-
+        // bound (not a bare `Button`) so `NavigationSplitView` actually navigates into the
+        // content column on ALL layout modes, Compact included — a plain `Button` calling
+        // `selectShoot` mutated the grid's data but never pushed the split view anywhere.
+        List(folders.filter { $0.kind == "day" }, id: \.id, selection: $selectedFolderID) {
+          folder in
+          Text(folder.name)
+        }
+        .task {
+          if let tree = try? await gridService.folders() {
+            folders = tree.items
+          }
+        }
+        .onChange(of: selectedFolderID) { _, newValue in
+          guard let newValue else { return }
+          Task { await gridStore.selectShoot(folderID: newValue) }
+        }
       case .unreachable:
         Text(DegradedStateCopy.notConnected)
       }
@@ -126,11 +219,34 @@ struct RootView: View {
   }
 
   private var contentColumn: some View {
-    Text("Grid")
+    GridView(store: gridStore)
+      .toolbar {
+        // Fold item 7: Compact (and, per this pass's simplification, Regular-2) reach the
+        // inspector through a persistent chrome control presenting ONE Info/Stats sheet —
+        // never a second phone-only surface.
+        if layoutMode != .regular3 {
+          ToolbarItem(placement: .primaryAction) {
+            Button {
+              showInspectorSheet = true
+            } label: {
+              Label("Info", systemImage: "info.circle")
+            }
+          }
+        }
+      }
+      .sheet(isPresented: $showInspectorSheet) {
+        InspectorView(store: gridStore, service: gridService)
+      }
   }
 
   private var detailColumn: some View {
-    Text("Inspector")
+    Group {
+      if layoutMode == .regular3 {
+        InspectorView(store: gridStore, service: gridService)
+      } else {
+        EmptyView()
+      }
+    }
   }
 }
 

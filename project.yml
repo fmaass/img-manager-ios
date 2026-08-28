@@ -123,13 +123,32 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
 
+  # Diff-gate round 2, item 9(a) follow-up: the ONE thing a unit-test target cannot do —
+  # drive a real device orientation and capture a real screen — needs `xcuitest`'s own
+  # headless-capable runner (`xcodebuild test` drives UI tests without a live/unlocked GUI
+  # session, unlike Simulator.app UI automation). Sources only the one orientation/screenshot
+  # test named for that purpose — never a general UI-automation surface.
+  ImgManagerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/ImgManagerUITests
+    dependencies:
+      - target: ImgManager
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   ImgManager:
     build:
       targets:
         ImgManager: all
         ImgManagerTests: [test]
+        ImgManagerUITests: [test]
     test:
       targets:
         - ImgManagerTests
+        - ImgManagerUITests
       commandLineArguments: {}

@@ -5,14 +5,58 @@ import SwiftUI
 /// shortcut becomes ACTIVE — declared in `commands(content:)` — only in the same commit
 /// that ships its owning phase's persistent-chrome surface (`ShortcutCatalog.swift`).
 ///
-/// P3 ships this with ZERO populated command groups: Queue/Grid/Inspector are still bare
-/// placeholders (P0a doc comment on `RootView`), so no shortcut's chrome surface exists
-/// yet — `ShortcutCatalog.activeEntries` is empty and this type's body is intentionally
-/// empty in lock step with it. The infrastructure (this type, wired into the app's Scene
-/// below) is what P3 delivers; populated content is every later phase's job.
+/// WP8 P4: the grid's own chrome now exists, so P4's active entries (arrows, P, X,
+/// Shift+advance, T, Z) are declared here, each dispatching through `GridKeyboardActions` —
+/// the `FocusedSceneValue` `RootView` publishes over its one `GridStore` instance (this type
+/// has no view-state access of its own by design; that indirection is exactly what
+/// `FocusedValue` is for). Bare keys, no `⌘` modifier — decision 9's "the web set verbatim...
+/// as the fast path", and `ShortcutCatalog`'s own doc comment names `commands(content:)`
+/// itself as the activation mechanism, so this is the ONE place these fire from (no parallel
+/// `.onKeyPress` path elsewhere that could double-fire the same key). `openSpaceEnter`,
+/// `clear`, and `help` stay undeclared here — `ShortcutCatalogTests.p4ActivatesExactlyItsOwnSet`
+/// is this file's own regression guard: an entry declared here that the catalog does not also
+/// mark active (or vice versa) is a defect that test catches, not a silent drift.
 struct AppCommands: Commands {
+  @FocusedValue(\.gridKeyboardActions) private var actions
+
   var body: some Commands {
-    // Deliberately empty — see the type doc comment and
-    // ShortcutCatalogTests.testZeroActiveShortcutsWithoutChromeSurface.
+    CommandMenu("Grid") {
+      Button("Focus Up") { actions?.moveFocus(.up) }
+        .keyboardShortcut(.upArrow, modifiers: [])
+        .disabled(actions == nil)
+      Button("Focus Down") { actions?.moveFocus(.down) }
+        .keyboardShortcut(.downArrow, modifiers: [])
+        .disabled(actions == nil)
+      Button("Focus Left") { actions?.moveFocus(.left) }
+        .keyboardShortcut(.leftArrow, modifiers: [])
+        .disabled(actions == nil)
+      Button("Focus Right") { actions?.moveFocus(.right) }
+        .keyboardShortcut(.rightArrow, modifiers: [])
+        .disabled(actions == nil)
+
+      Divider()
+
+      Button("Pick") { actions?.pick(false) }
+        .keyboardShortcut("p", modifiers: [])
+        .disabled(actions == nil)
+      Button("Pick and Advance") { actions?.pick(true) }
+        .keyboardShortcut("p", modifiers: [.shift])
+        .disabled(actions == nil)
+      Button("Dislike") { actions?.dislike(false) }
+        .keyboardShortcut("x", modifiers: [])
+        .disabled(actions == nil)
+      Button("Dislike and Advance") { actions?.dislike(true) }
+        .keyboardShortcut("x", modifiers: [.shift])
+        .disabled(actions == nil)
+
+      Divider()
+
+      Button("Add Tag…") { actions?.tag() }
+        .keyboardShortcut("t", modifiers: [])
+        .disabled(actions == nil)
+      Button("Undo") { actions?.undo() }
+        .keyboardShortcut("z", modifiers: [])
+        .disabled(actions == nil)
+    }
   }
 }
