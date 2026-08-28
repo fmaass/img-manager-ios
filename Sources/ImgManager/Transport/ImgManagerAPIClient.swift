@@ -26,7 +26,10 @@ enum ImgManagerAPIClient {
   static let baseURL = URL(string: "https://img.discomarder.live")!
 
   static func make(transport: any ClientTransport) -> any APIProtocol {
-    Client(serverURL: baseURL, transport: transport)
+    Client(
+      serverURL: baseURL,
+      configuration: Configuration(dateTranscoder: RFC3339DateTranscoder()),
+      transport: transport)
   }
 }
 
