@@ -296,8 +296,8 @@ struct GridStoreTests {
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     store.beginPointerDrag()
-    await store.pointerDragCrossed(1)
-    await store.pointerDragCrossed(1)  // re-entry: must NOT apply a second time
+    await store.pointerDragCrossed(.image(1))
+    await store.pointerDragCrossed(.image(1))  // re-entry: must NOT apply a second time
     let callCount = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
     #expect(callCount == 1)
   }
@@ -317,9 +317,9 @@ struct GridStoreTests {
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     store.beginPointerDrag()
-    await store.pointerDragCrossed(1)
+    await store.pointerDragCrossed(.image(1))
     store.beginPointerDrag()  // a new drag gesture
-    await store.pointerDragCrossed(1)
+    await store.pointerDragCrossed(.image(1))
     let callCount = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
     #expect(callCount == 2)
   }
@@ -329,7 +329,7 @@ struct GridStoreTests {
     let (store, _) = makeStore()
     store.selection.enterSelectExplicitly()
     store.beginPointerDrag()
-    await store.pointerDragCrossed(7)
+    await store.pointerDragCrossed(.image(7))
     #expect(store.selection.members == [7])
   }
 
@@ -448,7 +448,7 @@ struct GridStoreTests {
     await transport.setListImagesPage(
       .init(items: (1...5).map { makeImage(id: $0, revision: "r0") }, limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
-    store.rows = [[1, 2, 3], [4, 5]]
+    store.rows = [[.image(1), .image(2), .image(3)], [.image(4), .image(5)]]
     store.focusedImageID = 1
     store.moveFocus(.right)
     #expect(store.focusedImageID == 2)

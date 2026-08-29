@@ -12,7 +12,7 @@ struct JustifiedRowLayoutTests {
   @Test(
     "A single-tile row: tier chosen from its real packed size, no cap needed when pixels suffice")
   func singleTileNoCappingNeeded() {
-    let tiles = [JustifiedTile(imageID: 1, aspectRatio: 1.0)]
+    let tiles = [JustifiedTile(id: .image(1), aspectRatio: 1.0)]
     let rows = JustifiedRowLayout.packWithTierPlan(
       tiles: tiles, paneWidth: 400, targetRowHeight: 400, displayScale: 1.0
     ) { _, tier in
@@ -39,14 +39,14 @@ struct JustifiedRowLayoutTests {
     // has AMPLE pixels (would need no cap on its own) but must still shrink to the SAME 0.5,
     // proving the cap is row-wide, not per-tile.
     let tiles = [
-      JustifiedTile(imageID: 1, aspectRatio: 1.0),
-      JustifiedTile(imageID: 2, aspectRatio: 1.0),
+      JustifiedTile(id: .image(1), aspectRatio: 1.0),
+      JustifiedTile(id: .image(2), aspectRatio: 1.0),
     ]
     let paneWidth: CGFloat = 802  // 400 + 400 + 2pt spacing
     let rows = JustifiedRowLayout.packWithTierPlan(
       tiles: tiles, paneWidth: paneWidth, targetRowHeight: 400, displayScale: 1.0
-    ) { imageID, _ in
-      imageID == 1 ? .ok(width: 200, height: 200) : .ok(width: 4000, height: 4000)
+    ) { displayID, _ in
+      displayID == .image(1) ? .ok(width: 200, height: 200) : .ok(width: 4000, height: 4000)
     }
     #expect(rows.count == 1)
     #expect(rows[0].count == 2)
@@ -68,14 +68,14 @@ struct JustifiedRowLayoutTests {
     "A tile whose chosen tier is unavailable renders a placeholder and never drags the row down")
   func unavailableTileIsPlaceholderAndDoesNotCapSiblings() {
     let tiles = [
-      JustifiedTile(imageID: 1, aspectRatio: 1.0),
-      JustifiedTile(imageID: 2, aspectRatio: 1.0),
+      JustifiedTile(id: .image(1), aspectRatio: 1.0),
+      JustifiedTile(id: .image(2), aspectRatio: 1.0),
     ]
     let paneWidth: CGFloat = 802
     let rows = JustifiedRowLayout.packWithTierPlan(
       tiles: tiles, paneWidth: paneWidth, targetRowHeight: 400, displayScale: 1.0
-    ) { imageID, _ in
-      imageID == 1 ? .pending : .ok(width: 4000, height: 4000)
+    ) { displayID, _ in
+      displayID == .image(1) ? .pending : .ok(width: 4000, height: 4000)
     }
     #expect(rows[0][0].plan == .placeholder(reason: .pending))
     guard case .display(_, let sizeB) = rows[0][1].plan else {
@@ -92,7 +92,7 @@ struct JustifiedRowLayoutTests {
     // A 4:1 panorama alone in its row at the 400pt target, scale 2 -> natural width 1600pt,
     // requiredPixels = max(1600,400)*2 = 3200. Preview only actually has 1600x400 (long edge
     // 1600) -> capScale = 1600/3200 = 0.5 -> rendered width 800pt, height 200pt.
-    let tiles = [JustifiedTile(imageID: 1, aspectRatio: 4.0)]
+    let tiles = [JustifiedTile(id: .image(1), aspectRatio: 4.0)]
     let rows = JustifiedRowLayout.packWithTierPlan(
       tiles: tiles, paneWidth: 4000, targetRowHeight: 400, displayScale: 2.0
     ) { _, tier in

@@ -73,6 +73,16 @@ final class SelectionState {
     members.insert(imageID)
   }
 
+  /// WP12: photographs that have just STOPPED being visible leave the selection with them —
+  /// collapsing a scene hides its members, and a selection the reader can no longer see is both a
+  /// dishonest count in the action bar and a write target for the next Pick they press. Removes
+  /// only the named ids; a selection made elsewhere in the stream is untouched. Never adds, and
+  /// never changes the mode — collapsing a card is not leaving Select.
+  func removeHidden(_ imageIDs: [Int]) {
+    guard !members.isEmpty else { return }
+    members.subtract(imageIDs)
+  }
+
   /// Paging append / virtualization: deliberately does nothing. Kept as a named, called entry
   /// point (rather than no call site at all) so "paging never clears and never implicitly
   /// selects" has one place a test asserts against directly, and a future edit that tries to

@@ -148,11 +148,14 @@ struct PickButtonPresentation: Equatable {
 /// never paints" — there is no touch-driven call site for this type, by construction; only a
 /// pointer-hover-drag gesture recognizer, wired for iPad pointer input only, ever calls it).
 struct DragPaintSession: Sendable {
-  private var crossed: Set<Int> = []
+  private var crossed: Set<GridDisplayID> = []
 
   /// Returns `true` the FIRST time `id` is crossed in this session (the caller should apply its
-  /// action then), and `false` on every re-entry of the same tile during the same drag.
-  mutating func crossedTile(_ id: Int) -> Bool {
+  /// action then), and `false` on every re-entry of the same cell during the same drag.
+  ///
+  /// WP12: keyed by `GridDisplayID` rather than a bare `Int` so a scene card and a photograph
+  /// that happen to share a number are two different cells here, as they are everywhere else.
+  mutating func crossedTile(_ id: GridDisplayID) -> Bool {
     guard !crossed.contains(id) else { return false }
     crossed.insert(id)
     return true

@@ -20,7 +20,9 @@ struct LoupeView: View {
 
   private var focusedImage: Components.Schemas.ImageSummary? {
     guard let id = store.focusedImageID else { return nil }
-    return store.images.first { $0.id == id }
+    // WP12: the shared actionable projection, not `images` — in Scene mode the photograph the
+    // loupe was opened on is a member of an expanded scene or a loose row, and `images` is empty.
+    return store.actionableImages.first { $0.id == id }
   }
 
   var body: some View {
@@ -213,16 +215,20 @@ struct LoupeMarkBar: View {
 }
 
 /// Regular-2/3 only: the grid retained as a filmstrip "so context is never lost" (spec) — the
-/// SAME `GridStore.images`/`focusedImageID`, and the SAME serialized `loadMoreIfNeeded` the
-/// grid's own `GridView` uses (fold's "one paging path" pivot), never a filmstrip-local
+/// SAME `GridStore.actionableImages`/`focusedImageID`, and the SAME serialized `loadMoreIfNeeded`
+/// the grid's own `GridView` uses (fold's "one paging path" pivot), never a filmstrip-local
 /// cursor.
+///
+/// WP12: walking the shared actionable projection is what makes the filmstrip agree with the grid
+/// in BOTH modes rather than only in flat browse — in Scene mode it shows the loose photographs
+/// and the members of opened scenes, in display order, and no collapsed card's cover.
 struct FilmstripView: View {
   @Bindable var store: GridStore
 
   var body: some View {
     ScrollView(.horizontal) {
       LazyHStack(spacing: 4) {
-        ForEach(store.images, id: \.id) { image in
+        ForEach(store.actionableImages, id: \.id) { image in
           FilmstripThumbnail(
             image: image, isFocused: store.focusedImageID == image.id, store: store
           )
