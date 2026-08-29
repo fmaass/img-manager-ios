@@ -50,11 +50,25 @@ final class ShareExportStore {
     self.directory = directory
   }
 
-  /// A share-lane-private subdirectory of the system temp directory: it is cleared wholesale
-  /// before every export and again when the sheet is done with it, so at most one prepared
-  /// export exists on disk at a time.
+  /// A share-lane-private subdirectory of the system temp directory. Each export gets its OWN
+  /// numbered subdirectory inside it (see `exportDirectory(for:)`); the root is cleared wholesale
+  /// before every export and again when the sheet is done, so at most one prepared export is on
+  /// disk at a time.
   static var defaultDirectory: URL {
     FileManager.default.temporaryDirectory.appending(path: "share", directoryHint: .isDirectory)
+  }
+
+  /// One directory per generation, and this is load-bearing rather than tidy.
+  ///
+  /// Filenames are derived from the photograph, so two exports can easily want the SAME name —
+  /// the same photograph shared twice, or two photographs whose names sanitize alike. With a
+  /// single flat directory they would resolve to one URL, and a stale export finishing late
+  /// would write its bytes over the live export's file and then, cleaning itself up, DELETE that
+  /// file while `state` still said `.ready` — leaving the next share pointing at nothing, or at
+  /// the wrong photograph's bytes. Isolating by generation means a stale export can only ever
+  /// write to, and delete, its own path.
+  private func exportDirectory(for generation: Int) -> URL {
+    directory.appending(path: "\(generation)", directoryHint: .isDirectory)
   }
 
   var isPreparing: Bool {
@@ -77,20 +91,25 @@ final class ShareExportStore {
     generation &+= 1
     let requested = generation
     state = .preparing(variant)
+    // Safe even with an older export still in flight: that one has not written yet (it is
+    // suspended on its fetch, and writing plus the staleness check below happen together with no
+    // await between them), and when it does write it writes inside its own generation's
+    // directory, not here.
     clearDirectory()
+    let destination = exportDirectory(for: requested)
     let outcome: State
     switch variant {
     case .preview:
-      outcome = await preparePreview(for: image)
+      outcome = await preparePreview(for: image, in: destination)
     case .master:
-      outcome = await prepareMaster(for: image)
+      outcome = await prepareMaster(for: image, in: destination)
     }
     guard requested == generation else {
       // Stale: something moved on while this was in flight. Its bytes name a photograph that is
-      // no longer the one on screen, so they are deleted rather than left on disk for the next
-      // share to pick up, and `state` — already owned by whatever superseded this — is not
-      // touched at all.
-      if case .ready(let file) = outcome { try? FileManager.default.removeItem(at: file.url) }
+      // no longer the one on screen, so the WHOLE generation directory goes — never an
+      // individual file path, which a live export could by then be using for a same-named
+      // export of its own. `state`, already owned by whatever superseded this, is not touched.
+      try? FileManager.default.removeItem(at: destination)
       return
     }
     state = outcome
@@ -106,7 +125,9 @@ final class ShareExportStore {
     state = .idle
   }
 
-  private func preparePreview(for image: Components.Schemas.ImageSummary) async -> State {
+  private func preparePreview(for image: Components.Schemas.ImageSummary, in destination: URL)
+    async -> State
+  {
     let token = ProxyIdentity.token(
       from: image.proxies.additionalProperties[ProxyTier.preview.rawValue]?.url)
     let outcome: ProxyFetchResult
@@ -125,19 +146,25 @@ final class ShareExportStore {
     }
     guard data.count <= ShareExportPlan.previewByteCap else { return .refused(.tooLarge) }
     let filename = ShareExportPlan.previewFilename(for: image.filename)
-    guard let url = write(data, named: filename) else { return .refused(.couldNotPrepare) }
+    guard let url = write(data, named: filename, in: destination) else {
+      return .refused(.couldNotPrepare)
+    }
     return .ready(
       ShareExportFile(
         url: url, filename: filename, contentType: ShareExportPlan.previewContentType))
   }
 
-  private func prepareMaster(for image: Components.Schemas.ImageSummary) async -> State {
+  private func prepareMaster(for image: Components.Schemas.ImageSummary, in destination: URL)
+    async -> State
+  {
     // The seam, checked in the ONE place a master export can begin — see `ShareMasterSeam`.
     // The loupe already hides the entry while this is off; this is the guard that holds even if
     // a future caller forgets to ask.
     guard masterAvailable else { return .refused(.masterContractUnavailable) }
-    guard createDirectory() else { return .refused(.couldNotPrepare) }
-    switch await master.downloadMaster(imageID: image.id, into: directory) {
+    guard createDirectory(destination) else { return .refused(.couldNotPrepare) }
+    // The downloader is handed THIS generation's directory, so a stale master export streams
+    // into its own path too — the isolation is not something only the preview lane gets.
+    switch await master.downloadMaster(imageID: image.id, into: destination) {
     case .ok(let file):
       return .ready(file)
     case .refused(let refusal):
@@ -145,9 +172,9 @@ final class ShareExportStore {
     }
   }
 
-  private func write(_ data: Data, named filename: String) -> URL? {
-    guard createDirectory() else { return nil }
-    let url = directory.appending(path: filename, directoryHint: .notDirectory)
+  private func write(_ data: Data, named filename: String, in destination: URL) -> URL? {
+    guard createDirectory(destination) else { return nil }
+    let url = destination.appending(path: filename, directoryHint: .notDirectory)
     do {
       try data.write(to: url, options: .atomic)
       return url
@@ -156,10 +183,8 @@ final class ShareExportStore {
     }
   }
 
-  @discardableResult
-  private func createDirectory() -> Bool {
-    (try? FileManager.default.createDirectory(
-      at: directory, withIntermediateDirectories: true)) != nil
+  private func createDirectory(_ url: URL) -> Bool {
+    (try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)) != nil
   }
 
   private func clearDirectory() {

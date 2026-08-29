@@ -149,8 +149,50 @@ struct ShareExportStoreTests {
 
     // Never `.ready(A)` — the bar must not offer the previous photograph under B's chrome.
     #expect(store.state == .idle)
-    let stale = directory.appending(path: "A.jpg", directoryHint: .notDirectory)
-    #expect(!FileManager.default.fileExists(atPath: stale.path(percentEncoded: false)))
+    // A's whole generation directory is gone, so nothing of A is left anywhere under the root.
+    let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory.path())) ?? []
+    #expect(entries.isEmpty)
+  }
+
+  @Test("Two exports with the SAME filename: the stale one cannot touch the live one's file")
+  func sameNameOverlapLeavesTheLiveExportIntact() async throws {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    let bytes = Data([0xFF, 0xD8, 0xAB, 0xCD])
+    await transport.setProxyOutcome(.ok(bytes))
+    await transport.holdProxyRequests(true)
+    let store = makeStore(transport, directory: directory)
+
+    // A: the same photograph, held mid-fetch.
+    let first = Task {
+      await store.prepare(.preview, for: image(id: 1, filename: "DSC_1234.NEF"))
+    }
+    await transport.waitUntilProxyStarted()
+    store.finish()  // focus moved — this is what frees the lane for a second export
+
+    // B: a DIFFERENT export whose filename sanitizes to exactly the same name as A's. Under a
+    // single flat directory these two resolve to one URL, which is the collision.
+    await transport.holdProxyRequests(false)
+    await store.prepare(.preview, for: image(id: 2, filename: "DSC_1234.dng"))
+    guard case .ready(let live) = store.state else {
+      Issue.record("expected .ready for B, got \(store.state)")
+      return
+    }
+    #expect(live.filename == "DSC_1234.jpg")
+
+    // Now let the stale A finish and clean itself up.
+    await transport.releaseProxy()
+    await first.value
+
+    // B survives untouched: same state, same file, same bytes. Before the per-generation
+    // directories, A's cleanup deleted exactly this URL and left `.ready` pointing at nothing.
+    #expect(store.state == .ready(live))
+    #expect(FileManager.default.fileExists(atPath: live.url.path(percentEncoded: false)))
+    #expect(try Data(contentsOf: live.url) == bytes)
+    // And only B's generation directory remains under the root.
+    let entries = try FileManager.default.contentsOfDirectory(atPath: directory.path())
+    #expect(entries.count == 1)
   }
 
   @Test("With the seam on, a policy 403 refuses INLINE with the policy copy and no file")
@@ -233,8 +275,10 @@ struct ShareExportStoreTests {
       return
     }
     #expect(file.filename == "SECOND.jpg")
+    #expect(try Data(contentsOf: file.url) == Data([0xFF, 0xD8]))
+    // One export on disk at a time: the root holds exactly the current generation's directory.
     let contents = try FileManager.default.contentsOfDirectory(atPath: directory.path())
-    #expect(contents == ["SECOND.jpg"])
+    #expect(contents.count == 1)
   }
 }
 
