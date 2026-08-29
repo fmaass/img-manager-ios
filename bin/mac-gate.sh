@@ -207,15 +207,19 @@ say "--- step: content manifest (mirror side) ---"
 # same 139-file tree came back in time on one run and timed out on the next two, i.e. the cap was
 # turning host load into a false "the mirror differs from HEAD" verdict on a tree that was in fact
 # identical. The CHECK is unchanged — only the patience is.
+# Prune, don't filter: -not -path still STAT-WALKS every file under .build/DerivedData
+# (observed 2026-08-30: 129s real / 0.4s cpu over 9k files while a Plex transcode owned the
+# disk), and the per-file `git hash-object` fork added 139 more spawns. Pruned traversal +
+# one batched hash-object spawn keeps the same file set and fits the cap on a busy disk.
 remote_manifest="$(timeout 180 ssh -o BatchMode=yes "$host" "
   cd '$target_dir/work'
-  find . -type f \
-    -not -path './.git/*' -not -path '*/.build/*' -not -path './.build/*' -not -path '*/DerivedData/*' -not -path './DerivedData/*' \
-    -not -name '*.xcodeproj' -not -path '*.xcodeproj/*' -not -path '*.xcresult*' -not -path './.gate-artifacts/*' -not -name '.phase-ledger.md' \
-    -not -path './.tools/*' -not -name 'signing.local.yml' \
-  | sed 's|^\./||' | sort | while read -r f; do
-      printf '%s %s\n' \"\$(git hash-object \"\$f\")\" \"\$f\"
-    done
+  tmp=\$(mktemp -d)
+  find . \( -name .git -o -name .build -o -name DerivedData -o -name '*.xcodeproj' -o -name '*.xcresult' -o -name .gate-artifacts -o -name .tools \) -prune \
+    -o -type f -not -name '.phase-ledger.md' -not -name 'signing.local.yml' -print \
+  | sed 's|^\./||' | sort > \"\$tmp/f\"
+  tr '\n' '\0' < \"\$tmp/f\" | xargs -0 git hash-object > \"\$tmp/h\"
+  paste -d' ' \"\$tmp/h\" \"\$tmp/f\"
+  rm -rf \"\$tmp\"
 " 2>&1)"
 remote_rc=$?
 if [ $remote_rc -ne 0 ]; then
