@@ -65,6 +65,14 @@ struct ShareExportFile: Sendable, Equatable {
   let contentType: UTType
 }
 
+/// Names WHICH export a late callback belongs to. Held by anything that will report back after a
+/// delay — a presented share sheet, whose completion can arrive from an out-of-process target
+/// long after the user moved on — so `ShareExportStore.finish` can tell "the user dismissed the
+/// sheet I am showing" from "a sheet abandoned two exports ago has finally answered".
+struct ShareExportToken: Sendable, Equatable {
+  let generation: Int
+}
+
 /// The share lane's pure decisions — naming, caps, refusal mapping — deliberately free of
 /// SwiftUI, `GridService` and the generated client so every one of them is unit-testable on
 /// its own, including the parts of the master lane whose BYTES are still parked (see

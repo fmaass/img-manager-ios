@@ -40,9 +40,10 @@ struct LoupeView: View {
     }
     .task(id: store.focusedImageID) {
       // A prepared export names the photograph it was made from, so it never outlives that
-      // photograph being the focused one — the temp file is deleted the moment focus moves
-      // (gate correction 4), not left behind for whatever the user shares next.
-      share.finish()
+      // photograph being the focused one — the temp file is deleted the moment focus moves, not
+      // left behind for whatever the user shares next. This is the SUPERSEDE, not a completion:
+      // the context changed, so it abandons every generation rather than ending a named one.
+      share.supersede()
       await loadMainImage()
     }
   }

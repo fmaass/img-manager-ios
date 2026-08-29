@@ -115,11 +115,36 @@ final class ShareExportStore {
     state = outcome
   }
 
-  /// Called when the share sheet is dismissed, when the loupe's focus moves, and when the user
-  /// dismisses a refusal. The temp file is the only copy of those bytes outside the cache and it
-  /// does not outlive the sheet that needed it. Bumping the generation also disowns any fetch
-  /// still in flight (see `prepare`).
-  func finish() {
+  /// The token identifying the export currently on screen. A view captures this when it presents
+  /// something that will report back LATER — a share sheet, whose completion can arrive from an
+  /// out-of-process target long after the user has moved on — and hands it back to `finish`.
+  var currentToken: ShareExportToken { ShareExportToken(generation: generation) }
+
+  /// Ends the export the caller is actually holding, and NOTHING else.
+  ///
+  /// The gate is the whole point. A share sheet's completion callback can fire arbitrarily late:
+  /// the user shares A to an out-of-process target, gets bored, prepares B, and A's callback then
+  /// arrives. Ungated, it would delete B's file and reset B's state, leaving the bar offering an
+  /// export that is no longer on disk. A token from a superseded generation is therefore ignored
+  /// outright, and when the token IS current only that generation's own directory is removed —
+  /// never the shared root, which by then may belong to someone else.
+  func finish(_ token: ShareExportToken) {
+    guard token.generation == generation else { return }
+    try? FileManager.default.removeItem(at: exportDirectory(for: generation))
+    // Bumping disowns any fetch still in flight AND makes this token stale, so a second delayed
+    // callback carrying the same token is a no-op rather than a repeat.
+    generation &+= 1
+    state = .idle
+  }
+
+  /// Abandons whatever is current because the CONTEXT changed — the loupe's focus moved to
+  /// another photograph, so no export in progress or on disk belongs to what is on screen.
+  ///
+  /// Unlike `finish`, this deliberately takes no token: it is the supersede, not a completion,
+  /// and it owns every generation by construction — it bumps first, which makes every generation
+  /// that exists stale, so the wholesale root clear that follows can only be removing files that
+  /// their own stale branches would have removed anyway.
+  func supersede() {
     generation &+= 1
     clearDirectory()
     state = .idle

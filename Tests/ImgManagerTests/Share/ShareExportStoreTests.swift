@@ -143,7 +143,7 @@ struct ShareExportStoreTests {
     let inFlight = Task { await store.prepare(.preview, for: image(id: 1, filename: "A.NEF")) }
     await transport.waitUntilProxyStarted()
     // Exactly what `LoupeView`'s `.task(id: store.focusedImageID)` does when focus moves to B.
-    store.finish()
+    store.supersede()
     await transport.releaseProxy()
     await inFlight.value
 
@@ -152,6 +152,78 @@ struct ShareExportStoreTests {
     // A's whole generation directory is gone, so nothing of A is left anywhere under the root.
     let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory.path())) ?? []
     #expect(entries.isEmpty)
+  }
+
+  @Test("A delayed finish from an abandoned share cannot wipe the export that replaced it")
+  func delayedFinishFromAnOlderShareIsIgnored() async throws {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8])))
+    let store = makeStore(transport, directory: directory)
+
+    // A is prepared and shared: the sheet captures A's token, as `ShareStatusBar` does.
+    await store.prepare(.preview, for: image(id: 1, filename: "A.NEF"))
+    let abandonedToken = store.currentToken
+
+    // The user gets bored of the out-of-process target and prepares B instead.
+    await store.prepare(.preview, for: image(id: 2, filename: "B.NEF"))
+    guard case .ready(let live) = store.state else {
+      Issue.record("expected .ready for B, got \(store.state)")
+      return
+    }
+
+    // A's completion callback finally arrives — minutes late, from another process.
+    store.finish(abandonedToken)
+
+    // B is untouched: still ready, still on disk, still in its own directory.
+    #expect(store.state == .ready(live))
+    #expect(FileManager.default.fileExists(atPath: live.url.path(percentEncoded: false)))
+    let entries = try FileManager.default.contentsOfDirectory(atPath: directory.path())
+    #expect(entries.count == 1)
+  }
+
+  @Test("...while the CURRENT token does end the export — the gate is not simply refusing all")
+  func currentTokenStillFinishes() async throws {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8])))
+    let store = makeStore(transport, directory: directory)
+    await store.prepare(.preview, for: image())
+    guard case .ready(let file) = store.state else {
+      Issue.record("expected .ready, got \(store.state)")
+      return
+    }
+
+    store.finish(store.currentToken)
+
+    #expect(store.state == .idle)
+    #expect(!FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)))
+  }
+
+  @Test("The same token twice is a no-op the second time, not a repeat of the cleanup")
+  func replayedTokenIsIgnored() async throws {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8])))
+    let store = makeStore(transport, directory: directory)
+    await store.prepare(.preview, for: image(id: 1, filename: "A.NEF"))
+    let token = store.currentToken
+    store.finish(token)
+
+    // Both `onDismiss` and `completionWithItemsHandler` can fire for one sheet, so this happens
+    // routinely; and a second prepare must not be clobbered by the second of the pair.
+    await store.prepare(.preview, for: image(id: 2, filename: "B.NEF"))
+    store.finish(token)
+
+    guard case .ready(let live) = store.state else {
+      Issue.record("expected .ready for B, got \(store.state)")
+      return
+    }
+    #expect(live.filename == "B.jpg")
+    #expect(FileManager.default.fileExists(atPath: live.url.path(percentEncoded: false)))
   }
 
   @Test("Two exports with the SAME filename: the stale one cannot touch the live one's file")
@@ -169,7 +241,7 @@ struct ShareExportStoreTests {
       await store.prepare(.preview, for: image(id: 1, filename: "DSC_1234.NEF"))
     }
     await transport.waitUntilProxyStarted()
-    store.finish()  // focus moved — this is what frees the lane for a second export
+    store.supersede()  // focus moved — this is what frees the lane for a second export
 
     // B: a DIFFERENT export whose filename sanitizes to exactly the same name as A's. Under a
     // single flat directory these two resolve to one URL, which is the collision.
@@ -253,7 +325,7 @@ struct ShareExportStoreTests {
     }
     #expect(FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)))
 
-    store.finish()
+    store.finish(store.currentToken)
 
     #expect(store.state == .idle)
     #expect(!FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)))

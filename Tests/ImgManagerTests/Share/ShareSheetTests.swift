@@ -72,7 +72,8 @@ struct ShareSheetTests {
     }
     #expect(FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)))
 
-    let controller = ShareSheet.makeController(file: file, share: store)
+    let controller = ShareSheet.makeController(
+      file: file, share: store, token: store.currentToken)
     // Exactly what UIKit invokes when the sheet goes away, shared or cancelled alike.
     controller.completionWithItemsHandler?(nil, false, nil, nil)
 
@@ -89,7 +90,8 @@ struct ShareSheetTests {
       return
     }
 
-    let controller = ShareSheet.makeController(file: file, share: store)
+    let controller = ShareSheet.makeController(
+      file: file, share: store, token: store.currentToken)
 
     // Without this, dismissal is silent and the file outlives the sheet — the defect this
     // whole presentation path exists to close.

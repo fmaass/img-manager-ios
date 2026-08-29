@@ -63,20 +63,28 @@ struct ShareControl: View {
 /// unrelated happened to clear them — the user pressing Done, or focus moving — so a cancelled
 /// share left bytes on disk indefinitely. `.sheet(onDismiss:)` plus the activity controller's own
 /// `completionWithItemsHandler` between them cover every way the sheet can go away, and both end
-/// at `finish()`.
+/// at `finish(_:)` — carrying the token captured at PRESENTATION time, so a late callback ends
+/// the export it actually belongs to instead of whatever is current when it lands.
 struct ShareStatusBar: View {
   @Bindable var share: ShareExportStore
   @State private var isSharePresented = false
+  /// Captured when the sheet is presented, not when it is dismissed: dismissal can arrive long
+  /// after the export it belongs to stopped being the current one, and this is what lets the
+  /// store tell those apart (see `ShareExportStore.finish`).
+  @State private var presentedToken: ShareExportToken?
 
   var body: some View {
     content
       .sheet(
-        isPresented: $isSharePresented, onDismiss: { share.finish() },
+        isPresented: $isSharePresented,
+        onDismiss: {
+          if let presentedToken { share.finish(presentedToken) }
+        },
         content: {
           // Re-read from state rather than capturing: by presentation time this is still the
           // same `.ready` file, and if anything superseded it there is nothing to present.
-          if case .ready(let file) = share.state {
-            ShareSheet(file: file, share: share)
+          if case .ready(let file) = share.state, let presentedToken {
+            ShareSheet(file: file, share: share, token: presentedToken)
           }
         })
   }
@@ -100,6 +108,7 @@ struct ShareStatusBar: View {
     case .ready(let file):
       HStack(spacing: 12) {
         Button {
+          presentedToken = share.currentToken
           isSharePresented = true
         } label: {
           Label(file.filename, systemImage: "square.and.arrow.up")
@@ -109,7 +118,7 @@ struct ShareStatusBar: View {
         .frame(minHeight: 44)
         .accessibilityIdentifier("shareReadyLink")
         Spacer()
-        Button("Done") { share.finish() }
+        Button("Done") { share.finish(share.currentToken) }
           .font(.footnote)
           .frame(minHeight: 44)
       }
@@ -122,7 +131,7 @@ struct ShareStatusBar: View {
         Label(refusal.copy, systemImage: "exclamationmark.triangle")
           .font(.footnote)
         Spacer()
-        Button("Dismiss") { share.finish() }
+        Button("Dismiss") { share.finish(share.currentToken) }
           .font(.footnote)
           .frame(minHeight: 44)
       }
@@ -141,8 +150,9 @@ struct ShareStatusBar: View {
 ///
 /// 1. **Dismissal is reported.** `completionWithItemsHandler` fires whether the user completed a
 ///    share or cancelled, and `.sheet`'s own `onDismiss` at the call site covers an interactive
-///    swipe-down. Both end at `ShareExportStore.finish()`, so the temp file's life is tied to the
-///    sheet's rather than to the user happening to press Done afterwards.
+///    swipe-down. Both end at `ShareExportStore.finish(_:)` carrying this sheet's own token, so
+///    the temp file's life is tied to the sheet's — and a callback that arrives after the user
+///    moved on ends nothing at all.
 /// 2. **The type is declared, not inferred.** The item is registered under the EXPORT's own
 ///    `UTType` — the proxy's image type today, the master's server-declared type once
 ///    `ShareMasterSeam` opens — instead of letting the receiving app guess from a file
@@ -150,9 +160,13 @@ struct ShareStatusBar: View {
 struct ShareSheet: UIViewControllerRepresentable {
   let file: ShareExportFile
   let share: ShareExportStore
+  /// The export this sheet is showing. Carried so a completion arriving from an out-of-process
+  /// target — which can be minutes later, after the user prepared something else entirely — ends
+  /// THIS export and not whatever happens to be current when it lands.
+  let token: ShareExportToken
 
   func makeUIViewController(context: Context) -> UIActivityViewController {
-    Self.makeController(file: file, share: share)
+    Self.makeController(file: file, share: share, token: token)
   }
 
   func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
@@ -160,16 +174,16 @@ struct ShareSheet: UIViewControllerRepresentable {
   /// Split out of `makeUIViewController` because a `Context` cannot be constructed in a test:
   /// this is the SAME code path the view uses, callable directly, so the dismissal wiring and
   /// the declared type are provable rather than asserted in a comment.
-  static func makeController(file: ShareExportFile, share: ShareExportStore)
-    -> UIActivityViewController
-  {
+  static func makeController(
+    file: ShareExportFile, share: ShareExportStore, token: ShareExportToken
+  ) -> UIActivityViewController {
     let controller = UIActivityViewController(
       activityItems: [makeItemProvider(for: file)], applicationActivities: nil)
     controller.completionWithItemsHandler = { _, _, _, _ in
       // UIKit calls this on the main thread; `assumeIsolated` states that requirement instead
       // of hopping through a `Task`, which would make cleanup arrive an unpredictable moment
       // later — including after a new export had already started.
-      MainActor.assumeIsolated { share.finish() }
+      MainActor.assumeIsolated { share.finish(token) }
     }
     return controller
   }
