@@ -206,13 +206,17 @@ struct GridStoreSceneTests {
     await store.pointerDragCrossed(.stack(10))
 
     #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 0)
-    #expect(store.actionableImages.first { $0.id == 10 }?.mark.state == .none)
+    // Read through `MarkStateValue`, never `== .none` on the wire payload: `StatePayload` has a
+    // case literally named `none`, so a bare `.none` on the right of an Optional comparison binds
+    // to `Optional.none` (nil) and the assertion silently asks a different question — the exact
+    // trap `MarkStateValue.init(_:)`'s own doc comment was written for.
+    #expect(MarkStateValue(store.actionableImages.first { $0.id == 10 }?.mark.state) == .none)
 
     // Positive control on the SAME fixture: the photograph that shares the number does write.
     store.beginPointerDrag()
     await store.pointerDragCrossed(.image(10))
     #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
-    #expect(store.actionableImages.first { $0.id == 10 }?.mark.state == .pick)
+    #expect(MarkStateValue(store.actionableImages.first { $0.id == 10 }?.mark.state) == .pick)
   }
 
   @Test("Even with a card's cover id passed directly, the write finds no state to build a precondition from")

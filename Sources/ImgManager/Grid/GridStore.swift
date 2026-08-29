@@ -409,17 +409,29 @@ final class GridStore {
     // being replaced. Cleared in BOTH modes: a scope change while flat must not leave a stale
     // scene slice behind for the next entry into Scene mode to find.
     clearSceneWindow()
+    if displayMode == .scene {
+      // "`images` stays EMPTY in Scene mode" has to be something this code DOES, not something
+      // its doc comment says. Nothing below ever assigns `images` in this mode, so without this
+      // the flat window simply survives the switch — carrying the previous mode's photographs
+      // into the shared actionable projection, which is the one thing that projection exists to
+      // prevent. Caught by `sceneRowsAreKindDiscriminated`/`enteringSceneModeIsAFullReset`, which
+      // asserted the claim rather than trusting it. Its flat cursor goes with it: a cursor minted
+      // by `/api/images` is refused outright by the stacks endpoint.
+      images = []
+      nextCursor = nil
+    }
     do {
       switch displayMode {
       case .flat:
         let page = try await service.images(query, cursor: nil, limit: 100)
         guard generation == loadGeneration else { return }
+        // Assigned only on success, deliberately: a failed flat reload keeps the rows the reader
+        // was looking at rather than blanking the grid (pre-existing behaviour, unchanged).
         images = page.items
         nextCursor = page.nextCursor
       case .scene:
         let page = try await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
         guard generation == loadGeneration else { return }
-        // `images` stays empty in Scene mode by construction — see `sceneRows`' doc comment.
         sceneRows = page.rows
         sceneNextCursor = page.nextCursor
       }
