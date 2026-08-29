@@ -115,26 +115,37 @@ struct DragPaintSessionTests {
   @Test("The first crossing of a tile returns true; re-entry during the same drag returns false")
   func onceEver() {
     var session = DragPaintSession()
-    #expect(session.crossedTile(1) == true)
-    #expect(session.crossedTile(1) == false)
-    #expect(session.crossedTile(1) == false)
+    #expect(session.crossedTile(.image(1)) == true)
+    #expect(session.crossedTile(.image(1)) == false)
+    #expect(session.crossedTile(.image(1)) == false)
   }
 
   @Test("Distinct tiles are each true on their own first crossing")
   func distinctTilesEachOnce() {
     var session = DragPaintSession()
-    #expect(session.crossedTile(1) == true)
-    #expect(session.crossedTile(2) == true)
-    #expect(session.crossedTile(1) == false)
-    #expect(session.crossedTile(3) == true)
+    #expect(session.crossedTile(.image(1)) == true)
+    #expect(session.crossedTile(.image(2)) == true)
+    #expect(session.crossedTile(.image(1)) == false)
+    #expect(session.crossedTile(.image(3)) == true)
+  }
+
+  @Test("WP12: a scene card and a photograph that share a number are two different cells")
+  func stackAndImageWithTheSameNumberAreDistinct() {
+    // The dedup set is keyed by display id, not by a bare Int, so crossing card 7 does not make
+    // photograph 7 look already-crossed — which would silently skip a real mark.
+    var session = DragPaintSession()
+    #expect(session.crossedTile(.stack(7)) == true)
+    #expect(session.crossedTile(.image(7)) == true)
+    #expect(session.crossedTile(.stack(7)) == false)
+    #expect(session.crossedTile(.image(7)) == false)
   }
 
   @Test("A fresh session (a new drag) forgets prior crossings")
   func freshSessionForgets() {
     var first = DragPaintSession()
-    #expect(first.crossedTile(1) == true)
+    #expect(first.crossedTile(.image(1)) == true)
     var second = DragPaintSession()
-    #expect(second.crossedTile(1) == true)
+    #expect(second.crossedTile(.image(1)) == true)
   }
 }
 
