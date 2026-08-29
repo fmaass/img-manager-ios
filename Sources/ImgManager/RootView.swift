@@ -93,10 +93,12 @@ struct RootView: View {
         return subject
       })
     erasedBox.handler = { [weak queueStore] in
+      // FENCE FIRST, and synchronously — this closure is `@MainActor`, so nothing suspends
+      // before this line. Clearing the file first (as this did) left a window between the two
+      // awaits in which a fetch could resume against an un-advanced generation and write the
+      // snapshot straight back, one await after the erasure had removed it.
+      queueStore?.endSession()
       await queueSnapshotStore.clear()
-      // Ends the session IN MEMORY too: clearing only the file would leave an in-flight fetch
-      // free to publish the signed-out account's answer and write the cache straight back.
-      await queueStore?.endSession()
     }
     _queueStore = State(initialValue: queueStore)
     heroLoader = HeroThumbnailLoader(service: gridService)
@@ -348,5 +350,5 @@ private final class TerminalUnauthorizedBox: @unchecked Sendable {
 /// The same write-once box for the credential-erasure hook (see `RootView.init`): filled in
 /// synchronously during init, before the app can sign out, so no read can observe it unset.
 private final class CredentialsErasedBox: @unchecked Sendable {
-  var handler: (@Sendable () async -> Void)?
+  var handler: (@MainActor @Sendable () async -> Void)?
 }

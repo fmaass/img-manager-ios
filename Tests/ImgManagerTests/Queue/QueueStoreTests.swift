@@ -315,7 +315,8 @@ struct QueueStoreTests {
     let inFlight = Task { await store.loadIfNeeded() }
     await transport.waitUntilFolderSummariesStarted()
 
-    // Exactly what `RootView` wires to the credential-erasure hook, in that order.
+    // Drives the store directly; the ORDER production performs these in, and the window between
+    // them, are proved against a real `AuthSession` in `QueueCacheSessionEndTests`.
     await snapshotStore.clear()
     subject.value = nil
     store.endSession()

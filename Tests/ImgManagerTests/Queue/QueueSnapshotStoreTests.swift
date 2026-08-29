@@ -144,13 +144,16 @@ struct QueueSnapshotStoreTests {
   @Test("The DIRECTORY's protections are re-applied by every save, not only the one that made it")
   func directoryProtectionsReAppliedOnEverySave() async throws {
     // Diff-gate blocker 2: both objects must carry both protections after EVERY atomic write.
-    // The exclusion is stripped here between saves to prove the second save genuinely re-applies
-    // it, rather than the assertion passing on what the FIRST save left behind.
+    // BOTH of the directory's attributes are stripped between the two saves, so each assertion
+    // below is answered by the SECOND save rather than by what the first one left behind.
     let directory = makeDirectory()
     defer { removeDirectory(directory) }
     let store = QueueSnapshotStore(directoryURL: directory)
     await store.save(makeSnapshot())
 
+    // BOTH attributes are stripped, not just the exclusion: a regression that sets the
+    // directory's protection class once and never again would sail past a test that only ever
+    // takes the exclusion away.
     var stripped = directory
     var cleared = URLResourceValues()
     cleared.isExcludedFromBackup = false
@@ -158,7 +161,25 @@ struct QueueSnapshotStoreTests {
     let strippedValues = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
     #expect(strippedValues.isExcludedFromBackup == false)
 
+    // Whether the platform reports a protection class at all is decided HERE, from what the
+    // first save actually produced — a simulator has no data protection and reports none, which
+    // makes this half vacuous there and is why the exclusion half above carries the proof on
+    // that platform. On a device this strips complete protection and demands it back.
+    let afterFirstSave = try FileManager.default.attributesOfItem(atPath: directory.path)
+    let protectionIsReportable = afterFirstSave[.protectionKey] != nil
+    if protectionIsReportable {
+      try FileManager.default.setAttributes(
+        [.protectionKey: FileProtectionType.none], ofItemAtPath: directory.path)
+      let strippedAttributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+      #expect(strippedAttributes[.protectionKey] as? FileProtectionType == FileProtectionType.none)
+    }
+
     await store.save(makeSnapshot())
+
+    if protectionIsReportable {
+      let restored = try FileManager.default.attributesOfItem(atPath: directory.path)
+      #expect(restored[.protectionKey] as? FileProtectionType == .complete)
+    }
 
     let directoryValues = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
     #expect(directoryValues.isExcludedFromBackup == true)

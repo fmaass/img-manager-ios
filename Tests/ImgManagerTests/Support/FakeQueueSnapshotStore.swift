@@ -93,7 +93,37 @@ actor FakeQueueSnapshotStore: QueueSnapshotPersisting {
     savedSnapshots.append(snapshot)
   }
 
+  private var clearHoldEnabled = false
+  private var clearHasStarted = false
+  private var clearStartedContinuation: CheckedContinuation<Void, Never>?
+  private var clearReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  /// Lets a test suspend INSIDE the erase hook — the window between "the credential is gone" and
+  /// "every listener has fenced itself off" — and land an in-flight fetch's completion there.
+  func holdClears(_ hold: Bool) { clearHoldEnabled = hold }
+
+  func waitUntilClearStarted() async {
+    if clearHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.clearStartedContinuation = continuation
+    }
+  }
+
+  func releaseClear() {
+    clearReleaseContinuation?.resume()
+    clearReleaseContinuation = nil
+    clearHasStarted = false
+  }
+
   func clear() async {
+    if clearHoldEnabled {
+      clearHasStarted = true
+      clearStartedContinuation?.resume()
+      clearStartedContinuation = nil
+      await withCheckedContinuation { continuation in
+        self.clearReleaseContinuation = continuation
+      }
+    }
     stored = nil
     clearCount += 1
   }
