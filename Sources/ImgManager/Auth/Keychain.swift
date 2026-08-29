@@ -110,9 +110,39 @@ struct Keychain: Sendable {
 ///
 /// Ported from memos-ng-ios's `KeychainAccessGroup.probe()` (same mechanism, this app's single
 /// namespace — no multi-namespace precedence walk needed here, only the resolution itself).
+///
+/// SUCCESS is cached; FAILURE never is (WP12/IMGMGR-199 premise gate, blocking finding 1). The
+/// probe writes with the same `WhenPasscodeSetThisDeviceOnly` accessibility class the real
+/// credential uses, so on a LOCKED device it cannot add its item and resolves to nil. That was
+/// harmless while the app was the only process here — an app is not launched into a locked
+/// device — but the widget extension is: WidgetKit can start the process for a timeline refresh
+/// while the phone is locked. A once-per-process `static let` would have frozen that one failed
+/// probe for the life of the process, so every read AFTER the unlock would keep querying the
+/// unexpanded literal group and keep failing with `errSecMissingEntitlement`, and the widget
+/// would never recover until WidgetKit happened to relaunch it. Re-probing costs two microsecond
+/// `SecItem*` calls and only happens while unresolved.
 enum KeychainAccessGroup {
   /// A service nothing else uses, so a probe item can never collide with a real credential.
   private static let probeService = "live.discomarder.imgmanager.access-group-probe"
+
+  private static let cacheLock = NSLock()
+  private nonisolated(unsafe) static var cachedGroup: String?
+
+  /// The resolved group, or nil while it cannot be resolved YET. A nil answer is never
+  /// remembered — ask again after the device unlocks and it resolves.
+  static var resolved: String? {
+    cacheLock.lock()
+    let cached = cachedGroup
+    cacheLock.unlock()
+    if let cached { return cached }
+
+    guard let group = probe() else { return nil }
+
+    cacheLock.lock()
+    cachedGroup = group
+    cacheLock.unlock()
+    return group
+  }
 
   /// Adds one throwaway item naming NO access group (which lands in this build's DEFAULT
   /// group — the first entry of its effective `keychain-access-groups` list, i.e. the one
@@ -121,9 +151,9 @@ enum KeychainAccessGroup {
   /// group explicitly — every read, write and delete elsewhere names one, which is only
   /// possible because this probe found it first.
   ///
-  /// Resolved once per process (`static let`) — the resolution is a property of this BUILD's
-  /// code signature, not of the moment, so nothing here needs to change between calls.
-  static let resolved: String? = {
+  /// The answer is a property of this BUILD's code signature, not of the moment, so once it
+  /// comes back it never changes — which is why caching the SUCCESS is still correct.
+  private static func probe() -> String? {
     let account = UUID().uuidString
     let insert: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -150,5 +180,5 @@ enum KeychainAccessGroup {
         kSecAttrSynchronizable as String: false,
       ] as CFDictionary)
     return group
-  }()
+  }
 }

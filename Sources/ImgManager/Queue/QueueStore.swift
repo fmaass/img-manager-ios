@@ -1,6 +1,7 @@
 import Foundation
 import ImgManagerAPI
 import Observation
+import WidgetKit
 
 /// P7's own orchestrator for the work-queue home (WP8, IMGMGR-116) — owns the loaded
 /// `FolderSummary` list and the screen's connectivity/loading state machine (Q3). Deliberately
@@ -29,15 +30,29 @@ final class QueueStore {
 
   private let service: QueueService
   private let debounceNanoseconds: UInt64
+  private let reloadWidgets: () -> Void
   private var hasLoadedSuccessfullyOnce = false
   private var loadGeneration = 0
   private var debounceTask: Task<Void, Never>?
 
   /// `debounceNanoseconds` is test-injectable (default 400ms) so a coalescing test proves the
   /// real behaviour in milliseconds, never by waiting out the production interval.
-  init(service: QueueService, debounceNanoseconds: UInt64 = 400_000_000) {
+  ///
+  /// `reloadWidgets` (WP12, IMGMGR-199) is a seam for the same reason, and it lives HERE rather
+  /// than in `ForegroundRefresh` because this type is the only one that knows whether a summary
+  /// request actually succeeded — `refreshQueue: () async -> Void` tells its caller nothing, so
+  /// a reload hung off the foreground hook would fire just as eagerly after a failed refresh and
+  /// republish the widget's stale counts as if they were fresh.
+  init(
+    service: QueueService,
+    debounceNanoseconds: UInt64 = 400_000_000,
+    reloadWidgets: @escaping () -> Void = {
+      WidgetCenter.shared.reloadTimelines(ofKind: ReadinessWidgetKind.value)
+    }
+  ) {
     self.service = service
     self.debounceNanoseconds = debounceNanoseconds
+    self.reloadWidgets = reloadWidgets
   }
 
   /// The screen's own first-appearance entry point — a no-op once the first attempt (success OR
@@ -83,6 +98,8 @@ final class QueueStore {
       summaries = result
       phase = .reachable
       hasLoadedSuccessfullyOnce = true
+      // NOT IMPLEMENTED YET (RED): the reload request is what QueueStoreWidgetReloadTests
+      // specifies.
     } catch {
       guard generation == loadGeneration else { return }
       // "No cache" vs "stale data" (Q3) is read off whether there is anything to retain, not

@@ -53,6 +53,13 @@
 #             3 = another run of this branch holds the gate lock;
 #             otherwise the exit code of the first failing step (which now includes
 #             `copyback` and `lock-release` — see the leg list below).
+#
+# WP12 (IMGMGR-199) added the `widget-embed` leg and gave build/test an explicit
+# `-derivedDataPath` inside the mirrored work directory. The leg reads the BUILT app bundle
+# (never project.yml) to assert the widget extension is really embedded, and a deterministic
+# DerivedData path is what makes "the bundle this run just built" nameable at all — the default
+# location is outside the work tree and a broad search there can match a stale build. The path is
+# excluded from the rsync mirror and from the content manifest, exactly as the default one was.
 
 set -uo pipefail
 
@@ -259,7 +266,7 @@ step api-nullable-tests swift test --package-path Packages/ImgManagerAPI
 api_nullable_rc="$(printf '%s\n' "$summary" | tr ' ' '\n' | sed -n 's/^api-nullable-tests=//p')"
 if [ "$api_nullable_rc" != "0" ]; then
   echo "api-nullable-tests failed (exit $api_nullable_rc) — skipping xcodegen/build/test/lint/pins (fail-fast)"
-  summary="$summary xcodegen=skipped build=skipped test-iphone=skipped test-ipad=skipped idiom-grep=skipped lint=skipped pins=skipped"
+  summary="$summary xcodegen=skipped build=skipped widget-embed=skipped test-iphone=skipped test-ipad=skipped idiom-grep=skipped lint=skipped pins=skipped"
   echo "MAC_GATE_REMOTE_SUMMARY:$summary"
   exit 0
 fi
@@ -269,14 +276,54 @@ fi
 rm -rf ImgManager.xcodeproj
 step xcodegen ./bin/generate.sh
 
+# One explicit DerivedData root for every xcodebuild invocation below, inside the mirrored work
+# directory (rsync --exclude'd and manifest-excluded, like the default location was) — see the
+# header note. Sharing it across build and the two test legs also keeps the tests reusing the
+# build the `build` leg already produced, which is what the default path did implicitly.
+derived="$PWD/DerivedData"
+
 if [ -d ImgManager.xcodeproj ]; then
   step build xcodebuild build \
     -project ImgManager.xcodeproj -scheme ImgManager \
     -destination "generic/platform=iOS Simulator" \
+    -derivedDataPath "$derived" \
     -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+
+  # WP12 (IMGMGR-199): the readiness widget is only really shipped if the BUILT app bundle
+  # contains it. `embed: true` in project.yml is a claim about the spec, and a green xcodegen
+  # proves only that the spec parsed — this reads the product Xcode actually emitted, the same
+  # "read the artefact, never the spec" doctrine fastlane's archive checks follow.
+  # Positive control in the SAME invocation (idiom-grep's shape): the host app's own bundle id is
+  # read from the same tree, so a check that found nothing because it was pointed at an empty or
+  # stale DerivedData fails instead of quietly passing.
+  widget_app="$derived/Build/Products/Debug-iphonesimulator/ImgManager.app"
+  widget_appex="$widget_app/PlugIns/ImgManagerWidget.appex"
+  widget_point=""
+  widget_control=""
+  if [ -f "$widget_appex/Info.plist" ]; then
+    widget_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_appex/Info.plist" 2>/dev/null || true)"
+  fi
+  if [ -f "$widget_app/Info.plist" ]; then
+    widget_control="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_app/Info.plist" 2>/dev/null || true)"
+  fi
+  {
+    echo "app bundle : $widget_app"
+    echo "extension  : $widget_appex"
+    echo "NSExtensionPointIdentifier (expect com.apple.widgetkit-extension): $widget_point"
+    echo "positive control — host CFBundleIdentifier (expect live.discomarder.imgmanager): $widget_control"
+    echo "every .appex found in the built app (diagnostic, expect exactly the one above):"
+    find "$widget_app" -name '*.appex' 2>/dev/null || true
+  } > .gate-artifacts/widget-embed.log
+  if [ "$widget_point" = "com.apple.widgetkit-extension" ] \
+    && [ "$widget_control" = "live.discomarder.imgmanager" ]; then
+    echo "widget-embed exit=0"; summary="$summary widget-embed=0"
+  else
+    echo "widget-embed exit=1"; summary="$summary widget-embed=1"
+    tail -20 .gate-artifacts/widget-embed.log
+  fi
 else
   echo "xcodegen did not produce ImgManager.xcodeproj — build/test/lint/pins skipped"
-  summary="$summary build=skipped test-iphone=skipped test-ipad=skipped lint=skipped pins=skipped"
+  summary="$summary build=skipped widget-embed=skipped test-iphone=skipped test-ipad=skipped lint=skipped pins=skipped"
 fi
 
 if [ -d ImgManager.xcodeproj ]; then
@@ -293,11 +340,13 @@ if [ -d ImgManager.xcodeproj ]; then
   step test-iphone xcodebuild test \
     -project ImgManager.xcodeproj -scheme ImgManager \
     -destination "id=$iphone_udid" \
+    -derivedDataPath "$derived" \
     -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
 
   step test-ipad xcodebuild test \
     -project ImgManager.xcodeproj -scheme ImgManager \
     -destination "id=$ipad_udid" \
+    -derivedDataPath "$derived" \
     -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
 
   # Device-idiom-branching absence, WITH a positive control in the same invocation (bare grep -c

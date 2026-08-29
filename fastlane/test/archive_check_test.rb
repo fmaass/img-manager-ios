@@ -7,9 +7,31 @@ require "archive_check"
 class ArchiveCheckTest < Minitest::Test
   BUNDLE_ID = "live.discomarder.imgmanager"
   TEAM_ID = "Y2JQ4VAF85"
+  # WP12 (IMGMGR-199): the embedded readiness widget.
+  EXT_ID = "live.discomarder.imgmanager.readiness-widget"
+  KEYCHAIN_GROUP = "#{TEAM_ID}.live.discomarder.imgmanager.credentials"
 
-  def good_facts(overrides = {})
+  def good_extension_facts(overrides = {})
     {
+      present: true, bundle_id: EXT_ID, extension_point: ArchiveCheck::WIDGET_EXTENSION_POINT,
+      version: "0.1.0", build_number: "1",
+      signing_authority: "Apple Distribution: Fabian Maass (#{TEAM_ID})", codesign_verify_ok: true,
+      profile_app_id: "#{TEAM_ID}.#{EXT_ID}", profile_team_ids: [TEAM_ID],
+      profile_keychain_groups: [KEYCHAIN_GROUP],
+      entitlement_keychain_groups: [KEYCHAIN_GROUP],
+      get_task_allow: false,
+      binary_uuids: ["EFEF-5678"], dsym_uuids: %w[ABCD-1234 EFEF-5678],
+    }.merge(overrides)
+  end
+
+  # `extension:` in an override hash is a PARTIAL extension override (or the symbol :missing for
+  # an archive with no .appex at all). The extension's version/build track whatever version the
+  # app-level overrides set, so a test about the app's build number does not accidentally also
+  # break the extension-version check -- they genuinely must match, which is the point.
+  def good_facts(overrides = {})
+    overrides = overrides.dup
+    extension_override = overrides.delete(:extension)
+    merged = {
       bundle_id: BUNDLE_ID, expected_bundle_id: BUNDLE_ID,
       version: "0.1.0", build_number: "1", previous_build: nil,
       encryption_flag: false,
@@ -19,7 +41,20 @@ class ArchiveCheckTest < Minitest::Test
       profile_app_id: "#{TEAM_ID}.#{BUNDLE_ID}", profile_team_ids: [TEAM_ID], expected_team_id: TEAM_ID,
       get_task_allow: false,
       binary_uuids: ["ABCD-1234"], dsym_uuids: ["ABCD-1234"],
+      keychain_groups: [KEYCHAIN_GROUP],
+      expected_extension_bundle_id: EXT_ID,
     }.merge(overrides)
+
+    merged[:extension] =
+      if extension_override == :missing
+        { present: false }
+      else
+        good_extension_facts(
+          { version: merged[:version], build_number: merged[:build_number] }
+            .merge(extension_override || {}),
+        )
+      end
+    merged
   end
 
   def verdict(overrides = {})
@@ -29,7 +64,7 @@ class ArchiveCheckTest < Minitest::Test
   def test_a_fully_correct_archive_passes_every_check
     results = verdict
     assert(ArchiveCheck.pass?(results), ArchiveCheck.failures(results).map(&:message).join("; "))
-    assert_equal(9, results.size)
+    assert_equal(18, results.size)
   end
 
   def test_wrong_bundle_id_fails_only_that_check
@@ -172,5 +207,86 @@ class ArchiveCheckTest < Minitest::Test
     results = verdict(bundle_id: "wrong", get_task_allow: true, encryption_flag: "NO")
     failed_names = ArchiveCheck.failures(results).map(&:name).sort
     assert_equal(%w[bundle_id encryption_flag get_task_allow], failed_names)
+  end
+
+  # --- WP12 (IMGMGR-199): the embedded readiness widget ---------------------------------------
+
+  def test_a_missing_extension_fails_every_extension_check_and_no_app_check
+    results = verdict(extension: :missing)
+    refute(ArchiveCheck.pass?(results))
+    failed_names = ArchiveCheck.failures(results).map(&:name)
+    assert_equal(9, failed_names.size, failed_names.inspect)
+    assert(failed_names.all? { |name| name.start_with?("extension_") }, failed_names.inspect)
+    assert_includes(failed_names, "extension_present")
+  end
+
+  def test_wrong_extension_bundle_id_fails_only_that_check
+    results = verdict(extension: { bundle_id: "live.discomarder.imgmanager.somethingelse" })
+    assert_equal(["extension_bundle_id"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_a_non_widget_extension_point_fails_only_that_check
+    results = verdict(extension: { extension_point: "com.apple.share-services" })
+    assert_equal(["extension_point"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_extension_marketing_version_must_equal_the_apps
+    results = verdict(version: "0.6.0", build_number: "8", previous_build: 7,
+                      extension: { version: "0.5.0" })
+    assert_equal(["extension_version"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_extension_build_number_must_equal_the_apps
+    results = verdict(version: "0.6.0", build_number: "8", previous_build: 7,
+                      extension: { build_number: "7" })
+    failure = ArchiveCheck.failures(results).find { |r| r.name == "extension_version" }
+    refute_nil(failure)
+    assert_match(/CFBundleVersion/, failure.message)
+  end
+
+  def test_an_extension_profile_minted_for_the_app_id_is_refused
+    results = verdict(extension: { profile_app_id: "#{TEAM_ID}.#{BUNDLE_ID}" })
+    assert_equal(["extension_profile"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_an_extension_profile_for_another_team_is_refused
+    results = verdict(extension: { profile_team_ids: ["OTHERTEAM"] })
+    assert_equal(["extension_profile"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  # Without the shared group the widget installs, launches, and renders "Open the app to sign in"
+  # forever on a signed-in device -- invisible to every other check here.
+  def test_an_extension_without_the_apps_keychain_group_is_refused
+    results = verdict(extension: { entitlement_keychain_groups: ["#{TEAM_ID}.something.else"] })
+    assert_equal(["extension_keychain_group"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_a_keychain_group_the_extension_profile_does_not_authorise_is_refused
+    results = verdict(extension: { profile_keychain_groups: [] })
+    failure = ArchiveCheck.failures(results).find { |r| r.name == "extension_keychain_group" }
+    refute_nil(failure)
+    assert_match(/does not carry/, failure.message)
+  end
+
+  def test_extension_get_task_allow_true_is_refused
+    results = verdict(extension: { get_task_allow: true })
+    assert_equal(["extension_get_task_allow"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_extension_get_task_allow_nil_is_never_an_implicit_false
+    results = verdict(extension: { get_task_allow: nil })
+    failure = ArchiveCheck.failures(results).find { |r| r.name == "extension_get_task_allow" }
+    refute_nil(failure)
+    assert_match(/could not be read/, failure.message)
+  end
+
+  def test_a_development_signed_extension_is_refused
+    results = verdict(extension: { signing_authority: "Apple Development: Fabian Maass" })
+    assert_equal(["extension_signature"], ArchiveCheck.failures(results).map(&:name))
+  end
+
+  def test_an_extension_whose_own_dsym_is_absent_is_refused
+    results = verdict(extension: { dsym_uuids: ["ABCD-1234"] })
+    assert_equal(["extension_dsym_match"], ArchiveCheck.failures(results).map(&:name))
   end
 end
