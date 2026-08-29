@@ -303,6 +303,99 @@ struct QueueStoreTests {
     #expect(store.summaries.isEmpty)
   }
 
+  @Test("A fetch still in flight when the credential is erased publishes nothing and saves nothing")
+  func fetchInFlightAtSignOutIsDropped() async {
+    // Diff-gate blocker 1: the erasure path clears the FILE, but an account-A fetch that was
+    // already in flight completes afterwards — and before this fix its return path would publish
+    // A's shoots and write a brand-new snapshot, resurrecting the cache the sign-out destroyed.
+    let subject = SubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([makeSummary(1, "ready_to_review")])
+    await transport.holdFolderSummariesRequests(true)
+    let inFlight = Task { await store.loadIfNeeded() }
+    await transport.waitUntilFolderSummariesStarted()
+
+    // Exactly what `RootView` wires to the credential-erasure hook, in that order.
+    await snapshotStore.clear()
+    subject.value = nil
+    store.endSession()
+
+    await transport.holdFolderSummariesRequests(false)
+    await transport.releaseFolderSummaries()
+    await inFlight.value
+
+    #expect(store.summaries.isEmpty)
+    #expect(store.phase == .initialLoading)
+    #expect(store.lastFetchedAt == nil)
+    #expect(await snapshotStore.stored == nil)
+    #expect(await snapshotStore.savedSnapshots.isEmpty)
+  }
+
+  @Test("A subject switch DURING a fetch drops that fetch, even with no reset call in between")
+  func fetchInFlightAcrossSubjectSwitchIsDropped() async {
+    // The narrower window: the account changed but nothing has called back into the store yet,
+    // so the generation is untouched — the answer must still be recognised as another session's.
+    let subject = SubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([makeSummary(1, "ready_to_review")])
+    await transport.holdFolderSummariesRequests(true)
+    let inFlight = Task { await store.loadIfNeeded() }
+    await transport.waitUntilFolderSummariesStarted()
+
+    subject.value = "user-b"
+
+    await transport.holdFolderSummariesRequests(false)
+    await transport.releaseFolderSummaries()
+    await inFlight.value
+
+    #expect(store.summaries.isEmpty)
+    #expect(store.lastFetchedAt == nil)
+    // Never written under the subject the request was issued for, and never under the new one.
+    #expect(await snapshotStore.savedSnapshots.isEmpty)
+  }
+
+  @Test("An erasure landing DURING the snapshot write leaves no file behind")
+  func erasureDuringSaveLeavesNoSnapshot() async {
+    // The narrowest window of the same class: the fence was clean when the answer was published,
+    // and the sign-out lands while the write is still in flight. The write can no longer be
+    // stopped, so it has to be undone — asserted on the fake's own state, not on the call.
+    let subject = SubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([makeSummary(1, "ready_to_review")])
+    await snapshotStore.holdSaves(true)
+
+    let loading = Task { await store.loadIfNeeded() }
+    await snapshotStore.waitUntilSaveStarted()
+    subject.value = nil
+    store.endSession()
+    await snapshotStore.holdSaves(false)
+    await snapshotStore.releaseSave()
+    await loading.value
+
+    #expect(await snapshotStore.stored == nil)
+    #expect(await snapshotStore.clearCount == 1)
+  }
+
+  @Test("Positive control: the same held fetch, session unchanged, DOES publish and persist")
+  func heldFetchWithUnchangedSessionPublishes() async {
+    // Without this, the two drop-tests above would pass just as well against a store that never
+    // publishes anything at all.
+    let subject = SubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([makeSummary(1, "ready_to_review")])
+    await transport.holdFolderSummariesRequests(true)
+    let inFlight = Task { await store.loadIfNeeded() }
+    await transport.waitUntilFolderSummariesStarted()
+
+    await transport.holdFolderSummariesRequests(false)
+    await transport.releaseFolderSummaries()
+    await inFlight.value
+
+    #expect(store.phase == .reachable)
+    #expect(store.summaries.map(\.folderId) == [1])
+    #expect(await snapshotStore.savedSnapshots.count == 1)
+  }
+
   @Test("No cache and no subject yet: the launch presentation is unchanged (Loading shoots…)")
   func noSubjectStillLoadsLive() async {
     let (store, transport, snapshotStore) = makeStore(subject: SubjectBox(nil))

@@ -78,16 +78,27 @@ struct RootView: View {
     // LIVE read of the signed-in subject so a retained store cannot show account A's shoots to
     // account B — see `QueueStore.resetIfSubjectChanged`.
     let queueSnapshotStore = QueueSnapshotStore()
+    // A second write-once box, for the same reason as `unauthorizedBox` above and with the same
+    // ordering guarantee: the session's erase hook has to reach the QUEUE STORE, and the queue
+    // store has to read the SESSION's subject, so one of the two ends is filled in immediately
+    // after both exist — synchronously, before any request or sign-out can run.
+    let erasedBox = CredentialsErasedBox()
     let session = AuthSession(
       credentialStore: credentialStore, client: client,
-      onCredentialsErased: { await queueSnapshotStore.clear() })
-    _queueStore = State(
-      initialValue: QueueStore(
-        service: queueService, snapshotStore: queueSnapshotStore,
-        subject: { [weak session] in
-          guard case .signedIn(let subject) = session?.status else { return nil }
-          return subject
-        }))
+      onCredentialsErased: { await erasedBox.handler?() })
+    let queueStore = QueueStore(
+      service: queueService, snapshotStore: queueSnapshotStore,
+      subject: { [weak session] in
+        guard case .signedIn(let subject) = session?.status else { return nil }
+        return subject
+      })
+    erasedBox.handler = { [weak queueStore] in
+      await queueSnapshotStore.clear()
+      // Ends the session IN MEMORY too: clearing only the file would leave an in-flight fetch
+      // free to publish the signed-out account's answer and write the cache straight back.
+      await queueStore?.endSession()
+    }
+    _queueStore = State(initialValue: queueStore)
     heroLoader = HeroThumbnailLoader(service: gridService)
     unauthorizedBox.handler = { [weak session] token in
       await session?.handleTerminalUnauthorized(presentedToken: token)
@@ -332,4 +343,10 @@ struct RootView: View {
 /// a concurrent read could race — not because the box is generally thread-safe.
 private final class TerminalUnauthorizedBox: @unchecked Sendable {
   var handler: (@Sendable (String) async -> Void)?
+}
+
+/// The same write-once box for the credential-erasure hook (see `RootView.init`): filled in
+/// synchronously during init, before the app can sign out, so no read can observe it unset.
+private final class CredentialsErasedBox: @unchecked Sendable {
+  var handler: (@Sendable () async -> Void)?
 }

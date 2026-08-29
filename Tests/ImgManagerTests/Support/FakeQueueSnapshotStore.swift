@@ -58,7 +58,37 @@ actor FakeQueueSnapshotStore: QueueSnapshotPersisting {
     return resolved
   }
 
+  private var saveHoldEnabled = false
+  private var saveHasStarted = false
+  private var saveStartedContinuation: CheckedContinuation<Void, Never>?
+  private var saveReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  /// The write is a suspension point too, so a test needs to land a sign-out INSIDE it — the
+  /// window in which a store can resurrect the file the erasure just removed.
+  func holdSaves(_ hold: Bool) { saveHoldEnabled = hold }
+
+  func waitUntilSaveStarted() async {
+    if saveHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.saveStartedContinuation = continuation
+    }
+  }
+
+  func releaseSave() {
+    saveReleaseContinuation?.resume()
+    saveReleaseContinuation = nil
+    saveHasStarted = false
+  }
+
   func save(_ snapshot: QueueSnapshot) async {
+    if saveHoldEnabled {
+      saveHasStarted = true
+      saveStartedContinuation?.resume()
+      saveStartedContinuation = nil
+      await withCheckedContinuation { continuation in
+        self.saveReleaseContinuation = continuation
+      }
+    }
     stored = snapshot
     savedSnapshots.append(snapshot)
   }

@@ -141,6 +141,41 @@ struct QueueSnapshotStoreTests {
     #expect(values.isExcludedFromBackup == true)
   }
 
+  @Test("The DIRECTORY's protections are re-applied by every save, not only the one that made it")
+  func directoryProtectionsReAppliedOnEverySave() async throws {
+    // Diff-gate blocker 2: both objects must carry both protections after EVERY atomic write.
+    // The exclusion is stripped here between saves to prove the second save genuinely re-applies
+    // it, rather than the assertion passing on what the FIRST save left behind.
+    let directory = makeDirectory()
+    defer { removeDirectory(directory) }
+    let store = QueueSnapshotStore(directoryURL: directory)
+    await store.save(makeSnapshot())
+
+    var stripped = directory
+    var cleared = URLResourceValues()
+    cleared.isExcludedFromBackup = false
+    try stripped.setResourceValues(cleared)
+    let strippedValues = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+    #expect(strippedValues.isExcludedFromBackup == false)
+
+    await store.save(makeSnapshot())
+
+    let directoryValues = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+    #expect(directoryValues.isExcludedFromBackup == true)
+    let fileValues = try store.fileURL.resourceValues(forKeys: [.isExcludedFromBackupKey])
+    #expect(fileValues.isExcludedFromBackup == true)
+
+    // Protection class: asserted only where the platform reports one — a simulator has no data
+    // protection and returns no attribute, which is why the exclusion above (which IS enforced
+    // there) carries the simulator half of this proof.
+    for path in [directory.path, store.fileURL.path] {
+      let attributes = try FileManager.default.attributesOfItem(atPath: path)
+      if let protection = attributes[.protectionKey] as? FileProtectionType {
+        #expect(protection == .complete)
+      }
+    }
+  }
+
   @Test("The file is written with complete file protection where the platform enforces it")
   func cacheIsWrittenWithCompleteProtection() async throws {
     let directory = makeDirectory()

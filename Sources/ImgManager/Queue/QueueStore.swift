@@ -111,15 +111,29 @@ final class QueueStore {
     }
   }
 
+  /// Called the moment the credential these answers were fetched under is genuinely ERASED (the
+  /// same erase-path hook that destroys the persisted snapshot). Advancing the generation is the
+  /// load-bearing half: a fetch that was already in flight for the signed-out account completes
+  /// AFTER the sign-out, and without this its return path would publish that account's shoots
+  /// and write a brand-new snapshot — resurrecting exactly the cache the sign-out just destroyed.
+  func endSession() {
+    resetState(to: nil)
+  }
+
   /// The cross-account guard. A retained store must carry NOTHING from the account before it:
   /// after A signs out and B signs in, A's `.reachable` phase and A's cards are still sitting in
   /// this object unless they are dropped here, and `loadIfNeeded`'s own "already loaded" guard
-  /// would otherwise keep B looking at them forever. Bumping the generation fences an in-flight
-  /// network load AND a suspended snapshot read, so neither can publish A's answer afterwards.
+  /// would otherwise keep B looking at them forever.
   private func resetIfSubjectChanged() {
     let current = subject()
     guard current != activeSubject else { return }
-    activeSubject = current
+    resetState(to: current)
+  }
+
+  /// Bumping the generation fences an in-flight network load AND a suspended snapshot read, so
+  /// neither can publish the previous session's answer afterwards.
+  private func resetState(to newSubject: String?) {
+    activeSubject = newSubject
     loadGeneration += 1
     debounceTask?.cancel()
     debounceTask = nil
@@ -160,9 +174,17 @@ final class QueueStore {
       phase = .initialLoading
     }
     defer { if generation == loadGeneration { isRefreshing = false } }
+    // Captured BEFORE the request leaves: what comes back is an answer about THIS subject, and
+    // it may only be published if that is still who the app is signed in as. The generation
+    // catches every reset (sign-out, account switch, a newer load); the subject comparison
+    // catches a session that changed WITHOUT any store entry point having run yet — the window
+    // in which an erasure is already done but nothing has called back into the store.
+    let requestSubject = activeSubject
     do {
       let result = try await service.summaries()
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration, activeSubject == requestSubject,
+        subject() == requestSubject
+      else { return }
       let fetchedAt = now()
       summaries = result
       lastFetchedAt = fetchedAt
@@ -174,9 +196,22 @@ final class QueueStore {
         await snapshotStore.save(
           QueueSnapshot(
             summaries: result, fetchedAt: fetchedAt, baseURL: baseURL, subject: activeSubject))
+        // The write is itself a suspension point, so the guard above cannot be the last word: an
+        // erasure landing between it and the write completing would leave this store having just
+        // resurrected the file the sign-out removed. Re-read the fence AFTER the write — the
+        // first moment that is knowable — and undo it.
+        if generation != loadGeneration || self.activeSubject != requestSubject
+          || subject() != requestSubject
+        {
+          await snapshotStore.clear()
+        }
       }
     } catch {
-      guard generation == loadGeneration else { return }
+      // The same fence on the failure path: a dead session's failure is not this session's
+      // degraded state either.
+      guard generation == loadGeneration, activeSubject == requestSubject,
+        subject() == requestSubject
+      else { return }
       // "No cache" vs "stale data" (Q3) is read off whether there is anything to retain, not
       // off `hasLoadedSuccessfullyOnce` alone — a successful-but-empty prior fetch has no cards
       // to keep either, so it takes the same full-surface path as never having loaded at all.
