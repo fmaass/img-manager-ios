@@ -121,7 +121,12 @@ enum LayoutResolver {
 
   static func columnVisibility(for mode: LayoutMode) -> NavigationSplitViewVisibility {
     switch mode {
-    case .compact: return .detailOnly
+    // WP8 P7 (advisory 1, in scope): Compact used to force `.detailOnly` — the empty grid, with
+    // the sidebar (now the queue) unreachable until a shoot was somehow already selected. The
+    // queue is the launch surface now, so Compact starts on the sidebar column like Regular-2
+    // already does; tapping a queue card still pushes into `detail` (the grid) exactly as
+    // tapping a shoot in the old sidebar List always did.
+    case .compact: return .doubleColumn
     case .regular2: return .doubleColumn
     case .regular3: return .all
     }

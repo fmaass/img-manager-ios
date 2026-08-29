@@ -1514,4 +1514,250 @@ struct GridStoreTests {
     #expect(changedIDs == [1])
     #expect(freshMarkViews[1]?.revision == "r9")
   }
+
+  // MARK: - WP8 P7 (Q5): selectShoot's atomic (folderID, sourceTier) destination
+
+  @Test("selectShoot(folderID:sourceTier:) sets BOTH atomically — never a two-step transition")
+  func selectShootSetsBothFieldsAtomically() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 5, sourceTier: .archive)
+    #expect(store.query.folderID == 5)
+    #expect(store.query.sourceTier == .archive)
+  }
+
+  @Test(
+    "Same folder_id, DIFFERENT tier is a real scope change (reloadFirstPage), never a bare refresh"
+  )
+  func sameFolderDifferentTierIsScopeChange() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 5, sourceTier: .local)
+    let callsAfterFirst = await transport.callCount(Operations.ListImagesApiImagesGet.id)
+
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 5, sourceTier: .archive)
+
+    // A genuine scope change always issues its own fresh page-one fetch (reloadFirstPage),
+    // proving this went through the scope-change branch, not the same-scope refresh branch.
+    #expect(
+      await transport.callCount(Operations.ListImagesApiImagesGet.id) == callsAfterFirst + 1)
+    #expect(store.query.sourceTier == .archive)
+    #expect(store.images.map(\.id) == [2])
+  }
+
+  @Test("Same folder_id AND same tier is genuine re-entry — refreshes, never a duplicate load")
+  func sameFolderSameTierIsReEntry() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 5, sourceTier: .local)
+    await store.selectShoot(folderID: 5, sourceTier: .local)
+    // Both calls hit the SAME code path (reloadFirstPage first time, authoritativeRefresh
+    // second time) — each issues exactly one images() call, so two total.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(store.query.sourceTier == .local)
+  }
+
+  @Test("Omitting sourceTier reproduces the pre-P7 behavior exactly (nil, unconditionally)")
+  func omittedSourceTierDefaultsNil() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 5, sourceTier: .archive)
+    #expect(store.query.sourceTier == .archive)
+    // A caller that never learned about tiers (every pre-P7 call site) still clears it back to
+    // nil on its own next scope change — never silently inherits a stale tier from elsewhere.
+    await store.selectShoot(folderID: 6)
+    #expect(store.query.sourceTier == nil)
+  }
+
+  // MARK: - WP8 P7 (coexistence 7c): mutationCommitCount
+
+  @Test("mutationCommitCount increments on a COMMITTED mark, never on a rolled-back one")
+  func mutationCommitCountTracksCommitsOnly() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    #expect(store.mutationCommitCount == 0)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.applyMark(.pick, to: [1])
+    #expect(store.mutationCommitCount == 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    await store.applyMark(.dislike, to: [1])
+    // A refused write (conflict/rollback) must NOT increment — still 1, not 2.
+    #expect(store.mutationCommitCount == 1)
+  }
+
+  @Test("mutationCommitCount increments on a committed tag write too")
+  func mutationCommitCountTracksTagCommits() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setTagsOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.addTag("favorite", to: [1])
+    #expect(store.mutationCommitCount == 1)
+  }
+
+  // MARK: - WP8 P7 round-2 closure (diff-gate round 3)
+
+  private func makeQueueSummary(folderId: Int, sourceTier: String)
+    -> Components.Schemas.FolderSummary
+  {
+    Components.Schemas.FolderSummary(
+      cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId, kind: "dated",
+      lastTouched: nil, nothingLeftUnmarked: false, path: "p/\(folderId)", picked: 0,
+      previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!,
+      sourceTier: sourceTier, sync: nil, total: 1, unmarked: 1, withMasters: 0)
+  }
+
+  // B1 (QueueView.swift:66): a queue-card tap used to forward `summary.sourceTier` instead of
+  // clearing it — this test routes through the ACTUAL production function `QueueCardRow`'s tap
+  // gesture calls (`QueueCardDestination.route(for:)`), never a hand-typed `nil`, so a
+  // regression back to `summary.sourceTier` fails THIS test.
+  @Test(
+    "Queue-card entry clears a prior tree tier at the PRODUCTION forwarding level (B1)"
+  )
+  func queueCardEntryClearsTreeTierAtProductionForwardingLevel() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    // Tree entry: a Local/Archive branch tap sets a real tier filter.
+    await store.selectShoot(folderID: 5, sourceTier: .archive)
+    #expect(store.query.sourceTier == .archive)
+
+    // Queue-card entry: the summary's OWN sourceTier is "archive" too (matching the tree's
+    // last tier), proving the clear is unconditional -- never a same-tier coincidence.
+    let summary = makeQueueSummary(folderId: 6, sourceTier: "archive")
+    let destination = QueueCardDestination.route(for: summary)
+    await store.selectShoot(folderID: destination.folderID, sourceTier: destination.sourceTier)
+
+    #expect(store.query.folderID == 6)
+    #expect(store.query.sourceTier == nil)
+  }
+
+  // B2 (GridStore.swift applyMark/undoLastMark/addTag): the commit signal used to sit AFTER the
+  // generation guard at all three sites -- a scope change racing an in-flight, server-committed
+  // mutation discarded the signal along with the (correctly-discarded) local reconciliation, so
+  // the queue never learned a committed mutation happened. Each test below holds the mutation's
+  // network call, races a genuine scope change (`selectShoot`, which never touches the mutation
+  // lane) while it is suspended, then releases with a SUCCESS outcome.
+
+  @Test(
+    "B2 (applyMark): a committed mark still increments mutationCommitCount despite a racing generation change"
+  )
+  func applyMarkCommitCountFencedGenerationStillIncrements() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    #expect(store.mutationCommitCount == 0)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await transport.holdMarkStateRequests(true)
+    async let markCall: Void = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+
+    // The scope change lands and completes WHILE the mark request is still suspended --
+    // selectShoot never touches the mutation lane, so nothing here queues behind it.
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    await markCall
+
+    // The write landed server-side (success outcome) -- the commit signal must fire even
+    // though the generation moved out from under it in the meantime.
+    #expect(store.mutationCommitCount == 1)
+    #expect(store.query.folderID == 2)  // the scope change itself was never rolled back
+  }
+
+  @Test(
+    "B2 (applyMark): a REFUSED (409) mark never increments mutationCommitCount, race or no race"
+  )
+  func applyMarkConflictFencedGenerationDoesNotIncrement() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    await transport.holdMarkStateRequests(true)
+    async let markCall: Void = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    await markCall
+
+    #expect(store.mutationCommitCount == 0)
+  }
+
+  @Test(
+    "B2 (undoLastMark): a committed undo still increments mutationCommitCount despite a racing generation change"
+  )
+  func undoCommitCountFencedGenerationStillIncrements() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .dislike, revision: "r0")], limit: 100, nextCursor: nil)
+    )
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.applyMark(.pick, to: [1])
+    #expect(store.mutationCommitCount == 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])))
+    await transport.holdMarkStateRequests(true)
+    async let undoCall: Void = store.undoLastMark()
+    await transport.waitUntilMarkStateStarted()
+
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    await undoCall
+
+    #expect(store.mutationCommitCount == 2)
+  }
+
+  @Test(
+    "B2 (addTag): a committed tag write still increments mutationCommitCount despite a racing generation change"
+  )
+  func addTagCommitCountFencedGenerationStillIncrements() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setTagsOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await transport.holdTagsRequests(true)
+    async let tagCall: Void = store.addTag("favorite", to: [1])
+    await transport.waitUntilTagsStarted()
+
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    await transport.holdTagsRequests(false)
+    await transport.releaseTags()
+    await tagCall
+
+    #expect(store.mutationCommitCount == 1)
+  }
 }

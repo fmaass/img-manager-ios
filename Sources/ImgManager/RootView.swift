@@ -25,7 +25,15 @@ import SwiftUI
 /// the retired `UnauthenticatedPlaceholderClientTransport`.
 struct RootView: View {
   @State private var layoutMode: LayoutMode = .compact
-  @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
+  // WP8 P7 (advisory 1): must agree with `LayoutResolver.columnVisibility(for: .compact)` —
+  // `applyWidth`'s own `guard mode != layoutMode else { return }` means this INITIAL value is
+  // what actually governs a genuine Compact-width launch (the common case: the first
+  // `.onGeometryChange` pass resolves to the same `.compact` `layoutMode` already set above, so
+  // the guard skips ever re-deriving `columnVisibility` from `LayoutResolver` at all). A
+  // mismatched literal here would silently reintroduce the pre-P7 "Compact starts on the empty
+  // grid" bug this same phase fixes in `LayoutResolver`.
+  @State private var columnVisibility: NavigationSplitViewVisibility =
+    LayoutResolver.columnVisibility(for: .compact)
   @State private var connectivity: ConnectivityState
   @State private var auth: AuthSession
   @State private var showAccountSheet = false
@@ -33,7 +41,11 @@ struct RootView: View {
   /// — see that type's doc comment for why P4 does not extend P3's).
   @State private var gridStore: GridStore
   private let gridService: GridService
-  @State private var folders: [Components.Schemas.FolderNode] = []
+  /// WP8 P7: the work-queue home's own orchestrator and hero-thumbnail loader — siblings of
+  /// `gridStore`/`gridService`, sharing the SAME generated `client` but no mutable state with
+  /// either (P6 coexistence, binding adjudication 7).
+  @State private var queueStore: QueueStore
+  private let heroLoader: HeroThumbnailLoader
   @State private var selectedFolderID: Int?
   @State private var showInspectorSheet = false
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -60,6 +72,9 @@ struct RootView: View {
     let gridService = GridService(client: client)
     self.gridService = gridService
     _gridStore = State(initialValue: GridStore(service: gridService))
+    let queueService = QueueService(client: client)
+    _queueStore = State(initialValue: QueueStore(service: queueService))
+    heroLoader = HeroThumbnailLoader(service: gridService)
     let session = AuthSession(credentialStore: credentialStore, client: client)
     unauthorizedBox.handler = { [weak session] token in
       await session?.handleTerminalUnauthorized(presentedToken: token)
@@ -92,11 +107,26 @@ struct RootView: View {
       // prior two-`Task{}` shape ran renewal and the grid reload concurrently/unordered, and
       // used `fullReload()` (unconditional focus-clear); `authoritativeRefresh()` replaces that
       // reload with the generation-fenced, multi-page, focus-preserving re-read.
+      //
+      // P7 coexistence (binding adjudication 7a): the queue's OWN foreground refresh is
+      // appended AFTER the grid step, unconditionally (even with no shoot selected) — see
+      // `ForegroundRefresh.run`'s own doc comment for why this ordering is a pulled-out,
+      // independently-tested pure sequencing function rather than inline closure logic.
       Task {
-        await auth.renewOnForeground()
-        guard case .signedIn = auth.status, gridStore.query.folderID != nil else { return }
-        await gridStore.authoritativeRefresh()
+        await ForegroundRefresh.run(
+          renew: { await auth.renewOnForeground() },
+          isSignedIn: { if case .signedIn = auth.status { true } else { false } },
+          hasSelectedShoot: { gridStore.query.folderID != nil },
+          refreshGrid: { await gridStore.authoritativeRefresh() },
+          refreshQueue: { await queueStore.refresh() }
+        )
       }
+    }
+    .onChange(of: gridStore.mutationCommitCount) { _, _ in
+      // P7 coexistence (binding adjudication 7c): the ONE signal a committed mark/undo/tag
+      // mutation gives the queue — a coalesced, debounced re-read, never an optimistic local
+      // patch. Pure view-layer glue: neither store knows about the other.
+      queueStore.invalidateAfterMutation()
     }
   }
 
@@ -150,11 +180,14 @@ struct RootView: View {
     .task {
       await connectivity.check()
       #if DEBUG
-        if DebugStubLaunch.isActive {
+        if DebugStubLaunch.isActive && !DebugStubLaunch.skipAutoSelect {
           // Auto-select the fixture shoot so the grid is already populated for screenshots —
           // no manual navigation step in the fixture harness. Sets `selectedFolderID` too (not
           // just calling the store directly) so the List's own selection state agrees and the
-          // split view actually navigates, exactly as a real tap would.
+          // split view actually navigates, exactly as a real tap would. WP8 P7:
+          // `skipAutoSelect` lets the queue's OWN screenshot see the sidebar as a real launch
+          // would, instead of being auto-navigated past it into the grid (see that flag's own
+          // doc comment).
           selectedFolderID = 1
           await gridStore.selectShoot(folderID: 1)
         }
@@ -203,62 +236,38 @@ struct RootView: View {
     columnVisibility = LayoutResolver.columnVisibility(for: mode)
   }
 
+  /// WP8 P7 (advisory 1 / Q's launch-surface change): this IS the queue now — Compact's launch
+  /// surface (a full-screen list) and Regular's persistent sidebar column, with the pre-P7
+  /// shoot-tree List folded into `FolderTreeSection` as a secondary, collapsed disclosure
+  /// (Regular only; nil on Compact). The row-navigation discipline this replaces (selection-
+  /// bound List + `.simultaneousGesture`, never a bare `Button`, never `onChange`) is preserved
+  /// verbatim inside `QueueView`/`FolderTreeSection` themselves — see their own doc comments.
   private var sidebar: some View {
     Group {
-      switch connectivity.status {
+      // Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides
+      // this branch — `QueueView` mounts for BOTH `.connected` and `.unreachable` so its own
+      // `QueueStore` degraded-state machine is always the one that runs; see that type's own
+      // doc comment for why the old direct switch was a defect, not a deliberate second gate.
+      switch SidebarRouting.destination(for: connectivity.status) {
       case .checking:
         ProgressView()
-      case .connected:
-        // Shoot navigation (P4 endpoint table: `GET /api/folders`; sufficient; never render
-        // `FolderNode.path`). The browsable shoot leaves are the dated kinds — see
-        // `ShootListFilter` for the vocabulary and IMGMGR-173 for why the value is pinned
-        // there, not inlined here. Selection-bound (not a bare `Button`) so
-        // `NavigationSplitView` actually navigates into the content column on ALL layout
-        // modes, Compact included — a plain `Button` calling `selectShoot` mutated the
-        // grid's data but never pushed the split view anywhere.
-        //
-        // Diff-gate round 2, B3, and round 3's follow-up: the store call moved OFF
-        // `onChange(of: selectedFolderID)` (which never fires when a tap doesn't change the
-        // bound value — i.e. never on a tap of the ALREADY-selected row, leaving same-shoot
-        // re-entry's own refresh unreachable from the real UI) onto ONE explicit tap handler.
-        // Round 2's first attempt attached the gesture to the bare `Text`, whose hit-testing
-        // frame is only as wide as its GLYPHS — a tap on the row's own whitespace (everything
-        // else in the row's full width) landed on the List's OWN internal row-selection
-        // recognizer only, updating `selectedFolderID` without ever calling `selectShoot` at
-        // all (a regression: even a FIRST or different-shoot selection via whitespace could
-        // silently no-op). Fixed by giving the row content `.frame(maxWidth: .infinity,
-        // alignment: .leading)` — filling the row's full rendered width — THEN
-        // `.contentShape(Rectangle())`, which replaces Text's default tight-glyph hit-testing
-        // with that WHOLE expanded rectangle; the tap gesture attached after both modifiers
-        // therefore fires for a tap ANYWHERE in the row, whitespace included, with no second
-        // path (onChange or otherwise) left that could reach `selectShoot`. The ONE handler
-        // itself sets `selectedFolderID` (so the visual highlight / `NavigationSplitView` push
-        // is driven deterministically by this same code path, not left to race against the
-        // List's own independent internal recognizer) and then calls `selectShoot` on every
-        // tap unconditionally, same-value or not — `simultaneousGesture` still lets the List's
-        // own built-in handling run alongside rather than being consumed/replaced.
-        List(ShootListFilter.shoots(folders), id: \.id, selection: $selectedFolderID) {
-          folder in
-          Text(folder.name)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-              TapGesture().onEnded {
-                selectedFolderID = folder.id
-                Task { await gridStore.selectShoot(folderID: folder.id) }
-              }
-            )
-        }
-        .task {
-          if let tree = try? await gridService.folders() {
-            folders = tree.items
-          }
-        }
-      case .unreachable:
-        Text(DegradedStateCopy.notConnected)
+      case .queue:
+        QueueView(
+          queueStore: queueStore, heroLoader: heroLoader, selectedFolderID: $selectedFolderID,
+          onSelect: { folderID, sourceTier in
+            selectedFolderID = folderID
+            Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
+          },
+          treeSection: layoutMode == .compact
+            ? nil
+            : FolderTreeSection(
+              gridService: gridService, selectedFolderID: $selectedFolderID,
+              onSelect: { folderID, sourceTier in
+                Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
+              })
+        )
       }
     }
-    .navigationTitle("img-manager")
   }
 
   private var contentColumn: some View {
