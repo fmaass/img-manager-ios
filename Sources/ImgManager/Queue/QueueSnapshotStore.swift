@@ -44,7 +44,8 @@ actor QueueSnapshotStore: QueueSnapshotPersisting {
   }
 
   static var defaultDirectoryURL: URL {
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+    let base =
+      FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
       .first ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
     return base.appendingPathComponent("ImgManager", isDirectory: true)
   }
