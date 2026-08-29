@@ -289,6 +289,74 @@ final class GridStore {
     await reloadFirstPage()
   }
 
+  // MARK: - Stats facets (WP12: the Compact filter surface)
+
+  /// The counts the Stats tab renders. They live HERE, not in the inspector view's own `@State`,
+  /// because the thing that has to be provable is the CHAIN — a facet tap changes the filter and
+  /// the counts come back in step — and a trigger that only exists inside a SwiftUI `.task(id:)`
+  /// modifier cannot be exercised by any test, so deleting it would break the app while every
+  /// test stayed green.
+  private(set) var facets: Components.Schemas.ImageFacets?
+
+  /// The query the published `facets` describes. `refreshFacets` is a no-op while it already
+  /// matches, so the inspector's `.task(id: queryIdentity)` re-firing right after a tap that
+  /// already refreshed does not fetch the same counts a second time.
+  private(set) var facetsIdentity: GridImagesQuery?
+
+  /// The refresh currently in flight, recorded SYNCHRONOUSLY — before this method's first
+  /// suspension — so a second caller for the SAME query joins it instead of issuing a duplicate
+  /// request. This is the reentrancy the MainActor does not prevent: `applyFacetFilter` sets
+  /// `query` and then suspends inside `reloadFirstPage`, and the inspector's
+  /// `.task(id: queryIdentity)` fires for the NEW identity inside that window. With the identity
+  /// only written after the network await, both calls passed the guard below and whichever
+  /// response came home last won.
+  private var facetsRefresh: (identity: GridImagesQuery, task: Task<Void, Never>)?
+
+  /// Idempotent per query: the inspector's `.task(id:)` calls this on appearance and on every
+  /// query-identity change, and the tap handlers below call it after they mutate the filter.
+  /// A response that arrives after the query moved on is discarded (same discipline as the
+  /// paging generation fence), and a failed fetch leaves the last good counts standing rather
+  /// than blanking the tab — absence renders as absence, never as zeros.
+  func refreshFacets() async {
+    let requested = query
+    if facetsIdentity == requested, facets != nil { return }
+    if let inFlight = facetsRefresh, inFlight.identity == requested {
+      await inFlight.task.value
+      return
+    }
+    // A refresh for a DIFFERENT identity is never joined — it supersedes. The superseded task is
+    // left to finish and discard itself on its own guard rather than being cancelled, so a
+    // response racing home first can still never publish counts for a query already moved past.
+    let task = Task { @MainActor in
+      let fetched = try? await self.service.facets(requested)
+      guard self.query == requested, let fetched else { return }
+      self.facets = fetched
+      self.facetsIdentity = requested
+    }
+    facetsRefresh = (requested, task)
+    await task.value
+    // Compared by TASK, not by identity: a newer refresh for the same identity may already have
+    // claimed the slot while this one was in flight, and clearing it would let a duplicate
+    // through the join above.
+    if facetsRefresh?.task == task { facetsRefresh = nil }
+  }
+
+  /// A Stats facet row's tap, as ONE call: mutate that dimension (one value per dimension — a
+  /// second tap on the active value clears it) and bring the counts back in step. The view's
+  /// Button does exactly this and nothing else, so a test that calls it exercises the whole
+  /// chain the row triggers.
+  func applyFacetFilter(_ field: InspectorFacetField, value: String) async {
+    await applyFilterChange { field.toggle(value, in: &$0) }
+    await refreshFacets()
+  }
+
+  /// The Stats tab's "Clear filters" row: the facet fields only — never the shoot scope
+  /// (`folderID`/`sourceTier`, set atomically by `selectShoot`) and never `q`.
+  func clearFacetFilters() async {
+    await applyFilterChange { InspectorFacetFilters.clear(&$0) }
+    await refreshFacets()
+  }
+
   /// Foreground/retry: same scope, fresh data.
   func fullReload() async {
     selection.reset(.fullReload)

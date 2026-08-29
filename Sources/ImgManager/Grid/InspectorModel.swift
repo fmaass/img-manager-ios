@@ -148,6 +148,194 @@ struct InspectorMarkBlock: Equatable {
   }
 }
 
+/// The Stats tab's filter surface as a value type: one case per facet dimension the server
+/// returns AND the generated client can actually send back as a filter, with the pure query
+/// transforms a touch row needs. It lives here rather than in the view so that "which value is
+/// active", "what a second tap does" and "what Clear clears" are unit-testable without SwiftUI —
+/// the view only renders what this type decides.
+///
+/// `sidecar` is deliberately NOT a case, even though `GET /api/facets` returns a `sidecar` list:
+/// the vendored contract declares that PARAMETER as `anyOf: [$ref SidecarPresence, null]`, the
+/// idiom swift-openapi-generator drops silently (docs/OPENAPI_NORMALIZATION_DEBT.md — the 12
+/// `$ref` + null forms the retired normalisation bridge deliberately left alone, "a reference
+/// plus null is a different fix"). Neither `ListImagesApiImagesGet.Input.Query` nor
+/// `ImageFacetsApiFacetsGet.Input.Query` has the property at all (verified in the probe's own
+/// generated output, docs/evidence/p0a-probe/Types-BRIDGED-COMPLETE.swift.gz), which is also why
+/// `GridImagesQuery` never had a `sidecar` field. A sidecar row could show a count but never
+/// apply one, so it is not offered; closing that needs a backend schema change plus a re-vendor.
+enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
+  case mark
+  case rating
+  case label
+  case keyword
+  case tag
+  case sourceTier
+  case ext
+  case good
+  case hasMaster
+  case cameraPreviewOnly
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .mark: return "Mark"
+    case .rating: return "Rating"
+    case .label: return "Label"
+    case .keyword: return "Keyword"
+    case .tag: return "Tag"
+    case .sourceTier: return "Source"
+    case .ext: return "Type"
+    case .good: return "Good"
+    case .hasMaster: return "Master"
+    case .cameraPreviewOnly: return "Camera preview only"
+    }
+  }
+
+  /// The server's own counts for this dimension, verbatim — never recomputed or re-derived
+  /// client-side. A dimension the server sent no values for renders as absence, not as a zero.
+  func counts(from facets: Components.Schemas.ImageFacets) -> [Components.Schemas.FacetCount] {
+    switch self {
+    case .mark: return facets.mark ?? []
+    case .rating: return facets.rating ?? []
+    case .label: return facets.label ?? []
+    case .keyword: return facets.keyword ?? []
+    case .tag: return facets.tag ?? []
+    case .sourceTier: return facets.sourceTier ?? []
+    case .ext: return facets.ext ?? []
+    case .good: return facets.good ?? []
+    case .hasMaster: return facets.hasMaster ?? []
+    case .cameraPreviewOnly: return facets.cameraPreviewOnly ?? []
+    }
+  }
+
+  /// A row's label: the server's own value everywhere except the boolean dimensions, whose wire
+  /// values ("true"/"false") are not something a person reads. Counts are never touched.
+  func displayValue(_ value: String) -> String {
+    switch self {
+    case .good, .hasMaster, .cameraPreviewOnly:
+      switch value {
+      case "true": return "Yes"
+      case "false": return "No"
+      default: return value
+      }
+    case .mark, .rating, .label, .keyword, .tag, .sourceTier, .ext:
+      return value
+    }
+  }
+
+  /// Is `value` the value this dimension is currently filtered to? Drives the row's selected
+  /// state AND the second-tap-clears rule below, so both can never disagree.
+  func isActive(_ value: String, in query: GridImagesQuery) -> Bool {
+    switch self {
+    case .mark: return query.mark == value
+    case .rating: return query.ratingMin.map { String($0) } == value
+    case .label: return query.label == value
+    case .keyword: return query.keyword == value
+    case .tag: return query.tag == value
+    case .sourceTier: return query.sourceTier?.rawValue == value
+    case .ext: return query.ext == value
+    case .good: return query.good.map { String($0) } == value
+    case .hasMaster: return query.hasMaster.map { String($0) } == value
+    // The parameter's contract default is `false`, so only `true` is ever a filter — the
+    // server offers no "false" row for it either.
+    case .cameraPreviewOnly: return query.cameraPreviewOnly == true && value == "true"
+    }
+  }
+
+  /// One value per dimension — the web's chip semantics: tapping a different value switches to
+  /// it, tapping the value that is already active clears the dimension. A value this client
+  /// cannot express as a filter (the rating facet's "unset" row, an unknown tier) clears the
+  /// dimension rather than sending a filter the server would refuse or silently ignore.
+  func toggle(_ value: String, in query: inout GridImagesQuery) {
+    guard !isActive(value, in: query) else {
+      clear(in: &query)
+      return
+    }
+    switch self {
+    case .mark: query.mark = value
+    case .rating: query.ratingMin = Int(value)
+    case .label: query.label = value
+    case .keyword: query.keyword = value
+    case .tag: query.tag = value
+    case .sourceTier: query.sourceTier = GridSourceTier(rawValue: value)
+    case .ext: query.ext = value
+    case .good: query.good = Bool(value)
+    case .hasMaster: query.hasMaster = Bool(value)
+    case .cameraPreviewOnly: query.cameraPreviewOnly = value == "true" ? true : nil
+    }
+  }
+
+  func clear(in query: inout GridImagesQuery) {
+    switch self {
+    case .mark: query.mark = nil
+    case .rating: query.ratingMin = nil
+    case .label: query.label = nil
+    case .keyword: query.keyword = nil
+    case .tag: query.tag = nil
+    case .sourceTier: query.sourceTier = nil
+    case .ext: query.ext = nil
+    case .good: query.good = nil
+    case .hasMaster: query.hasMaster = nil
+    case .cameraPreviewOnly: query.cameraPreviewOnly = nil
+    }
+  }
+
+  func isSet(in query: GridImagesQuery) -> Bool {
+    switch self {
+    case .mark: return query.mark != nil
+    case .rating: return query.ratingMin != nil
+    case .label: return query.label != nil
+    case .keyword: return query.keyword != nil
+    case .tag: return query.tag != nil
+    case .sourceTier: return query.sourceTier != nil
+    case .ext: return query.ext != nil
+    case .good: return query.good != nil
+    case .hasMaster: return query.hasMaster != nil
+    case .cameraPreviewOnly: return query.cameraPreviewOnly == true
+    }
+  }
+}
+
+/// The active-filter count and the Clear action, over an EXPLICIT field list — never "every
+/// non-nil property of the query", which would sweep up things no facet row ever set.
+///
+/// Out of the list by design: `folderID` and `sourceTier` are the SHOOT SCOPE, set atomically as
+/// one destination by `GridStore.selectShoot`, so clearing the tier alone would publish a folder
+/// whose tier no longer matches it, and an archive shoot would badge "1 filter" with nothing
+/// filtered; `q`, `tree`, the date bounds and `missing` are surfaces this tab does not render at
+/// all (the phone's free-text surface is a separate, still-open question). The Source row stays
+/// tappable and self-clearing — only the count and Clear leave the tier alone.
+enum InspectorFacetFilters {
+  static let clearableFields: [InspectorFacetField] = [
+    .mark, .rating, .label, .keyword, .tag, .ext, .good, .hasMaster, .cameraPreviewOnly,
+  ]
+
+  static func activeCount(_ query: GridImagesQuery) -> Int {
+    clearableFields.filter { $0.isSet(in: query) }.count
+  }
+
+  static func clear(_ query: inout GridImagesQuery) {
+    for field in clearableFields {
+      field.clear(in: &query)
+    }
+  }
+
+  /// The Info button's own title: on Compact the sheet is the ONLY filter surface, so the button
+  /// that opens it is where "filters are on" has to be visible.
+  static func infoButtonTitle(activeCount: Int) -> String {
+    activeCount > 0 ? "Info · \(activeCount)" : "Info"
+  }
+
+  static func infoButtonAccessibilityLabel(activeCount: Int) -> String {
+    switch activeCount {
+    case 0: return "Info"
+    case 1: return "Info, 1 filter active"
+    default: return "Info, \(activeCount) filters active"
+    }
+  }
+}
+
 /// Read-only truth from the XMP sidecar — a DIFFERENT struct from `InspectorMarkBlock`, which is
 /// the structural half of "visibly separated": there is no shared type or shared section a view
 /// could accidentally fold the two into. Absence-tolerant: no sidecar is a stated fact, not an

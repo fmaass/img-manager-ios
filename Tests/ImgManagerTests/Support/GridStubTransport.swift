@@ -22,6 +22,7 @@ actor GridStubTransport: ClientTransport {
   /// (which resends with `cursor == nil`) actually lands on real data again.
   var listImagesRejectNonNilCursor = false
   var facetsResult = Components.Schemas.ImageFacets(total: 0)
+  var facetsShouldFail = false
   var detailResult: Components.Schemas.ImageDetail?
   /// Diff-gate round 3, B6: a `GET /api/images/{id}` failure for the NEXT call (self-disarming
   /// one-shot, same discipline as `listImagesShouldFail`) — models the per-id detail() fallback
@@ -124,6 +125,43 @@ actor GridStubTransport: ClientTransport {
     tagsHasStarted = false
   }
 
+  // MARK: - WP12 facets reentrancy (compact filter surface)
+
+  /// The same hold/release pattern as `listImages`/`neighbours` above, for
+  /// `GET /api/facets`: lets a test keep ONE facets request genuinely in flight while a second
+  /// `refreshFacets()` for the same query runs, which is the only way to prove the store's
+  /// single-flight coalescing rather than to assume it.
+  ///
+  /// The release side holds a LIST of continuations, unlike the single-slot holds above: the
+  /// whole point of the coalescing test is that a SECOND request must not arrive, and a
+  /// single slot would let a regression overwrite the first request's continuation and hang the
+  /// suite instead of failing it. With a list, a regression releases both and the test fails on
+  /// its call-count assertion, which is a verdict rather than a timeout.
+  private var facetsHoldEnabled = false
+  private var facetsHasStarted = false
+  private var facetsStartedContinuation: CheckedContinuation<Void, Never>?
+  private var facetsReleaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+  func holdFacetsRequests(_ hold: Bool) { facetsHoldEnabled = hold }
+
+  /// Suspends until a held facets call has genuinely entered `send(...)` — deterministic, not a
+  /// sleep.
+  func waitUntilFacetsStarted() async {
+    if facetsHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.facetsStartedContinuation = continuation
+    }
+  }
+
+  func releaseFacets() {
+    let waiting = facetsReleaseContinuations
+    facetsReleaseContinuations = []
+    facetsHasStarted = false
+    for continuation in waiting {
+      continuation.resume()
+    }
+  }
+
   // MARK: - P5 stale-neighbours race (diff-gate round, 2026-08-28)
 
   /// The same hold pattern for `GET /api/images/{id}/neighbours`: lets a test land a
@@ -216,9 +254,38 @@ actor GridStubTransport: ClientTransport {
   private(set) var lastTagsRequest: Components.Schemas.MarkTagsRequest?
   private(set) var callCounts: [String: Int] = [:]
 
+  // MARK: - Recorded browse-request query parameters (WP12 compact filter surface)
+
+  /// Every `GET /api/images` and `GET /api/facets` request's query parameters, in order, read
+  /// off the URL the REAL generated `Client` built — so a test can prove a Stats-row tap
+  /// actually reaches the server as a filter, rather than only that a Swift property changed.
+  /// Names are the wire's own (`folder_id`, `rating_min`, `source_tier`, …), never the Swift
+  /// property names, which is exactly what makes this a contract check.
+  private(set) var recordedListImagesQueries: [[String: String]] = []
+  private(set) var recordedFacetsQueries: [[String: String]] = []
+
+  var lastListImagesQuery: [String: String]? { recordedListImagesQueries.last }
+  var lastFacetsQuery: [String: String]? { recordedFacetsQueries.last }
+
+  private func queryParameters(of request: HTTPRequest) -> [String: String] {
+    guard let path = request.path, let items = URLComponents(string: path)?.queryItems else {
+      return [:]
+    }
+    var parameters: [String: String] = [:]
+    for item in items {
+      guard let value = item.value else { continue }
+      parameters[item.name] = value
+    }
+    return parameters
+  }
+
   func setListImagesPage(_ page: Components.Schemas.ImagePage) { listImagesPage = page }
   func setListImagesRejectNonNilCursor(_ reject: Bool) { listImagesRejectNonNilCursor = reject }
   func setFacetsResult(_ result: Components.Schemas.ImageFacets) { facetsResult = result }
+  /// A `GET /api/facets` failure for the NEXT call only (self-disarming single slot, same
+  /// discipline as `detailShouldFail`) — models the Stats counts being unreachable while a
+  /// filter tap still lands, which is what the "last good counts stand" rule is about.
+  func setFacetsShouldFail(_ fail: Bool) { facetsShouldFail = fail }
   func setDetailResult(_ result: Components.Schemas.ImageDetail) { detailResult = result }
   func setDetailShouldFail(_ fail: Bool) { detailShouldFail = fail }
   func setProxyOutcome(_ outcome: ProxyOutcome) { proxyOutcome = outcome }
@@ -264,6 +331,7 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, Components.Schemas.FolderSummaryList(items: resolvedItems))
 
     case Operations.ListImagesApiImagesGet.id:
+      recordedListImagesQueries.append(queryParameters(of: request))
       let cursorValue = request.path.flatMap(URLComponents.init(string:))?
         .queryItems?.first(where: { $0.name == "cursor" })?.value
       if listImagesShouldFail {
@@ -304,7 +372,23 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, resolvedPage)
 
     case Operations.ImageFacetsApiFacetsGet.id:
-      return try jsonResponse(.ok, facetsResult)
+      recordedFacetsQueries.append(queryParameters(of: request))
+      // Resolved BEFORE any hold-suspend, same discipline as `listImages`: a held call returns
+      // what was configured at REQUEST time, not what the stub drifted to while it sat held.
+      let resolvedFacets = facetsResult
+      if facetsHoldEnabled {
+        facetsHasStarted = true
+        facetsStartedContinuation?.resume()
+        facetsStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.facetsReleaseContinuations.append(continuation)
+        }
+      }
+      if facetsShouldFail {
+        facetsShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced facets failure")
+      }
+      return try jsonResponse(.ok, resolvedFacets)
 
     case Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id:
       if neighboursHoldEnabled {

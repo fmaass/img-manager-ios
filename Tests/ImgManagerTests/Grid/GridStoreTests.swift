@@ -493,6 +493,191 @@ struct GridStoreTests {
     #expect(store.selection.members == [1])
   }
 
+  // MARK: - Stats-tab facet taps reach the wire (WP12 compact filter surface)
+
+  /// Same construction as `makeStore()`. The service is NOT handed to the tests to call
+  /// directly — driving `GridService.facets` by hand would prove nothing about the app, since
+  /// deleting the store's own refresh would leave such a test green. Every assertion below goes
+  /// through `applyFacetFilter`/`clearFacetFilters`/`refreshFacets`, which is exactly what the
+  /// Stats row's Button and the inspector's `.task(id:)` call and all they call.
+  private func makeStoreWithFacets(total: Int) async -> (GridStore, GridStubTransport) {
+    let transport = GridStubTransport()
+    let client = ImgManagerAPIClient.make(transport: transport)
+    let store = GridStore(service: GridService(client: client))
+    await transport.setFacetsResult(.init(total: total))
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    return (store, transport)
+  }
+
+  @Test("A facet-row tap carries the filter into BOTH the images and the facets request")
+  func facetTapReachesImagesAndFacetsRequests() async {
+    let (store, transport) = await makeStoreWithFacets(total: 42)
+    await store.selectShoot(folderID: 7)
+    await store.refreshFacets()  // what the inspector's `.task(id:)` does on appearance
+    let identityBeforeTap = store.queryIdentity
+    let facetsBeforeTap = await transport.callCount(Operations.ImageFacetsApiFacetsGet.id)
+
+    // Exactly what the Stats row's Button does when "pick" under Mark is tapped — no test-only
+    // call path, and nothing else in between.
+    await store.applyFacetFilter(.mark, value: "pick")
+
+    #expect(store.query.mark == "pick")
+    let imagesQuery = await transport.lastListImagesQuery
+    #expect(imagesQuery?["mark"] == "pick")
+    #expect(imagesQuery?["folder_id"] == "7")
+
+    // The counts were refetched BY THE TAP, under the new filter — not by the test.
+    let facetsAfterTap = await transport.callCount(Operations.ImageFacetsApiFacetsGet.id)
+    #expect(facetsAfterTap == facetsBeforeTap + 1)
+    let facetsQuery = await transport.lastFacetsQuery
+    #expect(facetsQuery?["mark"] == "pick")
+    #expect(facetsQuery?["folder_id"] == "7")
+    #expect(store.facets?.total == 42)
+    #expect(store.queryIdentity != identityBeforeTap)
+
+    // The inspector's `.task(id:)` re-fires on that same identity change: it must not fetch the
+    // same counts a second time.
+    await store.refreshFacets()
+    let facetsAfterTaskRefire = await transport.callCount(Operations.ImageFacetsApiFacetsGet.id)
+    #expect(facetsAfterTaskRefire == facetsAfterTap)
+  }
+
+  @Test("A second tap on the active value clears that filter from the next images request")
+  func secondTapClearsTheFilterOnTheWire() async {
+    let (store, transport) = await makeStoreWithFacets(total: 9)
+    await store.selectShoot(folderID: 7)
+
+    await store.applyFacetFilter(.mark, value: "pick")
+    await store.applyFacetFilter(.mark, value: "pick")
+
+    #expect(store.query.mark == nil)
+    let imagesQuery = await transport.lastListImagesQuery
+    #expect(imagesQuery?["mark"] == nil)
+    #expect(imagesQuery?["folder_id"] == "7")
+    // The counts followed the filter back out, too.
+    let facetsQuery = await transport.lastFacetsQuery
+    #expect(facetsQuery?["mark"] == nil)
+  }
+
+  @Test("Clear filters drops every facet field from the wire but keeps the shoot scope")
+  func clearFiltersKeepsTheShootScope() async {
+    let (store, transport) = await makeStoreWithFacets(total: 13)
+    await store.selectShoot(folderID: 7, sourceTier: .archive)
+
+    await store.applyFacetFilter(.mark, value: "pick")
+    await store.applyFacetFilter(.ext, value: "raf")
+    #expect(InspectorFacetFilters.activeCount(store.currentQuery) == 2)
+
+    let reloadsBefore = await transport.callCount(Operations.ListImagesApiImagesGet.id)
+    let facetsBefore = await transport.callCount(Operations.ImageFacetsApiFacetsGet.id)
+    await store.clearFacetFilters()
+    let reloadsAfter = await transport.callCount(Operations.ListImagesApiImagesGet.id)
+    let facetsAfter = await transport.callCount(Operations.ImageFacetsApiFacetsGet.id)
+
+    // Clearing is a real filter change: same generation-fenced reload every facet tap does, and
+    // the counts are refetched for the now-unfiltered scope — never a silent local reset.
+    #expect(reloadsAfter == reloadsBefore + 1)
+    #expect(facetsAfter == facetsBefore + 1)
+    #expect(InspectorFacetFilters.activeCount(store.currentQuery) == 0)
+    let imagesQuery = await transport.lastListImagesQuery
+    #expect(imagesQuery?["mark"] == nil)
+    #expect(imagesQuery?["ext"] == nil)
+    #expect(imagesQuery?["folder_id"] == "7")
+    #expect(imagesQuery?["source_tier"] == "archive")
+    let facetsQuery = await transport.lastFacetsQuery
+    #expect(facetsQuery?["mark"] == nil)
+    #expect(facetsQuery?["source_tier"] == "archive")
+  }
+
+  @Test("A failed facets fetch leaves the last good counts standing, and retries next time")
+  func failedFacetsFetchKeepsLastGoodCounts() async {
+    let (store, transport) = await makeStoreWithFacets(total: 42)
+    await store.selectShoot(folderID: 7)
+    await store.refreshFacets()
+    #expect(store.facets?.total == 42)
+
+    // The next facets call fails; the tap still applies, and the tab keeps the counts it had
+    // rather than blanking (absence renders as absence, never as zeros).
+    await transport.setFacetsShouldFail(true)
+    await store.applyFacetFilter(.mark, value: "pick")
+    #expect(store.query.mark == "pick")
+    #expect(store.facets?.total == 42)
+
+    // ...and because the failure never recorded an identity, the next refresh really retries.
+    await transport.setFacetsResult(.init(total: 7))
+    await store.refreshFacets()
+    #expect(store.facets?.total == 7)
+  }
+
+  @Test("A refresh firing while one is in flight for the SAME query issues no second GET")
+  func concurrentRefreshesForTheSameQueryCoalesce() async {
+    let (store, transport) = await makeStoreWithFacets(total: 42)
+    await store.selectShoot(folderID: 7)
+    await transport.holdFacetsRequests(true)
+
+    // The tap's own refresh, suspended inside the transport — the new filter is already written
+    // to `query`, which is the window the MainActor does NOT serialize away.
+    async let tap: Void = store.applyFacetFilter(.mark, value: "pick")
+    await transport.waitUntilFacetsStarted()
+
+    // The inspector's `.task(id: queryIdentity)` firing for that same new identity, inside the
+    // window where the in-flight refresh has not yet written `facetsIdentity`.
+    async let taskRefresh: Void = store.refreshFacets()
+    await Task.yield()
+    await Task.yield()
+
+    // Counted at transport ENTRY, so a request that merely sits held is still counted: one call
+    // means the second refresh joined the first rather than issuing its own.
+    #expect(await transport.callCount(Operations.ImageFacetsApiFacetsGet.id) == 1)
+
+    // Disabled BEFORE the release, so a NON-coalesced second request would complete and be
+    // counted too: a regression fails this test on the assertion below instead of hanging it.
+    await transport.holdFacetsRequests(false)
+    await transport.releaseFacets()
+    _ = await tap
+    _ = await taskRefresh
+
+    #expect(await transport.callCount(Operations.ImageFacetsApiFacetsGet.id) == 1)
+    #expect(store.query.mark == "pick")
+    #expect(store.facets?.total == 42)
+    #expect(store.facetsIdentity == store.currentQuery)
+  }
+
+  @Test("A refresh for a DIFFERENT query is never joined — it supersedes, and the stale one loses")
+  func aRefreshForADifferentQuerySupersedes() async {
+    let (store, transport) = await makeStoreWithFacets(total: 42)
+    await store.selectShoot(folderID: 7)
+    await store.refreshFacets()
+    #expect(store.facets?.total == 42)
+    await transport.holdFacetsRequests(true)
+
+    // Refresh A: the counts for "mark = pick", suspended inside the transport.
+    async let first: Void = store.applyFacetFilter(.mark, value: "pick")
+    await transport.waitUntilFacetsStarted()
+
+    // Refresh B, for a DIFFERENT identity (a second facet on top). Its response is resolved at
+    // request entry, so this new value belongs to B alone and A still carries the old one.
+    await transport.setFacetsResult(.init(total: 7))
+    async let second: Void = store.applyFacetFilter(.ext, value: "raf")
+    await Task.yield()
+    await Task.yield()
+
+    await transport.holdFacetsRequests(false)
+    await transport.releaseFacets()
+    _ = await first
+    _ = await second
+
+    // Three calls: the priming refresh, A, and B — B was NOT joined to A. And whichever of the
+    // two came home last, the published counts are B's: A's guard discards a response for a
+    // query the app has already moved past.
+    #expect(await transport.callCount(Operations.ImageFacetsApiFacetsGet.id) == 3)
+    #expect(store.facets?.total == 7)
+    #expect(store.query.mark == "pick")
+    #expect(store.query.ext == "raf")
+    #expect(store.facetsIdentity == store.currentQuery)
+  }
+
   // MARK: - Cursor-fingerprint disposition (P2-checkpoint residual)
 
   @Test(
