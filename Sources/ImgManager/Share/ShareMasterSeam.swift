@@ -13,12 +13,17 @@ import OpenAPIRuntime
 /// (`Packages/ImgManagerAPI/Package.swift`). `DownloadContractProbeTests` records that finding
 /// as a passing test rather than a comment.
 ///
-/// Everything the master lane needs EXCEPT those bytes is built, wired and tested today:
-/// streaming-with-a-cap (`ShareStreamWriter`), server-authored naming
+/// What IS built and tested today are the PIECES a real downloader will assemble, each on its
+/// own: streaming-with-a-cap (`ShareStreamWriter`), server-authored naming
 /// (`ShareExportPlan.filename(fromContentDisposition:)`), refusal mapping
-/// (`ShareExportPlan.refusal(status:policyHeader:)`), the pre-flight state machine and temp-file
-/// lifecycle (`ShareExportStore`), and the loupe entry that shows the master option. Only the
-/// byte source is stubbed, behind `MasterDownloading`.
+/// (`ShareExportPlan.refusal(status:policyHeader:)`), and the pre-flight state machine and
+/// temp-file lifecycle around them (`ShareExportStore`, exercised end to end against a
+/// substituted downloader).
+///
+/// What is NOT built is the downloader itself: nothing yet issues the request, reads the
+/// response's `Content-Disposition`, or pulls `X-Img-Policy` off a real 403 — those three reads
+/// are written for the first time in step 3 below, and only the contract probe currently touches
+/// that operation at all. Treat this as assembled parts, not a finished lane behind a switch.
 ///
 /// TO ACTIVATE, in this order:
 ///  1. img-manager declares `200: {content: {application/octet-stream: {schema: {type: string,

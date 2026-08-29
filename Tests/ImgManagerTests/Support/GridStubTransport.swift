@@ -220,6 +220,29 @@ actor GridStubTransport: ClientTransport {
   var proxyShouldFail = false
   func setProxyShouldFail(_ fail: Bool) { proxyShouldFail = fail }
 
+  /// The same hold/release pattern as `listImages`/`neighbours`/`markState`: lets a test land a
+  /// focus change while a proxy fetch is genuinely in flight, so the share lane's stale-result
+  /// discard is proven deterministically rather than by sleeping.
+  private var proxyHoldEnabled = false
+  private var proxyHasStarted = false
+  private var proxyStartedContinuation: CheckedContinuation<Void, Never>?
+  private var proxyReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdProxyRequests(_ hold: Bool) { proxyHoldEnabled = hold }
+
+  func waitUntilProxyStarted() async {
+    if proxyHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.proxyStartedContinuation = continuation
+    }
+  }
+
+  func releaseProxy() {
+    proxyReleaseContinuation?.resume()
+    proxyReleaseContinuation = nil
+    proxyHasStarted = false
+  }
+
   // MARK: - WP12 (IMGMGR-196): GET /api/images/{id}/download
 
   /// The download endpoint's outcomes, modelled at the WIRE level so the contract probe decodes
@@ -360,6 +383,14 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, detailResult)
 
     case Operations.GetProxyApiImagesImageIdProxyTierGet.id:
+      if proxyHoldEnabled {
+        proxyHasStarted = true
+        proxyStartedContinuation?.resume()
+        proxyStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.proxyReleaseContinuation = continuation
+        }
+      }
       if proxyShouldFail {
         proxyShouldFail = false
         throw SentinelTransportError(raw: "GridStubTransport: forced proxy failure")

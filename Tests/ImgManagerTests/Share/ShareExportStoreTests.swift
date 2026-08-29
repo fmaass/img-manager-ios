@@ -5,9 +5,9 @@ import Testing
 @testable import ImgManager
 
 /// The pre-flight itself (gate correction 3): the file exists BEFORE anything could be
-/// presented, and every refusal leaves the state somewhere a `ShareLink` is never rendered
-/// from. `ShareStatusBar` puts a `ShareLink` on screen for exactly one state — `.ready` — so
-/// "no sheet" is provable here as "never reached `.ready`", not as a UI-snapshot claim.
+/// presented, and every refusal leaves the state somewhere no sheet can be opened from.
+/// `ShareStatusBar` offers the share control for exactly one state — `.ready` — so "no sheet"
+/// is provable here as "never reached `.ready`", not as a UI-snapshot claim.
 @MainActor
 @Suite("Share export pre-flight — file first, sheet second")
 struct ShareExportStoreTests {
@@ -88,16 +88,18 @@ struct ShareExportStoreTests {
     #expect(store.state == .refused(.noPreview))
   }
 
-  @Test("THE SEAM, at its production default: the master lane refuses without any request")
+  @Test("THE SEAM, at its production default: the guard alone stops a real network attempt")
   func productionDefaultSeamIsOffAndMakesNoRequest() async {
     let directory = scratchDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let transport = GridStubTransport()
-    // The PRODUCTION initialiser — `masterAvailable` not passed, so it takes
-    // `ShareMasterSeam.isAvailable` exactly as the app ships it.
+    let client = ImgManagerAPIClient.make(transport: transport)
+    // A downloader that genuinely WOULD reach the transport — so `calls == 0` below is evidence
+    // about the seam guard, not about a stub that never tries. `masterAvailable` is not passed:
+    // it takes `ShareMasterSeam.isAvailable` exactly as the app ships it.
     let store = ShareExportStore(
-      service: GridService(client: ImgManagerAPIClient.make(transport: transport)),
-      directory: directory)
+      service: GridService(client: client),
+      master: TransportTouchingMasterDownloader(client: client), directory: directory)
 
     await store.prepare(.master, for: image(hasEdit: true))
 
@@ -105,6 +107,50 @@ struct ShareExportStoreTests {
     let calls = await transport.callCount(
       Operations.DownloadImageApiImagesImageIdDownloadGet.id)
     #expect(calls == 0)
+  }
+
+  @Test("The control for that guard: with the seam OPEN the same downloader does reach the wire")
+  func seamOpenLetsTheSameDownloaderThrough() async {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    let client = ImgManagerAPIClient.make(transport: transport)
+    await transport.setDownloadOutcome(.notFound)
+    let store = ShareExportStore(
+      service: GridService(client: client),
+      master: TransportTouchingMasterDownloader(client: client), masterAvailable: true,
+      directory: directory)
+
+    await store.prepare(.master, for: image(hasEdit: true))
+
+    // Same store, same downloader, same image — the ONLY difference from the test above is the
+    // guard, so deleting the guard makes that test fail rather than silently still pass.
+    let calls = await transport.callCount(
+      Operations.DownloadImageApiImagesImageIdDownloadGet.id)
+    #expect(calls == 1)
+    #expect(store.state == .refused(.noMaster))
+  }
+
+  @Test("A stale export never lands: focus moves mid-fetch, so the result is dropped and deleted")
+  func staleExportIsDiscardedWhenFocusMoves() async throws {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8])))
+    await transport.holdProxyRequests(true)
+    let store = makeStore(transport, directory: directory)
+
+    let inFlight = Task { await store.prepare(.preview, for: image(id: 1, filename: "A.NEF")) }
+    await transport.waitUntilProxyStarted()
+    // Exactly what `LoupeView`'s `.task(id: store.focusedImageID)` does when focus moves to B.
+    store.finish()
+    await transport.releaseProxy()
+    await inFlight.value
+
+    // Never `.ready(A)` — the bar must not offer the previous photograph under B's chrome.
+    #expect(store.state == .idle)
+    let stale = directory.appending(path: "A.jpg", directoryHint: .notDirectory)
+    #expect(!FileManager.default.fileExists(atPath: stale.path(percentEncoded: false)))
   }
 
   @Test("With the seam on, a policy 403 refuses INLINE with the policy copy and no file")
@@ -189,6 +235,20 @@ struct ShareExportStoreTests {
     #expect(file.filename == "SECOND.jpg")
     let contents = try FileManager.default.contentsOfDirectory(atPath: directory.path())
     #expect(contents == ["SECOND.jpg"])
+  }
+}
+
+/// Deliberately reaches the transport, exactly as the real conformance will once the contract
+/// carries a body. Its whole purpose is to make "no request was made" a claim about the seam
+/// guard: with a downloader that never tries, that assertion passes with or without the guard.
+private struct TransportTouchingMasterDownloader: MasterDownloading {
+  let client: any APIProtocol
+
+  func downloadMaster(imageID: Int, into directory: URL) async -> MasterDownloadOutcome {
+    _ = try? await client.downloadImageApiImagesImageIdDownloadGet(
+      .init(path: .init(imageId: imageID), query: .init(content: .master)))
+    // The outcome is beside the point — the CALL is what the guard is supposed to prevent.
+    return .refused(.noMaster)
   }
 }
 

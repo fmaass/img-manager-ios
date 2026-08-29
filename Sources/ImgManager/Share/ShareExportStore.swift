@@ -8,7 +8,7 @@ import Observation
 /// obvious way would open the system sheet FIRST and only then discover a `403`, a missing
 /// preview, or no network — and the refusal would land inside a sheet this app does not own and
 /// cannot write copy into. So the file is prepared first: bytes are fetched, capped, and written
-/// to disk under a real name, and only a `.ready` state ever puts a `ShareLink` on screen.
+/// to disk under a real name, and only a `.ready` state can present the system sheet at all.
 /// Nothing in this type presents anything; the view does, and only from `.ready`.
 ///
 /// Bytes come from the EXISTING proxy path (`GridService.proxy`, the same operation and the same
@@ -31,6 +31,8 @@ final class ShareExportStore {
   private let master: any MasterDownloading
   private let masterAvailable: Bool
   private let directory: URL
+  /// Increments on every `prepare` and every `finish` — see `prepare` for what it guards.
+  private var generation = 0
 
   /// `masterAvailable` defaults to the seam and is a PARAMETER only so the master pipeline can
   /// be exercised end-to-end (refusal mapping, naming, `.ready`) while the seam itself stays
@@ -63,22 +65,43 @@ final class ShareExportStore {
   /// Fetches, caps, names and writes the export, then leaves `state` at `.ready` or `.refused`.
   /// Re-entrant taps are refused rather than raced — the same posture as `GridStore`'s
   /// `isMutatingMark` guard, so a double-tap can never leave two writers on one temp path.
+  ///
+  /// A fetch takes time, and the loupe's focus can move while it is in flight. The generation
+  /// captured before the await is what makes that safe: a result that comes back into a
+  /// CHANGED generation is discarded and its file deleted, so the status bar can never end up
+  /// offering the previous photograph under the new one's chrome. `finish()` bumps the
+  /// generation for exactly this reason — cancelling in-flight work is the whole point of it,
+  /// not just clearing what has already landed.
   func prepare(_ variant: ShareVariant, for image: Components.Schemas.ImageSummary) async {
     guard !isPreparing else { return }
+    generation &+= 1
+    let requested = generation
     state = .preparing(variant)
     clearDirectory()
+    let outcome: State
     switch variant {
     case .preview:
-      state = await preparePreview(for: image)
+      outcome = await preparePreview(for: image)
     case .master:
-      state = await prepareMaster(for: image)
+      outcome = await prepareMaster(for: image)
     }
+    guard requested == generation else {
+      // Stale: something moved on while this was in flight. Its bytes name a photograph that is
+      // no longer the one on screen, so they are deleted rather than left on disk for the next
+      // share to pick up, and `state` — already owned by whatever superseded this — is not
+      // touched at all.
+      if case .ready(let file) = outcome { try? FileManager.default.removeItem(at: file.url) }
+      return
+    }
+    state = outcome
   }
 
-  /// Called when the share sheet is done with the file, when the loupe's focus moves, and when
-  /// the user dismisses a refusal. The temp file is the only copy of those bytes outside the
-  /// cache and it does not outlive the sheet that needed it (gate correction 4).
+  /// Called when the share sheet is dismissed, when the loupe's focus moves, and when the user
+  /// dismisses a refusal. The temp file is the only copy of those bytes outside the cache and it
+  /// does not outlive the sheet that needed it. Bumping the generation also disowns any fetch
+  /// still in flight (see `prepare`).
   func finish() {
+    generation &+= 1
     clearDirectory()
     state = .idle
   }
