@@ -244,10 +244,14 @@ struct RootView: View {
   /// verbatim inside `QueueView`/`FolderTreeSection` themselves — see their own doc comments.
   private var sidebar: some View {
     Group {
-      switch connectivity.status {
+      // Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides
+      // this branch — `QueueView` mounts for BOTH `.connected` and `.unreachable` so its own
+      // `QueueStore` degraded-state machine is always the one that runs; see that type's own
+      // doc comment for why the old direct switch was a defect, not a deliberate second gate.
+      switch SidebarRouting.destination(for: connectivity.status) {
       case .checking:
         ProgressView()
-      case .connected:
+      case .queue:
         QueueView(
           queueStore: queueStore, heroLoader: heroLoader, selectedFolderID: $selectedFolderID,
           onSelect: { folderID, sourceTier in
@@ -262,8 +266,6 @@ struct RootView: View {
                 Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
               })
         )
-      case .unreachable:
-        Text(DegradedStateCopy.notConnected)
       }
     }
   }

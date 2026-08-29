@@ -76,6 +76,21 @@ struct SyncSignal: Equatable, Sendable {
   }
 }
 
+/// Diff-gate round-3 closure, B1: a queue card's destination is atomically `(folderId, nil)` —
+/// entering a shoot via the queue ALWAYS clears any prior tree-tier filter in the SAME scope
+/// transition, regardless of which tier the summary's OWN data happens to live in (that tier is
+/// `heroTaskID`'s/`HeroThumbnailLoader`'s concern for fetching the right hero image, never
+/// routing's). Pulled out as a pure function — the exact function `QueueCardRow`'s tap gesture
+/// calls, so a test proves the PRODUCTION forwarding decision, not a re-implementation of it —
+/// same discipline as `RootRouting`/`LayoutResolver`/`ForegroundRefresh`.
+enum QueueCardDestination {
+  static func route(for summary: Components.Schemas.FolderSummary) -> (
+    folderID: Int, sourceTier: GridSourceTier?
+  ) {
+    (summary.folderId, nil)
+  }
+}
+
 /// Groups and orders the flat `folder-summaries` response into rendering sections. Q1's
 /// presentation ordering ONLY — the section identity itself comes straight from `FolderSummary.
 /// readiness`, never recomputed (Q4 drift hazard: "recomputing readiness from counts/sync/

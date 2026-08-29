@@ -62,8 +62,13 @@ struct QueueView: View {
                   .contentShape(Rectangle())
                   .simultaneousGesture(
                     TapGesture().onEnded {
-                      selectedFolderID = summary.folderId
-                      onSelect(summary.folderId, GridSourceTier(rawValue: summary.sourceTier))
+                      // Diff-gate round-3 closure, B1: route through the ONE production
+                      // function that decides a queue card's destination — never re-derive the
+                      // tier here (that regressed to `summary.sourceTier`, defeating the
+                      // atomic-clear contract; see `QueueCardDestination`'s own doc comment).
+                      let destination = QueueCardDestination.route(for: summary)
+                      selectedFolderID = destination.folderID
+                      onSelect(destination.folderID, destination.sourceTier)
                     }
                   )
               }

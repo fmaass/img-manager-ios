@@ -99,6 +99,31 @@ actor GridStubTransport: ClientTransport {
     markStateHasStarted = false
   }
 
+  // MARK: - WP8 P7 round-2 closure, B2: in-flight tag-mutation race (diff-gate round 3)
+
+  /// Same hold/release pattern as `markState` above, for `EditMarkTagsApiMarksTagsPost` — lets a
+  /// test prove `addTag`'s own commit-signal fix (mutationCommitCount increments regardless of a
+  /// racing generation change) deterministically rather than by sleeping.
+  private var tagsHoldEnabled = false
+  private var tagsHasStarted = false
+  private var tagsStartedContinuation: CheckedContinuation<Void, Never>?
+  private var tagsReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdTagsRequests(_ hold: Bool) { tagsHoldEnabled = hold }
+
+  func waitUntilTagsStarted() async {
+    if tagsHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.tagsStartedContinuation = continuation
+    }
+  }
+
+  func releaseTags() {
+    tagsReleaseContinuation?.resume()
+    tagsReleaseContinuation = nil
+    tagsHasStarted = false
+  }
+
   // MARK: - P5 stale-neighbours race (diff-gate round, 2026-08-28)
 
   /// The same hold pattern for `GET /api/images/{id}/neighbours`: lets a test land a
@@ -349,6 +374,14 @@ actor GridStubTransport: ClientTransport {
         let data = try await Data(collecting: body, upTo: 1024 * 1024)
         lastTagsRequest = try? JSONDecoder.grid.decode(
           Components.Schemas.MarkTagsRequest.self, from: data)
+      }
+      if tagsHoldEnabled {
+        tagsHasStarted = true
+        tagsStartedContinuation?.resume()
+        tagsStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.tagsReleaseContinuation = continuation
+        }
       }
       switch tagsOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)

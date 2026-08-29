@@ -870,12 +870,17 @@ final class GridStore {
     do {
       let applied = try await service.setMarkState(
         imageIDs: priors.map(\.imageID), state: state, preconditions: preconditions)
+      // Diff-gate round-3 closure, B2: the commit signal fires for every SERVER-COMMITTED
+      // mutation regardless of a racing generation change — a stale-generation discard below
+      // only withholds LOCAL UI state (revisions/undo/selection) for a scope already left, never
+      // the fact that the write landed, so the queue's post-mutation re-read is never silently
+      // skipped just because a scope change happened to race the network await.
+      mutationCommitCount += 1
       guard generation == loadGeneration else { return }
       reconcileRevisions(applied.revisions ?? [])
       undo.record(UndoEntry(appliedState: state, priorStates: priors))
       if priors.count > 1 { selection.bulkActionSucceeded() }
       lastMutationError = nil
-      mutationCommitCount += 1
     } catch {
       guard generation == loadGeneration else { return }
       rollback(priors)
@@ -960,13 +965,16 @@ final class GridStore {
       do {
         let applied = try await service.setMarkState(
           imageIDs: priors.map(\.imageID), state: targetState, preconditions: preconditions)
+        // Diff-gate round-3 closure, B2: same posture as `applyMark` — the write landed
+        // server-side regardless of a racing generation change, so the commit signal fires
+        // before the generation guard withholds the rest (local reconciliation only).
+        mutationCommitCount += 1
         guard generation == loadGeneration else { return }
         reconcileRevisions(applied.revisions ?? [])
         // Only the ids actually submitted (the loaded subset) come out of the remainder — an
         // unloaded sibling in the same group was never attempted and stays pending.
         remaining.removeAll { loadedIDs.contains($0.imageID) }
         lastMutationError = nil
-        mutationCommitCount += 1
       } catch {
         guard generation == loadGeneration else { return }
         rollback(priors)
@@ -1056,10 +1064,12 @@ final class GridStore {
     do {
       let applied = try await service.editMarkTags(
         imageIDs: priors.map(\.imageID), operation: .add, tag: tag, preconditions: preconditions)
+      // Diff-gate round-3 closure, B2: same posture as `applyMark`/`undoLastMark` — the write
+      // landed server-side regardless of a racing generation change.
+      mutationCommitCount += 1
       guard generation == loadGeneration else { return }
       reconcileRevisions(applied.revisions ?? [])
       lastMutationError = nil
-      mutationCommitCount += 1
     } catch {
       guard generation == loadGeneration else { return }
       rollbackTag(tag, priors: priors)

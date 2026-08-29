@@ -132,4 +132,21 @@ struct QueueModelsTests {
     #expect(sections[0].items.map(\.folderId) == [1, 2, 3, 4, 5])
   }
 
+  // MARK: - QueueCardDestination (diff-gate round 3 closure, B1)
+
+  @Test(
+    "A queue card's destination always clears the tier, even matching a prior tree selection"
+  )
+  func queueCardDestinationAlwaysClearsTier() {
+    let summary = makeSummary(folderId: 6, readiness: "ready_to_review")
+    let archiveSummary = Components.Schemas.FolderSummary(
+      cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: 7, kind: "dated",
+      lastTouched: nil, nothingLeftUnmarked: false, path: "p/7", picked: 0,
+      previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!, sourceTier: "archive",
+      sync: nil, total: 10, unmarked: 10, withMasters: 0)
+
+    #expect(QueueCardDestination.route(for: summary) == (folderID: 6, sourceTier: nil))
+    #expect(QueueCardDestination.route(for: archiveSummary) == (folderID: 7, sourceTier: nil))
+  }
+
 }
