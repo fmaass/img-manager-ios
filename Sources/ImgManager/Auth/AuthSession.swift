@@ -52,6 +52,11 @@ final class AuthSession {
   private let coordinator: SignInCoordinator
   private let baseURL: URL
   private let deviceName: @MainActor () -> String
+  /// Runs when a credential is genuinely ERASED (see `clearAndReport`) — the hook any local
+  /// state fetched under that sign-in uses to destroy itself. Deliberately not tied to the entry
+  /// or exit of `handleTerminalUnauthorized`/`signOut()`: both return without erasing anything in
+  /// their fence/revoke-failed branches, where the session is still alive.
+  private let onCredentialsErased: @Sendable () async -> Void
 
   /// Diff-gate round 1, blocker 1: the single in-flight renewal every trigger (bootstrap,
   /// foreground) joins instead of starting a second one. Two concurrent rotations would both
@@ -65,13 +70,15 @@ final class AuthSession {
     client: any APIProtocol,
     coordinator: SignInCoordinator = SignInCoordinator(),
     baseURL: URL = ImgManagerAPIClient.baseURL,
-    deviceName: @escaping @MainActor () -> String = { UIDevice.current.name }
+    deviceName: @escaping @MainActor () -> String = { UIDevice.current.name },
+    onCredentialsErased: @escaping @Sendable () async -> Void = {}
   ) {
     self.credentialStore = credentialStore
     self.client = client
     self.coordinator = coordinator
     self.baseURL = baseURL
     self.deviceName = deviceName
+    self.onCredentialsErased = onCredentialsErased
   }
 
   /// Restores a stored credential at launch. Renewal is attempted inline if the restored

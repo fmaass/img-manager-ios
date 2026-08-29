@@ -26,8 +26,15 @@ final class QueueStore {
   /// `.reachable` at least once — the view shows a small activity indicator, never the centered
   /// first-load spinner, and never touches `summaries`/scroll/expansion/selection.
   private(set) var isRefreshing = false
+  /// When the currently displayed `summaries` were fetched FROM THE SERVER — the timestamp the
+  /// stale banner labels a replayed cache with. Never a "cache was read" time.
+  private(set) var lastFetchedAt: Date?
 
   private let service: QueueService
+  private let snapshotStore: any QueueSnapshotPersisting
+  private let subject: @MainActor () -> String?
+  private let baseURL: String
+  private let now: @MainActor () -> Date
   private let debounceNanoseconds: UInt64
   private var hasLoadedSuccessfullyOnce = false
   private var loadGeneration = 0
@@ -35,8 +42,19 @@ final class QueueStore {
 
   /// `debounceNanoseconds` is test-injectable (default 400ms) so a coalescing test proves the
   /// real behaviour in milliseconds, never by waiting out the production interval.
-  init(service: QueueService, debounceNanoseconds: UInt64 = 400_000_000) {
+  init(
+    service: QueueService,
+    snapshotStore: any QueueSnapshotPersisting = QueueSnapshotStore(),
+    subject: @escaping @MainActor () -> String? = { nil },
+    baseURL: String = ImgManagerAPIClient.baseURL.absoluteString,
+    now: @escaping @MainActor () -> Date = { Date() },
+    debounceNanoseconds: UInt64 = 400_000_000
+  ) {
     self.service = service
+    self.snapshotStore = snapshotStore
+    self.subject = subject
+    self.baseURL = baseURL
+    self.now = now
     self.debounceNanoseconds = debounceNanoseconds
   }
 

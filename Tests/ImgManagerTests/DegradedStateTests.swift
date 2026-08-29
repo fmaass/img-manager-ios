@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import ImgManager
@@ -41,6 +42,35 @@ struct DegradedStateTests {
     #expect(!statusDescription.contains(sentinel))
     #expect(!statusDescription.contains("backend.internal.example"))
     #expect(!statusDescription.contains("leak-if-visible"))
+  }
+
+  @Test("The stale banner's second line labels the cached answer with a relative time")
+  func cachedAnswerIsLabelledWithARelativeTime() {
+    // IMGMGR-198: the cached answer is never shown unlabelled. Line one stays the ONE
+    // adjudicated degraded string; line two says how old what you are looking at is.
+    let twoHoursAgo = Date().addingTimeInterval(-2 * 60 * 60)
+    let line = DegradedStateCopy.showingCached(since: twoHoursAgo)
+
+    #expect(line.hasPrefix("Showing shoots from "))
+    #expect(line.lowercased().contains("hour"))
+    #expect(DegradedStateCopy.notConnected == "Not connected to the home network")
+  }
+
+  @Test("Below a minute the label reads \"just now\" — never a raw seconds count")
+  func freshCacheReadsAsJustNow() {
+    let thirtySecondsAgo = Date().addingTimeInterval(-30)
+
+    #expect(
+      DegradedStateCopy.showingCached(since: thirtySecondsAgo) == "Showing shoots from just now")
+  }
+
+  @Test("A days-old cache is labelled in days")
+  func olderCacheIsLabelledInDays() {
+    let threeDaysAgo = Date().addingTimeInterval(-3 * 24 * 60 * 60)
+    let line = DegradedStateCopy.showingCached(since: threeDaysAgo)
+
+    #expect(line.hasPrefix("Showing shoots from "))
+    #expect(line.lowercased().contains("day"))
   }
 
   @Test(

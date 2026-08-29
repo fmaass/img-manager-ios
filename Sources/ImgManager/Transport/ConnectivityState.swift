@@ -9,6 +9,12 @@ import Observation
 /// unreachable states*) — this type intentionally has no case for any of them.
 enum DegradedStateCopy {
   static let notConnected = "Not connected to the home network"
+
+  /// IMGMGR-198's second banner line. Lives HERE, beside `notConnected`, so degraded copy stays
+  /// in exactly one place.
+  static func showingCached(since fetchedAt: Date, now: Date = Date()) -> String {
+    ""
+  }
 }
 
 /// Drives the shell's one connectivity-dependent surface (the sidebar/Queue placeholder)
