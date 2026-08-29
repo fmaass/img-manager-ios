@@ -201,7 +201,13 @@ record rsync "${PIPESTATUS[0]}"
 
 # --- Remote content manifest: git hash-object needs no .git — deterministic blob hash. ---
 say "--- step: content manifest (mirror side) ---"
-remote_manifest="$(timeout 30 ssh -o BatchMode=yes "$host" "
+# 180s, not 30 (WP12/IMGMGR-199): this step forks `git hash-object` once PER FILE over one ssh
+# connection, so its cost grows with the tree and with whatever else the build host is doing.
+# Observed 2026-08-29 with five WP12 lanes gating concurrently (merkur load average 46-122): the
+# same 139-file tree came back in time on one run and timed out on the next two, i.e. the cap was
+# turning host load into a false "the mirror differs from HEAD" verdict on a tree that was in fact
+# identical. The CHECK is unchanged — only the patience is.
+remote_manifest="$(timeout 180 ssh -o BatchMode=yes "$host" "
   cd '$target_dir/work'
   find . -type f \
     -not -path './.git/*' -not -path '*/.build/*' -not -path './.build/*' -not -path '*/DerivedData/*' -not -path './DerivedData/*' \
