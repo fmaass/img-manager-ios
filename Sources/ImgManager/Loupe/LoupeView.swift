@@ -16,6 +16,10 @@ import SwiftUI
 struct LoupeView: View {
   @Bindable var store: GridStore
   let layoutMode: LayoutMode
+  /// The share lane's pre-flight, owned by `RootView` so ONE instance spans the docked and the
+  /// full-screen presentations of this same loupe (they are mutually exclusive but swap freely,
+  /// and a prepared export must not be lost — or leaked — across that swap).
+  let share: ShareExportStore
   @State private var proxyImage: PlatformImage?
 
   private var focusedImage: Components.Schemas.ImageSummary? {
@@ -26,6 +30,7 @@ struct LoupeView: View {
   var body: some View {
     VStack(spacing: 0) {
       header
+      ShareStatusBar(share: share)
       mainImageArea
       if layoutMode != .compact {
         FilmstripView(store: store)
@@ -34,6 +39,10 @@ struct LoupeView: View {
       LoupeMarkBar(store: store)
     }
     .task(id: store.focusedImageID) {
+      // A prepared export names the photograph it was made from, so it never outlives that
+      // photograph being the focused one — the temp file is deleted the moment focus moves
+      // (gate correction 4), not left behind for whatever the user shares next.
+      share.finish()
       await loadMainImage()
     }
   }
@@ -59,6 +68,11 @@ struct LoupeView: View {
         .accessibilityIdentifier("loupeFidelityLabel")
 
       Spacer()
+
+      // Both idioms — on Compact this is the only trailing control, which is exactly the point:
+      // sharing is reachable from persistent chrome on the phone too, not just where there is
+      // room for a toolbar full of things.
+      ShareControl(share: share, image: focusedImage)
 
       if layoutMode != .compact {
         Button {

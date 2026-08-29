@@ -212,6 +212,32 @@ actor GridStubTransport: ClientTransport {
     case notFound
   }
 
+  /// A `SentinelTransportError` for the NEXT proxy call (self-disarming, single-slot — same
+  /// discipline as `listImagesShouldFail`): the fetch itself cannot reach the server, which
+  /// `GridService.proxy` turns into `GridServiceError.unreachable`. Deliberately DISTINCT from
+  /// `.notFound`, which is the tier simply not holding that proxy — the share lane must tell
+  /// those two apart to choose between the offline copy and "no preview yet".
+  var proxyShouldFail = false
+  func setProxyShouldFail(_ fail: Bool) { proxyShouldFail = fail }
+
+  // MARK: - WP12 (IMGMGR-196): GET /api/images/{id}/download
+
+  /// The download endpoint's outcomes, modelled at the WIRE level so the contract probe decodes
+  /// them through the real generated `Client`. `.ok` carries bytes and a `Content-Disposition`
+  /// the stub genuinely sends — which is the point: the probe proves the generated `Output.Ok`
+  /// cannot reach either of them at this contract version.
+  enum DownloadOutcome: Sendable {
+    case ok(Data, contentDisposition: String?)
+    /// 403 WITH `X-Img-Policy: raw-original` — the application's own policy answer.
+    case rawOriginalPolicy
+    /// 403 WITHOUT the header — a proxy/session refusal, which is a different thing entirely.
+    case sessionForbidden
+    case notFound
+  }
+
+  var downloadOutcome: DownloadOutcome = .notFound
+  func setDownloadOutcome(_ outcome: DownloadOutcome) { downloadOutcome = outcome }
+
   private(set) var lastMarkStateRequest: Components.Schemas.MarkStateRequest?
   private(set) var lastTagsRequest: Components.Schemas.MarkTagsRequest?
   private(set) var callCounts: [String: Int] = [:]
@@ -334,6 +360,10 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, detailResult)
 
     case Operations.GetProxyApiImagesImageIdProxyTierGet.id:
+      if proxyShouldFail {
+        proxyShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced proxy failure")
+      }
       switch proxyOutcome {
       case .ok(let data):
         var response = HTTPResponse(status: .ok)
@@ -341,6 +371,28 @@ actor GridStubTransport: ClientTransport {
         return (response, HTTPBody(data))
       case .notModified:
         return (HTTPResponse(status: .notModified), nil)
+      case .notFound:
+        return (HTTPResponse(status: .notFound), nil)
+      }
+
+    case Operations.DownloadImageApiImagesImageIdDownloadGet.id:
+      switch downloadOutcome {
+      case .ok(let data, let contentDisposition):
+        var response = HTTPResponse(status: .ok)
+        response.headerFields[.contentType] = "application/octet-stream"
+        if let contentDisposition, let name = HTTPField.Name("Content-Disposition") {
+          response.headerFields[name] = contentDisposition
+        }
+        return (response, HTTPBody(data))
+      case .rawOriginalPolicy:
+        var response = HTTPResponse(status: .forbidden)
+        // The exact header the backend sets (app/api/images.py) and the schema declares.
+        if let name = HTTPField.Name("X-Img-Policy") {
+          response.headerFields[name] = "raw-original"
+        }
+        return (response, nil)
+      case .sessionForbidden:
+        return (HTTPResponse(status: .forbidden), nil)
       case .notFound:
         return (HTTPResponse(status: .notFound), nil)
       }
