@@ -16,10 +16,12 @@ enum ReadinessEntryBuilder {
   /// Counts per `ReadinessSection.rawValue`. Sections with no shoots are simply absent; the
   /// entry reads an absent key as zero.
   static func counts(from summaries: [Components.Schemas.FolderSummary]) -> [String: Int] {
-    // NOT IMPLEMENTED YET (RED): the readiness -> section mapping is what
-    // ReadinessEntryBuilderTests specifies.
-    _ = summaries
-    return [:]
+    var counts: [String: Int] = [:]
+    for summary in summaries {
+      guard let section = ReadinessSection(rawValue: summary.readiness.rawValue) else { continue }
+      counts[section.rawValue, default: 0] += 1
+    }
+    return counts
   }
 
   /// A successful fetch. `fetchedAt` is the fetch's own moment and is also the entry's timeline
@@ -41,9 +43,12 @@ enum ReadinessEntryBuilder {
   /// A previous entry that itself carries no fetched counts (`.signedOut`/`.noData`) cannot
   /// become a last-known reading: there is nothing known. It degrades to `.noData`.
   static func lastKnown(carrying previous: ReadinessEntry, at date: Date) -> ReadinessEntry {
-    // NOT IMPLEMENTED YET (RED).
-    _ = previous
-    return noData(at: date)
+    guard previous.hasFetchedCounts, let fetchedAt = previous.fetchedAt else {
+      return noData(at: date)
+    }
+    return ReadinessEntry(
+      date: date, state: .lastKnown, countsBySection: previous.countsBySection,
+      fetchedAt: fetchedAt)
   }
 
   /// No usable credential. No counts and no timestamp — a signed-out device must not keep

@@ -56,8 +56,12 @@ struct ReadinessSnapshotStore: Sendable {
   /// reading) or a `.signedOut`/`.noData` placeholder is refused here rather than trusted to
   /// every call site.
   func save(_ entry: ReadinessEntry) {
-    // NOT IMPLEMENTED YET (RED).
-    _ = entry
+    guard entry.state == .live else { return }
+    guard let data = try? Self.encoder().encode(entry) else { return }
+    try? FileManager.default.createDirectory(
+      at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? data.write(
+      to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
   }
 
   /// Sign-out drops the snapshot: a device with no credential must not keep rendering the

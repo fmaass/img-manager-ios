@@ -53,9 +53,23 @@ struct ReadinessTimelineResolver: Sendable {
   let clearSnapshot: @Sendable () -> Void
 
   func resolve(now: Date) async -> Resolution {
-    // NOT IMPLEMENTED YET (RED): the state table above is what
-    // ReadinessTimelineResolverTests specifies.
-    return retry(ReadinessEntryBuilder.noData(at: now), now: now)
+    switch await loadCredential() {
+    case .absent:
+      clearSnapshot()
+      return retry(ReadinessEntryBuilder.signedOut(at: now), now: now)
+    case .error:
+      return retry(fallback(at: now), now: now)
+    case .present(let credential):
+      guard credential.expiresAt > now else {
+        return retry(ReadinessEntryBuilder.signedOut(at: now), now: now)
+      }
+      guard let summaries = try? await fetchSummaries() else {
+        return retry(fallback(at: now), now: now)
+      }
+      let entry = ReadinessEntryBuilder.live(from: summaries, fetchedAt: now)
+      writeSnapshot(entry)
+      return Resolution(entry: entry, nextRefresh: now.addingTimeInterval(Self.liveRefreshInterval))
+    }
   }
 
   /// What to show when this attempt produced no fresh counts: the last successful reading if

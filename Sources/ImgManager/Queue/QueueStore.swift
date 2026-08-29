@@ -98,8 +98,10 @@ final class QueueStore {
       summaries = result
       phase = .reachable
       hasLoadedSuccessfullyOnce = true
-      // NOT IMPLEMENTED YET (RED): the reload request is what QueueStoreWidgetReloadTests
-      // specifies.
+      // Inside the generation fence and after the publication, so the widget is only ever asked
+      // to re-read state this store has already committed — and only on the path that has fresh
+      // server truth to hand it.
+      reloadWidgets()
     } catch {
       guard generation == loadGeneration else { return }
       // "No cache" vs "stale data" (Q3) is read off whether there is anything to retain, not
