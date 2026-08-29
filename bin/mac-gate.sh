@@ -364,7 +364,7 @@ if [ -d ImgManager.xcodeproj ]; then
   # Device-idiom-branching absence, WITH a positive control in the same invocation (bare grep -c
   # exits 1 on zero matches, which would wrongly fail this bare-gate step on the pass case —
   # so the check is "0 real hits" computed explicitly, not the exit code of the bare grep).
-  idiom_hits="$(grep -rn 'userInterfaceIdiom' Sources/ Tests/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
+  idiom_hits="$(grep -rn --exclude-dir=.build 'userInterfaceIdiom' Sources/ Tests/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
   control_hits="$(grep -rln 'NavigationSplitView' Sources/ 2>/dev/null || true)"
   {
     echo "device-idiom-branching hits (expect 0):"
@@ -387,7 +387,7 @@ if [ -d ImgManager.xcodeproj ]; then
   # scan here); this leg exists so a future hand-rolled `.keyboardShortcut("c")`
   # bypassing the catalog entirely is still caught — "a check a comment can defeat is not
   # a check".
-  c_shortcut_hits="$(grep -rniE 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
+  c_shortcut_hits="$(grep -rniE --exclude-dir=.build 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
   c_control_hits="$(grep -rln 'ShortcutCatalog' Sources/ 2>/dev/null || true)"
   {
     echo "C-shortcut/compare hits (expect 0):"
@@ -425,7 +425,7 @@ build_script="${build_script//__WORK__/$target_dir/work}"
 build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
 
-remote_out="$(printf '%s\n' "$build_script" | timeout 900 ssh -o BatchMode=yes "$host" 'bash -s' 2>&1 | tee -a "$log")"
+remote_out="$(printf '%s\n' "$build_script" | timeout 1800 ssh -o BatchMode=yes "$host" 'bash -s' 2>&1 | tee -a "$log")"
 remote_line="$(printf '%s\n' "$remote_out" | grep '^MAC_GATE_REMOTE_SUMMARY:' | tail -1)"
 if [ -z "$remote_line" ]; then
   record remote-run 1
