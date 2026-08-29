@@ -11,9 +11,14 @@ enum DegradedStateCopy {
   static let notConnected = "Not connected to the home network"
 
   /// IMGMGR-198's second banner line. Lives HERE, beside `notConnected`, so degraded copy stays
-  /// in exactly one place.
-  static func showingCached(since fetchedAt: Date, now: Date = Date()) -> String {
-    ""
+  /// in exactly one place. A replayed cache is NEVER shown unlabelled — line one says the server
+  /// is out of reach, this line says how old what you are looking at is. Below a minute it reads
+  /// "just now" rather than a seconds count: the answer's age is what matters, not its precision.
+  static func showingCached(since fetchedAt: Date) -> String {
+    let elapsed = Date().timeIntervalSince(fetchedAt)
+    guard elapsed >= 60 else { return "Showing shoots from just now" }
+    return "Showing shoots from "
+      + fetchedAt.formatted(.relative(presentation: .numeric, unitsStyle: .wide))
   }
 }
 

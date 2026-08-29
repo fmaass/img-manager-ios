@@ -73,9 +73,22 @@ struct RootView: View {
     self.gridService = gridService
     _gridStore = State(initialValue: GridStore(service: gridService))
     let queueService = QueueService(client: client)
-    _queueStore = State(initialValue: QueueStore(service: queueService))
+    // IMGMGR-198: the queue's cached last answer. The session gets the erase hook (a credential
+    // that is genuinely gone takes the answers fetched under it with it), and the store gets a
+    // LIVE read of the signed-in subject so a retained store cannot show account A's shoots to
+    // account B — see `QueueStore.resetIfSubjectChanged`.
+    let queueSnapshotStore = QueueSnapshotStore()
+    let session = AuthSession(
+      credentialStore: credentialStore, client: client,
+      onCredentialsErased: { await queueSnapshotStore.clear() })
+    _queueStore = State(
+      initialValue: QueueStore(
+        service: queueService, snapshotStore: queueSnapshotStore,
+        subject: { [weak session] in
+          guard case .signedIn(let subject) = session?.status else { return nil }
+          return subject
+        }))
     heroLoader = HeroThumbnailLoader(service: gridService)
-    let session = AuthSession(credentialStore: credentialStore, client: client)
     unauthorizedBox.handler = { [weak session] token in
       await session?.handleTerminalUnauthorized(presentedToken: token)
     }

@@ -26,8 +26,14 @@ protocol QueueSnapshotPersisting: Sendable {
   func clear() async
 }
 
-/// One JSON file under Application Support, written atomically with complete file protection
-/// and excluded from backup.
+/// One JSON file in Application Support (never `UserDefaults` — this is a payload, not a
+/// preference), written atomically so a kill mid-write cannot leave a half-file behind.
+///
+/// Two at-rest protections, both required: `.completeFileProtection` keeps it unreadable while
+/// the device is locked, and `isExcludedFromBackup` keeps a shoot list the user has since signed
+/// out of from being recoverable out of an iCloud or device backup. The exclusion is re-applied
+/// after EVERY save because an atomic write replaces the file — the attribute belongs to the
+/// inode that was just swapped out, so setting it once would silently lapse on the next write.
 actor QueueSnapshotStore: QueueSnapshotPersisting {
   nonisolated let fileURL: URL
   private let directoryURL: URL
@@ -44,12 +50,36 @@ actor QueueSnapshotStore: QueueSnapshotPersisting {
   }
 
   func load() async -> QueueSnapshot? {
-    nil
+    guard let data = try? Data(contentsOf: fileURL) else { return nil }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try? decoder.decode(QueueSnapshot.self, from: data)
   }
 
   func save(_ snapshot: QueueSnapshot) async {
+    do {
+      try FileManager.default.createDirectory(
+        at: directoryURL, withIntermediateDirectories: true)
+      try setExcludedFromBackup(directoryURL)
+      let encoder = JSONEncoder()
+      encoder.dateEncodingStrategy = .iso8601
+      let data = try encoder.encode(snapshot)
+      try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+      try setExcludedFromBackup(fileURL)
+    } catch {
+      // A cache that cannot be written changes nothing the user can see: the live answer it
+      // came from is already published. There is deliberately nothing to surface here.
+    }
   }
 
   func clear() async {
+    try? FileManager.default.removeItem(at: fileURL)
+  }
+
+  private func setExcludedFromBackup(_ url: URL) throws {
+    var target = url
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    try target.setResourceValues(values)
   }
 }

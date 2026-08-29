@@ -283,6 +283,11 @@ final class AuthSession {
   private func clearAndReport(fallbackMessage: String) async {
     do {
       try await credentialStore.clear()
+      // IMGMGR-198: the ONE place a credential is actually erased, and therefore the one place
+      // state fetched under it must be destroyed. Hooking a method's entry instead would fire
+      // on `handleTerminalUnauthorized`'s epoch-fence path and on a revoke-failed `signOut()`,
+      // both of which deliberately KEEP the credential — the session is still alive there.
+      await onCredentialsErased()
       status = .signedOut
     } catch {
       status = .credentialError(fallbackMessage)
