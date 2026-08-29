@@ -393,7 +393,7 @@ actor GridStubTransport: ClientTransport {
         return try jsonResponse(.ok, page)
       }
       guard let stackID, let page = stackMemberPages[stackID] else {
-        let named = stackID.map(String.init) ?? "?"
+        let named = stackID.map { String($0) } ?? "?"
         throw SentinelTransportError(
           raw: "GridStubTransport: no stackMemberPage configured for \(named)")
       }
@@ -403,7 +403,7 @@ actor GridStubTransport: ClientTransport {
       let stackID = request.path.flatMap(URLComponents.init(string:))?
         .path.split(separator: "/").last.flatMap { Int($0) }
       guard let stackID, let row = stackRows[stackID] else {
-        let named = stackID.map(String.init) ?? "?"
+        let named = stackID.map { String($0) } ?? "?"
         throw SentinelTransportError(
           raw: "GridStubTransport: no stackRow configured for \(named)")
       }
