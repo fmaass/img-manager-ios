@@ -219,7 +219,9 @@ struct GridStoreSceneTests {
     #expect(MarkStateValue(store.actionableImages.first { $0.id == 10 }?.mark.state) == .pick)
   }
 
-  @Test("Even with a card's cover id passed directly, the write finds no state to build a precondition from")
+  @Test(
+    "Even with a card's cover id passed directly, the write finds no state to build a precondition from"
+  )
   func aCoverIdCannotBeMarkedEvenIfNamed() async {
     let (store, transport) = await loadedSceneStore()
     await store.applyMark(.pick, to: [900])
@@ -230,7 +232,9 @@ struct GridStoreSceneTests {
 
   // MARK: - Scene enter / leave scope semantics (gate correction 6)
 
-  @Test("Entering Scene mode is a full scope reset: flat cursor discarded, selection, Pick Lock, undo and focus cleared")
+  @Test(
+    "Entering Scene mode is a full scope reset: flat cursor discarded, selection, Pick Lock, undo and focus cleared"
+  )
   func enteringSceneModeIsAFullReset() async {
     let (store, transport) = makeStore()
     await transport.setListImagesPage(
@@ -349,7 +353,9 @@ struct GridStoreSceneTests {
     #expect(store.sceneRows.count == 2)
   }
 
-  @Test("Membership loading is single-flight per scene: a second expand while one is in flight adds no second call")
+  @Test(
+    "Membership loading is single-flight per scene: a second expand while one is in flight adds no second call"
+  )
   func membershipIsSingleFlight() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
@@ -455,7 +461,9 @@ struct GridStoreSceneTests {
 
   // MARK: - Members are ordinary photographs (gate correction 1), and the cover follows the write
 
-  @Test("A mark on an EXPANDED member finds its state, writes with its own precondition, and lands in place")
+  @Test(
+    "A mark on an EXPANDED member finds its state, writes with its own precondition, and lands in place"
+  )
   func markingAnExpandedMemberWorks() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
@@ -466,7 +474,8 @@ struct GridStoreSceneTests {
     await store.toggleSceneExpanded(5)
 
     await transport.setMarkStateOutcome(
-      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-rev-9")])))
+      .success(
+        .init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-rev-9")])))
     await store.applyMark(.pick, to: [501])
 
     let sent = await transport.lastMarkStateRequest
@@ -501,7 +510,8 @@ struct GridStoreSceneTests {
         anchor: Date(timeIntervalSince1970: 1), representative: newCover),
       forStack: 5)
     await transport.setMarkStateOutcome(
-      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-rev-9")])))
+      .success(
+        .init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-rev-9")])))
 
     await store.applyMark(.pick, to: [501])
 

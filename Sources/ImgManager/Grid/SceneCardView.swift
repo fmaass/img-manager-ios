@@ -67,7 +67,8 @@ struct SceneCardView: View {
     // The no-gesture-only rule, stated in the UI and not only in the code: a long press does
     // nothing on a card, so the card says out loud what its ONE gesture is.
     .accessibilityHint(
-      isExpanded ? "Double tap to close this scene" : "Double tap to open this scene")
+      isExpanded ? "Double tap to close this scene" : "Double tap to open this scene"
+    )
     .accessibilityIdentifier("sceneCard")
   }
 

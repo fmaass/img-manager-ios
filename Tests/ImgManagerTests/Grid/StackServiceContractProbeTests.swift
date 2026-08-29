@@ -120,7 +120,8 @@ struct StackServiceContractProbeTests {
     }
   }
 
-  @Test("Stack cursor mismatch: an undocumented 400 maps to the same .cursorInvalid the flat lane uses")
+  @Test(
+    "Stack cursor mismatch: an undocumented 400 maps to the same .cursorInvalid the flat lane uses")
   func stackCursorMismatchProbe() async {
     let transport = GridStubTransport()
     await transport.setBrowseStacksRejectNonNilCursor(true)
@@ -148,7 +149,8 @@ struct StackServiceContractProbeTests {
     #expect(page.rows.isEmpty)  // stub default page — reaching here at all is the proof
   }
 
-  @Test("GET /api/stacks/{id}/members: one page decodes with its own next_cursor and its tombstones")
+  @Test(
+    "GET /api/stacks/{id}/members: one page decodes with its own next_cursor and its tombstones")
   func stackMembersProbe() async throws {
     let transport = GridStubTransport()
     await transport.setStackMemberPage(
