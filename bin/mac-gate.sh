@@ -288,6 +288,12 @@ step xcodegen ./bin/generate.sh
 # build the `build` leg already produced, which is what the default path did implicitly.
 derived="$PWD/DerivedData"
 
+# The widget-embed leg reads the built .app for PlugIns/ImgManagerWidget.appex, and DerivedData
+# persists across gate runs (rsync excludes it) — a stale product bundle from an earlier green
+# run could satisfy the check even if this commit's config no longer embeds the widget. Purge
+# only the emitted products (module/build caches stay), so the inspected bundle is this run's.
+rm -rf "$derived/Build/Products"
+
 if [ -d ImgManager.xcodeproj ]; then
   step build xcodebuild build \
     -project ImgManager.xcodeproj -scheme ImgManager \
