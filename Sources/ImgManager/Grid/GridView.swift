@@ -200,12 +200,12 @@ struct GridView: View {
       tiles: rows.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) },
       paneWidth: paneWidth, targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale
     ) { displayID, tier in
-      switch byID[displayID] {
+      guard let row = byID[displayID] else { return .missing }
+      switch row {
       case .image(let image): return store.availability(for: image, tier: tier)
       // A card draws its representative, so its pixel availability IS the representative's.
       case .stack(let stackRow, _):
         return store.availability(for: stackRow.representative, tier: tier)
-      case nil: return .missing
       }
     }
   }

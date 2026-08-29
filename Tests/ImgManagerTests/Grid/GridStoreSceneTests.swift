@@ -180,6 +180,41 @@ struct GridStoreSceneTests {
     #expect(await transport.lastMarkStateRequest?.imageIds == [10])
   }
 
+  @Test(
+    "A card whose stack id equals a LOADED photograph's id still writes nothing — the typed identity, not luck"
+  )
+  func aCardIdCollidingWithALoadedPhotographWritesNothing() async {
+    // The one fixture that makes the typed-identity layer causally testable on its own: stack 10
+    // and photograph 10 side by side. If a display id ever collapsed back to a bare `Int` — or if
+    // `.stack` started answering with an image id — a drag across THIS card would mark THIS
+    // photograph, and nothing else in the suite would notice.
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await transport.setBrowseStacksPage(
+      page([
+        imageRow(makeImage(id: 10, revision: "r0")),
+        stackRowItem(makeStackRow(id: 10, representative: makeImage(id: 900))),
+      ]))
+    await store.setDisplayMode(.scene)
+    #expect(store.actionableImages.map(\.id) == [10])
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 10, revision: "r1")])))
+    store.pickLock.forceLatch()
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(.stack(10))
+
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 0)
+    #expect(store.actionableImages.first { $0.id == 10 }?.mark.state == .none)
+
+    // Positive control on the SAME fixture: the photograph that shares the number does write.
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(.image(10))
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
+    #expect(store.actionableImages.first { $0.id == 10 }?.mark.state == .pick)
+  }
+
   @Test("Even with a card's cover id passed directly, the write finds no state to build a precondition from")
   func aCoverIdCannotBeMarkedEvenIfNamed() async {
     let (store, transport) = await loadedSceneStore()
