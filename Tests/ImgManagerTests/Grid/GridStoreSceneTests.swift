@@ -393,6 +393,66 @@ struct GridStoreSceneTests {
     #expect(store.selection.mode == .select)
   }
 
+  @Test(
+    "An authoritative refresh drops selected members its replaced window no longer holds, and the tag targets follow"
+  )
+  func refreshPrunesTheSelectionToTheRefreshedWindow() async {
+    let (store, transport) = await loadedSceneStore()
+    // Two membership pages, so the reader can select a member that a refresh — which re-reads
+    // page ONE only — will not load again.
+    await transport.setStackMemberPage(
+      .init(items: [makeImage(id: 501)], limit: 100, nextCursor: "members-2", stackId: 5),
+      forStack: 5)
+    await transport.setStackMemberPage(
+      .init(items: [makeImage(id: 502)], limit: 100, nextCursor: nil, stackId: 5),
+      forCursor: "members-2")
+    await store.toggleSceneExpanded(5)
+    await store.loadMoreSceneMembersIfNeeded(afterMemberID: 501)
+    #expect(store.sceneMembers[5]?.map(\.id) == [501, 502])
+
+    store.enterSelectExplicitly()
+    store.selection.toggle(10)  // a loose photograph on page one
+    store.selection.toggle(501)  // a member page one holds
+    store.selection.toggle(502)  // a member only page TWO holds — a mixed selection
+    #expect(store.selection.members == [10, 501, 502])
+
+    // The foreground / 409-recovery re-read. It republishes page one of the stream and one
+    // membership page per open scene, so 502 stops being loaded.
+    let refreshed = await store.authoritativeRefresh()
+
+    #expect(refreshed)
+    #expect(store.sceneMembers[5]?.map(\.id) == [501])
+    #expect(store.sceneMemberCursors[5] == .more("members-2"))
+    // The vanished member left the selection with its tile; the two still on screen stayed, and
+    // Select mode itself is not exited — a refresh is not "Done".
+    #expect(store.selection.members == [10, 501])
+    #expect(store.selection.mode == .select)
+    // The write surface agrees with the screen exactly: no target outside the actionable
+    // projection, which is what `capturePriorTagSnapshots` would otherwise drop in silence.
+    #expect(Set(store.tagTargetImageIDs) == Set([10, 501]))
+    #expect(Set(store.tagTargetImageIDs) == Set(store.actionableImages.map(\.id)))
+  }
+
+  @Test(
+    "Positive control: a refresh whose window still holds every selected photograph prunes nothing"
+  )
+  func refreshKeepsASelectionItsWindowStillHolds() async {
+    let (store, transport) = await loadedSceneStore()
+    await transport.setStackMemberPage(
+      .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
+    await store.toggleSceneExpanded(5)
+
+    store.enterSelectExplicitly()
+    store.selection.toggle(10)
+    store.selection.toggle(501)
+
+    let refreshed = await store.authoritativeRefresh()
+
+    #expect(refreshed)
+    #expect(store.selection.members == [10, 501])
+    #expect(Set(store.tagTargetImageIDs) == Set([10, 501]))
+  }
+
   // MARK: - Members are ordinary photographs (gate correction 1), and the cover follows the write
 
   @Test("A mark on an EXPANDED member finds its state, writes with its own precondition, and lands in place")

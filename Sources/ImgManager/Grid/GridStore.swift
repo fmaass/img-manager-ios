@@ -547,13 +547,35 @@ final class GridStore {
       sceneMembers = refreshedMembers
       sceneMemberCursors = refreshedCursors
       sceneMembersInFlight = []
-      publishRefreshedFocusAndUndo(actionable: actionableImages)
+      let actionable = actionableImages
+      pruneSelectionOutside(actionable)
+      publishRefreshedFocusAndUndo(actionable: actionable)
       return true
     } catch {
       guard generation == loadGeneration else { return false }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
       return false
     }
+  }
+
+  /// A Scene refresh REPLACES the window rather than extending it — page one of the scene stream,
+  /// plus a FIRST membership page for each surviving open scene — so a photograph the reader
+  /// selected deeper in a long scene, or further down the stream, can simply stop being loaded.
+  /// Its id leaves the selection with it, for the same reason collapsing a card prunes
+  /// (`toggleSceneExpanded`): the selection is a set of ids, so nothing downstream can tell that
+  /// one of them is no longer on screen. `tagTargetImageIDs` would keep advertising it while
+  /// `capturePriorTagSnapshots` drops anything outside `actionableImages` — a mixed selection
+  /// would then write only its visible part and an all-hidden one would write nothing, in both
+  /// cases with no signal to the reader that the rest was skipped.
+  ///
+  /// Pruning, not preserving the extent: a refresh's whole point is that the window it publishes
+  /// is what the server says is there now, and re-fetching every page a reader had scrolled
+  /// through to keep a selection alive would make the resync unbounded.
+  private func pruneSelectionOutside(_ actionable: [Components.Schemas.ImageSummary]) {
+    guard !selection.members.isEmpty else { return }
+    let vanished = selection.members.subtracting(actionable.map(\.id))
+    guard !vanished.isEmpty else { return }
+    selection.removeHidden(Array(vanished))
   }
 
   private func refreshFlatPages(generation: Int) async -> Bool {
