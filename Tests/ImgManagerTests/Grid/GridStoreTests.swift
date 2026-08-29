@@ -1263,7 +1263,7 @@ struct GridStoreTests {
       .init(items: [makeImage(id: 2, mark: .none, revision: "r0")], limit: 200, nextCursor: nil))
     await transport.setDetailResult(
       .init(
-        ext: "jpg", filename: "vanished.jpg", folderId: 1, id: 1,
+        ext: "jpg", fileSize: 4_096, filename: "vanished.jpg", folderId: 1, id: 1,
         lightroom: .init(sidecarPresent: false),
         mark: .init(revision: "r9", state: .none, tags: []),
         proxies: .init(additionalProperties: [:]), sourceTier: "local"))
@@ -1500,7 +1500,7 @@ struct GridStoreTests {
     await transport.setDetailShouldFail(false)
     await transport.setDetailResult(
       .init(
-        ext: "jpg", filename: "vanished.jpg", folderId: 1, id: 1,
+        ext: "jpg", fileSize: 4_096, filename: "vanished.jpg", folderId: 1, id: 1,
         lightroom: .init(sidecarPresent: false),
         mark: .init(revision: "r9", state: .none, tags: []),
         proxies: .init(additionalProperties: [:]), sourceTier: "local"))
