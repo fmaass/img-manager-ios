@@ -141,4 +141,23 @@ enum FolderTreePresentation {
   ) -> [Components.Schemas.FolderNode] {
     ShootListFilter.shoots(folders)
   }
+
+  /// The tree the section renders, from the one mode-routing seam `shootRows` already
+  /// established. P7 (IMGMGR-217) makes it a forest instead of a flat leaf list; `mode` is taken
+  /// and again DELIBERATELY not consulted, so "both idioms get the same hierarchy" stays a
+  /// property a test can read rather than an absence nobody can assert.
+  static func tree(
+    for mode: LayoutMode, folders: [Components.Schemas.FolderNode]
+  ) -> [FolderTreeNode] {
+    FolderTreeModel.forest(folders)
+  }
+
+  /// Whether one branch of the tree is open. The reader's own disclosure choices are the answer
+  /// normally; while a search term is live, every surviving branch opens so the matches the
+  /// filter kept are actually on screen instead of hidden inside collapsed ancestors.
+  static func isExpanded(_ id: Int, readerExpanded: Set<Int>, isSearching: Bool) -> Bool {
+    // RED PROBE (this commit only): the PRE-P7 truth — there is no search, so only the reader's
+    // own choice ever opens a branch.
+    readerExpanded.contains(id)
+  }
 }

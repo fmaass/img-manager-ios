@@ -71,4 +71,28 @@ struct FolderTreeSectionTests {
     expansion.setExpanded(false)
     #expect(!expansion.isExpanded(in: .compact))
   }
+
+  /// P7 (IMGMGR-217): the tree now carries the WHOLE folder hierarchy, so the rows that navigate
+  /// have to be distinguishable from the rows that merely expand. `ShootListFilter` stays the one
+  /// definition of a browsable shoot (IMGMGR-173); everything else is a container.
+  @Test("only shoot-kind folders navigate — every other folder just expands")
+  func onlyShootKindLeavesAreSelectable() {
+    let tree = FolderTreePresentation.tree(for: .regular3, folders: folders)
+
+    // The whole tree is present, not only its shoots — that is the P7 change.
+    #expect(tree.map(\.id) == [2, 60, 61, 62, 63, 64])
+    #expect(tree.filter(\.isSelectableShoot).map(\.id) == [60, 63])
+    #expect(
+      tree.filter { !$0.isSelectableShoot }.map(\.kind)
+        == ["other", "template", "import", "project"])
+  }
+
+  /// A live search term opens what it matched; with no term, the reader's own disclosure state is
+  /// the only thing that opens a branch.
+  @Test("a live search opens the branches it kept, and the reader rules otherwise")
+  func searchOpensTheBranchesItKept() {
+    #expect(!FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: false))
+    #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [7], isSearching: false))
+    #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: true))
+  }
 }
