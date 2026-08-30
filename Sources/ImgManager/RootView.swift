@@ -269,6 +269,12 @@ struct RootView: View {
     ) {
       LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
     }
+    // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
+    // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
+    // grid is swapped out for the docked loupe, which would take the sheet's host with it.
+    .sheet(isPresented: $gridStore.isShortcutHelpPresented) {
+      ShortcutHelpSheet()
+    }
     .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
   }
 
@@ -326,7 +332,7 @@ struct RootView: View {
       if gridStore.isLoupeOpen && layoutMode != .compact && !gridStore.isLoupeFullScreen {
         LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
       } else {
-        GridView(store: gridStore)
+        GridView(store: gridStore, layoutMode: layoutMode)
           .toolbar {
             // Fold item 7's persistent chrome control, unchanged in role: wherever the inspector
             // is not a permanent column, this ONE control is how it is reached — never a second,

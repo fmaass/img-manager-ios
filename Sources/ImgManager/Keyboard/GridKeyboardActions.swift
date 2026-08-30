@@ -17,6 +17,18 @@ struct GridKeyboardActions {
   var clear: (_ shiftHeld: Bool) -> Void
   var tag: () -> Void
   var undo: () -> Void
+  /// WP13 P4 (IMGMGR-215): the View menu's six zoom steps (⌘1…⌘6). Same `GridStore.setRowHeight`
+  /// the Group/Zoom chrome control calls, so the menu-bar entry and the on-screen menu cannot
+  /// diverge.
+  var setRowHeight: (GridRowHeight) -> Void
+  /// WP13 P4: the View menu's Group single-select pair. Scene is a MODE, not a `group_by` wire
+  /// value (ADR-0005 decision 6).
+  var setDisplayMode: (GridDisplayMode) -> Void
+  /// WP13 P4: Scene view on/off (⌘⇧G) — the accelerator form of the pair above.
+  var toggleSceneMode: () -> Void
+  /// WP13 P4: `?` and ⌘/ both open the shortcut help sheet, the surface that finally makes
+  /// `ShortcutID.help` active (`ShortcutCatalog.swift`).
+  var showShortcutHelp: () -> Void
 }
 
 private struct GridKeyboardActionsKey: FocusedValueKey {
@@ -43,7 +55,16 @@ extension GridStore {
       dislike: { [self] shiftHeld in Task { await handleDislikeShortcut(shiftHeld: shiftHeld) } },
       clear: { [self] shiftHeld in Task { await handleClearShortcut(shiftHeld: shiftHeld) } },
       tag: { [self] in handleTagShortcut() },
-      undo: { [self] in Task { await handleUndoShortcut() } }
+      undo: { [self] in Task { await handleUndoShortcut() } },
+      setRowHeight: { [self] step in setRowHeight(step) },
+      setDisplayMode: { [self] mode in Task { await setDisplayMode(mode) } },
+      // On/off, read off the store's OWN current mode rather than a copy the menu holds — the
+      // focused value is a snapshot, and a stale copy would flip the wrong way after a change
+      // made from the Group control.
+      toggleSceneMode: { [self] in
+        Task { await setDisplayMode(displayMode == .scene ? .flat : .scene) }
+      },
+      showShortcutHelp: { [self] in showShortcutHelp() }
     )
   }
 }
