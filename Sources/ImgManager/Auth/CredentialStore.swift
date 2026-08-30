@@ -52,31 +52,39 @@ protocol CredentialPersisting: Sendable {
 /// app's single pinned namespace — there is no multi-namespace precedence walk here because
 /// there is only one namespace to walk.
 actor CredentialStore: CredentialPersisting {
-  private let keychain: Keychain
+  /// The contract's literal value (p1-spec-rev2.md §3 item 3), used only when the runtime probe
+  /// has not resolved the real group yet — a query naming it fails as `.notEntitled` rather than
+  /// silently reading nothing, which is the outcome this store wants for an unresolvable build.
+  static let unresolvedAccessGroup =
+    "$(AppIdentifierPrefix)live.discomarder.imgmanager.credentials"
+
+  private let service: String
+  private let explicitAccessGroup: String?
   private let account: String
   private let decoder: JSONDecoder
   private let encoder: JSONEncoder
 
   /// `service`/`accessGroup`/`account` default to the pinned contract (p1-spec-rev2.md §3 item
   /// 3): service `live.discomarder.imgmanager`, access group
-  /// `$(AppIdentifierPrefix)live.discomarder.imgmanager.credentials`, account `native-pat`. The
-  /// access group default is `KeychainAccessGroup.resolved` — the RUNTIME-resolved value
-  /// (`Keychain.swift`'s own doc comment: a Swift string literal cannot express Xcode's
-  /// build-time `$(AppIdentifierPrefix)` substitution) — falling back to the contract's literal
-  /// value only if the probe itself could not resolve anything (which is itself an entitlement
-  /// problem `load()`/`save()`/`clear()` will then surface as `.notEntitled` on the first real
-  /// call, never silently).
-  /// Overridable only for tests, which use a throwaway account under the SAME real Keychain
-  /// (mirrors memos-ng-ios's own test pattern — the test bundle is HOSTED in the app precisely
-  /// so it holds the keychain entitlement in the simulator; see project.yml's comment on
-  /// `ImgManagerTests`).
+  /// `$(AppIdentifierPrefix)live.discomarder.imgmanager.credentials`, account `native-pat`.
+  ///
+  /// `accessGroup` defaults to nil meaning "resolve at USE time" — not at init time (WP12/
+  /// IMGMGR-199 premise gate, blocking finding 1). The widget extension can be launched into a
+  /// LOCKED device, where `KeychainAccessGroup.resolved` cannot answer yet; binding whatever it
+  /// said at construction would leave a store built during that window permanently pointed at
+  /// the unexpanded literal, still failing after the unlock. Resolving per call costs nothing
+  /// (the probe caches its success) and recovers by itself.
+  /// A non-nil value is for tests only, which use a throwaway account under the SAME real
+  /// Keychain (mirrors memos-ng-ios's own test pattern — the test bundle is HOSTED in the app
+  /// precisely so it holds the keychain entitlement in the simulator; see project.yml's comment
+  /// on `ImgManagerTests`).
   init(
     service: String = "live.discomarder.imgmanager",
-    accessGroup: String = KeychainAccessGroup.resolved
-      ?? "$(AppIdentifierPrefix)live.discomarder.imgmanager.credentials",
+    accessGroup: String? = nil,
     account: String = "native-pat"
   ) {
-    self.keychain = Keychain(service: service, accessGroup: accessGroup)
+    self.service = service
+    self.explicitAccessGroup = accessGroup
     self.account = account
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
@@ -84,6 +92,14 @@ actor CredentialStore: CredentialPersisting {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     self.encoder = encoder
+  }
+
+  /// Built per call so the access group is whatever the probe can resolve NOW — see `init`.
+  private var keychain: Keychain {
+    Keychain(
+      service: service,
+      accessGroup: explicitAccessGroup ?? KeychainAccessGroup.resolved
+        ?? Self.unresolvedAccessGroup)
   }
 
   func load() -> CredentialLoadResult {

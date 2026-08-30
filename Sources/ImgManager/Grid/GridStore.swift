@@ -380,6 +380,7 @@ final class GridStore {
     undo.clear()
     conflictRecovery = nil
     await reloadFirstPage()
+  }
 
   // MARK: - Stats facets (WP12: the Compact filter surface)
 

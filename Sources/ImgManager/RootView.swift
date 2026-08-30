@@ -1,6 +1,7 @@
 import ImgManagerAPI
 import OpenAPIRuntime
 import SwiftUI
+import WidgetKit
 
 #if canImport(UIKit)
   import UIKit
@@ -154,6 +155,15 @@ struct RootView: View {
           refreshQueue: { await queueStore.refresh() }
         )
       }
+    }
+    .onChange(of: auth.status) { _, newStatus in
+      // WP12 (IMGMGR-199): losing the signed-in state must reach the widget promptly — its own
+      // timeline refresh is budgeted by WidgetKit and could be half an hour away, and until it
+      // runs the widget would keep rendering this account's shoot counts on a device that is no
+      // longer signed in. The widget's provider is what DECIDES what a credential-less refresh
+      // shows (`ReadinessTimelineResolver`, tested); this is only the nudge to go and ask.
+      if case .signedIn = newStatus { return }
+      WidgetCenter.shared.reloadTimelines(ofKind: ReadinessWidgetKind.value)
     }
     .onChange(of: gridStore.mutationCommitCount) { _, _ in
       // P7 coexistence (binding adjudication 7c): the ONE signal a committed mark/undo/tag

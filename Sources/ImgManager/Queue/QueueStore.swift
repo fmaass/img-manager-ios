@@ -1,6 +1,7 @@
 import Foundation
 import ImgManagerAPI
 import Observation
+import WidgetKit
 
 /// P7's own orchestrator for the work-queue home (WP8, IMGMGR-116) — owns the loaded
 /// `FolderSummary` list and the screen's connectivity/loading state machine (Q3). Deliberately
@@ -49,6 +50,7 @@ final class QueueStore {
   private let baseURL: String
   private let now: @MainActor () -> Date
   private let debounceNanoseconds: UInt64
+  private let reloadWidgets: () -> Void
   private var hasLoadedSuccessfullyOnce = false
   private var hasAttemptedHydration = false
   private var activeSubject: String?
@@ -58,13 +60,22 @@ final class QueueStore {
   /// `debounceNanoseconds` is test-injectable (default 400ms) so a coalescing test proves the
   /// real behaviour in milliseconds, never by waiting out the production interval. `now` is
   /// injectable for the same reason: a persisted timestamp has to be assertable exactly.
+  ///
+  /// `reloadWidgets` (WP12, IMGMGR-199) is a seam for the same reason, and it lives HERE rather
+  /// than in `ForegroundRefresh` because this type is the only one that knows whether a summary
+  /// request actually succeeded — `refreshQueue: () async -> Void` tells its caller nothing, so
+  /// a reload hung off the foreground hook would fire just as eagerly after a failed refresh and
+  /// republish the widget's stale counts as if they were fresh.
   init(
     service: QueueService,
     snapshotStore: any QueueSnapshotPersisting = QueueSnapshotStore(),
     subject: @escaping @MainActor () -> String? = { nil },
     baseURL: String = ImgManagerAPIClient.baseURL.absoluteString,
     now: @escaping @MainActor () -> Date = { Date() },
-    debounceNanoseconds: UInt64 = 400_000_000
+    debounceNanoseconds: UInt64 = 400_000_000,
+    reloadWidgets: @escaping () -> Void = {
+      WidgetCenter.shared.reloadTimelines(ofKind: ReadinessWidgetKind.value)
+    }
   ) {
     self.service = service
     self.snapshotStore = snapshotStore
@@ -72,6 +83,7 @@ final class QueueStore {
     self.baseURL = baseURL
     self.now = now
     self.debounceNanoseconds = debounceNanoseconds
+    self.reloadWidgets = reloadWidgets
   }
 
   /// The screen's own first-appearance entry point — a no-op once the first attempt (success OR
@@ -206,6 +218,10 @@ final class QueueStore {
           await snapshotStore.clear()
         }
       }
+      // Inside the generation fence and after the publication, so the widget is only ever asked
+      // to re-read state this store has already committed — and only on the path that has fresh
+      // server truth to hand it.
+      reloadWidgets()
     } catch {
       // The same fence on the failure path: a dead session's failure is not this session's
       // degraded state either.

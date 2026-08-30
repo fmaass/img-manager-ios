@@ -25,6 +25,13 @@ require File.expand_path("lib/archive_check", __dir__)
 default_platform(:ios)
 
 APP_ID   = "live.discomarder.imgmanager"
+# WP12 (IMGMGR-199): the readiness widget's own bundle id. It needs its OWN App ID and its OWN
+# distribution profile in App Store Connect (an app id is not a prefix match), and that profile
+# must carry the shared Keychain access group -- neither is provisioned yet, so no TestFlight cut
+# may run until both exist. The pre-upload checks below assert every part of that on the BUILT
+# archive, so a cut attempted without them fails here rather than at Apple's validator.
+EXT_ID   = "live.discomarder.imgmanager.readiness-widget"
+EXT_NAME = "ImgManagerWidget"
 TEAM_ID  = "Y2JQ4VAF85"
 SCHEME   = "ImgManager"
 PROJECT  = "ImgManager.xcodeproj"
@@ -346,10 +353,68 @@ def plist_json_array(plist, key)
   Array(plist_json_value(plist, key))
 end
 
-def binary_entitlements_plist(app)
-  path = "#{ROOT}/build/binary-entitlements.plist"
+def binary_entitlements_plist(app, name: "binary-entitlements")
+  path = "#{ROOT}/build/#{name}.plist"
   sh("codesign -d --entitlements #{path.shellescape} --xml #{app.shellescape} 2>&1", log: false)
   path
+end
+
+# WP12 (IMGMGR-199): the embedded widget extension's own facts, read off the BUILT .appex --
+# never project.yml, and never inferred from the app's. `codesign --verify --deep` on the app
+# walks nested code but says nothing about which profile, which entitlements or which version the
+# nested bundle carries, and those are exactly what a wrong extension provisioning gets wrong.
+# A missing .appex answers `{ present: false }` and every extension check then fails on its own
+# terms rather than the whole thing raising here.
+def extension_facts(archive, app)
+  appex = "#{app}/PlugIns/#{EXT_NAME}.appex"
+  info_plist = "#{appex}/Info.plist"
+  return { present: false } unless File.exist?(info_plist)
+
+  plist_string = lambda do |key|
+    sh("/usr/libexec/PlistBuddy -c 'Print #{key}' #{info_plist.shellescape}", log: false).strip
+  rescue StandardError
+    nil
+  end
+
+  profile_path = "#{appex}/embedded.mobileprovision"
+  profile_app_id = nil
+  profile_team_ids = []
+  profile_keychain_groups = []
+  if File.exist?(profile_path)
+    profile_plist = "#{ROOT}/build/embedded-extension-profile.plist"
+    sh("security cms -D -i #{profile_path.shellescape} > #{profile_plist.shellescape}", log: false)
+    profile_app_id = sh(
+      "/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' " \
+      "#{profile_plist.shellescape}", log: false,
+    ).strip
+    profile_team_ids = plist_json_array(profile_plist, "TeamIdentifier")
+    profile_keychain_groups = plist_json_array(profile_plist, "Entitlements.keychain-access-groups")
+  end
+
+  entitlements_plist = binary_entitlements_plist(appex, name: "extension-entitlements")
+  codesign_out = sh("codesign -dv --verbose=4 #{appex.shellescape} 2>&1", log: false)
+
+  {
+    present: true,
+    bundle_id: plist_string.call(":CFBundleIdentifier"),
+    extension_point: plist_string.call(":NSExtension:NSExtensionPointIdentifier"),
+    version: plist_string.call(":CFBundleShortVersionString"),
+    build_number: plist_string.call(":CFBundleVersion"),
+    signing_authority: codesign_out[/^Authority=(.+)$/, 1],
+    codesign_verify_ok: system("codesign --verify --strict #{appex.shellescape} >/dev/null 2>&1"),
+    profile_app_id: profile_app_id,
+    profile_team_ids: profile_team_ids,
+    profile_keychain_groups: profile_keychain_groups,
+    entitlement_keychain_groups: plist_json_array(entitlements_plist, "keychain-access-groups"),
+    get_task_allow: plist_json_value(entitlements_plist, "get-task-allow"),
+    binary_uuids: sh("dwarfdump --uuid #{(appex + '/' + EXT_NAME).shellescape} 2>&1", log: false)
+                  .scan(/UUID: ([0-9A-Fa-f-]+)/).flatten,
+    # The archive carries ONE dSYMs directory for every binary it built; the extension's own
+    # executable UUID has to match something in it or a widget crash ships unsymbolicated.
+    dsym_uuids: Dir.glob("#{archive}/dSYMs/*.dSYM").flat_map do |bundle|
+      sh("dwarfdump --uuid #{bundle.shellescape} 2>&1", log: false).scan(/UUID: ([0-9A-Fa-f-]+)/).flatten
+    end,
+  }
 end
 
 # The authoritative App Store Connect build listing -- the second, independent source
@@ -478,6 +543,11 @@ def archive_facts(archive, previous_build)
     profile_app_id: profile_app_id, profile_team_ids: profile_team_ids, expected_team_id: TEAM_ID,
     get_task_allow: get_task_allow,
     binary_uuids: binary_uuids, dsym_uuids: dsym_uuids,
+    # WP12 (IMGMGR-199): the app's own signed Keychain groups, so the extension's can be checked
+    # against what the APP actually got rather than against a literal nobody re-derived.
+    keychain_groups: plist_json_array(entitlements_plist, "keychain-access-groups"),
+    expected_extension_bundle_id: EXT_ID,
+    extension: extension_facts(archive, app),
   }
 end
 
