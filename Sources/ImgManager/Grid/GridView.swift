@@ -477,11 +477,11 @@ struct ActionBarView: View {
     .actionBarControlSize()
   }
 
-  /// The identifier goes on each concrete `Button`, never on the `Group` that branches between
-  /// them: on Regular the `Group` carries no geometry of its own, so an identifier there
-  /// resolves to an element with no frame and XCUITest cannot even determine its hittability
-  /// (gate GREEN-7, iPad leg). The two branches are one control to the reader, so they share one
-  /// identifier — only one of them is ever in the tree.
+  /// The identifier goes on the node that CARRIES THE FRAME — after `.actionBarControlSize()`,
+  /// so the element XCUITest resolves is the sized one. It sat on the wrapping `Group` first and
+  /// then on the two concrete `Button`s, and the iPad leg reported the identical "Activation
+  /// point invalid and no suggested hit points based on element frame" both times (gate GREEN-7
+  /// and GREEN-8), which is what a frameless element looks like from the harness.
   ///
   /// Factored out because `.buttonStyle(_:)` requires a single CONCRETE style per call site —
   /// a ternary between `.borderedProminent` and `.bordered` does not type-check (they are
@@ -498,7 +498,6 @@ struct ActionBarView: View {
           Label(pick.title, systemImage: pick.systemImage)
         }
         .buttonStyle(.borderedProminent)
-        .accessibilityIdentifier(pick.accessibilityIdentifier)
       } else {
         Button {
           Task { await store.activatePickButton() }
@@ -506,7 +505,6 @@ struct ActionBarView: View {
           Label(pick.title, systemImage: pick.systemImage)
         }
         .buttonStyle(.bordered)
-        .accessibilityIdentifier(pick.accessibilityIdentifier)
       }
     }
     .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
@@ -514,6 +512,7 @@ struct ActionBarView: View {
     // disabled is Pick LOCK entry, in the context menu below and in the store's own guard.
     .disabled(store.isPickControlDisabled)
     .actionBarControlSize()
+    .accessibilityIdentifier(pick.accessibilityIdentifier)
     .contextMenu {
       // Gate's unasked issue: the amendment's discoverable visible "Lock Pick" alternative to
       // the undiscoverable double-tap gesture.

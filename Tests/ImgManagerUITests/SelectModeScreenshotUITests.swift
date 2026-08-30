@@ -18,7 +18,45 @@ final class SelectModeScreenshotUITests: XCTestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestEnterSelectMode"]
     app.launch()
+    // PORTRAIT, explicitly. `XCUIDevice.orientation` is device state that PERSISTS across test
+    // classes in one run, and `RegularThreeScreenshotUITests` rotates it to landscapeLeft —
+    // that class sorts before this one, so this test inherited landscape on the iPad
+    // destination. Landscape on iPad is the Regular-3 three-pane layout, where the grid is a
+    // narrow middle column; portrait is Regular-2, where the grid is the wide content surface
+    // this phase's bar is laid out for. The iPhone leg is unaffected either way (Compact).
+    XCUIDevice.shared.orientation = .portrait
     return app
+  }
+
+  /// What the harness can actually SEE of the bar, recorded BEFORE anything asserts hittability.
+  /// A bare "Activation point invalid and no suggested hit points based on element frame" says
+  /// nothing about which control, at what size, in what tree — this makes a red run decisive
+  /// instead of another round of hypotheses.
+  private func recordBarGeometry(_ app: XCUIApplication, controls: [(String, XCUIElement)]) {
+    XCTContext.runActivity(named: "Action-bar geometry") { activity in
+      var report = "orientation=\(XCUIDevice.shared.orientation.rawValue)\n"
+      report += "app frame=\(app.frame)\n"
+      var anomalous = false
+      for (name, element) in controls {
+        let exists = element.exists
+        let frame = exists ? element.frame : .zero
+        if !exists || frame.width < 1 || frame.height < 1 { anomalous = true }
+        report += "\(name): exists=\(exists) enabled=\(exists && element.isEnabled) "
+        report += "frame=\(frame)\n"
+      }
+      let geometry = XCTAttachment(string: report)
+      geometry.name = "action-bar-geometry"
+      geometry.lifetime = .keepAlways
+      activity.add(geometry)
+      // Only on an anomaly, because the whole tree is large: it is the artefact that names the
+      // real container an element ended up inside.
+      if anomalous {
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "element-tree"
+        tree.lifetime = .keepAlways
+        activity.add(tree)
+      }
+    }
   }
 
   private func tile(_ imageID: Int, in app: XCUIApplication) -> XCUIElement {
@@ -87,12 +125,26 @@ final class SelectModeScreenshotUITests: XCTestCase {
     XCTAssertTrue(clear.isEnabled, "Clear must be live on a non-empty selection.")
     XCTAssertTrue(tag.isEnabled, "Tag must be live on a non-empty selection.")
 
+    recordBarGeometry(
+      app,
+      controls: [
+        ("Pick", pick), ("Dislike", dislike), ("Clear", clear), ("Undo", undo), ("Tag", tag),
+        ("More", more), ("selectModeCaption", caption),
+      ])
+
     // Reachability, not just presence: the bar's own arithmetic (`ActionBarMetrics`) claims six
     // 44-pt controls fit the narrowest Compact width, and this is that claim at the rendered
     // level. Undo is excluded here only because it is legitimately disabled until a mark
     // commits — the Clear-wiring test below reaches it in its enabled state.
-    for control in [pick, dislike, clear, tag, more] {
-      XCTAssertTrue(control.isHittable, "A bar control has no reachable hit region at this width.")
+    for (name, control) in [
+      ("Pick", pick), ("Dislike", dislike), ("Clear", clear), ("Tag", tag), ("More", more),
+    ] {
+      XCTAssertFalse(
+        control.frame.isEmpty,
+        "\(name) is rendered with an empty frame — see the action-bar-geometry and element-tree "
+          + "attachments for the tree it ended up in.")
+      XCTAssertTrue(
+        control.isHittable, "\(name) has no reachable hit region at this width.")
     }
   }
 
