@@ -184,7 +184,8 @@ final class InspectorSlideOverUITests: XCTestCase {
       .matching(
         NSPredicate(
           format:
-            "label BEGINSWITH 'pick' AND label != 'Pick' AND NOT (label CONTAINS 'photos')"))
+            "label BEGINSWITH 'pick' AND label != 'Pick'"
+              + " AND NOT (label CONTAINS 'photos')"))
       .firstMatch
     guard markRow.waitForExistence(timeout: 10) else {
       // An explicit closure, never `map(\.label)`: under Swift 6 `XCUIElement.label` is
