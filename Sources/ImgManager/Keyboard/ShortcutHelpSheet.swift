@@ -7,6 +7,11 @@ struct ShortcutHelpRow: Identifiable, Equatable, Sendable {
   /// The catalog entry's own raw value — stable and unique per entry, never an index
   /// (IMGMGR-210).
   let id: String
+  /// What the RENDERED row is addressable by from outside the process (diff-gate r1 blocker 3:
+  /// the help-sheet test asserted the model against its own source and never the rendered
+  /// sheet, so an empty `List` body passed). ASCII, derived from the catalog case name —
+  /// `id` is a display string of ⌘/⇧ glyphs and makes a poor identifier.
+  let accessibilityID: String
   let key: String
   let meaning: String
 }
@@ -18,7 +23,11 @@ struct ShortcutHelpRow: Identifiable, Equatable, Sendable {
 enum ShortcutHelpModel {
   static var rows: [ShortcutHelpRow] {
     ShortcutCatalog.activeEntries.map { entry in
-      ShortcutHelpRow(id: entry.id.rawValue, key: entry.id.keyLabel, meaning: entry.id.meaning)
+      ShortcutHelpRow(
+        id: entry.id.rawValue,
+        accessibilityID: "shortcutHelpRow.\(entry.id.accessibilityToken)",
+        key: entry.id.keyLabel,
+        meaning: entry.id.meaning)
     }
   }
 }
@@ -39,6 +48,10 @@ struct ShortcutHelpSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .combine)
+        // The rendered row's own handle. `ViewOptionsScreenshotUITests` opens this sheet on
+        // BOTH destinations and asserts the rows it finds by these identifiers, so emptying
+        // the `List` above turns that test RED instead of leaving a model-only test green.
+        .accessibilityIdentifier(row.accessibilityID)
       }
       .navigationTitle("Keyboard shortcuts")
       .navigationBarTitleDisplayMode(.inline)
@@ -48,6 +61,10 @@ struct ShortcutHelpSheet: View {
         }
       }
     }
-    .accessibilityIdentifier("shortcutHelpSheet")
+    // NO `.accessibilityIdentifier` on this container: an identifier set on a container
+    // OVERRIDES its descendants' — observed on the iPhone 17 Pro gate leg for `GridOptionsRow`,
+    // whose two controls both came back as the row's identifier and were unaddressable
+    // (`GridView.swift`). The rows above are what a test needs to name; the sheet itself is
+    // addressable by its navigation bar title, which is real rendered chrome either way.
   }
 }

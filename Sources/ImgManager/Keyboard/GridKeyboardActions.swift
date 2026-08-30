@@ -64,7 +64,7 @@ extension GridStore {
       toggleSceneMode: { [self] in
         Task { await setDisplayMode(displayMode == .scene ? .flat : .scene) }
       },
-      showShortcutHelp: { [self] in isShortcutHelpPresented = true }
+      showShortcutHelp: { [self] in showShortcutHelp() }
     )
   }
 }

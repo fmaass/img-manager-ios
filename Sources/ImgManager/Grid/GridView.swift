@@ -297,8 +297,10 @@ struct GridZoomControl: View {
   }
 }
 
-/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row — one row, two menu buttons,
-/// each labelled with its current value so the state is readable without opening anything.
+/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row — one row, two menu buttons
+/// each labelled with its current value so the state is readable without opening anything, and
+/// (diff-gate r1 blocker 3) the trailing shortcut-help button that is Compact's only route into
+/// the help sheet.
 /// Deliberately NOT a dense icon filter row (p3220 §2.2 must-not-copy #1) and deliberately not
 /// a filter surface: filters live in the Stats segment (`InspectorView`), never in chrome.
 struct GridOptionsRow: View {
@@ -313,6 +315,8 @@ struct GridOptionsRow: View {
       GridZoomControl(store: store)
         .frame(minHeight: 44)
       Spacer()
+      GridShortcutHelpControl(store: store)
+        .frame(minHeight: 44)
     }
     .buttonStyle(.bordered)
     .font(.subheadline)
@@ -324,6 +328,32 @@ struct GridOptionsRow: View {
     // `identifier: 'gridOptionsRow'` and neither `gridGroupControl` nor `gridZoomControl`
     // existed, so the row's own two controls were unaddressable. The controls are what anything
     // needs to name; the row is just where they sit on Compact.
+  }
+}
+
+/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: Compact's chrome path INTO the shortcut help
+/// sheet. Every other route the plan names — the menu-bar View menu, `?`, ⌘/ — needs a hardware
+/// keyboard or the iPad menu bar, so on Compact the sheet was unreachable and therefore had no
+/// rendered evidence on that idiom at all. Deliberately NOT a fourth entry in the More menu:
+/// that menu's contents are P5a's decided set (IMGMGR-221) and this phase does not get to
+/// pre-empt them.
+///
+/// Calls the same `GridStore.showShortcutHelp()` the `?`/⌘/ declarations dispatch into, so the
+/// button and the shortcut cannot drift apart.
+struct GridShortcutHelpControl: View {
+  let store: GridStore
+
+  var body: some View {
+    Button {
+      store.showShortcutHelp()
+    } label: {
+      Label("Keyboard shortcuts", systemImage: "keyboard")
+    }
+    // Icon-only ON PURPOSE here, unlike Group/Zoom: it carries no value to read, and the row's
+    // job is the two view options — this is the help affordance beside them, not a third one.
+    .labelStyle(.iconOnly)
+    .accessibilityLabel("Keyboard shortcuts")
+    .accessibilityIdentifier("gridShortcutHelpControl")
   }
 }
 

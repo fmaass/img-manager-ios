@@ -1172,6 +1172,15 @@ final class GridStore {
     isTagEntryPresented = true
   }
 
+  /// WP13 P4 (IMGMGR-215): raise the shortcut help sheet. ONE method rather than two call sites
+  /// setting the flag, because both surfaces that open it — the `?`/⌘/ key equivalents through
+  /// `GridKeyboardActions`, and Compact's options-row button (`GridShortcutHelpControl`) — must
+  /// stay the same action, the same rule `GridGroupControl`/`AppCommands` already follow for
+  /// the view options themselves.
+  func showShortcutHelp() {
+    isShortcutHelpPresented = true
+  }
+
   /// The images a tag action targets right now: the Select-mode membership when non-empty,
   /// otherwise the single focused tile — mirrors how `T`'s action-bar surface already reads in
   /// both modes rather than requiring a caller to branch on mode itself.

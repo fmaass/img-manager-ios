@@ -2,8 +2,12 @@ import Testing
 
 @testable import ImgManager
 
-/// WP13 P4 (IMGMGR-215): the `?` surface. The sheet renders `ShortcutHelpModel.rows` and
-/// nothing else, so these assertions are about what a reader actually sees listed.
+/// WP13 P4 (IMGMGR-215): the `?` surface's MODEL. These assertions are about the row list the
+/// sheet is built from — they are deliberately NOT the sheet's own verification, because a
+/// model-against-its-own-source test stays green with an empty `List` body (diff-gate r1
+/// blocker 3). The RENDERED sheet is asserted in
+/// `ViewOptionsScreenshotUITests.testShortcutHelpSheetListsEveryActiveShortcut`, which opens it
+/// on both destinations and matches the real rows by the identifiers pinned below.
 @Suite("Shortcut help sheet (WP13 P4)")
 struct ShortcutHelpSheetTests {
 
@@ -35,5 +39,26 @@ struct ShortcutHelpSheetTests {
     #expect(scene?.key == "⌘⇧G")
     let help = ShortcutHelpModel.rows.first { $0.id == ShortcutID.help.rawValue }
     #expect(help?.key == "? or ⌘/")
+    let group = ShortcutHelpModel.rows.first { $0.id == ShortcutID.groupMode.rawValue }
+    #expect(group?.key == "⌃⌘1 · ⌃⌘2")
+  }
+
+  @Test("Every row carries the ASCII identifier the rendered sheet is addressed by")
+  func everyRowCarriesItsRenderedIdentifier() {
+    // The UI test can only see the sheet through these — it has no access to the catalog. So
+    // the identifier scheme itself is pinned here, in the same place the rows are built, and
+    // the UI test asserts the rendered set against exactly these strings.
+    let rows = ShortcutHelpModel.rows
+    let expected = ShortcutCatalog.activeEntries.map {
+      "shortcutHelpRow.\($0.id.accessibilityToken)"
+    }
+    #expect(rows.map(\.accessibilityID) == expected)
+    #expect(Set(rows.map(\.accessibilityID)).count == rows.count)
+    // ASCII, because an identifier full of ⌘/⇧ glyphs is a poor handle for an XCTest predicate.
+    // Closure form, never `allSatisfy(\.isASCII)`: inside `#expect` the macro re-emits the
+    // predicate as a generic function value and a key path passed to a `rethrows` call there
+    // is treated as throwing (the same trap `ShortcutCatalogTests` already documents).
+    #expect(rows.allSatisfy { row in row.accessibilityID.allSatisfy { $0.isASCII } })
+    #expect(rows.contains { $0.accessibilityID == "shortcutHelpRow.groupMode" })
   }
 }
