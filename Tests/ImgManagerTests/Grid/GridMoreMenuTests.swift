@@ -143,9 +143,11 @@ struct GridViewMoreMenuTests {
         #expect(store.isStatusPresented, "the Status entry did not raise the sheet")
 
       default:
+        // ONE literal, not two concatenated: `Issue.record` takes a `Comment`, and `+` on a
+        // Comment is not a string append (gate p5a-red2, GridMoreMenuTests.swift:148).
         Issue.record(
-          "More-menu entry '\(entry.id)' has no probe here — a new entry needs one, or it is a "
-            + "placeholder row nothing proves.")
+          "More-menu entry '\(entry.id)' has no probe here — a new entry needs one, or it is a placeholder row nothing proves."
+        )
       }
     }
   }
@@ -239,7 +241,9 @@ struct GridViewMoreMenuTests {
 
     let sent = await transport.lastMarkStateRequest
     // By raw value, never `== .none` — see the comment in `everyEntryDoesSomethingObservable`.
-    #expect(sent?.state?.rawValue == "none", "Clear mark did not submit the `none` state")
+    // `MarkStateRequest.state` is NON-optional in the generated client (unlike `MarkView.state`),
+    // so there is exactly one `?` here: the optional request itself.
+    #expect(sent?.state.rawValue == "none", "Clear mark did not submit the `none` state")
     #expect(sent?.imageIds == [1])
   }
 

@@ -126,8 +126,8 @@ struct TileView: View {
   static func plateText(
     for image: Components.Schemas.ImageSummary, showsPlate: Bool
   ) -> String? {
-    guard showsPlate else { return nil }
-    return image.filename
+    _ = showsPlate
+    return nil  // RED stub
   }
 
   @ViewBuilder

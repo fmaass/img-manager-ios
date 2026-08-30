@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 /// WP13 P5a (IMGMGR-221) acceptance, on the real thing: the More menu's decided set is RENDERED,

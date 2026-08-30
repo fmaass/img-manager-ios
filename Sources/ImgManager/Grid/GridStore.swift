@@ -1217,22 +1217,14 @@ final class GridStore {
   /// menu entry is never a no-op even when the network is gone — the sheet comes up and says
   /// what it knows.
   func presentStatus() {
-    isStatusPresented = true
-    statusReadFailed = false
-    Task { await loadStatus() }
+    // RED stub
   }
 
   /// `GET /api/status`, through the SAME generated client every other call uses. Read-only by
   /// construction: this store exposes no maintenance mutation at all, and `POST /api/reindex`
   /// is wired nowhere in this app.
   func loadStatus() async {
-    do {
-      statusSnapshot = try await service.statusService.status()
-      statusReadFailed = false
-    } catch {
-      statusSnapshot = nil
-      statusReadFailed = true
-    }
+    // RED stub
   }
 
   /// Copy for Lightroom: the marked set's filename STEMS onto the local pasteboard, plus a
@@ -1243,18 +1235,8 @@ final class GridStore {
   /// Nothing is written when the export is empty: an empty pasteboard would silently destroy
   /// whatever the reader had copied before, in exchange for nothing.
   func copyMarkedFilenamesForLightroom() async {
-    guard !isCopyingMarksForLightroom else { return }
-    isCopyingMarksForLightroom = true
-    defer { isCopyingMarksForLightroom = false }
-    do {
-      let export = try await service.marksExport()
-      if export.count > 0 {
-        pasteboard.write(MarksExportCopy.pasteboardPayload(export))
-      }
-      marksCopyMessage = MarksExportCopy.confirmation(export)
-    } catch {
-      marksCopyMessage = "Couldn't reach the library to copy the marked filenames."
-    }
+    // RED stub
+    _ = pasteboard
   }
 
   func dismissMarksCopyMessage() {

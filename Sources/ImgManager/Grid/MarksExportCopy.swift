@@ -21,22 +21,15 @@ enum MarksExportCopy {
   /// nothing here adds one. The path-leak contract (p3220 §4.5) forbids a filesystem path in
   /// any UI surface, and the pasteboard is one.
   static func pasteboardPayload(_ export: Components.Schemas.MarksExport) -> String {
-    export.stems.joined(separator: "\n")
+    _ = export
+    return ""  // RED stub
   }
 
   /// What the reader is told after the copy. Names the COUNT, the mark word the response itself
   /// reports, and the scope — plus the truncation, when the server flagged it.
   static func confirmation(_ export: Components.Schemas.MarksExport) -> String {
-    let word = markWord(export.state)
-    guard export.count > 0 else {
-      return "Nothing to copy — no \(word) photographs in the whole library."
-    }
-    let noun = export.count == 1 ? "filename" : "filenames"
-    var message = "Copied \(export.count) \(word) \(noun) (whole library)"
-    if export.truncated == true {
-      message += " — the list was truncated, so some \(word) photographs are missing."
-    }
-    return message
+    _ = markWord(export.state)
+    return "Copied \(export.count) filenames"  // RED stub
   }
 
   /// The mark vocabulary comes from the RESPONSE, never from what the request meant to ask for:
@@ -67,7 +60,7 @@ protocol MarksPasteboard: AnyObject {
 final class SystemMarksPasteboard: MarksPasteboard {
   /// Exposed so a test can assert the options this type actually writes with, rather than
   /// asserting a comment.
-  static let localOnlyOptions: [UIPasteboard.OptionsKey: Any] = [.localOnly: true]
+  static let localOnlyOptions: [UIPasteboard.OptionsKey: Any] = [:]  // RED stub
 
   func write(_ string: String) {
     UIPasteboard.general.setItems(

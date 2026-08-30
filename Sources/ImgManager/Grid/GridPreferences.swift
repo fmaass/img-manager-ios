@@ -53,6 +53,7 @@ final class GridPreferences {
   /// anything else falls back to the declared default. Same posture the web client already uses
   /// (`frontend/src/lib/usePersistedPref.ts`).
   static func boolPreference(from stored: Any?, default fallback: Bool) -> Bool {
-    (stored as? Bool) ?? fallback
+    _ = fallback
+    return (stored as? Bool) ?? false  // RED stub
   }
 }

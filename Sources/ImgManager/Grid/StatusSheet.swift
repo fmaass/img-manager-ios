@@ -41,7 +41,7 @@ enum StatusSheetModel {
   }()
 
   static func timestamp(_ date: Date) -> String {
-    "\(formatter.string(from: date)) \(zoneLabel)"
+    ISO8601DateFormatter().string(from: date)  // RED stub
   }
 
   static func sections(_ status: Components.Schemas.StatusResponse) -> [StatusSheetSection] {
