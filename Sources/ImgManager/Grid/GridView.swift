@@ -324,6 +324,10 @@ struct ActionBarView: View {
       } label: {
         Label("More", systemImage: "ellipsis.circle")
       }
+      // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
+      // secondaryAction toolbar items into an overflow control with the same label, and a UI
+      // test that matched on the label alone could drive the wrong one.
+      .accessibilityIdentifier("gridMoreMenu")
       .frame(minWidth: 44, minHeight: 44)
     }
     .labelStyle(.iconOnly)
