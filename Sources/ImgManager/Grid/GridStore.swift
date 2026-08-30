@@ -1055,9 +1055,8 @@ final class GridStore {
   func tapTile(_ imageID: Int) async {
     // The LATCHED VERB decides the mark — one branch for both locks, never a `.pick` literal a
     // Dislike Lock would have to be a second copy of.
-    // SCAFFOLD (commit A): still the shipped hard-coded Pick.
-    if pickLock.latchedVerb != nil {
-      await applyMark(.pick, to: [imageID])
+    if let verb = pickLock.latchedVerb {
+      await applyMark(verb.markState, to: [imageID])
       return
     }
     switch selection.mode {
@@ -1106,9 +1105,8 @@ final class GridStore {
   func pointerDragCrossed(_ id: GridDisplayID) async {
     guard dragSession.crossedTile(id) else { return }
     guard let imageID = id.imageID else { return }
-    // SCAFFOLD (commit A): still the shipped hard-coded Pick.
-    if pickLock.latchedVerb != nil {
-      await applyMark(.pick, to: [imageID])
+    if let verb = pickLock.latchedVerb {
+      await applyMark(verb.markState, to: [imageID])
     } else if selection.mode == .select {
       selection.addFromDrag(imageID)
     }

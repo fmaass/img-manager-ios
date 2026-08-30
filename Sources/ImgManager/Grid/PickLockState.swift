@@ -69,9 +69,10 @@ final class PickLockState {
   }
 
   private(set) var state: LockState = .idle
-  // SCAFFOLD (commit A of this phase): still the shipped verb-BLIND anchor, and the cross-verb
-  // press is still the shipped verb-blind unlatch. Wired to the verb in the next commit.
-  private var lastButtonActivation: ContinuousClock.Instant?
+  /// The anchor a following activation is measured against, keyed by the VERB that set it: a
+  /// Pick tap followed within the window by a Dislike tap is two ordinary marks, never a latch,
+  /// because the two taps are not activations of the same control.
+  private var lastButtonActivation: (verb: LatchVerb, instant: ContinuousClock.Instant)?
   private let clock: ContinuousClock
   /// Pin (a): 350 ms, INCLUSIVE — an activation at exactly 350 ms since the prior one still
   /// latches; 351 ms is an ordinary mark. Identical for both verbs.
@@ -93,9 +94,6 @@ final class PickLockState {
   /// ONLY path that can latch or unlatch. `now` is injectable for the 350/351 ms boundary tests;
   /// production call sites omit it and get the real clock.
   ///
-  /// SCAFFOLD (commit A of this phase): the paragraph below states the phase's TARGET rule; this
-  /// commit still ships the verb-blind behaviour, so the pivot tests are expected RED here.
-  ///
   /// Pressing the OTHER verb's button while latched **exits the latch and applies that verb
   /// once** (plan Phase 2, pre-decided pivot): it never silently switches the latch, because a
   /// mode the reader did not ask to change is worse than one press that lands where it looks
@@ -105,13 +103,19 @@ final class PickLockState {
   func activate(verb: LatchVerb, at now: ContinuousClock.Instant? = nil) -> LatchButtonOutcome {
     let instant = now ?? clock.now
     switch state {
-    case .latched:
+    case .latched(let latched) where latched == verb:
       state = .idle
       lastButtonActivation = nil
       return .unlatch
+    case .latched:
+      state = .idle
+      lastButtonActivation = (verb, instant)
+      return .applyMark
     case .idle:
       let outcome: LatchButtonOutcome
-      if let last = lastButtonActivation, instant - last <= Self.doubleTapWindow {
+      if let last = lastButtonActivation, last.verb == verb,
+        instant - last.instant <= Self.doubleTapWindow
+      {
         state = .latched(verb)
         outcome = .latch
       } else {
@@ -122,7 +126,7 @@ final class PickLockState {
       // latched, but resetting to nil here vs. leaving it stale makes no behavioral
       // difference since `.latched` never reads it again; left as `instant` for clarity that
       // "this control was just touched" remains true).
-      lastButtonActivation = instant
+      lastButtonActivation = (verb, instant)
       return outcome
     }
   }

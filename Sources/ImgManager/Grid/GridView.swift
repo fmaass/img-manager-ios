@@ -408,8 +408,7 @@ struct PickLockModeRow: View {
 
   var body: some View {
     HStack {
-      // SCAFFOLD (commit A): still the shipped Pick-only caption.
-      Text(PickLockCopy.caption(for: .pick))
+      Text(PickLockCopy.caption(for: verb))
         .font(.subheadline)
         .accessibilityIdentifier("lockModeCaption")
       Spacer()
@@ -780,8 +779,7 @@ struct ActionBarView: View {
   @ViewBuilder
   private func latchButton(_ verb: LatchVerb) -> some View {
     let control = ActionBarMarkControl.control(for: verb)
-    // SCAFFOLD (commit A): still the shipped Pick-only presentation.
-    let presentation = PickButtonPresentation.for(store.pickLock.state, control: .pick)
+    let presentation = PickButtonPresentation.for(store.pickLock.state, control: verb)
     Group {
       if presentation.isProminent {
         Button {
