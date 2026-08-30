@@ -41,6 +41,8 @@ struct RootView: View {
   /// — see that type's doc comment for why P4 does not extend P3's).
   @State private var gridStore: GridStore
   private let gridService: GridService
+  /// WP12 (IMGMGR-196): the share lane's app-owned pre-flight — see `ShareExportStore`.
+  @State private var shareExport: ShareExportStore
   /// WP8 P7: the work-queue home's own orchestrator and hero-thumbnail loader — siblings of
   /// `gridStore`/`gridService`, sharing the SAME generated `client` but no mutable state with
   /// either (P6 coexistence, binding adjudication 7).
@@ -72,6 +74,11 @@ struct RootView: View {
     let gridService = GridService(client: client)
     self.gridService = gridService
     _gridStore = State(initialValue: GridStore(service: gridService))
+    // One share pre-flight for the whole app: the docked and full-screen loupes are two
+    // presentations of the same thing, and a prepared export (and its temp file) belongs to
+    // neither of them alone. `UnavailableMasterDownloader` is the parked master seam — see
+    // `Share/ShareMasterSeam.swift` for what replaces it.
+    _shareExport = State(initialValue: ShareExportStore(service: gridService))
     let queueService = QueueService(client: client)
     // IMGMGR-198: the queue's cached last answer. The session gets the erase hook (a credential
     // that is genuinely gone takes the answers fetched under it with it), and the store gets a
@@ -250,7 +257,7 @@ struct RootView: View {
           if !presented { gridStore.closeLoupe() }
         })
     ) {
-      LoupeView(store: gridStore, layoutMode: layoutMode)
+      LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
     }
     .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
   }
@@ -304,7 +311,7 @@ struct RootView: View {
       // the full-screen cover above); once `isLoupeFullScreen` is toggled on, this falls back
       // to the plain grid branch below so the cover above is the only thing showing the loupe.
       if gridStore.isLoupeOpen && layoutMode != .compact && !gridStore.isLoupeFullScreen {
-        LoupeView(store: gridStore, layoutMode: layoutMode)
+        LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
       } else {
         GridView(store: gridStore)
           .toolbar {
