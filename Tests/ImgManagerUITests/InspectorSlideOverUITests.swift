@@ -3,12 +3,14 @@ import XCTest
 
 /// WP13 P10 (IMGMGR-219), on the real simulator surface. Two jobs, one code path:
 ///
-/// 1. **The phase's live probe** — which real configurations resolve to which layout mode. Every
-///    input is a fact the app RENDERED: the iPad-only "Folders" disclosure (`QueueView` is handed
-///    `treeSection: nil` on Compact) and the inspector's own "Stats" segment already on screen
-///    with nothing tapped (only Regular-3's permanent column does that). Plus the measured window
-///    size, printed for the record. Never a device idiom — this target is inside the gate's
-///    device-idiom absence grep like every other source directory.
+/// 1. **The phase's live probe** — which real configurations resolve to which layout mode. The
+///    classification uses only facts INDEPENDENT of the inspector: the iPad-only "Folders"
+///    disclosure (`QueueView` is handed `treeSection: nil` on Compact) splits Compact from
+///    Regular, and the measured window width against the resolver's own Regular-3 pin splits
+///    Regular-2 from Regular-3. The inspector's presence is never an input — it is what these
+///    tests are here to judge, so using it would let a wrong presentation relabel the layout and
+///    pass (diff-gate round 1, blocking finding 1). Never a device idiom — this target is inside
+///    the gate's device-idiom absence grep like every other source directory.
 ///
 /// 2. **The acceptance assertion** — at Regular-2 the inspector is a NON-MODAL panel: the grid's
 ///    own controls stay hittable beside it. Under the pre-P10 modal sheet that assertion fails,
@@ -24,6 +26,13 @@ final class InspectorSlideOverUITests: XCTestCase {
     case regular2
     case regular3
   }
+
+  /// Mirrors `LayoutResolver.regular3Threshold`. A UI-test bundle DRIVES an installed app rather
+  /// than linking it, so the app module cannot be imported here and the pin has to be duplicated
+  /// as a literal. `LayoutPresentationTests.theRegular3WidthPinMatchesTheUITestLiteral` is the
+  /// join that keeps the two honest: move the production pin and that test fails, naming this
+  /// literal as the thing that must move with it.
+  private static let regular3WidthThreshold: CGFloat = 1197
 
   func testInspectorPresentationInPortrait() {
     assertInspectorContract(orientation: .portrait, orientationName: "portrait")
@@ -57,10 +66,12 @@ final class InspectorSlideOverUITests: XCTestCase {
       .matching(NSPredicate(format: "label BEGINSWITH 'Info'")).firstMatch
 
     let hasFolders = foldersDisclosure.exists
+    // Read, but NEVER used to classify — asserted per branch below instead.
     let inspectorAlreadyOnScreen = statsSegment.exists
     let hasChromeInfo = chromeInfo.exists
+    let width = app.frame.size.width
     let resolved: ResolvedLayout =
-      !hasFolders ? .compact : (inspectorAlreadyOnScreen ? .regular3 : .regular2)
+      !hasFolders ? .compact : (width >= Self.regular3WidthThreshold ? .regular3 : .regular2)
 
     // The probe's record. `print` (not only an activity) because the gate copies back the
     // xcodebuild log, which is where this has to be readable afterwards.
@@ -74,6 +85,9 @@ final class InspectorSlideOverUITests: XCTestCase {
     case .compact:
       XCTAssertTrue(
         hasChromeInfo, "Compact must reach the inspector from the persistent chrome control.")
+      XCTAssertFalse(
+        inspectorAlreadyOnScreen,
+        "Compact's inspector is a sheet reached from chrome — it must not already be on screen.")
       chromeInfo.tap()
       XCTAssertTrue(
         statsSegment.waitForExistence(timeout: 10), "The inspector never appeared after Info.")
@@ -87,6 +101,11 @@ final class InspectorSlideOverUITests: XCTestCase {
     case .regular2:
       XCTAssertTrue(
         hasChromeInfo, "Regular-2 must reach the inspector from the persistent chrome control.")
+      // The other half of blocking finding 1: at this width a PERMANENT inspector is wrong. The
+      // slide-over is opened from chrome, so nothing inspector-shaped may be on screen yet.
+      XCTAssertFalse(
+        inspectorAlreadyOnScreen,
+        "Regular-2's inspector must be opened from chrome, never permanently on screen.")
       chromeInfo.tap()
       XCTAssertTrue(
         statsSegment.waitForExistence(timeout: 10), "The inspector never appeared after Info.")
@@ -96,16 +115,70 @@ final class InspectorSlideOverUITests: XCTestCase {
         dislike.isHittable,
         "Regular-2's inspector must not block the grid — a panel that stops the grid taking "
           + "taps is the modal sheet with a different animation.")
+      assertTheChromeControlReportsTheActiveFilterCount(app: app, chromeInfo: chromeInfo)
 
     case .regular3:
       XCTAssertFalse(
         hasChromeInfo,
         "Regular-3's inspector is a permanent column — there is nothing for a chrome control to "
           + "open.")
+      XCTAssertTrue(
+        inspectorAlreadyOnScreen, "Regular-3's inspector column must be on screen with no tap.")
       XCTAssertTrue(dislike.isHittable, "The grid stays interactive beside the permanent column.")
     }
 
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-inspectorShown")
+  }
+
+  /// Diff-gate round 1, blocking finding 2: the filter-count indicator must be proven ON THE
+  /// PRODUCTION CONTROL, not on the helper functions that feed it. Nothing below touches
+  /// `InspectorFacetFilters` — it drives the shipped chain end to end (tap a facet row → the
+  /// store's query changes → `RootView`'s Info control re-renders) and then reads the control's
+  /// own accessibility label. Drop `.accessibilityLabel(...)` from that button and the label
+  /// falls back to plain "Info", which fails here.
+  ///
+  /// Run at Regular-2 specifically because the slide-over leaves the navigation bar uncovered, so
+  /// the control stays readable while the panel is open — under Compact's modal sheet it is not.
+  private func assertTheChromeControlReportsTheActiveFilterCount(
+    app: XCUIApplication, chromeInfo: XCUIElement
+  ) {
+    XCTAssertEqual(
+      chromeInfo.label, "Info",
+      "With no facet filter applied the control must read plainly — otherwise the assertion "
+        + "below could not tell a real count from a leftover.")
+
+    app.buttons["Stats"].tap()
+
+    let clearFilters = app.buttons["inspectorClearFilters"]
+    XCTAssertFalse(clearFilters.exists, "No facet filter should be active at launch.")
+
+    // The stub serves exactly one mark facet — value "pick", count 3 (`DebugStubTransport`). The
+    // `photos` exclusion keeps a queue card ("40 photos · 10 picked") out of the match; the
+    // failure path dumps every button label so a miss is diagnosable from the gate log instead of
+    // being a mystery on the next round.
+    let markRow = app.buttons
+      .matching(NSPredicate(format: "label BEGINSWITH[c] 'pick' AND NOT (label CONTAINS 'photos')"))
+      .firstMatch
+    guard markRow.waitForExistence(timeout: 10) else {
+      let labels = app.buttons.allElementsBoundByIndex.map(\.label)
+      XCTFail(
+        "The Stats section never offered the stub's 'pick' mark facet row. Buttons seen: \(labels)")
+      return
+    }
+    markRow.tap()
+
+    // The store actually applied it: the Clear row only renders while activeCount > 0.
+    XCTAssertTrue(
+      clearFilters.waitForExistence(timeout: 10),
+      "Tapping the facet row did not put the production query into a filtered state.")
+
+    // ...and THAT is what the production control must now be reporting.
+    XCTAssertTrue(
+      chromeInfo.waitForExistence(timeout: 5), "The chrome control vanished while filtering.")
+    XCTAssertEqual(
+      chromeInfo.label, "Info, 1 filter active",
+      "The Info control must carry the active-filter count — it is the only place a filtered "
+        + "grid announces itself, and losing it is the regression this test exists to catch.")
   }
 
   private func attach(app: XCUIApplication, named name: String) {
