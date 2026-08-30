@@ -56,6 +56,52 @@ struct GridViewMoreMenuTests {
     #expect(!titles.contains { $0.lowercased().contains("download") })
   }
 
+  /// The P1 merge contract (IMGMGR-212 x IMGMGR-221): the decided set always renders SIX rows,
+  /// and the fold changes the Clear ROW'S IDENTITY rather than adding a second Clear beside it.
+  /// Folded, that row is the bar's Clear control and answers to `gridClearButton`; unfolded, the
+  /// bar owns that identifier and the menu shows none of it.
+  @Test("Folded, the More menu has exactly one Clear; unfolded, none — never two")
+  func theFoldMovesClearsIdentityAndNeverAddsASecondClear() {
+    let folded = GridMoreMenu.entries.map {
+      GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true)
+    }
+    let unfolded = GridMoreMenu.entries.map {
+      GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: false)
+    }
+    let barClear = ActionBarMarkControl.clear.accessibilityIdentifier
+    #expect(folded.filter { $0 == barClear }.count == 1, "folded: \(folded)")
+    #expect(unfolded.filter { $0 == barClear }.count == 0, "unfolded: \(unfolded)")
+    // Positive control for the 0-hit line above: the unfolded menu really was enumerated.
+    #expect(unfolded.contains("gridMoreMenu.more.clearMark"))
+    // The SET of rows never changes with the fold — only that one identifier does.
+    #expect(folded.count == unfolded.count && folded.count == GridMoreMenu.entries.count)
+    #expect(zip(folded, unfolded).filter { $0 != $1 }.count == 1)
+    // P1's own identifier for Select survives the merge, so its menu tests keep resolving it.
+    #expect(unfolded.contains("gridSelectCommand"))
+  }
+
+  /// One Clear row, whatever the fold: the decided set has exactly one, and it is the same row
+  /// the bar hands over.
+  @Test("There is exactly one Clear row, and it uses P1's state and disabled rule")
+  func exactlyOneClearRowWiredToP1sTableAndRule() async {
+    let clears = GridMoreMenu.entries.filter { $0.id == "more.clearMark" }
+    #expect(clears.count == 1)
+    #expect(GridMoreMenu.clearMark.systemImage == ActionBarMarkControl.clear.systemImage)
+    #expect(ActionBarMarkControl.clear.state == MarkStateValue.none)
+
+    let (store, transport, _, _) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .pick)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = nil
+    // P1's rule, read off the store rather than re-derived here.
+    #expect(store.isMarkActionUnavailable)
+    #expect(GridMoreMenu.clearMark.isEnabled(store) == false)
+    store.focusedImageID = 1
+    #expect(store.isMarkActionUnavailable == false)
+    #expect(GridMoreMenu.clearMark.isEnabled(store))
+  }
+
   @Test("Select's title states the way OUT while Select is on, not a second 'Select'")
   func selectEntryNamesTheExit() {
     let (store, _, _, _) = makeStore()

@@ -123,9 +123,13 @@ extension ShortcutID {
 ///   Dislike · Undo · Tag · More)" — undo's chrome surface exists starting here, not
 ///   P6; Pick Lock's "Dislike Lock parity" amendment additionally confirms P4 owns the
 ///   mark buttons), the tag popover, and the grid->loupe "open" action.
-/// - `.p5` ("Loupe / cull") owns **clear** (P5's Approach text: "persistent bottom mark
-///   bar (Pick · Dislike · Clear · Undo)" — Clear's chrome surface is P5's bar; P4's own
-///   bar has no Clear button).
+/// - `.p5` ("Loupe / cull") owns **clear**: P5's own bar (Pick · Dislike · Clear · Undo) is where
+///   `U` first got a chrome surface, and OWNERSHIP is historical — it records which phase
+///   shipped the surface that activated the shortcut, not every surface that exists now.
+///   WP13 P1 added a Clear control to the GRID action bar as well (the ticket names
+///   Pick/Dislike/Clear as the Select-mode actions), so the parenthetical this line used to
+///   carry — "P4's own bar has no Clear button" — is no longer true and has been removed
+///   rather than left standing as a stale fact about shipped chrome.
 ///
 /// The first three cases are WP8 phases; `.wp13p4` is WP13's view-options phase.
 enum OwningPhase: String, Sendable {

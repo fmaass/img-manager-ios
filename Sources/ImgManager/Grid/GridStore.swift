@@ -1,6 +1,19 @@
 import Foundation
 import ImgManagerAPI
 
+/// Select mode's own copy, pinned as data beside `PickLockCopy` (its Pick-Lock twin) so a test
+/// asserts the exact strings without touching SwiftUI.
+///
+/// The COUNT is stated at every N, zero included — "0 selected", never an instructional caption
+/// that hides it. The empty Select is exactly the state a reader has to be able to see, because
+/// it is the state where every selection-consuming control refuses to write (WP13 P1 / the
+/// shipped defect IMGMGR-223); the instruction is a second, subordinate line rather than a
+/// replacement for the number.
+enum SelectCopy {
+  static func caption(selectedCount: Int) -> String { "\(selectedCount) selected" }
+  static let emptyHint = "Tap photos to choose"
+}
+
 /// Grid-relative navigation. `.left`/`.right` move one image in the currently-loaded flat
 /// order; `.up`/`.down` move by `columnsPerRow` — a value the VIEW sets from its own measured
 /// layout (this store never guesses a column count).
@@ -1130,12 +1143,18 @@ final class GridStore {
   // MARK: - Pick Lock
 
   func activatePickButton() async {
-    // Lock entry disabled while Select is active (pin e) — the view also disables the control
-    // visually; this guard is the source of truth independent of that.
-    guard selection.mode != .select else { return }
+    // Lock ENTRY stays disabled while Select is active (pin e) — but the button itself is no
+    // longer disabled with it: in Select mode Pick is an ordinary bulk mark on the selection,
+    // and the latch machine is never consulted, so a double-tap there cannot latch. The two
+    // used to be one modifier on the control; they are two different rules and are now written
+    // as two.
+    guard selection.mode != .select else {
+      await applyMarkToTarget(.pick)
+      return
+    }
     switch pickLock.activateFromPickButton() {
     case .applyPick:
-      if let id = focusedImageID { await applyMark(.pick, to: [id]) }
+      await applyMarkToTarget(.pick)
     case .latch, .unlatch:
       break
     }
@@ -1164,14 +1183,14 @@ final class GridStore {
   // MARK: - Shortcuts (P4: arrows, P, X, Shift+advance, T, Z; P5 adds Space/Enter and U)
 
   func handlePickShortcut(shiftHeld: Bool) async {
-    guard let id = focusedImageID else { return }
-    await applyMark(.pick, to: [id])
+    guard !markTargetImageIDs.isEmpty else { return }
+    await applyMarkToTarget(.pick)
     if shiftHeld { advanceToNext() }
   }
 
   func handleDislikeShortcut(shiftHeld: Bool) async {
-    guard let id = focusedImageID else { return }
-    await applyMark(.dislike, to: [id])
+    guard !markTargetImageIDs.isEmpty else { return }
+    await applyMarkToTarget(.dislike)
     if shiftHeld { advanceToNext() }
   }
 
@@ -1179,8 +1198,8 @@ final class GridStore {
   /// does not know or care which screen is currently on top). Shift+U also advances, mirroring
   /// P/X (`ShortcutCatalog`'s own doc comment: "Shift held on P/X/U means 'mark and advance'").
   func handleClearShortcut(shiftHeld: Bool) async {
-    guard let id = focusedImageID else { return }
-    await applyMark(.none, to: [id])
+    guard !markTargetImageIDs.isEmpty else { return }
+    await applyMarkToTarget(.none)
     if shiftHeld { advanceToNext() }
   }
 
@@ -1198,7 +1217,7 @@ final class GridStore {
   }
 
   func handleTagShortcut() {
-    guard focusedImageID != nil || !selection.members.isEmpty else { return }
+    guard !tagTargetImageIDs.isEmpty else { return }
     isTagEntryPresented = true
   }
 
@@ -1261,12 +1280,69 @@ final class GridStore {
     marksCopyMessage = nil
   }
 
-  /// The images a tag action targets right now: the Select-mode membership when non-empty,
-  /// otherwise the single focused tile — mirrors how `T`'s action-bar surface already reads in
-  /// both modes rather than requiring a caller to branch on mode itself.
-  var tagTargetImageIDs: [Int] {
-    selection.mode == .select && !selection.members.isEmpty
-      ? Array(selection.members) : focusedImageID.map { [$0] } ?? []
+  /// A tag targets exactly what a mark targets: ONE rule, expressed once. The shipped defect
+  /// (IMGMGR-223) was precisely a second copy of the rule drifting from the first — this
+  /// property used to fall back to the focused photograph on an EMPTY Select, so an explicit
+  /// Select with nothing chosen tagged whatever happened to be focused, while `GridView` read
+  /// the same property as non-empty and left the Tag control enabled.
+  var tagTargetImageIDs: [Int] { markTargetImageIDs }
+
+  // MARK: - Mark targets (WP13 P1)
+
+  /// THE images a grid mark control writes to right now. Pick, Dislike, Clear and Tag all read
+  /// this ONE property, so a control can never write to something other than what the screen
+  /// says is targeted.
+  ///
+  /// The MODE decides, not the emptiness. In Select mode the selection IS the target and there
+  /// is no fallback to the focused photograph — not even when the selection is empty:
+  /// `enterSelectExplicitly()` starts with an EMPTY membership, so a `!members.isEmpty` fallback
+  /// marks a photograph the reader never selected while the mode row reads "0 selected". A
+  /// Select mode that refuses is better than one that writes to something else.
+  ///
+  /// ORDERED by `actionableImages` position, never `Array(selection.members)`: `members` is a
+  /// `Set` whose iteration order is unspecified, and this order reaches the wire, the undo
+  /// entry's prior list and the conflict-recovery batch.
+  ///
+  /// The `actionableImages` filter IS the actionable-only write boundary, and it is the same
+  /// pool `capturePriorSnapshots` resolves against — so the control's target and the store's
+  /// preconditions cannot disagree.
+  var markTargetImageIDs: [Int] {
+    switch selection.mode {
+    case .select:
+      return actionableImages.map(\.id).filter { selection.members.contains($0) }
+    case .browse:
+      return focusedImageID.map { [$0] } ?? []
+    }
+  }
+
+  /// How many photographs the next mark would write to — the ACTIONABLE membership, not
+  /// `selection.members.count`, so the number the Select row states is exactly the number the
+  /// next Pick acts on even when a member has stopped being visible.
+  var selectedCount: Int { markTargetImageIDs.count }
+
+  /// Every selection-consuming control (Dislike, Clear, Tag) disables together, derived from the
+  /// one target property — never from `selection.members`, which is what would let the enabled
+  /// state and the write target disagree.
+  var isMarkActionUnavailable: Bool { markTargetImageIDs.isEmpty }
+
+  /// Pick is the one control that is not purely a write: in BROWSE it also owns Pick Lock entry
+  /// (the double-tap and its "Lock Pick" chrome twin), which is meaningful with nothing focused
+  /// — a latched tap acts on the tile it lands on. So Pick is disabled only where it would be
+  /// a pure no-op write: Select mode with an empty selection. Lock ENTRY stays disabled through
+  /// Select (pin e) in `activatePickButton`'s own guard, which is why the two conditions are no
+  /// longer the single modifier they used to share.
+  var isPickControlDisabled: Bool { selection.mode == .select && markTargetImageIDs.isEmpty }
+
+  /// The ONE entry point the grid's mark controls and the `P`/`X`/`U` shortcuts share: the
+  /// control names the STATE, the store derives the TARGETS. No control builds an id list of its
+  /// own — every `applyMark` call site passing a single focused id is exactly how Select mode
+  /// shipped as a tagging-only mode.
+  ///
+  /// An empty target writes nothing: `applyMark` refuses an empty precondition set on its own
+  /// (`capturePriorSnapshots` returns nothing to submit), so the refusal is one rule in one
+  /// place rather than a guard each control has to remember.
+  func applyMarkToTarget(_ state: MarkStateValue) async {
+    await applyMark(state, to: markTargetImageIDs)
   }
 
   /// Any effective tier change resets selection (pin: "any effective filter/tier/tree change").
@@ -1467,9 +1543,12 @@ final class GridStore {
     conflictRecovery = nil
   }
 
-  /// Applies `state` to every id in `imageIDs`. Preconditions are normally derived from the
-  /// CURRENTLY LOADED `images` (an id not loaded is silently skipped — loaded-only membership
-  /// means the caller should never have passed one anyway) — `explicitPriors` overrides this for
+  /// Applies `state` to every id in `imageIDs`. Preconditions are normally derived from
+  /// `actionableImages`, via `capturePriorSnapshots` — the projection of "photographs a gesture
+  /// may act on", NOT the raw `images` array this comment used to name: an id outside that pool
+  /// (a collapsed scene's member, a cover, an id the current window no longer holds) is silently
+  /// skipped, and THAT is the actionable-only write boundary, enforced here rather than trusted
+  /// to every caller — `explicitPriors` overrides this for
   /// exactly one caller (`applyConflictAgain`, diff-gate round 2 B6): a conflict-recovery retry
   /// must resubmit for every originally-rejected id INCLUDING one the active filter no longer
   /// shows, using the FRESH markview the recovery's own re-read already captured for it.

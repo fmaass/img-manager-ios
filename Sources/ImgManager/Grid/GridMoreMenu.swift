@@ -22,6 +22,13 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
 
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
   let id: String
+  /// What XCUITest resolves this row by, at rest.
+  let accessibilityIdentifier: String
+  /// The identifier this row takes INSTEAD when the action bar folds Clear into the More menu
+  /// (`ActionBarLayout.foldsClearIntoMore`, WP13 P1). Only the Clear row has one: folded, that
+  /// row IS the bar's Clear control, so it answers to `ActionBarMarkControl.clear`'s identifier
+  /// and P1's tests find exactly one of it. Nil everywhere else.
+  let foldedAccessibilityIdentifier: String?
   let systemImage: String
   let title: @MainActor @Sendable (GridStore) -> String
   let isEnabled: @MainActor @Sendable (GridStore) -> Bool
@@ -49,6 +56,10 @@ enum GridMoreMenu {
   /// siblings rather than written inline in `ActionBarView`.
   static let select = GridMoreMenuEntry(
     id: "more.select",
+    // P1's identifier, kept verbatim: its label changes with the mode, and a menu item inside a
+    // popover is not addressable by label on every idiom (Regular-3, SelectModeScreenshotUITests).
+    accessibilityIdentifier: "gridSelectCommand",
+    foldedAccessibilityIdentifier: nil,
     systemImage: "checkmark.circle",
     title: { $0.selection.mode == .select ? "Exit Select" : "Select" },
     isEnabled: { _ in true },
@@ -71,15 +82,23 @@ enum GridMoreMenu {
   /// keyboard's affordance (⇧U), not a menu row.
   static let clearMark = GridMoreMenuEntry(
     id: "more.clearMark",
-    systemImage: "minus.circle",
+    accessibilityIdentifier: "gridMoreMenu.more.clearMark",
+    // Folded, this row IS the bar's Clear control — same identifier, same state source, same
+    // disabled rule. So there is never a SECOND Clear beside it, and P1's UI tests
+    // (`SelectModeScreenshotUITests`) find `gridClearButton` in the menu exactly when the bar
+    // gave it up.
+    foldedAccessibilityIdentifier: ActionBarMarkControl.clear.accessibilityIdentifier,
+    systemImage: ActionBarMarkControl.clear.systemImage,
     title: { _ in "Clear mark" },
-    isEnabled: { !$0.tagTargetImageIDs.isEmpty },
+    isEnabled: { !$0.isMarkActionUnavailable },
     surface: .action { store in
-      Task { await store.handleClearShortcut(shiftHeld: false) }
+      Task { await store.applyMarkToTarget(ActionBarMarkControl.clear.state) }
     })
 
   static let copyForLightroom = GridMoreMenuEntry(
     id: "more.copyForLightroom",
+    accessibilityIdentifier: "gridMoreMenu.more.copyForLightroom",
+    foldedAccessibilityIdentifier: nil,
     systemImage: "doc.on.clipboard",
     title: { _ in "Copy for Lightroom" },
     isEnabled: { !$0.isCopyingMarksForLightroom },
@@ -91,6 +110,8 @@ enum GridMoreMenu {
   /// `GridPreferences`, this app's first scalar preference.
   static let filenamePlates = GridMoreMenuEntry(
     id: "more.filenamePlates",
+    accessibilityIdentifier: "gridMoreMenu.more.filenamePlates",
+    foldedAccessibilityIdentifier: nil,
     systemImage: "textformat",
     title: { _ in "Filename plates" },
     isEnabled: { _ in true },
@@ -111,6 +132,8 @@ enum GridMoreMenu {
   /// a future second property fails the gate rather than shipping quietly.
   static let density = GridMoreMenuEntry(
     id: "more.density",
+    accessibilityIdentifier: "gridMoreMenu.more.density",
+    foldedAccessibilityIdentifier: nil,
     systemImage: "square.grid.2x2",
     title: { "Density: \(Int($0.rowHeight.rawValue)) pt" },
     isEnabled: { _ in true },
@@ -120,8 +143,22 @@ enum GridMoreMenu {
 
   /// READ ONLY (`StatusSheet`): maintenance state, last indexed, store health, coverage, recent
   /// runs. `POST /api/reindex` is in the vendored spec and stays unwired (plan invariant viii).
+  /// The identifier a row renders with at this fold state — a pure function, so
+  /// "folded shows exactly one Clear, unfolded shows none" is a unit test rather than a
+  /// screenshot.
+  static func accessibilityIdentifier(
+    for entry: GridMoreMenuEntry, foldsClearIntoMore: Bool
+  ) -> String {
+    guard foldsClearIntoMore, let folded = entry.foldedAccessibilityIdentifier else {
+      return entry.accessibilityIdentifier
+    }
+    return folded
+  }
+
   static let status = GridMoreMenuEntry(
     id: "more.status",
+    accessibilityIdentifier: "gridMoreMenu.more.status",
+    foldedAccessibilityIdentifier: nil,
     systemImage: "info.circle",
     title: { _ in "Status" },
     isEnabled: { _ in true },
@@ -131,10 +168,13 @@ enum GridMoreMenu {
 /// The menu's rendered body: EXACTLY `GridMoreMenu.entries`, in order, with no second list.
 struct GridMoreMenuContent: View {
   let store: GridStore
+  /// From `ActionBarLayout.foldsClearIntoMore` (WP13 P1) — the ONE thing about the menu that
+  /// varies with the bar's width, and it changes an identifier, never the set of rows.
+  let foldsClearIntoMore: Bool
 
   var body: some View {
     ForEach(GridMoreMenu.entries) { entry in
-      GridMoreMenuItem(entry: entry, store: store)
+      GridMoreMenuItem(entry: entry, store: store, foldsClearIntoMore: foldsClearIntoMore)
     }
   }
 }
@@ -142,6 +182,11 @@ struct GridMoreMenuContent: View {
 struct GridMoreMenuItem: View {
   let entry: GridMoreMenuEntry
   let store: GridStore
+  let foldsClearIntoMore: Bool
+
+  private var identifier: String {
+    GridMoreMenu.accessibilityIdentifier(for: entry, foldsClearIntoMore: foldsClearIntoMore)
+  }
 
   var body: some View {
     switch entry.surface {
@@ -153,7 +198,7 @@ struct GridMoreMenuItem: View {
       }
       .disabled(!entry.isEnabled(store))
       .labelStyle(.titleAndIcon)
-      .accessibilityIdentifier("gridMoreMenu.\(entry.id)")
+      .accessibilityIdentifier(identifier)
 
     case .toggle(let isOn, let set):
       Toggle(
@@ -162,7 +207,7 @@ struct GridMoreMenuItem: View {
         Label(entry.title(store), systemImage: entry.systemImage)
       }
       .labelStyle(.titleAndIcon)
-      .accessibilityIdentifier("gridMoreMenu.\(entry.id)")
+      .accessibilityIdentifier(identifier)
 
     case .rowHeightSteps(let set, let isCurrent):
       Menu {
@@ -183,7 +228,7 @@ struct GridMoreMenuItem: View {
         Label(entry.title(store), systemImage: entry.systemImage)
       }
       .labelStyle(.titleAndIcon)
-      .accessibilityIdentifier("gridMoreMenu.\(entry.id)")
+      .accessibilityIdentifier(identifier)
     }
   }
 }

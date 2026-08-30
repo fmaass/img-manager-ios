@@ -233,6 +233,11 @@ struct RootView: View {
           // doc comment).
           selectedFolderID = 1
           await gridStore.selectShoot(folderID: 1)
+          // WP13 P1: applied AFTER the shoot loads, because `selectShoot` resets the selection
+          // by design (a scope change leaves Select). See the flag's own doc comment.
+          if DebugStubLaunch.enterSelectMode {
+            gridStore.enterSelectExplicitly()
+          }
         }
         #if canImport(UIKit)
           if DebugStubLaunch.forceLandscape,

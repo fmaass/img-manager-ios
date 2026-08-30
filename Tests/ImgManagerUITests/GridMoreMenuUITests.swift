@@ -65,9 +65,9 @@ final class GridMoreMenuUITests: XCTestCase {
     // with. "Download…" is deliberately absent (owner decision 3) and is asserted absent with
     // the five present entries above it as the positive control.
     let expected = [
-      "gridMoreMenu.more.select", "gridMoreMenu.more.clearMark",
-      "gridMoreMenu.more.copyForLightroom", "gridMoreMenu.more.filenamePlates",
-      "gridMoreMenu.more.density", "gridMoreMenu.more.status",
+      "gridSelectCommand", "gridMoreMenu.more.copyForLightroom",
+      "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.density",
+      "gridMoreMenu.more.status",
     ]
     for identifier in expected {
       let entry = app.descendants(matching: .any)[identifier]
@@ -75,6 +75,18 @@ final class GridMoreMenuUITests: XCTestCase {
         entry.waitForExistence(timeout: 5),
         "The More menu does not render '\(identifier)'.")
     }
+
+    // The Clear row's IDENTITY depends on whether this column folded the bar's Clear into the
+    // menu (WP13 P1), which is a width fact — so resolve it rather than assume the surface, and
+    // require EXACTLY ONE of the two, never both (that would be two Clear rows).
+    let menuClear = app.descendants(matching: .any)["gridMoreMenu.more.clearMark"]
+    let foldedClear = app.descendants(matching: .any)["gridClearButton"]
+    let hasMenuClear = menuClear.waitForExistence(timeout: 5)
+    let hasFoldedClear = foldedClear.exists
+    XCTAssertTrue(
+      hasMenuClear != hasFoldedClear,
+      "Expected exactly one Clear row in the More menu — found menu-clear=\(hasMenuClear), "
+        + "folded-clear=\(hasFoldedClear).")
 
     let screenshot = XCUIScreen.main.screenshot()
     let attachment = XCTAttachment(screenshot: screenshot)
