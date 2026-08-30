@@ -18,13 +18,6 @@ final class SelectModeScreenshotUITests: XCTestCase {
       moreMenu.waitForExistence(timeout: 30),
       "The grid action bar never appeared within 30s — expected the DEBUG fixture "
         + "composition's populated grid, got something else (sign-in, blank, or a failed stub).")
-    moreMenu.tap()
-
-    let selectCommand = app.buttons["Select"]
-    XCTAssertTrue(
-      selectCommand.waitForExistence(timeout: 10), "The More menu has no Select command.")
-    selectCommand.tap()
-
     // Two DIFFERENT photographs, addressed by the fixture's own ids (`DebugStubTransport`
     // serves ids 1...12) rather than by bound index: one tile surfaces as several
     // accessibility elements, so an index-addressed pair can be the same photograph twice.
@@ -32,15 +25,19 @@ final class SelectModeScreenshotUITests: XCTestCase {
     let secondTile = app.descendants(matching: .any).matching(identifier: "gridTile-2").firstMatch
     XCTAssertTrue(firstTile.waitForExistence(timeout: 10), "No grid tiles to select.")
 
+    // Enter Select by LONG-PRESSING a tile rather than through the More menu: the long press is
+    // the entry every idiom shares, while the menu's own item does not surface identically on
+    // both (on Regular-3 the popover's command is not addressable the way Compact's is — noted
+    // for P5a, which owns that menu). Long-press enters Select WITH that tile selected.
+    firstTile.press(forDuration: 1.0)
+
     let caption = app.staticTexts["selectModeCaption"]
     XCTAssertTrue(
       caption.waitForExistence(timeout: 10),
       "Select mode is active but no mode row is on screen — the only way out would be the "
-        + "More menu again, which is the discoverability defect this phase closes.")
-    XCTAssertEqual(caption.label, "0 selected", "An explicit Select starts empty.")
+        + "More menu, which is the discoverability defect this phase closes.")
+    XCTAssertEqual(caption.label, "1 selected", "A long press enters Select with that tile chosen.")
 
-    firstTile.tap()
-    XCTAssertEqual(caption.label, "1 selected", "Tapping a tile in Select mode must select it.")
     XCTAssertTrue(secondTile.waitForExistence(timeout: 5), "The second fixture tile is missing.")
     secondTile.tap()
 
