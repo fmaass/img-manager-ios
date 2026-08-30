@@ -7,9 +7,13 @@ import SwiftUI
 struct MenuCommandDeclaration: Identifiable {
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
   let id: String
-  /// The catalog entry this declaration realizes, or `nil` for a menu entry that carries no
-  /// key equivalent at all (the View menu's Group single-select items). A declaration that
-  /// HAS a `key` must name a catalog entry; a test asserts it.
+  /// The catalog entry this declaration realizes. Optional ONLY so that
+  /// `ShortcutCatalogTests.everyMenuDeclarationIsKeyedAndCatalogued` is a test that can
+  /// actually fail: NO shipped declaration may leave this (or `key`) nil — design decision 9's
+  /// parity rule is that every menu entry has a declared bare/⌘ equivalent in the single
+  /// catalog, and the Group single-select pair shipped in violation of it (diff-gate r1
+  /// blocker 1) precisely because the reconciliation filtered unkeyed rows out instead of
+  /// failing on them.
   let shortcut: ShortcutID?
   let title: String
   let key: KeyEquivalent?
@@ -170,15 +174,24 @@ extension AppCommands {
   /// arrangements (AC: "a View menu naming them"); the ⌘⇧G entry is the on/off accelerator.
   /// Scene is a MODE, not a `group_by` wire value (ADR-0005 decision 6) — which is why the
   /// pair is single-select and `GROUP_KEYS` never gains a Scene entry.
+  ///
+  /// The pair carries ⌃⌘1 / ⌃⌘2 (diff-gate r1 blocker 1 — it shipped unkeyed, violating
+  /// decision 9's parity rule). The assignment and its collision argument are recorded on
+  /// `ShortcutID.groupMode`, the single inventory: the arrangement pair takes the zoom digits
+  /// one modifier up, no iPadOS system default binds ⌃⌘digit, and `ShortcutCatalogTests`
+  /// asserts both — no reserved combination is bound, and every (key, modifiers) pair in the
+  /// app is unique.
   @MainActor static let viewMenuGroups: [MenuCommandGroup] = [
     MenuCommandGroup(
       id: "view.group",
       items: [
         MenuCommandDeclaration(
-          id: "view.group.none", shortcut: nil, title: "Group: None", key: nil, modifiers: [],
+          id: "view.group.none", shortcut: .groupMode, title: "Group: None",
+          key: KeyEquivalent("1"), modifiers: [.command, .control],
           run: { $0.setDisplayMode(.flat) }),
         MenuCommandDeclaration(
-          id: "view.group.scene", shortcut: nil, title: "Group: Scene", key: nil, modifiers: [],
+          id: "view.group.scene", shortcut: .groupMode, title: "Group: Scene",
+          key: KeyEquivalent("2"), modifiers: [.command, .control],
           run: { $0.setDisplayMode(.scene) }),
         MenuCommandDeclaration(
           id: "view.group.toggleScene", shortcut: .sceneToggle, title: "Toggle Scene View",

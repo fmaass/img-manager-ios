@@ -2,13 +2,13 @@ import Foundation
 
 /// The web keyboard set this app mirrors verbatim (P3 fold item 1; `frontend/src/lib/keys.ts`
 /// in the web repo is the source of truth for what each key means), PLUS the ⌘-modified
-/// discovery half of design decision 9 that WP13 P4 adds (`zoomStep`, `sceneToggle`, and the
-/// `⌘/` form of `help`). Deliberately NOT the web's full set: `A` (auto-advance toggle),
-/// `Escape` (close), `Tab` (compare-flip) and `C` (compare) are all excluded from the target
-/// inventory — `C` because native compare is cancelled outright (Amendment 7; declared
-/// NOWHERE, never present-and-dead), `A` because its own surface is WP13 P8's and a
-/// present-and-dead key is exactly what this catalog exists to prevent, the other two because
-/// the P3 fold's own target inventory line does not name them.
+/// discovery half of design decision 9 that WP13 P4 adds (`zoomStep`, `sceneToggle`,
+/// `groupMode`, and the `⌘/` form of `help`). Deliberately NOT the web's full set: `A`
+/// (auto-advance toggle), `Escape` (close), `Tab` (compare-flip) and `C` (compare) are all
+/// excluded from the target inventory — `C` because native compare is cancelled outright
+/// (Amendment 7; declared NOWHERE, never present-and-dead), `A` because its own surface is
+/// WP13 P8's and a present-and-dead key is exactly what this catalog exists to prevent, the
+/// other two because the P3 fold's own target inventory line does not name them.
 ///
 /// This enum is the SINGLE inventory: every key equivalent the app declares names one of these
 /// cases (`AppCommands.declarations`), and `ShortcutCatalogTests` asserts that correspondence
@@ -39,6 +39,25 @@ enum ShortcutID: String, CaseIterable, Sendable {
   /// conventionally means "Find Next" on Apple platforms and HIG Keyboards warns against
   /// re-binding an established system shortcut, so the Shift-modified form carries it.
   case sceneToggle = "⌘⇧G"
+  /// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 1: the View menu's Group single-select pair
+  /// (`None` / `Scene`) — ONE catalog entry with two declarations, the shape `zoomStep` and
+  /// `openSpaceEnter` already use. It exists because design decision 9's parity rule is "every
+  /// menu entry has a declared bare/⌘ equivalent in the single catalog": the pair shipped
+  /// unkeyed, which the reconciliation test could not see because it filtered unkeyed
+  /// declarations out.
+  ///
+  /// ASSIGNMENT, and why it collides with nothing (the plan flags the whole ⌘ table OPEN,
+  /// `PLAN_2026-08-30_wp13-photoculler-idiom.md` §Phase 4):
+  /// - The pair is a view-ARRANGEMENT single-select — the role Finder gives ⌘1/⌘2.
+  ///   Those bare digits are already this app's six zoom steps, so the arrangement pair takes
+  ///   the same two digits one modifier up: `⌃⌘1` = None, `⌃⌘2` = Scene.
+  /// - No iPadOS system default uses ⌃⌘digit: the combinations iPadOS reserves are ⌘Space,
+  ///   ⌘Tab, ⌘H, ⌘⌥D, ⌘⇧3/⌘⇧4 and ⌃⌘Space (Apple Support, "Keyboard shortcuts for iPad"),
+  ///   plus the ⌘G "Find Next" convention HIG Keyboards warns about. `ShortcutCatalogTests`
+  ///   asserts that none of them is bound, with a positive control on the predicate itself.
+  /// - No OTHER declaration in this app binds ⌃⌘1/⌃⌘2: the same test file asserts that every
+  ///   (key, modifiers) pair across all menus is unique.
+  case groupMode = "⌃⌘1 · ⌃⌘2"
 }
 
 extension ShortcutID {
@@ -61,8 +80,16 @@ extension ShortcutID {
     case .help: return "? or ⌘/"
     case .zoomStep: return "⌘1 … ⌘6"
     case .sceneToggle: return "⌘⇧G"
+    case .groupMode: return "⌃⌘1 · ⌃⌘2"
     }
   }
+
+  /// A stable ASCII handle for this entry — the accessibility identifier the help sheet's
+  /// row carries, and the only thing a UI test can address it by. Derived from the CASE NAME
+  /// rather than `rawValue`, because the raw values are display strings made of ⌘/⇧
+  /// glyphs, which make miserable identifiers. Renaming a case therefore breaks the UI test
+  /// loudly rather than silently.
+  var accessibilityToken: String { String(describing: self) }
 
   /// What pressing it does, in the reader's words — the help sheet's meaning column.
   var meaning: String {
@@ -81,6 +108,7 @@ extension ShortcutID {
     case .help: return "Show this list of keyboard shortcuts"
     case .zoomStep: return "Set the grid zoom step (120 pt … 400 pt)"
     case .sceneToggle: return "Turn Scene view on or off"
+    case .groupMode: return "Choose the grid arrangement — ⌃⌘1 None, ⌃⌘2 Scene"
     }
   }
 }
@@ -142,7 +170,7 @@ enum ShortcutCatalog {
   /// loupe's own mark bar, `Pick · Dislike · Clear · Undo`) both flip `hasChromeSurface: true`
   /// here too, in this same commit.
   ///
-  /// WP13 P4 (IMGMGR-215): `help` finally gets its surface (`ShortcutHelpSheet`), and the two
+  /// WP13 P4 (IMGMGR-215): `help` finally gets its surface (`ShortcutHelpSheet`), and the three
   /// view-option entries arrive already active because their chrome — the Compact grid options
   /// row, the Regular `.primaryAction` controls and the menu-bar View menu — ships in this same
   /// commit. Nothing here is present-and-dead.
@@ -161,6 +189,7 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .help, owningPhase: .p3, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .zoomStep, owningPhase: .wp13p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .sceneToggle, owningPhase: .wp13p4, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .groupMode, owningPhase: .wp13p4, hasChromeSurface: true),
   ]
 
   static var activeEntries: [ShortcutCatalogEntry] { entries.filter(\.isActive) }

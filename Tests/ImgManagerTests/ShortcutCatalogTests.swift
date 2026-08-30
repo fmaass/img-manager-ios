@@ -17,12 +17,15 @@ struct ShortcutCatalogTests {
       .openSpaceEnter,
       .pick, .dislike, .clear, .shiftAdvance,
       .tag, .undo, .help,
-      // WP13 P4 (IMGMGR-215) — decision 9's ⌘ discovery half.
-      .zoomStep, .sceneToggle,
+      // WP13 P4 (IMGMGR-215) — decision 9's ⌘ discovery half. `groupMode` joined them in the
+      // diff-gate r1 fix round: the Group single-select pair was declared in the View menu with
+      // no key equivalent and no catalog entry at all, which is the parity violation this file
+      // exists to catch.
+      .zoomStep, .sceneToggle, .groupMode,
     ]
     let actual = Set(ShortcutCatalog.entries.map(\.id))
     #expect(actual == expected)
-    #expect(ShortcutCatalog.entries.count == 14)
+    #expect(ShortcutCatalog.entries.count == 15)
   }
 
   @Test("No C anywhere in the catalog")
@@ -82,7 +85,7 @@ struct ShortcutCatalogTests {
   @Test("WP13 P4's OWN entries (zoom steps, Scene toggle) are active — their chrome ships here")
   func wp13P4OwnEntriesAreActive() {
     let owned = ShortcutCatalog.entries.filter { $0.owningPhase == .wp13p4 }
-    #expect(Set(owned.map(\.id)) == [.zoomStep, .sceneToggle])
+    #expect(Set(owned.map(\.id)) == [.zoomStep, .sceneToggle, .groupMode])
     #expect(owned.allSatisfy { $0.isActive })
   }
 
@@ -120,20 +123,91 @@ struct ShortcutCatalogTests {
   )
   func everyActiveEntryHasAKeyEquivalentDeclaredInAppCommands() {
     let active = Set(ShortcutCatalog.activeEntries.map(\.id))
-    let keyed = AppCommands.declarations.filter { $0.key != nil }
-    let declared = Set(keyed.compactMap(\.shortcut))
+    // EVERY declaration, with NO exclusion list (diff-gate r1 blocker 1: this line used to be
+    // `.filter { $0.key != nil }`, which silently exempted the two unkeyed Group entries from
+    // the parity rule they were violating — the filter made the test pass BECAUSE of the bug).
+    let declared = Set(AppCommands.declarations.compactMap(\.shortcut))
 
     // BIDIRECTIONAL: an entry active in the catalog but bound nowhere, or bound in the menus
     // but not active in the catalog, fails this one assertion either way.
     #expect(declared == active)
 
-    // A key equivalent that names no catalog entry is a second, uncatalogued inventory — the
-    // exact drift this file exists to prevent.
-    #expect(keyed.allSatisfy { $0.shortcut != nil })
     // Menu ids are the `ForEach` identity that renders them: unique, never index-derived
     // (IMGMGR-210).
     let ids = AppCommands.declarations.map(\.id)
     #expect(Set(ids).count == ids.count)
+  }
+
+  @MainActor
+  @Test(
+    "EVERY menu declaration carries a key equivalent AND names a catalog entry — no unkeyed menu entry, no exclusion list"
+  )
+  func everyMenuDeclarationIsKeyedAndCatalogued() {
+    // Design decision 9's parity rule, asserted directly rather than left implicit in the
+    // reconciliation above: a menu entry with `key: nil` (as `Group: None` and `Group: Scene`
+    // shipped) is an app action with no declared bare/⌘ equivalent, and a declaration with
+    // `shortcut: nil` is a second, uncatalogued inventory. Both are failures here, by id, so
+    // the message names the offender instead of just the count.
+    let unkeyed = AppCommands.declarations.filter { $0.key == nil }.map(\.id)
+    #expect(unkeyed.isEmpty, "menu declarations with no key equivalent: \(unkeyed)")
+    let uncatalogued = AppCommands.declarations.filter { $0.shortcut == nil }.map(\.id)
+    #expect(uncatalogued.isEmpty, "menu declarations naming no catalog entry: \(uncatalogued)")
+    // POSITIVE CONTROL, same invocation (LSN-0033): the two 0-hit filters above prove absence
+    // only if the same scan finds something known to be there.
+    #expect(AppCommands.declarations.count >= 14)
+  }
+
+  @MainActor
+  @Test("No two declarations bind the SAME key with the same modifiers — an in-app collision")
+  func noTwoDeclarationsBindTheSameCombination() {
+    // The Group pair's ⌃⌘1/⌃⌘2 sit one modifier above the zoom steps' ⌘1/⌘2, so "does anything
+    // else already use it" has to be a test, not a reading of the file.
+    let combinations = AppCommands.declarations.compactMap { declaration in
+      declaration.key.map { "\($0.character)|\(declaration.modifiers.rawValue)" }
+    }
+    #expect(Set(combinations).count == combinations.count)
+    #expect(combinations.count == AppCommands.declarations.count)
+  }
+
+  @MainActor
+  @Test(
+    "No declaration binds a combination iPadOS itself reserves — with the predicate's own positive control"
+  )
+  func noDeclarationBindsASystemReservedCombination() {
+    // Apple Support, "Keyboard shortcuts for iPad": ⌘Space (Search), ⌘Tab (app switcher),
+    // ⌘H (Home), ⌘⌥D (Dock), ⌘⇧3 / ⌘⇧4 (screenshot), ⌃⌘Space (emoji). Plus ⌘G, which HIG
+    // Keyboards warns about as the established "Find Next" — the reason Scene is ⌘⇧G.
+    // This is what "verify no collision with iPadOS system defaults" looks like as a check
+    // rather than a claim; ⌃⌘1/⌃⌘2 (the Group pair) appear in none of them.
+    func isReserved(_ character: Character, _ modifiers: EventModifiers) -> Bool {
+      let reserved: [(Character, EventModifiers)] = [
+        (" ", .command), ("\t", .command), ("h", .command), ("d", [.command, .option]),
+        ("3", [.command, .shift]), ("4", [.command, .shift]), (" ", [.command, .control]),
+        ("g", .command),
+      ]
+      return reserved.contains { $0.0 == character && $0.1 == modifiers }
+    }
+    // POSITIVE + NEGATIVE control on the predicate itself, in the same invocation: a 0-hit
+    // sweep below proves nothing unless the predicate can say yes.
+    #expect(isReserved("h", .command))
+    #expect(!isReserved("1", [.command, .control]))
+
+    let offenders = AppCommands.declarations.filter { declaration in
+      declaration.key.map { isReserved($0.character, declaration.modifiers) } ?? false
+    }
+    let offenderIDs = offenders.map(\.id)
+    #expect(offenders.isEmpty, "declarations on system-reserved combinations: \(offenderIDs)")
+  }
+
+  @MainActor
+  @Test("The Group single-select pair is ⌃⌘1 / ⌃⌘2 — the zoom digits one modifier up")
+  func groupPairIsControlCommandOneAndTwo() {
+    let group = AppCommands.declarations.filter { $0.shortcut == .groupMode }
+    #expect(group.count == 2)
+    #expect(group.map(\.id) == ["view.group.none", "view.group.scene"])
+    #expect(group.compactMap { $0.key.map { String($0.character) } } == ["1", "2"])
+    #expect(group.allSatisfy { $0.modifiers == EventModifiers([.command, .control]) })
+    #expect(ShortcutID.groupMode.keyLabel == "⌃⌘1 · ⌃⌘2")
   }
 
   @MainActor
