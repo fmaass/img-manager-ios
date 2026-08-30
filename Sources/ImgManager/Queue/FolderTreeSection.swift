@@ -100,7 +100,7 @@ struct FolderTreeSection: View {
 /// readable by a test. P6 (IMGMGR-216) exists because the equivalent decision used to be an
 /// inline ternary in `RootView.sidebar` (`treeSection: layoutMode == .compact ? nil : …`), where
 /// nothing could assert it and the phone silently had no browse surface at all. Neither function
-/// reads `UIDevice.current.userInterfaceIdiom` — `LayoutMode` is resolved from measured width
+/// reads the device idiom — `LayoutMode` is resolved from measured width
 /// plus `horizontalSizeClass` (`LayoutResolver`), and this is the one place the tree consults it.
 enum FolderTreePresentation {
   /// The Folders disclosure opens itself on Compact, where it is the only way to reach a shoot
