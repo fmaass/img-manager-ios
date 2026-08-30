@@ -238,6 +238,13 @@ struct RootView: View {
           if DebugStubLaunch.enterSelectMode {
             gridStore.enterSelectExplicitly()
           }
+          // WP13 P2: likewise applied after the shoot loads — `selectShoot` calls
+          // `pickLock.exit()`, so latching before it would be silently undone. Mutually
+          // exclusive with the Select flag by construction: `lockFromMenu` refuses while Select
+          // is active, so passing both leaves Select, exactly as the shipped rule does.
+          if DebugStubLaunch.latchDislikeLock {
+            gridStore.lockFromMenu(.dislike)
+          }
         }
         #if canImport(UIKit)
           if DebugStubLaunch.forceLandscape,

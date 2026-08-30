@@ -3,10 +3,14 @@ import Testing
 
 @testable import ImgManager
 
-/// premise.out's five Pick Lock pins, each with its own test. The 350/351 ms boundary uses
-/// `ContinuousClock.Instant` arithmetic directly (no real sleeping, no flakiness) — every
-/// timestamp is constructed by hand from a fixed anchor.
-@Suite("Pick Lock state machine (premise.out pins)")
+/// premise.out's five lock pins, each with its own test, plus WP13 P2's verb generalization
+/// (IMGMGR-222). The 350/351 ms boundary uses `ContinuousClock.Instant` arithmetic directly (no
+/// real sleeping, no flakiness) — every timestamp is constructed by hand from a fixed anchor.
+///
+/// Every pre-P2 test below is unchanged except for naming its verb at the call site: the pins
+/// are the SAME pins, and a generalization that had to weaken one of them would be the wrong
+/// generalization.
+@Suite("Pick/Dislike Lock state machine (premise.out pins + WP13 P2 verb parity)")
 struct PickLockStateTests {
 
   private func instant(_ base: ContinuousClock.Instant, plus ms: Int) -> ContinuousClock.Instant {
@@ -17,8 +21,8 @@ struct PickLockStateTests {
   func firstActivationAppliesImmediately() {
     let state = PickLockState()
     let now = ContinuousClock.now
-    let outcome = state.activateFromPickButton(at: now)
-    #expect(outcome == .applyPick)
+    let outcome = state.activate(verb: .pick, at: now)
+    #expect(outcome == .applyMark)
     #expect(state.state == .idle)
   }
 
@@ -26,19 +30,19 @@ struct PickLockStateTests {
   func exactly350msLatches() {
     let state = PickLockState()
     let t0 = ContinuousClock.now
-    #expect(state.activateFromPickButton(at: t0) == .applyPick)
-    let outcome = state.activateFromPickButton(at: instant(t0, plus: 350))
+    #expect(state.activate(verb: .pick, at: t0) == .applyMark)
+    let outcome = state.activate(verb: .pick, at: instant(t0, plus: 350))
     #expect(outcome == .latch)
-    #expect(state.state == .latched)
+    #expect(state.state == .latched(.pick))
   }
 
   @Test("Pin (a): a second activation at 351 ms is an ordinary Pick — never a latch")
   func exactly351msDoesNotLatch() {
     let state = PickLockState()
     let t0 = ContinuousClock.now
-    #expect(state.activateFromPickButton(at: t0) == .applyPick)
-    let outcome = state.activateFromPickButton(at: instant(t0, plus: 351))
-    #expect(outcome == .applyPick)
+    #expect(state.activate(verb: .pick, at: t0) == .applyMark)
+    let outcome = state.activate(verb: .pick, at: instant(t0, plus: 351))
+    #expect(outcome == .applyMark)
     #expect(state.state == .idle)
   }
 
@@ -46,10 +50,10 @@ struct PickLockStateTests {
   func retapUnlatches() {
     let state = PickLockState()
     let t0 = ContinuousClock.now
-    _ = state.activateFromPickButton(at: t0)
-    _ = state.activateFromPickButton(at: instant(t0, plus: 100))  // latches
-    #expect(state.state == .latched)
-    let outcome = state.activateFromPickButton(at: instant(t0, plus: 200))
+    _ = state.activate(verb: .pick, at: t0)
+    _ = state.activate(verb: .pick, at: instant(t0, plus: 100))  // latches
+    #expect(state.state == .latched(.pick))
+    let outcome = state.activate(verb: .pick, at: instant(t0, plus: 200))
     #expect(outcome == .unlatch)
     #expect(state.state == .idle)
   }
@@ -58,8 +62,8 @@ struct PickLockStateTests {
   func farApartTapsNeverLatch() {
     let state = PickLockState()
     let t0 = ContinuousClock.now
-    #expect(state.activateFromPickButton(at: t0) == .applyPick)
-    #expect(state.activateFromPickButton(at: instant(t0, plus: 5000)) == .applyPick)
+    #expect(state.activate(verb: .pick, at: t0) == .applyMark)
+    #expect(state.activate(verb: .pick, at: instant(t0, plus: 5000)) == .applyMark)
     #expect(state.state == .idle)
   }
 
@@ -71,29 +75,29 @@ struct PickLockStateTests {
     // A keyboard P does not arm the window: a button tap 100ms later still needs its OWN
     // pairing partner, not the keyboard press, to latch.
     state.activateFromKeyboard()
-    let outcome = state.activateFromPickButton(at: instant(t0, plus: 100))
-    #expect(outcome == .applyPick)  // treated as a first tap, not a paired second one
+    let outcome = state.activate(verb: .pick, at: instant(t0, plus: 100))
+    #expect(outcome == .applyMark)  // treated as a first tap, not a paired second one
     #expect(state.state == .idle)
 
     // Keyboard P while genuinely latched does not unlatch and does not read/alter state.
     // Pairs with the t0+100 anchor above (100ms apart, within the 350ms window) to latch.
-    _ = state.activateFromPickButton(at: instant(t0, plus: 200))
-    #expect(state.state == .latched)
+    _ = state.activate(verb: .pick, at: instant(t0, plus: 200))
+    #expect(state.state == .latched(.pick))
     state.activateFromKeyboard()
-    #expect(state.state == .latched)
+    #expect(state.state == .latched(.pick))
   }
 
   @Test("Pin (e), Lock-side: unlatch() resets state and the timing anchor")
   func unlatchResetsAnchor() {
     let state = PickLockState()
     let t0 = ContinuousClock.now
-    _ = state.activateFromPickButton(at: t0)
-    _ = state.activateFromPickButton(at: instant(t0, plus: 100))  // latches
-    #expect(state.state == .latched)
+    _ = state.activate(verb: .pick, at: t0)
+    _ = state.activate(verb: .pick, at: instant(t0, plus: 100))  // latches
+    #expect(state.state == .latched(.pick))
     state.unlatch()
     #expect(state.state == .idle)
     // A fresh tap right after unlatch() is a first tap again (no stale anchor survives).
-    #expect(state.activateFromPickButton(at: instant(t0, plus: 105)) == .applyPick)
+    #expect(state.activate(verb: .pick, at: instant(t0, plus: 105)) == .applyMark)
   }
 
   @Test("exit() is idempotent and always returns to idle")
@@ -102,11 +106,117 @@ struct PickLockStateTests {
     state.exit()
     #expect(state.state == .idle)
     let t0 = ContinuousClock.now
-    _ = state.activateFromPickButton(at: t0)
-    _ = state.activateFromPickButton(at: instant(t0, plus: 100))
-    #expect(state.state == .latched)
+    _ = state.activate(verb: .pick, at: t0)
+    _ = state.activate(verb: .pick, at: instant(t0, plus: 100))
+    #expect(state.state == .latched(.pick))
     state.exit()
     #expect(state.state == .idle)
+  }
+
+  // MARK: - WP13 P2 (IMGMGR-222): the same machine, the other verb
+
+  @Test("Dislike latches on its OWN double tap inside the window — symmetric with Pick")
+  func dislikeLatchesOnItsOwnDoubleTapWithinTheWindow() {
+    let state = PickLockState()
+    let t0 = ContinuousClock.now
+    #expect(state.activate(verb: .dislike, at: t0) == .applyMark)
+    #expect(state.state == .idle)
+    #expect(state.activate(verb: .dislike, at: instant(t0, plus: 200)) == .latch)
+    #expect(state.state == .latched(.dislike))
+    #expect(state.latchedVerb == .dislike)
+  }
+
+  @Test("A Pick tap then a Dislike tap inside the window latches NEITHER — two ordinary marks")
+  func aPickTapFollowedByADislikeTapWithinTheWindowLatchesNeither() {
+    let state = PickLockState()
+    let t0 = ContinuousClock.now
+    #expect(state.activate(verb: .pick, at: t0) == .applyMark)
+    // 100 ms later, well inside the 350 ms window — but a DIFFERENT control, so it is a first
+    // tap of its own, not the second of a pair. A verb-blind anchor would latch Dislike here.
+    #expect(state.activate(verb: .dislike, at: instant(t0, plus: 100)) == .applyMark)
+    #expect(state.state == .idle)
+    #expect(state.latchedVerb == nil)
+    // And the mirror: Dislike then Pick.
+    let other = PickLockState()
+    #expect(other.activate(verb: .dislike, at: t0) == .applyMark)
+    #expect(other.activate(verb: .pick, at: instant(t0, plus: 100)) == .applyMark)
+    #expect(other.state == .idle)
+  }
+
+  @Test("The 350 ms boundary is inclusive and 351 ms is an ordinary mark — for BOTH verbs")
+  func the350msBoundaryIsInclusiveForBothVerbs() {
+    for verb in LatchVerb.allCases {
+      let atBoundary = PickLockState()
+      let t0 = ContinuousClock.now
+      #expect(atBoundary.activate(verb: verb, at: t0) == .applyMark)
+      #expect(atBoundary.activate(verb: verb, at: instant(t0, plus: 350)) == .latch)
+      #expect(atBoundary.state == .latched(verb))
+
+      let pastBoundary = PickLockState()
+      #expect(pastBoundary.activate(verb: verb, at: t0) == .applyMark)
+      #expect(pastBoundary.activate(verb: verb, at: instant(t0, plus: 351)) == .applyMark)
+      #expect(pastBoundary.state == .idle)
+    }
+  }
+
+  @Test("Latched: re-tapping the SAME verb's button unlatches and applies nothing — both verbs")
+  func retappingTheLatchedVerbUnlatches() {
+    for verb in LatchVerb.allCases {
+      let state = PickLockState()
+      let t0 = ContinuousClock.now
+      _ = state.activate(verb: verb, at: t0)
+      _ = state.activate(verb: verb, at: instant(t0, plus: 100))
+      #expect(state.state == .latched(verb))
+      #expect(state.activate(verb: verb, at: instant(t0, plus: 200)) == .unlatch)
+      #expect(state.state == .idle)
+    }
+  }
+
+  @Test(
+    "Pre-decided pivot: pressing the OTHER verb while latched exits the latch and applies once — it never switches the latch"
+  )
+  func pressingTheOtherVerbWhileLatchedExitsAndAppliesOnce() {
+    let state = PickLockState()
+    let t0 = ContinuousClock.now
+    _ = state.activate(verb: .pick, at: t0)
+    _ = state.activate(verb: .pick, at: instant(t0, plus: 100))
+    #expect(state.state == .latched(.pick))
+
+    #expect(state.activate(verb: .dislike, at: instant(t0, plus: 500)) == .applyMark)
+    // Exited, NOT switched: a silent switch would leave `.latched(.dislike)` here and every
+    // following tap on a tile would write Dislike without the reader ever asking for that mode.
+    #expect(state.state == .idle)
+    #expect(state.latchedVerb == nil)
+    // That press anchors its own verb, so a deliberate second Dislike press does latch it.
+    #expect(state.activate(verb: .dislike, at: instant(t0, plus: 600)) == .latch)
+    #expect(state.state == .latched(.dislike))
+  }
+
+  @Test("forceLatch takes a verb, and refuses while a lock of the OTHER verb is already on")
+  func forceLatchIsVerbedAndMutuallyExclusive() {
+    let state = PickLockState()
+    state.forceLatch(.dislike)
+    #expect(state.state == .latched(.dislike))
+    // The two locks cannot coexist: the menu twin is a no-op rather than a switch, which is the
+    // same "never switch a mode the reader did not ask to change" rule the button path follows.
+    state.forceLatch(.pick)
+    #expect(state.state == .latched(.dislike))
+    state.exit()
+    state.forceLatch(.pick)
+    #expect(state.state == .latched(.pick))
+  }
+
+  @Test("Keyboard marks never participate in latch detection — for the Dislike verb too")
+  func keyboardNeverParticipatesForDislikeEither() {
+    let state = PickLockState()
+    let t0 = ContinuousClock.now
+    state.activateFromKeyboard()
+    #expect(state.activate(verb: .dislike, at: instant(t0, plus: 100)) == .applyMark)
+    #expect(state.state == .idle)
+    _ = state.activate(verb: .dislike, at: instant(t0, plus: 200))
+    #expect(state.state == .latched(.dislike))
+    state.activateFromKeyboard()
+    #expect(state.state == .latched(.dislike))
   }
 }
 
@@ -149,26 +259,53 @@ struct DragPaintSessionTests {
   }
 }
 
-@Suite("Pick button presentation (diff-gate round 2, blocker 4: caption + unmistakable state)")
+@Suite("Latch button presentation (diff-gate round 2, blocker 4: caption + unmistakable state)")
 struct PickButtonPresentationTests {
-  @Test("Idle: not prominent, not accessibility-selected, no mode-row caption")
+  @Test("Idle: neither control is prominent, accessibility-selected, or captioned")
   func idlePresentation() {
-    let presentation = PickButtonPresentation.for(.idle)
-    #expect(presentation.isProminent == false)
-    #expect(presentation.accessibilitySelected == false)
-    #expect(presentation.modeRowCaption == nil)
+    for verb in LatchVerb.allCases {
+      let presentation = PickButtonPresentation.for(.idle, control: verb)
+      #expect(presentation.isProminent == false)
+      #expect(presentation.accessibilitySelected == false)
+      #expect(presentation.modeRowCaption == nil)
+    }
   }
 
-  @Test("Latched: prominent AND accessibility-selected AND the exact pinned caption")
+  @Test("Latched: prominent AND accessibility-selected AND the exact pinned caption — both verbs")
   func latchedPresentation() {
-    let presentation = PickButtonPresentation.for(.latched)
-    #expect(presentation.isProminent == true)
-    #expect(presentation.accessibilitySelected == true)
-    #expect(presentation.modeRowCaption == "Pick Lock — tap photos to apply Pick")
+    let pick = PickButtonPresentation.for(.latched(.pick), control: .pick)
+    #expect(pick.isProminent == true)
+    #expect(pick.accessibilitySelected == true)
+    #expect(pick.modeRowCaption == "Pick Lock — tap photos to apply Pick")
+
+    let dislike = PickButtonPresentation.for(.latched(.dislike), control: .dislike)
+    #expect(dislike.isProminent == true)
+    #expect(dislike.accessibilitySelected == true)
+    #expect(dislike.modeRowCaption == "Dislike Lock — tap photos to apply Dislike")
   }
 
-  @Test("The exact caption constant matches the pin verbatim")
+  @Test("A latch lights ONLY its own control — the other stays plain and uncaptioned")
+  func theOtherControlIsNotLit() {
+    let pickWhileDislikeLatched = PickButtonPresentation.for(.latched(.dislike), control: .pick)
+    #expect(pickWhileDislikeLatched.isProminent == false)
+    #expect(pickWhileDislikeLatched.accessibilitySelected == false)
+    #expect(pickWhileDislikeLatched.modeRowCaption == nil)
+
+    let dislikeWhilePickLatched = PickButtonPresentation.for(.latched(.pick), control: .dislike)
+    #expect(dislikeWhilePickLatched.isProminent == false)
+    #expect(dislikeWhilePickLatched.accessibilitySelected == false)
+    #expect(dislikeWhilePickLatched.modeRowCaption == nil)
+  }
+
+  @Test("The exact caption constants match the pin and its symmetric twin verbatim")
   func captionConstantIsExact() {
-    #expect(PickLockCopy.caption == "Pick Lock — tap photos to apply Pick")
+    #expect(PickLockCopy.caption(for: .pick) == "Pick Lock — tap photos to apply Pick")
+    #expect(PickLockCopy.caption(for: .dislike) == "Dislike Lock — tap photos to apply Dislike")
+  }
+
+  @Test("Each verb writes its own mark — the one mapping every latched call site reads")
+  func verbMarkStates() {
+    #expect(LatchVerb.pick.markState == .pick)
+    #expect(LatchVerb.dislike.markState == .dislike)
   }
 }
