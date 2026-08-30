@@ -140,9 +140,13 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
       "shortcutHelpRow.zoomStep", "shortcutHelpRow.sceneToggle", "shortcutHelpRow.groupMode",
     ]
 
-    // A `List` only materialises the rows it has laid out — the first gate run found 6 of 15 in
-    // the tree — so each row is SCROLLED INTO VIEW in render order and read there, rather than
-    // assuming the whole sheet is realised at once.
+    // A `List` only materialises the rows it has laid out, so the sheet is TRAVERSED and every
+    // row read while it happens to be on screen — never "scroll until row N appears", which is
+    // what the 20:50 gate run caught: one momentum swipe carried `dislike` and `clear` past the
+    // viewport, and a per-row search that has already overshot can only burn its budget going
+    // further down (13 of 15 found, the two skipped ones stranded above). Slow swipes to keep
+    // each step short, a harvest between every one of them, and a second pass back UP for
+    // anything the downward pass still flew over.
     let scroller: XCUIElement
     if app.collectionViews.firstMatch.exists {
       scroller = app.collectionViews.firstMatch
@@ -151,21 +155,43 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     } else {
       scroller = app
     }
+    let rowQuery = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "shortcutHelpRow."))
     var rendered: [String: String] = [:]
-    var missing: [String] = []
-    for identifier in expected {
-      let row = app.descendants(matching: .any)[identifier]
-      var swipes = 0
-      while !row.exists && swipes < 12 {
-        scroller.swipeUp()
-        swipes += 1
-      }
-      if row.exists {
-        rendered[identifier] = renderedText(of: row)
-      } else {
-        missing.append(identifier)
+    func harvestVisibleRows() {
+      for row in rowQuery.allElementsBoundByIndex {
+        let text = self.renderedText(of: row)
+        if text.count >= (rendered[row.identifier]?.count ?? 0) {
+          rendered[row.identifier] = text
+        }
       }
     }
+
+    guard let lastRow = expected.last else {
+      XCTFail("The expected-row list is empty — nothing to traverse to.")
+      return
+    }
+    harvestVisibleRows()
+    var downSwipes = 0
+    while downSwipes < 20 && (rendered[lastRow] == nil || rendered.count < expected.count) {
+      scroller.swipeUp(velocity: .slow)
+      downSwipes += 1
+      harvestVisibleRows()
+    }
+    // The end of the sheet was reached — that is what makes "found N of 15" a statement about
+    // the SHEET rather than about how far the scroll happened to get.
+    XCTAssertNotNil(
+      rendered[lastRow],
+      "The traverse never reached the sheet's last row (\(lastRow)) in \(downSwipes) swipes; "
+        + "found \(rendered.count) of \(expected.count): \(rendered.keys.sorted()).")
+
+    var upSwipes = 0
+    while upSwipes < 20 && rendered.count < expected.count {
+      scroller.swipeDown(velocity: .slow)
+      upSwipes += 1
+      harvestVisibleRows()
+    }
+    let missing = expected.filter { rendered[$0] == nil }
 
     let end = XCUIScreen.main.screenshot()
     let endAttachment = XCTAttachment(screenshot: end)
@@ -175,8 +201,9 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
 
     XCTAssertEqual(
       missing, [],
-      "Rows the sheet never rendered, even after scrolling to them. Opened via \(openedVia); "
-        + "found \(rendered.count) of \(expected.count).")
+      "Rows the sheet never rendered, in a traverse that DID reach its last row. Opened via "
+        + "\(openedVia); found \(rendered.count) of \(expected.count) in \(downSwipes) swipes "
+        + "down and \(upSwipes) back up.")
 
     // The rows a reader came for, asserted on the RENDERED text rather than on the model that
     // produced it: the ⌘ discovery half is the whole point of the sheet.
@@ -194,7 +221,8 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
 
     XCTContext.runActivity(
       named: "Opened via \(openedVia) · ⌘/ reached the app: \(openedByKeyEquivalent) · "
-        + "\(rendered.count) rendered rows · captured \(opened.image.size)"
+        + "\(rendered.count) rendered rows in \(downSwipes)+\(upSwipes) swipes · captured "
+        + "\(opened.image.size)"
     ) { _ in }
   }
 
