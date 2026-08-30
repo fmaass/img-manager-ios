@@ -34,7 +34,7 @@ struct MenuCommandGroup: Identifiable {
 /// WP8 P4/P5 declared the bare web set (arrows, Space/Enter, P, X, U, Shift+advance, T, Z).
 /// WP13 P4 (IMGMGR-215) adds design decision 9's OTHER half — "the web set verbatim as the
 /// fast path **and** Command-equivalents for discovery", both, never one replacing the other:
-/// a `View` menu carrying Group, the six zoom steps as ⌘1…⌘6, Scene view as ⌘⇧G, and the
+/// the system View menu gains Group, the six zoom steps as ⌘1…⌘6, Scene view as ⌘⇧G, and the
 /// shortcut help sheet as `?` and ⌘/. No existing bare key is re-keyed or removed.
 ///
 /// `⌘G` is deliberately NOT used for Scene: it conventionally means "Find Next" on Apple
@@ -46,7 +46,13 @@ struct AppCommands: Commands {
     CommandMenu("Grid") {
       menuContent(Self.gridMenuGroups)
     }
-    CommandMenu("View") {
+    // NOT `CommandMenu("View")`, which the plan proposed: probed live on the iPad Pro 13" (M5)
+    // simulator, iOS 26.5, 2026-08-30 — iPadOS 26 already provides `View` in the system menu
+    // bar (observed: `img-manager · File · Edit · View · Grid · Window · Help`, with this app's
+    // own `CommandMenu("Grid")` sitting between View and Window). `CommandMenu` always ADDS a
+    // menu rather than merging by name, so declaring one called "View" would have put a second
+    // View beside the system's. `CommandGroup(after: .sidebar)` inserts into the real one.
+    CommandGroup(after: .sidebar) {
       menuContent(Self.viewMenuGroups)
     }
   }
@@ -159,8 +165,8 @@ extension AppCommands {
         run: { $0.setRowHeight(step) })
     }
 
-  /// The "View" menu: p3220 §3.1's own discovery surface — "the menu bar… the discovery
-  /// surface for shortcuts and for View options". Group's single-select pair NAMES the two
+  /// What goes INTO the system View menu: p3220 §3.1's own discovery surface — "the menu
+  /// bar… the discovery surface for shortcuts and for View options". Group's pair NAMES the two
   /// arrangements (AC: "a View menu naming them"); the ⌘⇧G entry is the on/off accelerator.
   /// Scene is a MODE, not a `group_by` wire value (ADR-0005 decision 6) — which is why the
   /// pair is single-select and `GROUP_KEYS` never gains a Scene entry.
