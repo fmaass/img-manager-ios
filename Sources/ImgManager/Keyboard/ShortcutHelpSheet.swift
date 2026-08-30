@@ -40,6 +40,7 @@ struct ShortcutHelpSheet: View {
   var body: some View {
     NavigationStack {
       List(ShortcutHelpModel.rows) { row in
+        let spokenLabel = "\(row.key), \(row.meaning)"
         HStack(alignment: .firstTextBaseline, spacing: 16) {
           Text(row.key)
             .font(.body.monospaced())
@@ -48,6 +49,13 @@ struct ShortcutHelpSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .combine)
+        // The element that carries the identifier must also CARRY THE TEXT: with a merely
+        // combined element the label XCTest reads back came out empty on both gate legs
+        // (queue-p4-green2 run, `Rendered row shortcutHelpRow.help reads ''`), so the row
+        // states its own label and value instead of relying on the synthesized one. The key
+        // goes in the value as well, which is what a UI test can assert on directly.
+        .accessibilityLabel(spokenLabel)
+        .accessibilityValue(row.key)
         // The rendered row's own handle. `ViewOptionsScreenshotUITests` opens this sheet on
         // BOTH destinations and asserts the rows it finds by these identifiers, so emptying
         // the `List` above turns that test RED instead of leaving a model-only test green.

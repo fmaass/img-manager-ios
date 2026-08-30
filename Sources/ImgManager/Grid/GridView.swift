@@ -75,6 +75,14 @@ struct GridView: View {
         ToolbarItem(placement: .primaryAction) {
           GridZoomControl(store: store)
         }
+        // Regular's route into the shortcut help sheet. The gate's UI leg proved the other two
+        // routes are not drivable there — ⌘/ never reached the app on the iPad simulator
+        // (no attached hardware keyboard) and the system menu bar is not a surface a UI test
+        // can open — so without this the sheet had no chrome path and no rendered evidence on
+        // Regular at all. Compact carries the same control in its options row.
+        ToolbarItem(placement: .primaryAction) {
+          GridShortcutHelpControl(store: store)
+        }
       }
     }
   }
@@ -331,12 +339,13 @@ struct GridOptionsRow: View {
   }
 }
 
-/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: Compact's chrome path INTO the shortcut help
-/// sheet. Every other route the plan names — the menu-bar View menu, `?`, ⌘/ — needs a hardware
-/// keyboard or the iPad menu bar, so on Compact the sheet was unreachable and therefore had no
-/// rendered evidence on that idiom at all. Deliberately NOT a fourth entry in the More menu:
-/// that menu's contents are P5a's decided set (IMGMGR-221) and this phase does not get to
-/// pre-empt them.
+/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: the chrome path INTO the shortcut help sheet,
+/// rendered on both layouts — Compact's options row and Regular's `.primaryAction` toolbar.
+/// Every other route the plan names — the menu-bar View menu, `?`, ⌘/ — needs a hardware
+/// keyboard or the menu bar, neither of which exists on a phone and neither of which the gate's
+/// simulators supplied, so without this the sheet was unreachable and had no rendered evidence.
+/// Deliberately NOT a fourth entry in the More menu: that menu's contents are P5a's decided set
+/// (IMGMGR-221) and this phase does not get to pre-empt them.
 ///
 /// Calls the same `GridStore.showShortcutHelp()` the `?`/⌘/ declarations dispatch into, so the
 /// button and the shortcut cannot drift apart.

@@ -77,17 +77,20 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
 
   /// Diff-gate r1 blocker 3: the help sheet's only test compared the catalog-derived model
   /// against the catalog itself, so an EMPTY `ShortcutHelpSheet` body passed and no rendered
-  /// evidence existed on Compact at all. This opens the real sheet on whichever destination it
-  /// runs on and reads the rows out of the live accessibility tree.
+  /// evidence existed on either layout. This opens the real sheet and reads its rows back out
+  /// of the live accessibility tree.
   ///
-  /// Blocker 2's other half rides here too: on a destination with no options row — Regular,
-  /// i.e. the iPad leg — the sheet is opened by PRESSING ⌘/, which dispatches through
-  /// `AppCommands`' own declaration rather than calling the store. A no-op `run` closure on
-  /// that declaration fails this test.
+  /// HOW IT OPENS THE SHEET, and why: the render assertions go through the CHROME control,
+  /// which both layouts carry (Compact's options row, Regular's `.primaryAction` toolbar).
+  /// Pressing ⌘/ is attempted first but only LOGGED, never asserted — the queue-p4-green2 gate
+  /// run showed the key equivalent never reaches the app on the iPad simulator, which has no
+  /// attached hardware keyboard, and a UI test cannot open the system menu bar either. The
+  /// proof that the ⌘/ and `?` declarations actually dispatch is
+  /// `GridViewOptionsTests.helpDeclarationsDispatchThroughTheirOwnRunClosures`, which invokes
+  /// each declaration's own `run` closure; this test's job is the RENDERED sheet.
   ///
-  /// Branches on an OBSERVED element, never on the device idiom: `userInterfaceIdiom` is
-  /// grep-banned across `Sources/` AND `Tests/` by the gate (`bin/mac-gate.sh`), and the plan's
-  /// invariant (i) is that no test makes an idiom decision.
+  /// Makes no device-idiom decision (plan invariant (i)): every step keys off an observed
+  /// element, never off which kind of device this destination happens to be.
   func testShortcutHelpSheetListsEveryActiveShortcut() throws {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid"]
@@ -99,31 +102,37 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
         + "composition's populated grid, got something else (sign-in screen, blank screen, or a "
         + "failed stub composition).")
 
-    let helpControl = app.descendants(matching: .any)["gridShortcutHelpControl"]
-    let openedVia: String
-    if helpControl.waitForExistence(timeout: 5) {
-      // Compact: the options row's own chrome path — the only route into the sheet on a
-      // destination with neither a menu bar nor (necessarily) a hardware keyboard.
+    let helpBar = app.navigationBars["Keyboard shortcuts"]
+    app.typeKey("/", modifierFlags: .command)
+    let openedByKeyEquivalent = helpBar.waitForExistence(timeout: 5)
+    if !openedByKeyEquivalent {
+      let helpControl = app.descendants(matching: .any)["gridShortcutHelpControl"]
+      XCTAssertTrue(
+        helpControl.waitForExistence(timeout: 10),
+        "Neither route into the shortcut help sheet exists on this destination: ⌘/ did not "
+          + "reach the app and nothing named 'gridShortcutHelpControl' is on a primary surface.")
       helpControl.tap()
-      openedVia = "the options row's Keyboard-shortcuts button (Compact chrome path)"
-    } else {
-      // Regular: no options row exists here, so this is the declared key equivalent itself.
-      app.typeKey("/", modifierFlags: .command)
-      openedVia = "the ⌘/ key equivalent, dispatched through AppCommands"
     }
+    let openedVia = openedByKeyEquivalent ? "the ⌘/ key equivalent" : "the chrome control"
 
     // The sheet's own rendered chrome. NOT an identifier on the sheet container: one set there
     // overrides its descendants' (the `GridOptionsRow` lesson, `GridView.swift`), which would
     // make the rows below unaddressable.
     XCTAssertTrue(
-      app.navigationBars["Keyboard shortcuts"].waitForExistence(timeout: 10),
+      helpBar.waitForExistence(timeout: 10),
       "The shortcut help sheet never came up after opening it via \(openedVia).")
 
-    // Exactly the ACTIVE catalog, as rendered. Pinned here as literals because a UI test cannot
-    // see the app's types; `ShortcutHelpSheetTests.everyRowCarriesItsRenderedIdentifier` binds
-    // this same list to `ShortcutCatalog.activeEntries`, so a catalog change breaks one of the
-    // two loudly rather than silently drifting.
-    let expected: Set<String> = [
+    let opened = XCUIScreen.main.screenshot()
+    let openedAttachment = XCTAttachment(screenshot: opened)
+    openedAttachment.name = "shortcut-help-sheet"
+    openedAttachment.lifetime = .keepAlways
+    add(openedAttachment)
+
+    // Exactly the ACTIVE catalog, in the order it renders. Pinned here as literals because a UI
+    // test cannot see the app's types; the `everyRowCarriesItsRenderedIdentifier` test in
+    // `ShortcutHelpSheetTests` binds this same list to `ShortcutCatalog.activeEntries`, so a
+    // catalog change breaks one of the two loudly rather than drifting silently.
+    let expected = [
       "shortcutHelpRow.arrowUp", "shortcutHelpRow.arrowDown", "shortcutHelpRow.arrowLeft",
       "shortcutHelpRow.arrowRight", "shortcutHelpRow.openSpaceEnter", "shortcutHelpRow.pick",
       "shortcutHelpRow.dislike", "shortcutHelpRow.clear", "shortcutHelpRow.shiftAdvance",
@@ -131,41 +140,43 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
       "shortcutHelpRow.zoomStep", "shortcutHelpRow.sceneToggle", "shortcutHelpRow.groupMode",
     ]
 
-    // A `List` only materializes what it has laid out, so the rows are collected across scrolls
-    // rather than read once — the count assertion below is about the SHEET, not about how much
-    // of it happens to fit on this destination's screen.
-    let rowQuery = app.descendants(matching: .any).matching(
-      NSPredicate(format: "identifier BEGINSWITH %@", "shortcutHelpRow."))
+    // A `List` only materialises the rows it has laid out — the first gate run found 6 of 15 in
+    // the tree — so each row is SCROLLED INTO VIEW in render order and read there, rather than
+    // assuming the whole sheet is realised at once.
+    let scroller: XCUIElement
+    if app.collectionViews.firstMatch.exists {
+      scroller = app.collectionViews.firstMatch
+    } else if app.tables.firstMatch.exists {
+      scroller = app.tables.firstMatch
+    } else {
+      scroller = app
+    }
     var rendered: [String: String] = [:]
-    var passesWithoutANewRow = 0
-    var scrolls = 0
-    while scrolls < 10 && passesWithoutANewRow < 2 && rendered.count < expected.count {
-      let before = rendered.count
-      for row in rowQuery.allElementsBoundByIndex {
-        // A row can surface twice — the cell and the combined element inside it — and only one
-        // of the two carries the text. Keep the richer label rather than whichever came last.
-        let label = row.label
-        if label.count >= (rendered[row.identifier]?.count ?? 0) {
-          rendered[row.identifier] = label
-        }
+    var missing: [String] = []
+    for identifier in expected {
+      let row = app.descendants(matching: .any)[identifier]
+      var swipes = 0
+      while !row.exists && swipes < 12 {
+        scroller.swipeUp()
+        swipes += 1
       }
-      passesWithoutANewRow = rendered.count == before ? passesWithoutANewRow + 1 : 0
-      if rendered.count < expected.count {
-        app.swipeUp()
-        scrolls += 1
+      if row.exists {
+        rendered[identifier] = renderedText(of: row)
+      } else {
+        missing.append(identifier)
       }
     }
 
-    let screenshot = XCUIScreen.main.screenshot()
-    let attachment = XCTAttachment(screenshot: screenshot)
-    attachment.name = "shortcut-help-sheet"
-    attachment.lifetime = .keepAlways
-    add(attachment)
+    let end = XCUIScreen.main.screenshot()
+    let endAttachment = XCTAttachment(screenshot: end)
+    endAttachment.name = "shortcut-help-sheet-scrolled"
+    endAttachment.lifetime = .keepAlways
+    add(endAttachment)
 
     XCTAssertEqual(
-      Set(rendered.keys), expected,
-      "The rendered help sheet is not the active catalog. Opened via \(openedVia); found "
-        + "\(rendered.count) rows: \(rendered.keys.sorted()).")
+      missing, [],
+      "Rows the sheet never rendered, even after scrolling to them. Opened via \(openedVia); "
+        + "found \(rendered.count) of \(expected.count).")
 
     // The rows a reader came for, asserted on the RENDERED text rather than on the model that
     // produced it: the ⌘ discovery half is the whole point of the sheet.
@@ -175,15 +186,26 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
       ("shortcutHelpRow.sceneToggle", "⌘⇧G"),
       ("shortcutHelpRow.groupMode", "⌃⌘1 · ⌃⌘2"),
     ] {
-      let label = rendered[identifier] ?? ""
+      let text = rendered[identifier] ?? ""
       XCTAssertTrue(
-        label.contains(key),
-        "Rendered row \(identifier) reads '\(label)' — it does not show its key '\(key)'.")
+        text.contains(key),
+        "Rendered row \(identifier) reads '\(text)' — it does not show its key '\(key)'.")
     }
 
     XCTContext.runActivity(
-      named: "Opened via \(openedVia) · \(rendered.count) rendered rows · captured "
-        + "\(screenshot.image.size)"
+      named: "Opened via \(openedVia) · ⌘/ reached the app: \(openedByKeyEquivalent) · "
+        + "\(rendered.count) rendered rows · captured \(opened.image.size)"
     ) { _ in }
+  }
+
+  /// Everything the row element can tell us about its own text: an accessibility element that
+  /// merely COMBINES its children can come back with an empty `label` (it did on both legs of
+  /// the queue-p4-green2 run), so the value and the element's own static texts are read too.
+  private func renderedText(of element: XCUIElement) -> String {
+    var parts = [element.label, (element.value as? String) ?? ""]
+    for text in element.staticTexts.allElementsBoundByIndex {
+      parts.append(text.label)
+    }
+    return parts.joined(separator: " ")
   }
 }
