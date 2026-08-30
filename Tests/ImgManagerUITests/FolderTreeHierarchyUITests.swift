@@ -50,7 +50,6 @@ final class FolderTreeHierarchyUITests: XCTestCase {
       "Expanding the container revealed no nested shoot — the tree is not two levels deep.")
     attach(named: "P7-tree-two-levels")
 
-
     let field = app.textFields["folderTreeSearchField"].firstMatch
     XCTAssertTrue(reveal(field, in: app), "The folder search field never appeared.")
 
