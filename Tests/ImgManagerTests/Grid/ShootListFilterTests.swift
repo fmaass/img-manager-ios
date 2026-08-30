@@ -38,4 +38,19 @@ struct ShootListFilterTests {
     #expect(ShootListFilter.shoots([node(id: 1, kind: "day")]).isEmpty)
     #expect(!ShootListFilter.shootKinds.contains("day"))
   }
+
+  /// The IMGMGR-173 guard, re-pinned against a LIVE reading of the deployed API rather than
+  /// against a fixture this suite also wrote. Probe, 2026-08-30, `GET /api/folders` for both
+  /// tiers through the running `img-manager` container (read-only, HTTP 200 both): the complete
+  /// `kind` vocabulary on the wire is {other, dated, template, import, dated_split, project} —
+  /// 855 rows (local 166, archive 689), of which 465 are shoot rows (local 110, archive 355).
+  /// `"day"` does not occur in either tier.
+  @Test("rejects the retired \"day\" value and accepts exactly the live vocabulary")
+  func rejectsTheRetiredDayKindAndAcceptsTheLiveVocabulary() {
+    let liveVocabulary = ["other", "dated", "template", "import", "dated_split", "project"]
+    let nodes = liveVocabulary.enumerated().map { node(id: $0.offset, kind: $0.element) }
+    #expect(ShootListFilter.shoots(nodes).map(\.kind) == ["dated", "dated_split"])
+    #expect(ShootListFilter.shootKinds == ["dated", "dated_split"])
+    #expect(ShootListFilter.shoots([node(id: 99, kind: "day")]).isEmpty)
+  }
 }

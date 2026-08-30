@@ -59,3 +59,20 @@ struct FolderTreeSection: View {
     }
   }
 }
+
+/// TEMPORARY — mutation-loop RED probe (disciplined-implementation §1: a test written against
+/// already-working code proves nothing until it has been seen failing for the BEHAVIOUR's
+/// absence). These two bodies reproduce the PRE-P6 behaviour on purpose — Compact reaches no
+/// shoot at all, and the disclosure never opens itself — so this commit's gate run shows
+/// `FolderTreeSectionTests` red. The next commit replaces them with the real decisions and wires
+/// them into the view. `ShootListFilter.shootKinds` is mutated in the same commit and for the
+/// same reason.
+enum FolderTreePresentation {
+  static func startsExpanded(in mode: LayoutMode) -> Bool { false }
+
+  static func shootRows(
+    for mode: LayoutMode, folders: [Components.Schemas.FolderNode]
+  ) -> [Components.Schemas.FolderNode] {
+    mode == .compact ? [] : ShootListFilter.shoots(folders)
+  }
+}
