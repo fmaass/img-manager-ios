@@ -50,7 +50,7 @@ struct RootView: View {
   @State private var queueStore: QueueStore
   private let heroLoader: HeroThumbnailLoader
   @State private var selectedFolderID: Int?
-  @State private var showInspectorSheet = false
+  @State private var showInspector = false
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
 
@@ -328,20 +328,71 @@ struct RootView: View {
       } else {
         GridView(store: gridStore)
           .toolbar {
-            // Fold item 7: Compact (and, per this pass's simplification, Regular-2) reach the
-            // inspector through a persistent chrome control presenting ONE Info/Stats sheet —
-            // never a second phone-only surface.
-            if layoutMode != .regular3 {
+            // Fold item 7's persistent chrome control, unchanged in role: wherever the inspector
+            // is not a permanent column, this ONE control is how it is reached — never a second,
+            // width-specific surface. WP13 P10 (IMGMGR-219) changes only WHAT it presents at
+            // Regular-2, and the decision now comes from one pure resolver
+            // (`InspectorPlacement`) rather than an inline `layoutMode != .regular3`.
+            if inspectorPresentation.usesChromeControl {
               ToolbarItem(placement: .primaryAction) {
-                inspectorSheetButton
+                inspectorChromeButton
               }
             }
           }
-          .sheet(isPresented: $showInspectorSheet) {
+          .overlay(alignment: .trailing) {
+            // The ONE place P10 could have gone wrong: the slide-over is an overlay ON THE
+            // DETAIL PANE, never a third column. `workspace`'s 2-column `NavigationSplitView`
+            // for Compact/Regular-2 is a deliberate WP8 diff-gate round-3 fix (reusing the
+            // 3-column initializer with an empty `detailColumn` still reserved a wasted pane
+            // under `.doubleColumn`, squeezing the grid), and a panel built as a column would
+            // undo it. An overlay sits outside NavigationSplitView's column management
+            // entirely, so the two cannot fight over the same space.
+            if showInspector && inspectorPresentation == .slideOver {
+              inspectorSlideOver
+            }
+          }
+          .sheet(isPresented: inspectorSheetBinding) {
             InspectorView(store: gridStore, service: gridService)
           }
       }
     }
+  }
+
+  /// The inspector's presentation at the CURRENT layout mode. One resolver, read by the toolbar
+  /// condition, the sheet binding and the slide-over overlay alike, so the three can never
+  /// disagree about which surface is showing.
+  private var inspectorPresentation: InspectorPresentation {
+    InspectorPlacement.presentation(for: layoutMode)
+  }
+
+  /// The sheet presents ONLY where the resolved presentation IS the sheet. One `showInspector`
+  /// state drives every presentation, so there is no width at which two of them could be on
+  /// screen at once, and no second flag to drift out of step.
+  private var inspectorSheetBinding: Binding<Bool> {
+    Binding(
+      get: { showInspector && inspectorPresentation.isModal },
+      set: { showInspector = $0 })
+  }
+
+  /// [/link/3220] §2.2's side panel: anchored to the trailing edge of the grid pane,
+  /// width-limited by `InspectorSlideOverMetrics`, and NON-MODAL — nothing dims, nothing is
+  /// disabled, and the grid keeps taking taps beside it. Two details carry that guarantee:
+  /// `GeometryReader` measures the PANE the overlay covers (so the width rule applies to the
+  /// space actually available, including a half-width iPad window), and the widened frame around
+  /// the panel carries no background, so it has no hit region of its own and taps in it reach the
+  /// grid underneath. System materials only, never a custom `glassEffect` (ADR-N1) — `.bar` and
+  /// `.thinMaterial` are already this app's chrome backing (`ActionBarView`, `GridView`).
+  private var inspectorSlideOver: some View {
+    GeometryReader { proxy in
+      InspectorView(store: gridStore, service: gridService)
+        .frame(width: InspectorSlideOverMetrics.width(inPane: proxy.size.width))
+        .frame(maxHeight: .infinity)
+        .background(.regularMaterial)
+        .overlay(alignment: .leading) { Divider() }
+        .accessibilityIdentifier("inspectorSlideOver")
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+    .transition(.move(edge: .trailing))
   }
 
   /// The Info button doubles as the "filters are on" indicator: on Compact the Info·Stats sheet
@@ -350,10 +401,13 @@ struct RootView: View {
   /// failure this prevents. The count is the facet fields only, never the shoot scope
   /// (`InspectorFacetFilters`), so browsing an archive shoot never reads as "filtered".
   @ViewBuilder
-  private var inspectorSheetButton: some View {
+  private var inspectorChromeButton: some View {
     let activeFilters = InspectorFacetFilters.activeCount(gridStore.currentQuery)
     Button {
-      showInspectorSheet = true
+      // A TOGGLE, not a one-way open: the slide-over has no sheet grabber to dismiss it, so the
+      // persistent chrome control is also how it closes (zero gesture-only actions). At Compact
+      // the sheet covers this control while it is up, so toggling reads exactly as before.
+      withAnimation(.snappy(duration: 0.25)) { showInspector.toggle() }
     } label: {
       if activeFilters > 0 {
         Label(

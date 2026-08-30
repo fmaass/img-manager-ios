@@ -9,7 +9,9 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 
 /// One component, three presentations (P4 Approach + fold item 7):
 /// - Regular-3: a permanent column (`RootView.detailColumn`).
-/// - Regular-2: a slide-over (presented as a sheet here — see the file's scope note).
+/// - Regular-2: a slide-over — a non-modal trailing panel over the grid pane
+///   (`RootView.inspectorSlideOver`, WP13 P10 / IMGMGR-219). The grid stays visible and
+///   interactive beside it; this view itself is unchanged, only where it is presented.
 /// - Compact: ONE sheet with Info/Stats as segments (fold item 7 — not two separate phone-only
 ///   surfaces, and no bottom-sheet-of-three-tabs like the mobile web's Library/Stats/Info).
 ///
