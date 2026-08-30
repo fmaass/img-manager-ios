@@ -27,10 +27,11 @@ import SwiftUI
 /// - the count on every row is `descendant_image_count` straight off the wire, which is exactly
 ///   the population a tap opens (`/api/images` resolves `folder_id` to the whole subtree), so the
 ///   badge and the grid can never disagree;
-/// - a shoot that ALSO has a subtree (110 of them in production — `dated` folders with a
-///   `template`/`project` child) both enters the grid and reveals its children on a label tap;
-///   the chevron alone is the pure expand affordance. Nothing here is gesture-only: every row,
-///   every chevron and the search field are chrome.
+/// - the tree renders as a FLAT list of open rows with a depth inset (`FolderTreeModel
+///   .visibleRows`), not as nested `DisclosureGroup`s, and expanding is its own chevron Button
+///   separate from the name's tap target — on the 110 production folders that are both a shoot
+///   and a parent, opening a subtree must not also navigate into the grid. Nothing here is
+///   gesture-only: every row, every chevron and the search field are chrome.
 struct FolderTreeSection: View {
   let gridService: GridService
   let layoutMode: LayoutMode
@@ -137,12 +138,18 @@ struct FolderTreeSection: View {
   private func tierBranch(
     _ title: String, folders: [Components.Schemas.FolderNode], tier: GridSourceTier
   ) -> some View {
-    let roots = branches(folders)
-    if !roots.isEmpty {
+    let rows = FolderTreeModel.visibleRows(branches(folders)) { id in
+      FolderTreePresentation.isExpanded(
+        id, readerExpanded: expandedBranches, isSearching: isSearching)
+    }
+    if !rows.isEmpty {
       DisclosureGroup(isExpanded: tierBinding(tier)) {
-        ForEach(roots, id: \.id) { node in
-          FolderTreeRow(
-            node: node, tier: tier, isSearching: isSearching,
+        // One flat ForEach over the OPEN rows, keyed by the server's folder id — never an index
+        // (IMGMGR-210), and never a second nested container per level: the depth is a leading
+        // inset, so a branch three deep is still one row in one list.
+        ForEach(rows) { row in
+          FolderTreeRowView(
+            row: row, tier: tier, isSearching: isSearching,
             expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
             onSelect: onSelect)
         }
@@ -171,12 +178,17 @@ struct FolderTreeSection: View {
   }
 }
 
-/// One folder, and — when the server put anything under it — its subtree. Recursive by design:
-/// the depth is the server's (4 at most across both tiers on 2026-08-30), and a `List` builds a
-/// collapsed `DisclosureGroup`'s children lazily, so an unopened branch of 689 archive folders
-/// costs nothing.
-private struct FolderTreeRow: View {
-  let node: FolderTreeNode
+/// One line of the tree: an expand control (only where there is something to expand), the
+/// folder's name at its depth, and the server's count.
+///
+/// The two affordances are deliberately SEPARATE controls rather than one `DisclosureGroup`
+/// label. 110 production folders are both a shoot and a parent, and with a single combined label
+/// a tap meant to open a subtree also navigated into the grid; worse, the composition could not
+/// be driven through the real UI at all (gate run 1cfa3f4). Here the chevron toggles and nothing
+/// else, the name navigates and nothing else, and each carries its own accessibility identifier.
+/// Both are chrome — there is no gesture-only path anywhere in this tree.
+private struct FolderTreeRowView: View {
+  let row: FolderTreeOutlineRow
   let tier: GridSourceTier
   let isSearching: Bool
   @Binding var expandedBranches: Set<Int>
@@ -184,27 +196,41 @@ private struct FolderTreeRow: View {
   let onSelect: (Int, GridSourceTier) -> Void
 
   var body: some View {
-    if node.children.isEmpty {
-      label
-    } else {
-      DisclosureGroup(isExpanded: branchBinding) {
-        // Stable, server-issued ids — never `ForEach(0..<n)` (IMGMGR-210, the 0.7.0 (9) Scene
-        // crash).
-        ForEach(node.children, id: \.id) { child in
-          FolderTreeRow(
-            node: child, tier: tier, isSearching: isSearching,
-            expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
-            onSelect: onSelect)
+    HStack(spacing: 6) {
+      expandControl
+      nameAndCount
+    }
+    .padding(.leading, CGFloat(row.depth) * 14)
+  }
+
+  @ViewBuilder
+  private var expandControl: some View {
+    if row.isExpandable {
+      Button {
+        if isOpen {
+          expandedBranches.remove(row.id)
+        } else {
+          expandedBranches.insert(row.id)
         }
       } label: {
-        label
+        Image(systemName: "chevron.right")
+          .font(.caption.weight(.semibold))
+          .rotationEffect(.degrees(isOpen ? 90 : 0))
+          .frame(width: 20, height: 24)
+          .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
+      .accessibilityIdentifier("folderDisclose-\(row.id)")
+      .accessibilityLabel(isOpen ? "Collapse \(row.node.name)" : "Expand \(row.node.name)")
+    } else {
+      Color.clear.frame(width: 20, height: 1)
     }
   }
 
   @ViewBuilder
-  private var label: some View {
-    if node.isSelectableShoot {
+  private var nameAndCount: some View {
+    if row.node.isSelectableShoot {
       // Same row-navigation pattern as the pre-P7 sidebar (RootView's own doc comment on this
       // exact fix): `.simultaneousGesture` layered on TOP of the enclosing List's own selection
       // recognizer, never a bare `Button` and never `.onChange(of: selectedFolderID)` — a plain
@@ -212,32 +238,32 @@ private struct FolderTreeRow: View {
       // a same-value re-tap.
       rowContent
         .contentShape(Rectangle())
-        .tag(node.id)
+        .tag(row.id)
         // Stable, id-derived identifiers so the UI test drives the REAL rows rather than
         // matching a localizable label (the shoot name is server data).
-        .accessibilityIdentifier("folderRow-\(node.id)")
+        .accessibilityIdentifier("folderRow-\(row.id)")
         .simultaneousGesture(
           TapGesture().onEnded {
-            selectedFolderID = node.id
-            onSelect(node.id, tier)
+            selectedFolderID = row.id
+            onSelect(row.id, tier)
           }
         )
     } else {
       // A container: it expands, and it does NOT navigate. Its identifier is deliberately a
       // different prefix, so `folderRow-<id>` keeps meaning "a row that enters the grid".
       rowContent
-        .accessibilityIdentifier("folderContainer-\(node.id)")
+        .accessibilityIdentifier("folderContainer-\(row.id)")
     }
   }
 
   private var rowContent: some View {
     HStack(spacing: 8) {
-      Text(node.name)
+      Text(row.node.name)
         .lineLimit(1)
         .truncationMode(.middle)
       Spacer(minLength: 8)
       // The server's own roll-up, formatted and never recomputed.
-      Text(node.descendantImageCount.formatted())
+      Text(row.node.descendantImageCount.formatted())
         .font(.caption)
         .monospacedDigit()
         .foregroundStyle(.secondary)
@@ -245,19 +271,9 @@ private struct FolderTreeRow: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private var branchBinding: Binding<Bool> {
-    Binding(
-      get: {
-        FolderTreePresentation.isExpanded(
-          node.id, readerExpanded: expandedBranches, isSearching: isSearching)
-      },
-      set: { open in
-        if open {
-          expandedBranches.insert(node.id)
-        } else {
-          expandedBranches.remove(node.id)
-        }
-      })
+  private var isOpen: Bool {
+    FolderTreePresentation.isExpanded(
+      row.id, readerExpanded: expandedBranches, isSearching: isSearching)
   }
 }
 

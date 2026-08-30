@@ -34,6 +34,16 @@ struct FolderTreeNode: Identifiable {
   var isSelectableShoot: Bool { ShootListFilter.shootKinds.contains(kind) }
 }
 
+/// One rendered line of the tree: a node, and how deep it sits. Identity is the server's folder
+/// id, so a `ForEach` over these is index-free (IMGMGR-210) even as branches open and close.
+struct FolderTreeOutlineRow: Identifiable {
+  let node: FolderTreeNode
+  let depth: Int
+
+  var id: Int { node.id }
+  var isExpandable: Bool { !node.children.isEmpty }
+}
+
 /// The pure half of the folder tree: flat `[FolderNode]` in, forest out, plus the client-side
 /// filter the search field drives. No view, no fetch, no state — so every property below is
 /// readable by a test.
@@ -106,6 +116,35 @@ enum FolderTreeModel {
     let kept = node.children.compactMap { pruned($0, matching: needle) }
     guard !kept.isEmpty else { return nil }
     return FolderTreeNode(folder: node.folder, children: kept)
+  }
+
+  /// The rows that are actually on screen, in order, each carrying its own depth — the tree
+  /// rendered as a flat list rather than as nested `DisclosureGroup`s.
+  ///
+  /// Why flat (gate run 1cfa3f4): the nested-disclosure version could not be driven through the
+  /// real UI at all — a tap on a second-level container never produced its children for
+  /// `FolderTreeHierarchyUITests`, and there was no way to tell an unopened branch from an
+  /// unrendered one. A flat list makes both halves explicit and separable: the chevron is its own
+  /// chrome Button and the name is its own tap target, so on the 110 production folders that are
+  /// BOTH a shoot and a parent, expanding no longer also navigates.
+  ///
+  /// `isExpanded` is supplied by the caller so this stays a pure function of the tree: the rule
+  /// itself (the reader's choice, or everything while a search is live) lives with the
+  /// presentation, not here.
+  static func visibleRows(
+    _ forest: [FolderTreeNode], isExpanded: (Int) -> Bool
+  ) -> [FolderTreeOutlineRow] {
+    var rows: [FolderTreeOutlineRow] = []
+    func walk(_ nodes: [FolderTreeNode], depth: Int) {
+      for node in nodes {
+        rows.append(FolderTreeOutlineRow(node: node, depth: depth))
+        if !node.children.isEmpty, isExpanded(node.id) {
+          walk(node.children, depth: depth + 1)
+        }
+      }
+    }
+    walk(forest, depth: 0)
+    return rows
   }
 
   /// The shoot rows reachable in `forest`, flattened in render order — the P6 acceptance property
