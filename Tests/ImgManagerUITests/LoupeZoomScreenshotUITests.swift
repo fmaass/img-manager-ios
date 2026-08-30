@@ -61,7 +61,9 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
     let image = app.descendants(matching: .any).matching(identifier: "loupeImage").firstMatch
     XCTAssertTrue(image.waitForExistence(timeout: 10))
     XCTContext.runActivity(named: "loupeImage frame: \(image.frame)") { _ in }
-    image.doubleTap()
+    // Coordinate-based so the double-tap does not depend on the container element being
+    // reported hittable by the accessibility tree.
+    image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
     Thread.sleep(forTimeInterval: 1.0)
     XCTAssertEqual(
       zoomToggle.value as? String, "Fit",
