@@ -131,10 +131,20 @@ struct QueueView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
+  /// Two lines, never one: the adjudicated degraded copy, and — whenever the list underneath is
+  /// a replayed answer rather than a live one — how old that answer is (IMGMGR-198). Cards stay
+  /// tappable in this phase exactly as before; the grid has its own unreachable state.
   private var unreachableBanner: some View {
-    HStack {
-      Text(DegradedStateCopy.notConnected)
-        .font(.footnote)
+    HStack(alignment: .firstTextBaseline) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(DegradedStateCopy.notConnected)
+          .font(.footnote)
+        if let lastFetchedAt = queueStore.lastFetchedAt {
+          Text(DegradedStateCopy.showingCached(since: lastFetchedAt))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
       Spacer()
       Button("Try Again") { Task { await queueStore.refresh() } }
         .font(.footnote)

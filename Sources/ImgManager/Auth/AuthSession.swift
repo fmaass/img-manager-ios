@@ -52,6 +52,14 @@ final class AuthSession {
   private let coordinator: SignInCoordinator
   private let baseURL: URL
   private let deviceName: @MainActor () -> String
+  /// Runs when a credential is genuinely ERASED (see `clearAndReport`) — the hook any local
+  /// state fetched under that sign-in uses to destroy itself. Deliberately not tied to the entry
+  /// or exit of `handleTerminalUnauthorized`/`signOut()`: both return without erasing anything in
+  /// their fence/revoke-failed branches, where the session is still alive.
+  /// `@MainActor` so a listener can advance its own fence SYNCHRONOUSLY, before its first await:
+  /// a hook that has to hop actors first leaves a window in which the credential is already gone
+  /// but nothing downstream knows it yet.
+  private let onCredentialsErased: @MainActor @Sendable () async -> Void
 
   /// Diff-gate round 1, blocker 1: the single in-flight renewal every trigger (bootstrap,
   /// foreground) joins instead of starting a second one. Two concurrent rotations would both
@@ -65,13 +73,15 @@ final class AuthSession {
     client: any APIProtocol,
     coordinator: SignInCoordinator = SignInCoordinator(),
     baseURL: URL = ImgManagerAPIClient.baseURL,
-    deviceName: @escaping @MainActor () -> String = { UIDevice.current.name }
+    deviceName: @escaping @MainActor () -> String = { UIDevice.current.name },
+    onCredentialsErased: @escaping @MainActor @Sendable () async -> Void = {}
   ) {
     self.credentialStore = credentialStore
     self.client = client
     self.coordinator = coordinator
     self.baseURL = baseURL
     self.deviceName = deviceName
+    self.onCredentialsErased = onCredentialsErased
   }
 
   /// Restores a stored credential at launch. Renewal is attempted inline if the restored
@@ -276,7 +286,17 @@ final class AuthSession {
   private func clearAndReport(fallbackMessage: String) async {
     do {
       try await credentialStore.clear()
+      // Published BEFORE the hook runs, deliberately: `status` is what every listener reads to
+      // decide whose session an in-flight answer belongs to, and this assignment is synchronous.
+      // Publishing it afterwards left a window in which the credential was already erased while
+      // the app still reported `.signedIn(subject:)`, so a request that resumed inside the hook
+      // could still be mistaken for the live session's own (diff-gate delta, blocker 1).
       status = .signedOut
+      // IMGMGR-198: the ONE place a credential is actually erased, and therefore the one place
+      // state fetched under it must be destroyed. Hooking a method's entry instead would fire
+      // on `handleTerminalUnauthorized`'s epoch-fence path and on a revoke-failed `signOut()`,
+      // both of which deliberately KEEP the credential — the session is still alive there.
+      await onCredentialsErased()
     } catch {
       status = .credentialError(fallbackMessage)
     }

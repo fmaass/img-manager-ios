@@ -201,15 +201,25 @@ record rsync "${PIPESTATUS[0]}"
 
 # --- Remote content manifest: git hash-object needs no .git — deterministic blob hash. ---
 say "--- step: content manifest (mirror side) ---"
-remote_manifest="$(timeout 30 ssh -o BatchMode=yes "$host" "
+# 180s, not 30 (WP12/IMGMGR-199): this step forks `git hash-object` once PER FILE over one ssh
+# connection, so its cost grows with the tree and with whatever else the build host is doing.
+# Observed 2026-08-29 with five WP12 lanes gating concurrently (merkur load average 46-122): the
+# same 139-file tree came back in time on one run and timed out on the next two, i.e. the cap was
+# turning host load into a false "the mirror differs from HEAD" verdict on a tree that was in fact
+# identical. The CHECK is unchanged — only the patience is.
+# Prune, don't filter: -not -path still STAT-WALKS every file under .build/DerivedData
+# (observed 2026-08-30: 129s real / 0.4s cpu over 9k files while a Plex transcode owned the
+# disk), and the per-file `git hash-object` fork added 139 more spawns. Pruned traversal +
+# one batched hash-object spawn keeps the same file set and fits the cap on a busy disk.
+remote_manifest="$(timeout 180 ssh -o BatchMode=yes "$host" "
   cd '$target_dir/work'
-  find . -type f \
-    -not -path './.git/*' -not -path '*/.build/*' -not -path './.build/*' -not -path '*/DerivedData/*' -not -path './DerivedData/*' \
-    -not -name '*.xcodeproj' -not -path '*.xcodeproj/*' -not -path '*.xcresult*' -not -path './.gate-artifacts/*' -not -name '.phase-ledger.md' \
-    -not -path './.tools/*' -not -name 'signing.local.yml' \
-  | sed 's|^\./||' | sort | while read -r f; do
-      printf '%s %s\n' \"\$(git hash-object \"\$f\")\" \"\$f\"
-    done
+  tmp=\$(mktemp -d)
+  find . \( -name .git -o -name .build -o -name DerivedData -o -name '*.xcodeproj' -o -name '*.xcresult' -o -name .gate-artifacts -o -name .tools \) -prune \
+    -o -type f -not -name '.phase-ledger.md' -not -name 'signing.local.yml' -print \
+  | sed 's|^\./||' | sort > \"\$tmp/f\"
+  tr '\n' '\0' < \"\$tmp/f\" | xargs -0 git hash-object > \"\$tmp/h\"
+  paste -d' ' \"\$tmp/h\" \"\$tmp/f\"
+  rm -rf \"\$tmp\"
 " 2>&1)"
 remote_rc=$?
 if [ $remote_rc -ne 0 ]; then
@@ -303,7 +313,7 @@ if [ -d ImgManager.xcodeproj ]; then
   # Device-idiom-branching absence, WITH a positive control in the same invocation (bare grep -c
   # exits 1 on zero matches, which would wrongly fail this bare-gate step on the pass case —
   # so the check is "0 real hits" computed explicitly, not the exit code of the bare grep).
-  idiom_hits="$(grep -rn 'userInterfaceIdiom' Sources/ Tests/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
+  idiom_hits="$(grep -rn --exclude-dir=.build 'userInterfaceIdiom' Sources/ Tests/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
   control_hits="$(grep -rln 'NavigationSplitView' Sources/ 2>/dev/null || true)"
   {
     echo "device-idiom-branching hits (expect 0):"
@@ -326,7 +336,7 @@ if [ -d ImgManager.xcodeproj ]; then
   # scan here); this leg exists so a future hand-rolled `.keyboardShortcut("c")`
   # bypassing the catalog entirely is still caught — "a check a comment can defeat is not
   # a check".
-  c_shortcut_hits="$(grep -rniE 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
+  c_shortcut_hits="$(grep -rniE --exclude-dir=.build 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
   c_control_hits="$(grep -rln 'ShortcutCatalog' Sources/ 2>/dev/null || true)"
   {
     echo "C-shortcut/compare hits (expect 0):"
@@ -364,7 +374,7 @@ build_script="${build_script//__WORK__/$target_dir/work}"
 build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
 
-remote_out="$(printf '%s\n' "$build_script" | timeout 900 ssh -o BatchMode=yes "$host" 'bash -s' 2>&1 | tee -a "$log")"
+remote_out="$(printf '%s\n' "$build_script" | timeout 1800 ssh -o BatchMode=yes "$host" 'bash -s' 2>&1 | tee -a "$log")"
 remote_line="$(printf '%s\n' "$remote_out" | grep '^MAC_GATE_REMOTE_SUMMARY:' | tail -1)"
 if [ -z "$remote_line" ]; then
   record remote-run 1
