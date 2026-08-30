@@ -80,7 +80,7 @@ struct GridViewPointerGestureWiringTests {
     _ = view.body
     #expect(capturedOnEnded != nil)
 
-    store.pickLock.forceLatch()
+    store.pickLock.forceLatch(.pick)
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
 

@@ -289,9 +289,9 @@ struct GridStoreTests {
       .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
     let t0 = ContinuousClock.now
-    _ = store.pickLock.activateFromPickButton(at: t0)
-    _ = store.pickLock.activateFromPickButton(at: t0.advanced(by: .milliseconds(100)))
-    #expect(store.pickLock.state == .latched)
+    _ = store.pickLock.activate(verb: .pick, at: t0)
+    _ = store.pickLock.activate(verb: .pick, at: t0.advanced(by: .milliseconds(100)))
+    #expect(store.pickLock.state == .latched(.pick))
 
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
@@ -311,8 +311,8 @@ struct GridStoreTests {
       .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
     let t0 = ContinuousClock.now
-    _ = store.pickLock.activateFromPickButton(at: t0)
-    _ = store.pickLock.activateFromPickButton(at: t0.advanced(by: .milliseconds(100)))
+    _ = store.pickLock.activate(verb: .pick, at: t0)
+    _ = store.pickLock.activate(verb: .pick, at: t0.advanced(by: .milliseconds(100)))
 
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
@@ -333,22 +333,26 @@ struct GridStoreTests {
     #expect(store.selection.members == [7])
   }
 
-  // MARK: - "Lock Pick" discoverable menu command (gate's unasked issue)
+  // MARK: - "Lock Pick"/"Lock Dislike" discoverable menu commands (gate's unasked issue)
 
-  @Test("lockPickFromMenu() latches immediately -- no timing window, unlike the double-tap path")
-  func lockPickFromMenuLatchesImmediately() {
-    let (store, _) = makeStore()
-    #expect(store.pickLock.state == .idle)
-    store.lockPickFromMenu()
-    #expect(store.pickLock.state == .latched)
+  @Test("lockFromMenu() latches immediately -- no timing window, unlike the double-tap path")
+  func lockFromMenuLatchesImmediately() {
+    for verb in LatchVerb.allCases {
+      let (store, _) = makeStore()
+      #expect(store.pickLock.state == .idle)
+      store.lockFromMenu(verb)
+      #expect(store.pickLock.state == .latched(verb))
+    }
   }
 
-  @Test("lockPickFromMenu() is a no-op while Select is active")
-  func lockPickFromMenuNoopDuringSelect() {
-    let (store, _) = makeStore()
-    store.selection.enterSelectExplicitly()
-    store.lockPickFromMenu()
-    #expect(store.pickLock.state == .idle)
+  @Test("lockFromMenu() is a no-op while Select is active -- for either verb")
+  func lockFromMenuNoopDuringSelect() {
+    for verb in LatchVerb.allCases {
+      let (store, _) = makeStore()
+      store.selection.enterSelectExplicitly()
+      store.lockFromMenu(verb)
+      #expect(store.pickLock.state == .idle)
+    }
   }
 
   // MARK: - Pick Lock ⟷ Select mutual exclusion (premise.out pin e)
@@ -363,9 +367,9 @@ struct GridStoreTests {
     await store.selectShoot(folderID: 1)
 
     let t0 = ContinuousClock.now
-    _ = store.pickLock.activateFromPickButton(at: t0)
-    _ = store.pickLock.activateFromPickButton(at: t0.advanced(by: .milliseconds(100)))
-    #expect(store.pickLock.state == .latched)
+    _ = store.pickLock.activate(verb: .pick, at: t0)
+    _ = store.pickLock.activate(verb: .pick, at: t0.advanced(by: .milliseconds(100)))
+    #expect(store.pickLock.state == .latched(.pick))
 
     store.longPressTile(999)
 
@@ -384,8 +388,13 @@ struct GridStoreTests {
     #expect(store.pickLock.state == .idle)
   }
 
-  @Test("Dislike never touches Pick Lock state — v1 is Pick-only")
-  func dislikeNeverTouchesPickLock() async {
+  /// WP13 P2 (IMGMGR-222) reverses the WP8 pin this test used to assert ("v1 is PICK-ONLY —
+  /// Dislike never latches"): the owner decided on 2026-08-30 that the Dislike BUTTON latches
+  /// symmetrically. What survives the reversal untouched is the KEYBOARD half of the pin —
+  /// `X`, like `P`, never participates in latch detection — so the test keeps its assertion and
+  /// gains the two cases that make it a real invariant rather than a single idle read.
+  @Test("Keyboard X never latches, never unlatches, and never arms the double-tap window")
+  func keyboardXNeverLatches() async {
     let (store, transport) = makeStore()
     await transport.setListImagesPage(
       .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
@@ -393,8 +402,152 @@ struct GridStoreTests {
     store.focusedImageID = 1
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+
+    // Two X presses in immediate succession: if the keyboard shared the button's anchor, this
+    // is exactly the pair that would latch.
+    await store.handleDislikeShortcut(shiftHeld: false)
     await store.handleDislikeShortcut(shiftHeld: false)
     #expect(store.pickLock.state == .idle)
+
+    // And X while genuinely latched neither unlatches nor switches the verb.
+    store.lockFromMenu(.dislike)
+    await store.handleDislikeShortcut(shiftHeld: false)
+    #expect(store.pickLock.state == .latched(.dislike))
+    await store.handlePickShortcut(shiftHeld: false)
+    #expect(store.pickLock.state == .latched(.dislike))
+  }
+
+  // MARK: - Dislike Lock parity (WP13 P2, IMGMGR-222)
+
+  @Test(
+    "A latched Dislike applies DISLIKE on a tile tap and on a pointer-drag crossing — the same lane, the latched verb"
+  )
+  func latchedDislikeAppliesDislikeOnTapAndOnPointerDragCrossing() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")],
+        limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    // Latched through the button's own double tap, inside the 350 ms window.
+    let t0 = ContinuousClock.now
+    _ = store.pickLock.activate(verb: .dislike, at: t0)
+    _ = store.pickLock.activate(verb: .dislike, at: t0.advanced(by: .milliseconds(100)))
+    #expect(store.pickLock.state == .latched(.dislike))
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.tapTile(1)
+    // The WIRE is the assertion, not a local flag: a latched tap that still hard-coded `.pick`
+    // would leave the store looking right and write the wrong mark.
+    let tapped = await transport.lastMarkStateRequest
+    #expect(tapped?.state == .dislike)
+    #expect(tapped?.imageIds == [1])
+    #expect(store.images[0].mark.state == .dislike)
+    // Preconditions still ride along: the latched lane is the SHIPPED mutation lane, not a
+    // second one that skips the revision check.
+    #expect(tapped?.preconditions?.first?.revision == "r0")
+    #expect(store.undo.canUndo)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r1")])))
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(.image(2))
+    let dragged = await transport.lastMarkStateRequest
+    #expect(dragged?.state == .dislike)
+    #expect(dragged?.imageIds == [2])
+    #expect(store.images[1].mark.state == .dislike)
+  }
+
+  @Test(
+    "Entering Select while Dislike-latched unlatches FIRST and applies nothing during the transition"
+  )
+  func enteringSelectWhileDislikeLatchedUnlatchesFirstAndAppliesNothing() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 999, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.lockFromMenu(.dislike)
+    #expect(store.pickLock.state == .latched(.dislike))
+
+    store.longPressTile(999)
+    #expect(store.pickLock.state == .idle)
+    #expect(store.selection.mode == .select)
+    #expect(store.selection.members == [999])
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 0)
+
+    // The explicit entry too, from a fresh latch.
+    store.done()
+    store.lockFromMenu(.dislike)
+    #expect(store.pickLock.state == .latched(.dislike))
+    store.enterSelectExplicitly()
+    #expect(store.pickLock.state == .idle)
+    #expect(store.selection.mode == .select)
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 0)
+  }
+
+  @Test("Dislike Lock entry is disabled while Select is active — the button bulk-marks instead")
+  func dislikeLockEntryDisabledDuringSelect() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.enterSelectExplicitly()
+    store.selection.toggle(1)
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+
+    // Two presses in immediate succession: outside Select this pair latches.
+    await store.activateDislikeButton()
+    await store.activateDislikeButton()
+    #expect(store.pickLock.state == .idle)
+    let bulk = await transport.lastMarkStateRequest
+    #expect(bulk?.state == .dislike)
+    #expect(bulk?.imageIds == [1])
+  }
+
+  @Test(
+    "Pressing the other verb's button while latched exits the latch and applies that verb ONCE, through the store"
+  )
+  func pressingTheOtherLatchVerbExitsAndAppliesOnce() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1
+    store.lockFromMenu(.pick)
+    #expect(store.pickLock.state == .latched(.pick))
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+    await store.activateDislikeButton()
+
+    #expect(store.pickLock.state == .idle)
+    let applied = await transport.lastMarkStateRequest
+    #expect(applied?.state == .dislike)
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
+  }
+
+  /// ADR-0005 decision 4, for the one gesture that cannot be stopped at its own site: a pointer
+  /// drag does not choose which cells it crosses, so the refusal has to live in the lane. The
+  /// generalization to a verb must not have turned "a card has no image id" into "a card gets
+  /// the latched verb".
+  @Test(
+    "The latched write boundary stays actionable-only: a Dislike-latched drag across a collapsed scene card writes nothing"
+  )
+  func latchedDislikeNeverWritesThroughASceneCard() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.lockFromMenu(.dislike)
+    #expect(store.pickLock.state == .latched(.dislike))
+
+    store.beginPointerDrag()
+    await store.pointerDragCrossed(.stack(1))
+    await store.pointerDragCrossed(.stack(2))
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 0)
   }
 
   // MARK: - Shortcut activation (arrows / P / X / Shift+advance / T / Z)
@@ -755,8 +908,8 @@ struct GridStoreTests {
     // by giving Pick Lock real non-default state to preserve, not just leaving it at its
     // already-idle default).
     store.selection.reset(.doneOrEsc)  // Lock entry is disabled while Select is active
-    store.lockPickFromMenu()
-    #expect(store.pickLock.state == .latched)
+    store.lockFromMenu(.pick)
+    #expect(store.pickLock.state == .latched(.pick))
 
     store.openLoupe(on: 1)
 
@@ -765,7 +918,7 @@ struct GridStoreTests {
     #expect(store.selection.mode == .browse)
     #expect(store.selection.members.isEmpty)
     // PickLockState.exit() is "grid-only, never the loupe".
-    #expect(store.pickLock.state == .latched)
+    #expect(store.pickLock.state == .latched(.pick))
   }
 
   @Test("closeLoupe() also resets the full-screen toggle")
@@ -2215,22 +2368,23 @@ struct GridStoreBulkMarkTests {
     #expect(store.selectedCount == 0)
     #expect(SelectCopy.caption(selectedCount: store.selectedCount) == "0 selected")
     #expect(store.isMarkActionUnavailable)
-    #expect(store.isPickControlDisabled)
+    #expect(store.isLatchControlDisabled)
 
     // Positive control: one member and every control is live again, with an honest count.
     await store.tapTile(2)
     #expect(store.selectedCount == 1)
     #expect(SelectCopy.caption(selectedCount: store.selectedCount) == "1 selected")
     #expect(!store.isMarkActionUnavailable)
-    #expect(!store.isPickControlDisabled)
+    #expect(!store.isLatchControlDisabled)
 
     // BROWSE with nothing focused is a different case on purpose: there is nothing to write to,
-    // but Pick also owns Pick Lock entry (a latched tap acts on the tile it lands on), so the
-    // control stays live there.
+    // but each latch control also owns its own lock entry (a latched tap acts on the tile it
+    // lands on), so BOTH stay live there. WP13 P2: Dislike joined Pick under this rule — under
+    // the old one it was disabled here, and its double tap could never reach the latch machine.
     let (fresh, _) = makeStore()
     #expect(fresh.markTargetImageIDs.isEmpty)
     #expect(fresh.isMarkActionUnavailable)
-    #expect(!fresh.isPickControlDisabled)
+    #expect(!fresh.isLatchControlDisabled)
   }
 
   @Test("Tag obeys the same empty-Select rule as the marks (the shipped-defect guard)")

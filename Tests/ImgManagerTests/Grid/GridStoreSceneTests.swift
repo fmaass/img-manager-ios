@@ -134,7 +134,7 @@ struct GridStoreSceneTests {
 
     // 1. A tap while Pick Lock is LATCHED. On a photograph this is a pick; on a card it must not
     //    be, and the card's only meaning — open me — is what happens instead.
-    store.pickLock.forceLatch()
+    store.pickLock.forceLatch(.pick)
     await store.tapCell(.stack(5))
     #expect(await transport.callCount(markOp) == 0)
     #expect(store.sceneExpanded.contains(5))  // it did the ONE thing a card can do
@@ -172,7 +172,7 @@ struct GridStoreSceneTests {
 
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 10, revision: "r1")])))
-    store.pickLock.forceLatch()
+    store.pickLock.forceLatch(.pick)
     store.beginPointerDrag()
     await store.pointerDragCrossed(.image(10))
 
@@ -201,7 +201,7 @@ struct GridStoreSceneTests {
 
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 10, revision: "r1")])))
-    store.pickLock.forceLatch()
+    store.pickLock.forceLatch(.pick)
     store.beginPointerDrag()
     await store.pointerDragCrossed(.stack(10))
 
@@ -251,7 +251,7 @@ struct GridStoreSceneTests {
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     await store.applyMark(.pick, to: [1])
     #expect(store.undo.canUndo)
-    store.pickLock.forceLatch()
+    store.pickLock.forceLatch(.pick)
 
     await transport.setBrowseStacksPage(page([imageRow(makeImage(id: 10))]))
     await store.setDisplayMode(.scene)
@@ -260,7 +260,7 @@ struct GridStoreSceneTests {
     #expect(store.images.isEmpty)
     #expect(store.selection.members.isEmpty)
     #expect(store.selection.mode == .browse)
-    #expect(store.pickLock.state != .latched)
+    #expect(store.pickLock.latchedVerb == nil)
     #expect(!store.undo.canUndo)
     #expect(store.focusedImageID == nil)
   }
