@@ -11,6 +11,10 @@ import SwiftUI
 /// computation anywhere in this file.
 struct GridView: View {
   @Bindable var store: GridStore
+  /// WP13 P4 (IMGMGR-215): where the two view-option controls live. Resolved ONCE by
+  /// `RootView` from measured width plus `horizontalSizeClass` and passed down — never
+  /// re-derived here, and never from the device-idiom API (plan invariant (i)).
+  let layoutMode: LayoutMode
   @Environment(\.displayScale) private var displayScale
   @State private var paneWidth: CGFloat = 0
   @State private var tileFrames: [GridDisplayID: CGRect] = [:]
@@ -25,6 +29,13 @@ struct GridView: View {
 
   var body: some View {
     VStack(spacing: 0) {
+      // WP13 P4 (IMGMGR-215): Compact's persistent options row sits immediately below the
+      // navigation bar — above the transient mode rows, because it is the one row that is
+      // always there. On Regular the same two controls are `.primaryAction` toolbar items
+      // (see `.toolbar` below); they are never rendered in both places at once.
+      if layoutMode == .compact {
+        GridOptionsRow(store: store)
+      }
       if store.pickLock.state == .latched {
         PickLockModeRow(store: store)
       }
@@ -52,52 +63,17 @@ struct GridView: View {
     .onChange(of: store.sceneMembers) { _, _ in publishRows() }
     .onChange(of: store.rowHeight) { _, _ in publishRows() }
     .toolbar {
-      ToolbarItem(placement: .secondaryAction) {
-        // Scene is a MODE, not a `group_by` wire value — it calls a different endpoint with a
-        // different row vocabulary. It lives in a Group menu anyway because that is where a
-        // reader looks for "how is this stream arranged", and because the two entries are
-        // mutually exclusive by construction when they share one single-select list.
-        Menu {
-          Button {
-            Task { await store.setDisplayMode(.flat) }
-          } label: {
-            if store.displayMode == .flat {
-              Label("None", systemImage: "checkmark")
-            } else {
-              Text("None")
-            }
-          }
-          Button {
-            Task { await store.setDisplayMode(.scene) }
-          } label: {
-            if store.displayMode == .scene {
-              Label("Scene", systemImage: "checkmark")
-            } else {
-              Text("Scene")
-            }
-          }
-        } label: {
-          Label("Group", systemImage: "square.stack")
+      // WP13 P4 (IMGMGR-215): on Regular the two view-option controls are PRIMARY toolbar
+      // items. They used to be `ToolbarItem(placement: .secondaryAction)`, which collapses
+      // into the nav bar's overflow chevron — the gap the owner reported and the audit
+      // confirmed in code (/link/3282, owner feedback (c)). Compact has no room for them
+      // beside Account and Info, so there they are the options row above instead.
+      if layoutMode != .compact {
+        ToolbarItem(placement: .primaryAction) {
+          GridGroupControl(store: store)
         }
-        .accessibilityIdentifier("gridGroupMenu")
-      }
-      ToolbarItem(placement: .secondaryAction) {
-        // Diff-gate round 2, blocker 2: the six native row-height steps must be reachable —
-        // this is their one real UI call site.
-        Menu {
-          ForEach(GridRowHeight.allCases, id: \.self) { step in
-            Button {
-              store.setRowHeight(step)
-            } label: {
-              if store.rowHeight == step {
-                Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
-              } else {
-                Text("\(Int(step.rawValue)) pt")
-              }
-            }
-          }
-        } label: {
-          Label("Zoom", systemImage: "square.grid.2x2")
+        ToolbarItem(placement: .primaryAction) {
+          GridZoomControl(store: store)
         }
       }
     }
@@ -232,6 +208,110 @@ struct GridView: View {
 
   private func publishRows() {
     store.rows = packedRows.map { $0.map(\.id) }
+  }
+}
+
+/// WP13 P4 (IMGMGR-215): the Group control — ONE definition, rendered either as a Regular
+/// `.primaryAction` toolbar item or inside Compact's persistent options row. Its label carries
+/// the CURRENT VALUE ("Group: Scene"), which is the discoverability half of this ticket: an
+/// icon-only menu behind an overflow chevron is exactly what the owner could not find.
+///
+/// Scene is a MODE, not a `group_by` wire value (ADR-0005 decision 6) — it calls a different
+/// endpoint with a different row vocabulary. It lives in a Group menu anyway because that is
+/// where a reader looks for "how is this stream arranged", and because the two entries are
+/// mutually exclusive by construction when they share one single-select list.
+struct GridGroupControl: View {
+  let store: GridStore
+
+  var body: some View {
+    Menu {
+      Button {
+        Task { await store.setDisplayMode(.flat) }
+      } label: {
+        if store.displayMode == .flat {
+          Label("None", systemImage: "checkmark")
+        } else {
+          Text("None")
+        }
+      }
+      Button {
+        Task { await store.setDisplayMode(.scene) }
+      } label: {
+        if store.displayMode == .scene {
+          Label("Scene", systemImage: "checkmark")
+        } else {
+          Text("Scene")
+        }
+      }
+    } label: {
+      Label(Self.title(for: store.displayMode), systemImage: "square.stack")
+    }
+    .accessibilityIdentifier("gridGroupControl")
+  }
+
+  /// A pure function so the value-in-label contract is testable without a render host.
+  static func title(for mode: GridDisplayMode) -> String {
+    switch mode {
+    case .flat: return "Group: None"
+    case .scene: return "Group: Scene"
+    }
+  }
+}
+
+/// WP13 P4 (IMGMGR-215): the Zoom control, the same shape as `GridGroupControl` above and the
+/// six native row-height steps' one real UI call site (diff-gate round 2, blocker 2). The
+/// menu-bar View menu declares the same six steps as ⌘1…⌘6 (`AppCommands.zoomDeclarations`),
+/// dispatching to this same `GridStore.setRowHeight`.
+struct GridZoomControl: View {
+  let store: GridStore
+
+  var body: some View {
+    Menu {
+      ForEach(GridRowHeight.allCases, id: \.self) { step in
+        Button {
+          store.setRowHeight(step)
+        } label: {
+          if store.rowHeight == step {
+            Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
+          } else {
+            Text("\(Int(step.rawValue)) pt")
+          }
+        }
+      }
+    } label: {
+      Label(Self.title(for: store.rowHeight), systemImage: "square.grid.2x2")
+    }
+    .accessibilityIdentifier("gridZoomControl")
+  }
+
+  static func title(for step: GridRowHeight) -> String {
+    "Zoom: \(Int(step.rawValue)) pt"
+  }
+}
+
+/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row — one row, two menu buttons,
+/// each labelled with its current value so the state is readable without opening anything.
+/// Deliberately NOT a dense icon filter row (p3220 §2.2 must-not-copy #1) and deliberately not
+/// a filter surface: filters live in the Stats segment (`InspectorView`), never in chrome.
+struct GridOptionsRow: View {
+  let store: GridStore
+
+  var body: some View {
+    HStack(spacing: 12) {
+      // Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
+      // already follows — never a single frame on the containing `HStack`.
+      GridGroupControl(store: store)
+        .frame(minHeight: 44)
+      GridZoomControl(store: store)
+        .frame(minHeight: 44)
+      Spacer()
+    }
+    .buttonStyle(.bordered)
+    .font(.subheadline)
+    .padding(.horizontal)
+    .padding(.vertical, 6)
+    .background(.thinMaterial)
+    .accessibilityIdentifier("gridOptionsRow")
   }
 }
 

@@ -1,11 +1,18 @@
 import Foundation
 
 /// The web keyboard set this app mirrors verbatim (P3 fold item 1; `frontend/src/lib/keys.ts`
-/// in the web repo is the source of truth for what each key means). Deliberately NOT the
-/// web's full set: `A` (auto-advance toggle), `Escape` (close), `Tab` (compare-flip) and
-/// `C` (compare) are all excluded from the target inventory — `C` because native compare
-/// is cancelled outright (Amendment 7; declared NOWHERE, never present-and-dead), the
-/// other three because the P3 fold's own target inventory line does not name them.
+/// in the web repo is the source of truth for what each key means), PLUS the ⌘-modified
+/// discovery half of design decision 9 that WP13 P4 adds (`zoomStep`, `sceneToggle`, and the
+/// `⌘/` form of `help`). Deliberately NOT the web's full set: `A` (auto-advance toggle),
+/// `Escape` (close), `Tab` (compare-flip) and `C` (compare) are all excluded from the target
+/// inventory — `C` because native compare is cancelled outright (Amendment 7; declared
+/// NOWHERE, never present-and-dead), `A` because its own surface is WP13 P8's and a
+/// present-and-dead key is exactly what this catalog exists to prevent, the other two because
+/// the P3 fold's own target inventory line does not name them.
+///
+/// This enum is the SINGLE inventory: every key equivalent the app declares names one of these
+/// cases (`AppCommands.declarations`), and `ShortcutCatalogTests` asserts that correspondence
+/// in both directions. There is no second list anywhere.
 enum ShortcutID: String, CaseIterable, Sendable {
   case arrowUp = "ArrowUp"
   case arrowDown = "ArrowDown"
@@ -25,9 +32,60 @@ enum ShortcutID: String, CaseIterable, Sendable {
   case tag = "T"
   case undo = "Z"
   case help = "?"
+  /// WP13 P4 (IMGMGR-215): the six `GridRowHeight` steps, published as ⌘1…⌘6 — ONE catalog
+  /// entry with six declarations, the same shape `openSpaceEnter` already uses for its two.
+  case zoomStep = "⌘1…⌘6"
+  /// WP13 P4 (IMGMGR-215): Scene view on/off. `⌘G` is deliberately NOT used — it
+  /// conventionally means "Find Next" on Apple platforms and HIG Keyboards warns against
+  /// re-binding an established system shortcut, so the Shift-modified form carries it.
+  case sceneToggle = "⌘⇧G"
 }
 
-/// Which WP8 phase owns the persistent-chrome surface a shortcut attaches to. Assigned
+extension ShortcutID {
+  /// How the shortcut is WRITTEN for a reader — the help sheet's key column. Lives on the id
+  /// itself so the catalog stays the single inventory; `AppCommands` binds the real
+  /// `KeyEquivalent`s and a test asserts the two agree entry-for-entry.
+  var keyLabel: String {
+    switch self {
+    case .arrowUp: return "↑"
+    case .arrowDown: return "↓"
+    case .arrowLeft: return "←"
+    case .arrowRight: return "→"
+    case .openSpaceEnter: return "Space or Return"
+    case .pick: return "P"
+    case .dislike: return "X"
+    case .clear: return "U"
+    case .shiftAdvance: return "⇧P · ⇧X · ⇧U"
+    case .tag: return "T"
+    case .undo: return "Z"
+    case .help: return "? or ⌘/"
+    case .zoomStep: return "⌘1 … ⌘6"
+    case .sceneToggle: return "⌘⇧G"
+    }
+  }
+
+  /// What pressing it does, in the reader's words — the help sheet's meaning column.
+  var meaning: String {
+    switch self {
+    case .arrowUp: return "Move the focus up a row"
+    case .arrowDown: return "Move the focus down a row"
+    case .arrowLeft: return "Move the focus to the previous photograph"
+    case .arrowRight: return "Move the focus to the next photograph"
+    case .openSpaceEnter: return "Open the focused photograph"
+    case .pick: return "Pick"
+    case .dislike: return "Dislike"
+    case .clear: return "Clear the mark"
+    case .shiftAdvance: return "Mark and advance to the next photograph"
+    case .tag: return "Add a tag"
+    case .undo: return "Undo the last mark"
+    case .help: return "Show this list of keyboard shortcuts"
+    case .zoomStep: return "Set the grid zoom step (120 pt … 400 pt)"
+    case .sceneToggle: return "Turn Scene view on or off"
+    }
+  }
+}
+
+/// Which phase owns the persistent-chrome surface a shortcut attaches to. Assigned
 /// from each phase's own Approach text (not the phase titles alone — the diff-gate
 /// reconciliation below caught two entries assigned from title/scope-line guesswork
 /// that disagreed with the actual persistent-bar contents written into the phases
@@ -40,17 +98,23 @@ enum ShortcutID: String, CaseIterable, Sendable {
 /// - `.p5` ("Loupe / cull") owns **clear** (P5's Approach text: "persistent bottom mark
 ///   bar (Pick · Dislike · Clear · Undo)" — Clear's chrome surface is P5's bar; P4's own
 ///   bar has no Clear button).
+///
+/// The first three cases are WP8 phases; `.wp13p4` is WP13's view-options phase.
 enum OwningPhase: String, Sendable {
   case p4 = "P4 — Shoot grid, inspector, selection"
   case p5 = "P5 — Loupe / cull"
   /// `?` (help) is infrastructure, not a product action — its natural home is the
-  /// dispatcher/menu-bar surface P3 itself builds (fold item 1), not a downstream
-  /// screen. It stays PLANNED rather than ACTIVE here even so: P3's own chrome is the
-  /// bare menu bar with zero populated command groups (`AppCommands.swift`), and a
-  /// working "list every shortcut" sheet is a product decision this phase's Do-NOT list
-  /// does not clearly grant — kept inert and flagged as an open question rather than
-  /// asserted.
+  /// dispatcher/menu-bar surface P3 itself builds (fold item 1), not a downstream screen.
+  /// It stayed PLANNED through WP8 because P3's own chrome was the bare menu bar and a
+  /// working "list every shortcut" sheet was a product decision P3's Do-NOT list did not
+  /// grant. WP13 P4 (IMGMGR-215) is the phase that grants it: `ShortcutHelpSheet` is that
+  /// surface, and this entry flips ACTIVE in the same commit that ships it — the rule below,
+  /// not an exception to it.
   case p3 = "P3 — Shell (dispatcher/menu-bar infrastructure itself)"
+  /// WP13 P4 (IMGMGR-215): the grid options row on Compact, the `.primaryAction` Group/Zoom
+  /// controls on Regular, and the menu-bar View menu — the chrome surface the ⌘ view-option
+  /// equivalents attach to.
+  case wp13p4 = "WP13 P4 — View options (options row, View menu, shortcut help)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every
@@ -61,10 +125,7 @@ enum OwningPhase: String, Sendable {
 struct ShortcutCatalogEntry: Sendable {
   let id: ShortcutID
   let owningPhase: OwningPhase
-  /// Flips to `true` only in the commit that ships the owning phase's chrome. P3 ships
-  /// none of P4/P5/P6's chrome (Do-NOT: "no grid, inspector, compare or loupe content
-  /// yet"), so every entry is `false` here — this is a data fact the tests assert, not
-  /// an oversight.
+  /// Flips to `true` only in the commit that ships the owning phase's chrome.
   let hasChromeSurface: Bool
 
   var isActive: Bool { hasChromeSurface }
@@ -80,6 +141,11 @@ enum ShortcutCatalog {
   /// second-tap AND keyboard Open both land on it) and `clear` (its chrome surface is the
   /// loupe's own mark bar, `Pick · Dislike · Clear · Undo`) both flip `hasChromeSurface: true`
   /// here too, in this same commit.
+  ///
+  /// WP13 P4 (IMGMGR-215): `help` finally gets its surface (`ShortcutHelpSheet`), and the two
+  /// view-option entries arrive already active because their chrome — the Compact grid options
+  /// row, the Regular `.primaryAction` controls and the menu-bar View menu — ships in this same
+  /// commit. Nothing here is present-and-dead.
   static let entries: [ShortcutCatalogEntry] = [
     ShortcutCatalogEntry(id: .arrowUp, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowDown, owningPhase: .p4, hasChromeSurface: true),
@@ -92,7 +158,9 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .shiftAdvance, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .tag, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .undo, owningPhase: .p4, hasChromeSurface: true),
-    ShortcutCatalogEntry(id: .help, owningPhase: .p3, hasChromeSurface: false),
+    ShortcutCatalogEntry(id: .help, owningPhase: .p3, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .zoomStep, owningPhase: .wp13p4, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .sceneToggle, owningPhase: .wp13p4, hasChromeSurface: true),
   ]
 
   static var activeEntries: [ShortcutCatalogEntry] { entries.filter(\.isActive) }

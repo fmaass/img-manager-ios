@@ -149,6 +149,12 @@ final class GridStore {
   /// `T`/the action bar's Tag control opens tag entry for the focused image (browse mode) or
   /// the current selection (Select mode); the actual write happens on submit, via `addTag`.
   var isTagEntryPresented = false
+  /// WP13 P4 (IMGMGR-215): the shortcut help sheet, opened from the menu-bar View menu, from
+  /// `?` and from ⌘/. It lives here — beside `isTagEntryPresented`, the same shape — because
+  /// `AppCommands` is a scene-level `Commands` builder with no view state of its own and
+  /// reaches the workspace only through this store's `GridKeyboardActions`; `RootView` hosts
+  /// the sheet itself.
+  var isShortcutHelpPresented = false
 
   let selection = SelectionState()
   let pickLock = PickLockState()
