@@ -39,19 +39,21 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     XCTAssertTrue(group.isHittable, "The Group control exists but cannot be tapped where it is.")
     XCTAssertTrue(zoom.isHittable, "The Zoom control exists but cannot be tapped where it is.")
 
-    // The other half of "primary surface": the nav-bar overflow chevron that used to hide these
-    // two is gone. Asserted by the identifier UIKit gives it, with a positive control in the
-    // same check — the nav bar's own Info button — so a 0-hit proves the scan looked at a real
-    // nav bar rather than at nothing (LSN-0033).
-    let navBar = app.navigationBars.element(boundBy: 0)
+    // The other half of "primary surface": the toolbar overflow chevron that used to hide these
+    // two is gone. `OverflowBarButtonItem` is the identifier UIKit gives that chevron — it is
+    // exactly what the pre-change probe found on Compact, with "Group"/"Zoom" reachable only
+    // after tapping it. Paired with a positive control in the same check (LSN-0033), and the
+    // control is the action bar's Dislike button rather than the nav bar's Info button: Info is
+    // only rendered outside Regular-3 (`RootView.contentColumn`), so on a Regular-3 destination
+    // it is legitimately absent and would fail as a control while proving nothing.
     XCTAssertTrue(
-      navBar.buttons["Info"].exists,
-      "Positive control failed: the navigation bar has no Info button, so the overflow check "
-        + "below would pass vacuously.")
+      app.buttons["Dislike"].exists,
+      "Positive control failed: the Dislike button is gone, so the 0-hit overflow check below "
+        + "would pass vacuously.")
     XCTAssertFalse(
-      navBar.buttons["OverflowBarButtonItem"].exists,
-      "The navigation bar still has an overflow chevron — something is back in "
-        + "`.secondaryAction`, which is exactly where these controls could not be found.")
+      app.buttons["OverflowBarButtonItem"].exists,
+      "A toolbar overflow chevron is still present — something is back in `.secondaryAction`, "
+        + "which is exactly where these two controls could not be found.")
 
     // Value-in-label: the state must be readable WITHOUT opening anything. Both controls are
     // menus, so their rendered label is what a reader sees at rest.
