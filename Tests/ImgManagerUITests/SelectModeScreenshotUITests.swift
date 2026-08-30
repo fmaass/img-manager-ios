@@ -25,18 +25,30 @@ final class SelectModeScreenshotUITests: XCTestCase {
     let secondTile = app.descendants(matching: .any).matching(identifier: "gridTile-2").firstMatch
     XCTAssertTrue(firstTile.waitForExistence(timeout: 10), "No grid tiles to select.")
 
-    // Enter Select by LONG-PRESSING a tile rather than through the More menu: the long press is
-    // the entry every idiom shares, while the menu's own item does not surface identically on
-    // both (on Regular-3 the popover's command is not addressable the way Compact's is — noted
-    // for P5a, which owns that menu). Long-press enters Select WITH that tile selected.
-    firstTile.press(forDuration: 1.0)
-
+    // Enter Select. The long press is the GESTURE and the More menu is its CHROME TWIN; the
+    // phase's rule is that both exist, and this test takes whichever the idiom under test
+    // actually delivers. Compact takes the long press. On Regular-3 it does not arrive — the
+    // pointer-drag recognizer installed over the grid claims it — so the twin is used there,
+    // which is exactly what a chrome twin is for.
     let caption = app.staticTexts["selectModeCaption"]
-    XCTAssertTrue(
-      caption.waitForExistence(timeout: 10),
-      "Select mode is active but no mode row is on screen — the only way out would be the "
-        + "More menu, which is the discoverability defect this phase closes.")
-    XCTAssertEqual(caption.label, "1 selected", "A long press enters Select with that tile chosen.")
+    firstTile.press(forDuration: 1.0)
+    if !caption.waitForExistence(timeout: 5) {
+      moreMenu.tap()
+      let selectCommand = app.descendants(matching: .any)
+        .matching(identifier: "gridSelectCommand").firstMatch
+      XCTAssertTrue(
+        selectCommand.waitForExistence(timeout: 10),
+        "Neither the long press nor the More menu reached Select mode.")
+      selectCommand.tap()
+      XCTAssertTrue(
+        caption.waitForExistence(timeout: 10),
+        "Select mode is active but no mode row is on screen — the only way out would be the "
+          + "More menu, which is the discoverability defect this phase closes.")
+      // The menu entry starts EMPTY (unlike the long press, which selects what it pressed).
+      XCTAssertEqual(caption.label, "0 selected", "An explicit Select entry starts empty.")
+      firstTile.tap()
+    }
+    XCTAssertEqual(caption.label, "1 selected", "One photograph is chosen at this point.")
 
     XCTAssertTrue(secondTile.waitForExistence(timeout: 5), "The second fixture tile is missing.")
     secondTile.tap()

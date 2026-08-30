@@ -374,6 +374,10 @@ struct ActionBarView: View {
             store.enterSelectExplicitly()
           }
         }
+        // Identified because its LABEL changes with the mode, and because a menu item inside a
+        // popover is not addressable by label on every idiom (Regular-3 — see
+        // SelectModeScreenshotUITests).
+        .accessibilityIdentifier("gridSelectCommand")
       } label: {
         Label("More", systemImage: "ellipsis.circle")
       }
