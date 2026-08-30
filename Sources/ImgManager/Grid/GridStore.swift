@@ -217,9 +217,9 @@ final class GridStore {
     focusedImageID = imageID
     // Pin (`SelectionState.swift`'s own `SelectionResetTrigger.enteredLoupe` doc comment,
     // written ahead of P5 for exactly this call site): entering the loupe resets selection.
-    // Pick Lock is deliberately left UNTOUCHED — `PickLockState.exit()`'s own doc comment pins
-    // it "Grid-only, never the loupe" — and structurally a latched tap never reaches here
-    // anyway (the `pickLock.state == .latched` branch above returns before this switch).
+    // A latched lock (either verb) is deliberately left UNTOUCHED — `PickLockState.exit()`'s
+    // own doc comment pins it "Grid-only, never the loupe" — and structurally a latched tap
+    // never reaches here anyway (`tapTile`'s `latchedVerb` branch returns before this switch).
     selection.reset(.enteredLoupe)
     isLoupeOpen = true
   }
@@ -1061,8 +1061,8 @@ final class GridStore {
 
   /// A tap on a CELL. WP12: the parameter is a display id, so the one place a card's tap is
   /// interpreted is here, and it is interpreted as "open me" and nothing else — never a mark,
-  /// never a selection entry, whatever mode the grid is in. A latched Pick Lock does not change
-  /// that: there is no image id in a `.stack` to apply a pick to.
+  /// never a selection entry, whatever mode the grid is in. A latched lock does not change
+  /// that, either verb: there is no image id in a `.stack` to apply a mark to.
   func tapCell(_ id: GridDisplayID) async {
     switch id {
     case .image(let imageID):
@@ -1083,8 +1083,10 @@ final class GridStore {
   }
 
   func tapTile(_ imageID: Int) async {
-    if pickLock.state == .latched {
-      await applyMark(.pick, to: [imageID])
+    // The LATCHED VERB decides the mark — one branch for both locks, never a `.pick` literal a
+    // Dislike Lock would have to be a second copy of.
+    if let verb = pickLock.latchedVerb {
+      await applyMark(verb.markState, to: [imageID])
       return
     }
     switch selection.mode {
@@ -1105,7 +1107,7 @@ final class GridStore {
   func longPressTile(_ imageID: Int) {
     // Pin (e): entering Select while latched unlatches first; the transition itself never
     // applies a mark.
-    if pickLock.state == .latched {
+    if pickLock.latchedVerb != nil {
       pickLock.unlatch()
     }
     selection.enterSelectViaLongPress(imageID: imageID)
@@ -1126,52 +1128,58 @@ final class GridStore {
   /// crossed tile per drag" is enforced by `dragSession`, reset at the start of each gesture.
   /// WP12: the drag lane takes a DISPLAY id. A drag that crosses a scene card is recorded as
   /// crossed (so the dedup session is honest about the path the pointer took) and then produces
-  /// nothing — a `.stack` has no image id, so neither the Pick-Lock branch nor the Select branch
+  /// nothing — a `.stack` has no image id, so neither the latched branch nor the Select branch
   /// below has anything to name. That is the actionability boundary holding for the one gesture
   /// that cannot be stopped at its own site: a pointer drag does not choose which cells it
   /// crosses.
   func pointerDragCrossed(_ id: GridDisplayID) async {
     guard dragSession.crossedTile(id) else { return }
     guard let imageID = id.imageID else { return }
-    if pickLock.state == .latched {
-      await applyMark(.pick, to: [imageID])
+    if let verb = pickLock.latchedVerb {
+      await applyMark(verb.markState, to: [imageID])
     } else if selection.mode == .select {
       selection.addFromDrag(imageID)
     }
   }
 
-  // MARK: - Pick Lock
+  // MARK: - Pick Lock / Dislike Lock (WP13 P2, IMGMGR-222)
 
-  func activatePickButton() async {
+  /// The ONE entry point both latch-capable bar buttons call — `GridView.latchButton(_:)` passes
+  /// the verb, so the view holds no rule of its own about what a press means, and Dislike is a
+  /// latch-capable control on exactly the terms Pick is (owner decision 4, 2026-08-30). That
+  /// single funnel is what makes "the two locks are mutually exclusive" a fact about
+  /// `PickLockState` rather than a rule this coordinator has to police.
+  func activateLatchButton(_ verb: LatchVerb) async {
     // Lock ENTRY stays disabled while Select is active (pin e) — but the button itself is no
-    // longer disabled with it: in Select mode Pick is an ordinary bulk mark on the selection,
-    // and the latch machine is never consulted, so a double-tap there cannot latch. The two
-    // used to be one modifier on the control; they are two different rules and are now written
-    // as two.
+    // longer disabled with it: in Select mode a mark control is an ordinary bulk mark on the
+    // selection, and the latch machine is never consulted, so a double-tap there cannot latch.
+    // The two used to be one modifier on the control; they are two different rules and are now
+    // written as two.
     guard selection.mode != .select else {
-      await applyMarkToTarget(.pick)
+      await applyMarkToTarget(verb.markState)
       return
     }
-    switch pickLock.activateFromPickButton() {
-    case .applyPick:
-      await applyMarkToTarget(.pick)
+    switch pickLock.activate(verb: verb) {
+    case .applyMark:
+      await applyMarkToTarget(verb.markState)
     case .latch, .unlatch:
       break
     }
   }
 
-  /// The amendment's discoverable "Lock Pick" long-press menu command — gate's unasked issue.
-  /// Same mutual-exclusion guard as the button's own path (pin e); `PickLockState.forceLatch()`
-  /// is itself a no-op if already latched, so this is safe to invoke unconditionally.
-  func lockPickFromMenu() {
+  /// The amendment's discoverable "Lock Pick" / "Lock Dislike" long-press menu command — gate's
+  /// unasked issue. Same mutual-exclusion guard as the button's own path (pin e);
+  /// `PickLockState.forceLatch(_:)` is itself a no-op if a lock of EITHER verb is already on, so
+  /// this is safe to invoke unconditionally and cannot produce two simultaneous locks.
+  func lockFromMenu(_ verb: LatchVerb) {
     guard selection.mode != .select else { return }
-    pickLock.forceLatch()
+    pickLock.forceLatch(verb)
   }
 
   // MARK: - Select mode
 
   func enterSelectExplicitly() {
-    if pickLock.state == .latched { pickLock.unlatch() }
+    if pickLock.latchedVerb != nil { pickLock.unlatch() }
     selection.enterSelectExplicitly()
   }
 
@@ -1320,18 +1328,23 @@ final class GridStore {
   /// next Pick acts on even when a member has stopped being visible.
   var selectedCount: Int { markTargetImageIDs.count }
 
-  /// Every selection-consuming control (Dislike, Clear, Tag) disables together, derived from the
+  /// Every purely selection-consuming control (Clear, Tag) disables together, derived from the
   /// one target property — never from `selection.members`, which is what would let the enabled
-  /// state and the write target disagree.
+  /// state and the write target disagree. Pick and Dislike are NOT among them: each owns a lock
+  /// entry that is meaningful with nothing focused, so they follow `isLatchControlDisabled`.
   var isMarkActionUnavailable: Bool { markTargetImageIDs.isEmpty }
 
-  /// Pick is the one control that is not purely a write: in BROWSE it also owns Pick Lock entry
-  /// (the double-tap and its "Lock Pick" chrome twin), which is meaningful with nothing focused
-  /// — a latched tap acts on the tile it lands on. So Pick is disabled only where it would be
-  /// a pure no-op write: Select mode with an empty selection. Lock ENTRY stays disabled through
-  /// Select (pin e) in `activatePickButton`'s own guard, which is why the two conditions are no
-  /// longer the single modifier they used to share.
-  var isPickControlDisabled: Bool { selection.mode == .select && markTargetImageIDs.isEmpty }
+  /// Pick and Dislike are the two controls that are not purely writes: in BROWSE each also owns
+  /// its own lock entry (the double-tap and its "Lock Pick"/"Lock Dislike" chrome twin), which is
+  /// meaningful with nothing focused — a latched tap acts on the tile it lands on. So they are
+  /// disabled only where they would be a pure no-op write: Select mode with an empty selection.
+  /// Lock ENTRY stays disabled through Select (pin e) in `activateLatchButton`'s own guard, which
+  /// is why the two conditions are no longer the single modifier they used to share.
+  ///
+  /// WP13 P2: Dislike moved off `isMarkActionUnavailable` onto this rule for exactly the reason
+  /// Pick already was — under the old rule a browse-mode Dislike with nothing focused was
+  /// disabled, so its double-tap could never reach the latch machine at all.
+  var isLatchControlDisabled: Bool { selection.mode == .select && markTargetImageIDs.isEmpty }
 
   /// The ONE entry point the grid's mark controls and the `P`/`X`/`U` shortcuts share: the
   /// control names the STATE, the store derives the TARGETS. No control builds an id list of its
@@ -1362,7 +1375,7 @@ final class GridStore {
   /// REFUSED no-op (no snapshot is ever taken while `true`) — the sanctioned alternative to a
   /// serialization queue the addendum names ("serialize... or disable mark chrome while one is
   /// in flight"). The view also disables the mark bar's controls while this is true, same
-  /// "the guard is the source of truth independent of the view" posture `activatePickButton`'s
+  /// "the guard is the source of truth independent of the view" posture `activateLatchButton`'s
   /// own `selection.mode != .select` guard already uses.
   ///
   /// P6: the SAME flag is now the "one ordered mark/refresh lane" (plan item 2) -- `applyMark`/

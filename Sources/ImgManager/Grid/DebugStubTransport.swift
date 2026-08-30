@@ -305,6 +305,19 @@
     static var enterSelectMode: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestEnterSelectMode")
     }
+
+    /// WP13 P2 (IMGMGR-222): a FIFTH, independent launch argument, for the same reason the
+    /// Select one exists. The Dislike Lock mode row's retained screenshot needs the app to BE
+    /// latched on Dislike, and neither shipped entry is drivable from XCUITest on every
+    /// destination — a double tap inside the 350 ms window is not a gesture XCUITest can time
+    /// reliably against a control, and the context-menu twin is a long press whose popover items
+    /// are not addressable by label or identifier on Regular-3 (three P1 gate runs established
+    /// the same for the More menu). This flag latches through `GridStore.lockFromMenu(.dislike)`
+    /// — the SAME entry point the "Lock Dislike" context-menu command calls, never a special
+    /// code path. Debug-only, like every flag here: a Release archive strips this whole file.
+    static var latchDislikeLock: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestLatchDislikeLock")
+    }
   }
 
   #if canImport(UIKit)

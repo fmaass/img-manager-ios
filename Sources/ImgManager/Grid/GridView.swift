@@ -37,15 +37,16 @@ struct GridView: View {
         GridOptionsRow(store: store)
       }
       // Pinned order: the Scene row above the mode row, the mode row above the recovery banner,
-      // the banner above the action bar. At most ONE of the two mode rows can ever render —
-      // Pick Lock and Select are mutually exclusive in `GridStore` (`enterSelectExplicitly` and
-      // `longPressTile` both unlatch first), and the `else if` makes that a structural fact of
-      // this view rather than a coincidence two independent `if`s would let drift apart.
+      // the banner above the action bar. At most ONE mode row can ever render — a lock and
+      // Select are mutually exclusive in `GridStore` (`enterSelectExplicitly` and `longPressTile`
+      // both unlatch first), and the `else if` makes that a structural fact of this view rather
+      // than a coincidence two independent `if`s would let drift apart. Pick Lock and Dislike
+      // Lock cannot both render because `latchedVerb` is one value, not two flags.
       if store.displayMode == .scene {
         SceneModeRow(store: store)
       }
-      if store.pickLock.state == .latched {
-        PickLockModeRow(store: store)
+      if let latchedVerb = store.pickLock.latchedVerb {
+        PickLockModeRow(store: store, verb: latchedVerb)
       } else if store.selection.mode == .select {
         SelectModeRow(store: store)
       }
@@ -400,17 +401,26 @@ struct SceneModeRow: View {
 
 /// Fold item 5(b)'s exact caption and placement: a persistent mode row directly above the
 /// bottom action bar, `Done` trailing, never overlaying a tile.
+///
+/// WP13 P2: ONE row for both locks, rendering the LATCHED VERB's own caption — a second row type
+/// for Dislike would be two places for one rule, and the reader would have no way to tell from
+/// the row which mark a tap is about to apply. The identifier is verb-neutral for the same
+/// reason; the caption text is what distinguishes the two, and it is what the tests assert.
 struct PickLockModeRow: View {
   let store: GridStore
+  let verb: LatchVerb
 
   var body: some View {
     HStack {
-      Text(PickLockCopy.caption)
+      Text(PickLockCopy.caption(for: verb))
         .font(.subheadline)
-        .accessibilityIdentifier("pickLockCaption")
+        .accessibilityIdentifier("lockModeCaption")
       Spacer()
       Button("Done") { store.done() }
         .frame(minWidth: 44, minHeight: 44)
+        // Named because "Done" is not unique on screen (a system keyboard accessory carries the
+        // same label), and a UI test that matched on the label alone could drive the wrong one.
+        .accessibilityIdentifier("lockModeDone")
     }
     .padding(.horizontal)
     .padding(.vertical, 8)
@@ -599,6 +609,21 @@ enum ActionBarMarkControl: CaseIterable {
   }
 
   var accessibilityIdentifier: String { "grid\(title)Button" }
+
+  /// The control that writes a given latch verb's mark. WP13 P2: the bar's two latch-capable
+  /// buttons are rendered from this table exactly as before, so a verb can never be drawn with
+  /// the wrong title, symbol or identifier.
+  static func control(for verb: LatchVerb) -> ActionBarMarkControl {
+    switch verb {
+    case .pick: return .pick
+    case .dislike: return .dislike
+    }
+  }
+
+  /// The chrome twin for the double-tap latch gesture, in this control's own context menu:
+  /// "Lock Pick" (shipped) and "Lock Dislike" (WP13 P2). Derived from `title` so the menu entry
+  /// and the button can never name different verbs.
+  var lockMenuTitle: String { "Lock \(title)" }
 }
 
 /// iPhone: `Pick · Dislike · Clear · Undo · Tag · More`. Persistent in every grid layout (P4
@@ -649,10 +674,8 @@ struct ActionBarView: View {
   @ViewBuilder
   private func bar(_ layout: ActionBarLayout) -> some View {
     HStack(spacing: layout.spacing) {
-      let presentation = PickButtonPresentation.for(store.pickLock.state)
-      pickButton(presentation: presentation)
-
-      markControl(.dislike)
+      latchButton(.pick)
+      latchButton(.dislike)
       if !layout.foldsClearIntoMore {
         markControl(.clear)
       }
@@ -716,9 +739,10 @@ struct ActionBarView: View {
     #endif
   }
 
-  /// The two plain mark controls (Dislike, Clear). Pick is not one of them only because its
-  /// presentation branches on the lock state, which needs two literal `Button` declarations
-  /// (see `pickButton`) — it still takes its title, symbol and STATE from the same table.
+  /// The one plain mark control (Clear). Pick and Dislike are not among them because each
+  /// branches its presentation on the lock state, which needs two literal `Button` declarations
+  /// (see `latchButton`) — all three still take their title, symbol and STATE from the same
+  /// table.
   @ViewBuilder
   private func markControl(_ control: ActionBarMarkControl) -> some View {
     Button {
@@ -742,37 +766,46 @@ struct ActionBarView: View {
   /// a ternary between `.borderedProminent` and `.bordered` does not type-check (they are
   /// different concrete `ButtonStyle` types) — so the two presentations are two literal button
   /// declarations sharing the same action/label/menu, branched once here instead.
+  ///
+  /// WP13 P2 (IMGMGR-222) makes this ONE builder for both latch-capable controls rather than a
+  /// Pick-shaped one and a copy: the verb decides the store action, the presentation and the
+  /// context-menu twin's title, so Dislike Lock cannot drift from Pick Lock by construction. No
+  /// control is added to the bar — `ActionBarMetrics` is untouched and the six-control tiers are
+  /// unchanged; Dislike simply stops being a plain button.
   @ViewBuilder
-  private func pickButton(presentation: PickButtonPresentation) -> some View {
-    let pick = ActionBarMarkControl.pick
+  private func latchButton(_ verb: LatchVerb) -> some View {
+    let control = ActionBarMarkControl.control(for: verb)
+    let presentation = PickButtonPresentation.for(store.pickLock.state, control: verb)
     Group {
       if presentation.isProminent {
         Button {
-          Task { await store.activatePickButton() }
+          Task { await store.activateLatchButton(verb) }
         } label: {
-          Label(pick.title, systemImage: pick.systemImage)
+          Label(control.title, systemImage: control.systemImage)
         }
         .buttonStyle(.borderedProminent)
       } else {
         Button {
-          Task { await store.activatePickButton() }
+          Task { await store.activateLatchButton(verb) }
         } label: {
-          Label(pick.title, systemImage: pick.systemImage)
+          Label(control.title, systemImage: control.systemImage)
         }
         .buttonStyle(.bordered)
       }
     }
     .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
-    // Select mode alone no longer disables Pick — it is the phase's whole point. What stays
-    // disabled is Pick LOCK entry, in the context menu below and in the store's own guard.
-    .disabled(store.isPickControlDisabled)
+    // Select mode alone no longer disables these — it is P1's whole point. What stays disabled
+    // is LOCK entry, in the context menu below and in the store's own guard.
+    .disabled(store.isLatchControlDisabled)
     .actionBarControlSize()
-    .accessibilityIdentifier(pick.accessibilityIdentifier)
+    .accessibilityIdentifier(control.accessibilityIdentifier)
     .contextMenu {
-      // Gate's unasked issue: the amendment's discoverable visible "Lock Pick" alternative to
-      // the undiscoverable double-tap gesture.
-      Button("Lock Pick") { store.lockPickFromMenu() }
-        .disabled(store.pickLock.state == .latched || store.selection.mode == .select)
+      // Gate's unasked issue: the amendment's discoverable visible alternative to the
+      // undiscoverable double-tap gesture — now on both controls (persistent-chrome rule: every
+      // gesture has a chrome twin). Disabled while EITHER lock is on, which is the mutual
+      // exclusion made visible rather than merely enforced.
+      Button(control.lockMenuTitle) { store.lockFromMenu(verb) }
+        .disabled(store.pickLock.latchedVerb != nil || store.selection.mode == .select)
     }
   }
 }
