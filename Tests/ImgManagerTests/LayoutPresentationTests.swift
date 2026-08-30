@@ -79,11 +79,21 @@ struct LayoutPresentationTests {
     // read this pin and duplicates it as a literal. This is the join: move the production pin
     // and this fails, naming the literal that has to move with it.
     #expect(LayoutResolver.regular3Threshold == 1197)
-    // The two measured full-screen iPad anchors the UI test actually meets, replayed through the
-    // production resolver so the duplicated literal is pinned to real behaviour, not just to a
-    // number: 1032 pt portrait must classify Regular-2, 1376 pt landscape Regular-3.
+    // 1197 is the ONLY literal the UI test duplicates: it splits Regular-2 from Regular-3 by
+    // width. It does NOT duplicate a Compact/Regular width, because there is no correct one to
+    // duplicate — see this file's note below — so it reads the rendered column count instead.
+    //
+    // All four anchors the UI test actually meets on the gate's two destinations, replayed
+    // through the production resolver so the duplicated pin is joined to real behaviour rather
+    // than to a bare number. Widths and traits are the live P10 probe's own readings.
+    #expect(LayoutResolver.resolve(width: 402, horizontalSizeClass: .compact) == .compact)
+    #expect(LayoutResolver.resolve(width: 874, horizontalSizeClass: .compact) == .compact)
     #expect(LayoutResolver.resolve(width: 1032, horizontalSizeClass: .regular) == .regular2)
     #expect(LayoutResolver.resolve(width: 1376, horizontalSizeClass: .regular) == .regular3)
+    // Why no Compact/Regular width literal exists to join: 874 pt is Compact (iPhone landscape)
+    // while a windowed iPad is Regular well below it — the trait, not the width, decides. A UI
+    // test that guessed a floor between 874 and 1032 would misclassify every iPad half-window.
+    #expect(LayoutResolver.resolve(width: 874, horizontalSizeClass: .regular) == .regular2)
   }
 
   @Test("The slide-over is width-limited: 40 % of the pane, capped at 360 pt")

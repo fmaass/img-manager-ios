@@ -4,10 +4,18 @@ import XCTest
 /// WP13 P10 (IMGMGR-219), on the real simulator surface. Two jobs, one code path:
 ///
 /// 1. **The phase's live probe** — which real configurations resolve to which layout mode. The
-///    classification uses only facts INDEPENDENT of the inspector: the iPad-only "Folders"
-///    disclosure (`QueueView` is handed `treeSection: nil` on Compact) splits Compact from
+///    classification uses only facts INDEPENDENT of the inspector: whether the split view is
+///    showing two panes at once (queue card AND grid control both hittable) splits Compact from
 ///    Regular, and the measured window width against the resolver's own Regular-3 pin splits
-///    Regular-2 from Regular-3. The inspector's presence is never an input — it is what these
+///    Regular-2 from Regular-3. It deliberately does NOT read the "Folders" disclosure — P6
+///    (IMGMGR-216) gives Compact that same section, so its presence stops meaning "Regular".
+///    Width alone cannot make the Compact/Regular split either: the measured anchors are 874 pt
+///    Compact (iPhone landscape) and 1032 pt Regular-2 (iPad portrait), while a genuine iPad
+///    half-window is Regular from ~667 pt up — no width floor separates those. Production makes
+///    the same call for the same reason: `horizontalSizeClass` gates B2 and `LayoutMode.swift`'s
+///    B2 section records why reimplementing it as a width would be a guess. The rendered column
+///    count is that trait's visible consequence, which is why it is the input here.
+///    The inspector's presence is never an input — it is what these
 ///    tests are here to judge, so using it would let a wrong presentation relabel the layout and
 ///    pass (diff-gate round 1, blocking finding 1). Never a device idiom — this target is inside
 ///    the gate's device-idiom absence grep like every other source directory.
@@ -60,23 +68,33 @@ final class InspectorSlideOverUITests: XCTestCase {
     // The rotation's own layout pass, then the resolver's `.onGeometryChange` reaction to it.
     Thread.sleep(forTimeInterval: 2.0)
 
-    let foldersDisclosure = app.descendants(matching: .any)["Folders"]
+    // A queue card from the stub's own fixture ("40 photos · 10 picked"). P6 does not touch
+    // queue cards, so this survives the wave that retires the Folders-based split.
+    let queueCard = app.staticTexts
+      .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
     let statsSegment = app.buttons["Stats"]
     let chromeInfo = app.navigationBars.buttons
       .matching(NSPredicate(format: "label BEGINSWITH 'Info'")).firstMatch
 
-    let hasFolders = foldersDisclosure.exists
+    // Two panes on screen AT ONCE — the visible consequence of a regular horizontal size class.
+    // Compact's split view is collapsed, so its sidebar and its grid are never both hittable.
+    let panesSideBySide = queueCard.isHittable && dislike.isHittable
     // Read, but NEVER used to classify — asserted per branch below instead.
     let inspectorAlreadyOnScreen = statsSegment.exists
     let hasChromeInfo = chromeInfo.exists
     let width = app.frame.size.width
     let resolved: ResolvedLayout =
-      !hasFolders ? .compact : (width >= Self.regular3WidthThreshold ? .regular3 : .regular2)
+      !panesSideBySide ? .compact : (width >= Self.regular3WidthThreshold ? .regular3 : .regular2)
+    // The two inputs must agree: nothing at or above the Regular-3 pin can be showing one pane.
+    XCTAssertFalse(
+      !panesSideBySide && width >= Self.regular3WidthThreshold,
+      "Contradictory layout inputs: \(width) pt is Regular-3 width but only one pane is on "
+        + "screen. Classification would be wrong either way — fix the app or this probe.")
 
     // The probe's record. `print` (not only an activity) because the gate copies back the
     // xcodebuild log, which is where this has to be readable afterwards.
     print(
-      "P10-PROBE \(orientationName): window=\(app.frame.size) folders=\(hasFolders) "
+      "P10-PROBE \(orientationName): window=\(app.frame.size) twoPanes=\(panesSideBySide) "
         + "inspectorAtLaunch=\(inspectorAlreadyOnScreen) chromeInfo=\(hasChromeInfo) "
         + "resolvedLayout=\(resolved.rawValue)")
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-atLaunch")
