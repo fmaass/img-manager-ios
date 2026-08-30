@@ -2030,11 +2030,29 @@ struct GridStoreBulkMarkTests {
     #expect(store.focusedImageID == 5)
 
     await transport.setMarkStateOutcome(.success(.init(applied: 2, requested: 2, revisions: [])))
-    await store.handleDislikeShortcut(shiftHeld: false)
 
-    let sent = await transport.lastMarkStateRequest
+    // ALL THREE, not one: a focused-id regression in P or U would hide behind a correct X, and
+    // each shortcut has its own guard and its own state argument to get wrong.
+    await store.handlePickShortcut(shiftHeld: false)
+    var sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [6, 7])
+    #expect(sent?.state == .pick)
+
+    await store.handleDislikeShortcut(shiftHeld: false)
+    sent = await transport.lastMarkStateRequest
     #expect(sent?.imageIds == [6, 7])
     #expect(sent?.state == .dislike)
+
+    await store.handleClearShortcut(shiftHeld: false)
+    sent = await transport.lastMarkStateRequest
+    let clearState = Components.Schemas.MarkStateRequest.StatePayload.none
+    #expect(sent?.imageIds == [6, 7])
+    #expect(sent?.state == clearState)
+
+    // One call per shortcut, never a per-id loop; and the focused photograph is untouched by
+    // all three.
+    #expect(await transport.callCount(markStateOperation) == 3)
+    #expect(store.focusedImageID == 5)
   }
 
   @Test("Clear from the grid bar applies to the whole selection")
@@ -2046,8 +2064,12 @@ struct GridStoreBulkMarkTests {
     await store.tapTile(7)
 
     await transport.setMarkStateOutcome(.success(.init(applied: 2, requested: 2, revisions: [])))
-    // The action the grid bar's Clear control invokes, by name.
-    await store.applyMarkToTarget(.none)
+    // Written through the SAME table the bar's Clear button renders and acts from, so a button
+    // wired to the wrong state fails HERE rather than shipping green: this test asserts the
+    // wire carries `none`, and `ActionBarMarkControl.clear.state` is the only declaration of
+    // what that control writes. That the button EXISTS and reaches the mark lane at all is the
+    // rendered half, in `SelectModeScreenshotUITests.testClearControlInTheGridBarDrivesTheMarkLane`.
+    await store.applyMarkToTarget(ActionBarMarkControl.clear.state)
 
     let sent = await transport.lastMarkStateRequest
     // Type-qualified: a bare `.none` here matches `Optional.none`, not the wire state.
@@ -2230,5 +2252,36 @@ struct GridStoreBulkMarkTests {
     #expect(store.tagTargetImageIDs == store.markTargetImageIDs)
     store.handleTagShortcut()
     #expect(store.isTagEntryPresented)
+  }
+}
+
+
+/// WP13 P1, diff-gate round 1: adding Clear made the action bar SIX controls, and six 44-pt
+/// controls at the shipped 24-pt rhythm do not fit an iPhone. Every number here comes from
+/// `ActionBarMetrics`, which is what `ActionBarView` lays out with — there is no second
+/// declaration for this suite to agree with while the view drifts away from it.
+@Suite("Grid action bar geometry (six controls must still fit Compact)")
+struct ActionBarMetricsTests {
+
+  @Test("Six 44-pt controls, their gaps and the bar's padding fit the narrowest Compact width")
+  func sixControlsFitTheNarrowestCompactWidth() {
+    #expect(ActionBarMetrics.controlCount == 6)
+    #expect(ActionBarMetrics.requiredWidth() <= ActionBarMetrics.narrowestCompactWidth)
+  }
+
+  @Test("The rhythm that stopped fitting is pinned as an executable fact, not a comment")
+  func theShippedSpacingWouldNotHaveFit() {
+    // 6×44 + 5×24 + 2×16 = 416 against 402: the overflow the diff gate found. Asserted so
+    // the gap cannot drift back up without a failing test, and so the REASON for 16 pt is
+    // written down where it is executed.
+    #expect(ActionBarMetrics.requiredWidth(spacing: 24) == 416)
+    #expect(ActionBarMetrics.requiredWidth(spacing: 24) > ActionBarMetrics.narrowestCompactWidth)
+    #expect(ActionBarMetrics.requiredWidth(spacing: 16) == 376)
+  }
+
+  @Test("A seventh control would not fit either — the guard covers the count, not just the gap")
+  func aSeventhControlWouldNotFit() {
+    #expect(
+      ActionBarMetrics.requiredWidth(controlCount: 7) > ActionBarMetrics.narrowestCompactWidth)
   }
 }

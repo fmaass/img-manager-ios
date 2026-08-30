@@ -207,5 +207,18 @@
     static var skipAutoSelect: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestStubSkipAutoSelect")
     }
+
+    /// WP13 P1: a FOURTH, independent launch argument. The Select mode row's retained
+    /// screenshot needs the app to BE in Select mode, and neither shipped entry is drivable
+    /// from XCUITest on every destination — Regular-3 never receives the tile long press (the
+    /// grid's pointer-drag recognizer claims it) and its More-menu popover items are not
+    /// addressable by label or by identifier. This flag enters Select mode after the fixture
+    /// shoot loads, through `GridStore.enterSelectExplicitly()` — the SAME entry point the
+    /// More menu's own command calls, never a special code path — so the harness gets the
+    /// state without the gesture. Debug-only, like every flag here: a Release archive strips
+    /// this whole file.
+    static var enterSelectMode: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestEnterSelectMode")
+    }
   }
 #endif

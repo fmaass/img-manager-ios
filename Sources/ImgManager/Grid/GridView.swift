@@ -317,6 +317,73 @@ struct SelectModeRow: View {
   }
 }
 
+/// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
+/// it against — no second, drifting declaration. Adding Clear made the bar SIX controls, and the
+/// shipped 24-pt rhythm no longer fits: 6×44 + 5×24 + 2×16 = 416 pt against a 402-pt Compact
+/// width, which clips the edge controls out of their required 44-pt reachable region. The gap is
+/// 16 pt instead, for 376 pt, and `ActionBarMetricsTests` fails if that stops being true.
+enum ActionBarMetrics {
+  /// The narrowest Compact width this app targets — the gate's own iPhone destination
+  /// (iPhone 17 Pro, 402 pt portrait). A bar that fits here fits every wider layout.
+  static let narrowestCompactWidth: CGFloat = 402
+  /// Fold item 4: every control keeps its OWN — never the row's — 44×44 hit region.
+  static let minimumControlSide: CGFloat = 44
+  static let horizontalPadding: CGFloat = 16
+  static let verticalPadding: CGFloat = 16
+  static let controlSpacing: CGFloat = 16
+  /// Pick, Dislike, Clear, Undo, Tag, More. Kept beside the layout it describes; the retained
+  /// screenshot test asserts each of the six is present AND hittable at Compact width, which is
+  /// what catches a seventh control being added without re-checking this arithmetic.
+  static let controlCount = 6
+
+  /// The width the bar needs for `controlCount` controls at `spacing`, all at their minimum
+  /// side, including both paddings.
+  static func requiredWidth(
+    controlCount: Int = ActionBarMetrics.controlCount,
+    spacing: CGFloat = ActionBarMetrics.controlSpacing
+  ) -> CGFloat {
+    CGFloat(controlCount) * minimumControlSide
+      + CGFloat(max(controlCount - 1, 0)) * spacing
+      + 2 * horizontalPadding
+  }
+}
+
+/// The three mark controls of the bar, as DATA. The point is the `state` property: a button that
+/// named its own target state inline could be wired to the wrong one and every store-level test
+/// would stay green (diff-gate round 1). The view renders from this table and
+/// `clearAppliesToTheSelectionFromTheGridBar` writes through `ActionBarMarkControl.clear.state`,
+/// so the button and its test cannot name different states.
+enum ActionBarMarkControl: CaseIterable {
+  case pick, dislike, clear
+
+  var state: MarkStateValue {
+    switch self {
+    case .pick: return .pick
+    case .dislike: return .dislike
+    case .clear: return MarkStateValue.none
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .pick: return "Pick"
+    case .dislike: return "Dislike"
+    case .clear: return "Clear"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .pick: return "hand.thumbsup"
+    case .dislike: return "hand.thumbsdown"
+    // The loupe's own Clear already uses this symbol; one vocabulary for one verb.
+    case .clear: return "xmark.circle"
+    }
+  }
+
+  var accessibilityIdentifier: String { "grid\(title)Button" }
+}
+
 /// iPhone: `Pick · Dislike · Clear · Undo · Tag · More`. Persistent in every grid layout (P4
 /// Approach). Clear joined it in WP13 P1: the ticket names Pick/Dislike/Clear as the Select-mode
 /// actions, and the grid bar had no Clear — its only chrome surface was the loupe's mark bar.
@@ -326,27 +393,12 @@ struct ActionBarView: View {
   @Bindable var store: GridStore
 
   var body: some View {
-    HStack(spacing: 24) {
+    HStack(spacing: ActionBarMetrics.controlSpacing) {
       let presentation = PickButtonPresentation.for(store.pickLock.state)
       pickButton(presentation: presentation)
 
-      Button {
-        Task { await store.applyMarkToTarget(.dislike) }
-      } label: {
-        Label("Dislike", systemImage: "hand.thumbsdown")
-      }
-      .buttonStyle(.bordered)
-      .disabled(store.isMarkActionUnavailable)
-      .frame(minWidth: 44, minHeight: 44)
-
-      Button {
-        Task { await store.applyMarkToTarget(.none) }
-      } label: {
-        Label("Clear", systemImage: "xmark.circle")
-      }
-      .buttonStyle(.bordered)
-      .disabled(store.isMarkActionUnavailable)
-      .frame(minWidth: 44, minHeight: 44)
+      markControl(.dislike)
+      markControl(.clear)
 
       Button {
         Task { await store.undoLastMark() }
@@ -355,7 +407,10 @@ struct ActionBarView: View {
       }
       .buttonStyle(.bordered)
       .disabled(!store.undo.canUndo)
-      .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("gridUndoButton")
+      .frame(
+        minWidth: ActionBarMetrics.minimumControlSide,
+        minHeight: ActionBarMetrics.minimumControlSide)
 
       Button {
         store.handleTagShortcut()
@@ -364,7 +419,10 @@ struct ActionBarView: View {
       }
       .buttonStyle(.bordered)
       .disabled(store.isMarkActionUnavailable)
-      .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("gridTagButton")
+      .frame(
+        minWidth: ActionBarMetrics.minimumControlSide,
+        minHeight: ActionBarMetrics.minimumControlSide)
 
       Menu {
         Button(store.selection.mode == .select ? "Exit Select" : "Select") {
@@ -385,15 +443,36 @@ struct ActionBarView: View {
       // secondaryAction toolbar items into an overflow control with the same label, and a UI
       // test that matched on the label alone could drive the wrong one.
       .accessibilityIdentifier("gridMoreMenu")
-      .frame(minWidth: 44, minHeight: 44)
+      .frame(
+        minWidth: ActionBarMetrics.minimumControlSide,
+        minHeight: ActionBarMetrics.minimumControlSide)
     }
     .labelStyle(.iconOnly)
     .font(.title3)
-    .padding()
+    .padding(.horizontal, ActionBarMetrics.horizontalPadding)
+    .padding(.vertical, ActionBarMetrics.verticalPadding)
     .background(.bar)
     .sheet(isPresented: $store.isTagEntryPresented) {
       TagEntrySheet(store: store)
     }
+  }
+
+  /// The two plain mark controls (Dislike, Clear). Pick is not one of them only because its
+  /// presentation branches on the lock state, which needs two literal `Button` declarations
+  /// (see `pickButton`) — it still takes its title, symbol and STATE from the same table.
+  @ViewBuilder
+  private func markControl(_ control: ActionBarMarkControl) -> some View {
+    Button {
+      Task { await store.applyMarkToTarget(control.state) }
+    } label: {
+      Label(control.title, systemImage: control.systemImage)
+    }
+    .buttonStyle(.bordered)
+    .disabled(store.isMarkActionUnavailable)
+    .accessibilityIdentifier(control.accessibilityIdentifier)
+    .frame(
+      minWidth: ActionBarMetrics.minimumControlSide,
+      minHeight: ActionBarMetrics.minimumControlSide)
   }
 
   /// Factored out because `.buttonStyle(_:)` requires a single CONCRETE style per call site —
@@ -402,28 +481,32 @@ struct ActionBarView: View {
   /// declarations sharing the same action/label/menu, branched once here instead.
   @ViewBuilder
   private func pickButton(presentation: PickButtonPresentation) -> some View {
+    let pick = ActionBarMarkControl.pick
     Group {
       if presentation.isProminent {
         Button {
           Task { await store.activatePickButton() }
         } label: {
-          Label("Pick", systemImage: "hand.thumbsup")
+          Label(pick.title, systemImage: pick.systemImage)
         }
         .buttonStyle(.borderedProminent)
       } else {
         Button {
           Task { await store.activatePickButton() }
         } label: {
-          Label("Pick", systemImage: "hand.thumbsup")
+          Label(pick.title, systemImage: pick.systemImage)
         }
         .buttonStyle(.bordered)
       }
     }
+    .accessibilityIdentifier(pick.accessibilityIdentifier)
     .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
     // Select mode alone no longer disables Pick — it is the phase's whole point. What stays
     // disabled is Pick LOCK entry, in the context menu below and in the store's own guard.
     .disabled(store.isPickControlDisabled)
-    .frame(minWidth: 44, minHeight: 44)
+    .frame(
+      minWidth: ActionBarMetrics.minimumControlSide,
+      minHeight: ActionBarMetrics.minimumControlSide)
     .contextMenu {
       // Gate's unasked issue: the amendment's discoverable visible "Lock Pick" alternative to
       // the undiscoverable double-tap gesture.
