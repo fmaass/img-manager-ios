@@ -110,9 +110,16 @@ struct GridView: View {
     let content = AnyView(
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 2) {
-          ForEach(packedRows.indices, id: \.self) { rowIndex in
+          // Rows are identified by their LEADING cell's display id, never by index: with
+          // index identity, a row-count shrink (entering/leaving Scene mode, collapsing a
+          // stack) can leave SwiftUI evaluating a stale row body whose index no longer
+          // exists, and the `packedRows[rowIndex]` subscript traps — the 0.7.0 (9) Scene
+          // crash (EXC_BREAKPOINT in ForEachChild.updateValue, GridView.swift:115). A
+          // leading-cell id is unique per layout (each cell packs into exactly one row)
+          // and moves with its row across repacks, so diffing stays coherent.
+          ForEach(packedRowModels) { rowModel in
             HStack(spacing: 2) {
-              ForEach(packedRows[rowIndex], id: \.id) { packed in
+              ForEach(rowModel.cells, id: \.id) { packed in
                 if let row = rowsByID[packed.id] {
                   cell(for: row, plan: packed.plan)
                     .background(
@@ -191,6 +198,19 @@ struct GridView: View {
 
   private var rowsByID: [GridDisplayID: SceneDisplayRow] {
     Dictionary(displayRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  }
+
+  /// One rendered grid row with a STABLE identity: its leading cell's display id. See the
+  /// ForEach comment in `scrollArea` — index identity is what crashed 0.7.0 (9). An empty
+  /// packed row cannot exist (a row exists because tiles were packed into it), and
+  /// `packedRowModels` drops one defensively rather than inventing an identity for it.
+  private struct PackedRow: Identifiable, Equatable {
+    let id: GridDisplayID
+    let cells: [PackedTilePlan]
+  }
+
+  private var packedRowModels: [PackedRow] {
+    packedRows.compactMap { row in row.first.map { PackedRow(id: $0.id, cells: row) } }
   }
 
   private var packedRows: [[PackedTilePlan]] {
