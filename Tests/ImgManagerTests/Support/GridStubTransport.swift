@@ -371,6 +371,18 @@ actor GridStubTransport: ClientTransport {
   /// Names are the wire's own (`folder_id`, `rating_min`, `source_tier`, …), never the Swift
   /// property names, which is exactly what makes this a contract check.
   private(set) var recordedListImagesQueries: [[String: String]] = []
+  /// Every proxy request path this transport saw, in order — WP13 P3 asserts the loupe asks for
+  /// the `preview` tier and nothing else at any magnification, which needs the TIER, not just an
+  /// operation-level call count.
+  private(set) var recordedProxyRequests: [String] = []
+
+  /// The `{tier}` path component of each recorded proxy request.
+  var recordedProxyTiers: [String] {
+    recordedProxyRequests.compactMap {
+      URLComponents(string: $0)?.path.split(separator: "/").last.map(String.init)
+    }
+  }
+
   private(set) var recordedFacetsQueries: [[String: String]] = []
 
   var lastListImagesQuery: [String: String]? { recordedListImagesQueries.last }
@@ -573,6 +585,7 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, detailResult)
 
     case Operations.GetProxyApiImagesImageIdProxyTierGet.id:
+      recordedProxyRequests.append(request.path ?? "")
       if proxyHoldEnabled {
         proxyHasStarted = true
         proxyStartedContinuation?.resume()
