@@ -25,11 +25,18 @@ struct GridView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      if store.pickLock.state == .latched {
-        PickLockModeRow(store: store)
-      }
+      // Pinned order: the Scene row above the mode row, the mode row above the recovery banner,
+      // the banner above the action bar. At most ONE of the two mode rows can ever render —
+      // Pick Lock and Select are mutually exclusive in `GridStore` (`enterSelectExplicitly` and
+      // `longPressTile` both unlatch first), and the `else if` makes that a structural fact of
+      // this view rather than a coincidence two independent `if`s would let drift apart.
       if store.displayMode == .scene {
         SceneModeRow(store: store)
+      }
+      if store.pickLock.state == .latched {
+        PickLockModeRow(store: store)
+      } else if store.selection.mode == .select {
+        SelectModeRow(store: store)
       }
       scrollArea
         .onGeometryChange(for: CGFloat.self) {
@@ -276,7 +283,43 @@ struct PickLockModeRow: View {
   }
 }
 
-/// iPhone: `Pick · Dislike · Undo · Tag · More`. Persistent in every grid layout (P4 Approach).
+/// Select mode's own persistent row, structurally identical to `PickLockModeRow` — same
+/// `.thinMaterial` band, same `Done` trailing at ≥44×44, never overlaying a tile — so "you are in a
+/// mode, here is what it acts on, and here is the way out" reads the same for every mode this
+/// screen can be in. Before this row, the only exit from Select was an item in the More menu.
+///
+/// The count is stated at N = 0 too ("0 selected"), never replaced by an instructional caption
+/// that hides it: an empty Select is exactly the state where every mark control refuses to
+/// write, so the number is the thing that explains why they are dim. The instruction is a
+/// second, subordinate line.
+struct SelectModeRow: View {
+  let store: GridStore
+
+  var body: some View {
+    HStack {
+      Text(SelectCopy.caption(selectedCount: store.selectedCount))
+        .font(.subheadline)
+        .accessibilityIdentifier("selectModeCaption")
+        .accessibilityValue("\(store.selectedCount)")
+      if store.selectedCount == 0 {
+        Text(SelectCopy.emptyHint)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("selectModeEmptyHint")
+      }
+      Spacer()
+      Button("Done") { store.done() }
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .padding(.horizontal)
+    .padding(.vertical, 8)
+    .background(.thinMaterial)
+  }
+}
+
+/// iPhone: `Pick · Dislike · Clear · Undo · Tag · More`. Persistent in every grid layout (P4
+/// Approach). Clear joined it in WP13 P1: the ticket names Pick/Dislike/Clear as the Select-mode
+/// actions, and the grid bar had no Clear — its only chrome surface was the loupe's mark bar.
 /// Diff-gate round 2, blocker 2: EACH icon-only control carries its OWN ≥44×44 hit region — the
 /// frame is never applied to the containing `HStack` alone.
 struct ActionBarView: View {
@@ -293,6 +336,16 @@ struct ActionBarView: View {
         Label("Dislike", systemImage: "hand.thumbsdown")
       }
       .buttonStyle(.bordered)
+      .disabled(store.isMarkActionUnavailable)
+      .frame(minWidth: 44, minHeight: 44)
+
+      Button {
+        Task { await store.applyMarkToTarget(.none) }
+      } label: {
+        Label("Clear", systemImage: "xmark.circle")
+      }
+      .buttonStyle(.bordered)
+      .disabled(store.isMarkActionUnavailable)
       .frame(minWidth: 44, minHeight: 44)
 
       Button {
@@ -310,7 +363,7 @@ struct ActionBarView: View {
         Label("Tag", systemImage: "tag")
       }
       .buttonStyle(.bordered)
-      .disabled(store.tagTargetImageIDs.isEmpty)
+      .disabled(store.isMarkActionUnavailable)
       .frame(minWidth: 44, minHeight: 44)
 
       Menu {
@@ -363,7 +416,9 @@ struct ActionBarView: View {
       }
     }
     .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
-    .disabled(store.selection.mode == .select)
+    // Select mode alone no longer disables Pick — it is the phase's whole point. What stays
+    // disabled is Pick LOCK entry, in the context menu below and in the store's own guard.
+    .disabled(store.isPickControlDisabled)
     .frame(minWidth: 44, minHeight: 44)
     .contextMenu {
       // Gate's unasked issue: the amendment's discoverable visible "Lock Pick" alternative to

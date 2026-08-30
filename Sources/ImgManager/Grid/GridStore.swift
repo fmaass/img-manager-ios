@@ -1107,12 +1107,18 @@ final class GridStore {
   // MARK: - Pick Lock
 
   func activatePickButton() async {
-    // Lock entry disabled while Select is active (pin e) — the view also disables the control
-    // visually; this guard is the source of truth independent of that.
-    guard selection.mode != .select else { return }
+    // Lock ENTRY stays disabled while Select is active (pin e) — but the button itself is no
+    // longer disabled with it: in Select mode Pick is an ordinary bulk mark on the selection,
+    // and the latch machine is never consulted, so a double-tap there cannot latch. The two
+    // used to be one modifier on the control; they are two different rules and are now written
+    // as two.
+    guard selection.mode != .select else {
+      await applyMarkToTarget(.pick)
+      return
+    }
     switch pickLock.activateFromPickButton() {
     case .applyPick:
-      if let id = focusedImageID { await applyMark(.pick, to: [id]) }
+      await applyMarkToTarget(.pick)
     case .latch, .unlatch:
       break
     }
@@ -1141,13 +1147,13 @@ final class GridStore {
   // MARK: - Shortcuts (P4: arrows, P, X, Shift+advance, T, Z; P5 adds Space/Enter and U)
 
   func handlePickShortcut(shiftHeld: Bool) async {
-    guard focusedImageID != nil else { return }
+    guard !markTargetImageIDs.isEmpty else { return }
     await applyMarkToTarget(.pick)
     if shiftHeld { advanceToNext() }
   }
 
   func handleDislikeShortcut(shiftHeld: Bool) async {
-    guard focusedImageID != nil else { return }
+    guard !markTargetImageIDs.isEmpty else { return }
     await applyMarkToTarget(.dislike)
     if shiftHeld { advanceToNext() }
   }
@@ -1156,7 +1162,7 @@ final class GridStore {
   /// does not know or care which screen is currently on top). Shift+U also advances, mirroring
   /// P/X (`ShortcutCatalog`'s own doc comment: "Shift held on P/X/U means 'mark and advance'").
   func handleClearShortcut(shiftHeld: Bool) async {
-    guard focusedImageID != nil else { return }
+    guard !markTargetImageIDs.isEmpty else { return }
     await applyMarkToTarget(.none)
     if shiftHeld { advanceToNext() }
   }
@@ -1175,17 +1181,16 @@ final class GridStore {
   }
 
   func handleTagShortcut() {
-    guard focusedImageID != nil || !selection.members.isEmpty else { return }
+    guard !tagTargetImageIDs.isEmpty else { return }
     isTagEntryPresented = true
   }
 
-  /// The images a tag action targets right now: the Select-mode membership when non-empty,
-  /// otherwise the single focused tile — mirrors how `T`'s action-bar surface already reads in
-  /// both modes rather than requiring a caller to branch on mode itself.
-  var tagTargetImageIDs: [Int] {
-    selection.mode == .select && !selection.members.isEmpty
-      ? Array(selection.members) : focusedImageID.map { [$0] } ?? []
-  }
+  /// A tag targets exactly what a mark targets: ONE rule, expressed once. The shipped defect
+  /// (IMGMGR-223) was precisely a second copy of the rule drifting from the first — this
+  /// property used to fall back to the focused photograph on an EMPTY Select, so an explicit
+  /// Select with nothing chosen tagged whatever happened to be focused, while `GridView` read
+  /// the same property as non-empty and left the Tag control enabled.
+  var tagTargetImageIDs: [Int] { markTargetImageIDs }
 
   // MARK: - Mark targets (WP13 P1)
 
@@ -1238,12 +1243,11 @@ final class GridStore {
   /// own — every `applyMark` call site passing a single focused id is exactly how Select mode
   /// shipped as a tagging-only mode.
   ///
-  /// WP13 P1, EXTRACTION step: this still resolves the focused image, byte-for-byte what the
-  /// shortcut handlers and the action bar each had inline. The target RULE (`markTargetImageIDs`)
-  /// is wired in by the routing commit; no behaviour changes here.
+  /// An empty target writes nothing: `applyMark` refuses an empty precondition set on its own
+  /// (`capturePriorSnapshots` returns nothing to submit), so the refusal is one rule in one
+  /// place rather than a guard each control has to remember.
   func applyMarkToTarget(_ state: MarkStateValue) async {
-    guard let id = focusedImageID else { return }
-    await applyMark(state, to: [id])
+    await applyMark(state, to: markTargetImageIDs)
   }
 
   /// Any effective tier change resets selection (pin: "any effective filter/tier/tree change").
