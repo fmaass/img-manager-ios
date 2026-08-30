@@ -2,6 +2,12 @@ import ImgManagerAPI
 
 /// Which `FolderNode`s the sidebar lists as browsable shoots (ADR-0004: shoot ≡ folder).
 ///
+/// P7 (IMGMGR-217) split the sidebar's two questions apart without splitting this definition:
+/// the tree now renders the WHOLE folder hierarchy, and this type answers only which of those
+/// rows NAVIGATE. `FolderTreeNode.isSelectableShoot` reads `shootKinds` directly; `shoots(_:)`
+/// stays the list form, applied by `FolderTreeModel.selectableShoots(in:)` to the flattened
+/// tree. Everything else in the tree is a container that expands and does not navigate.
+///
 /// The backend's `FolderKind` vocabulary is `dated / dated_split / import / project /
 /// template / other` (app/models.py; classifier app/indexer/classify.py) — there is NO
 /// "day" kind. P4 shipped filtering on `"day"`, which the API never emits, so the shoot

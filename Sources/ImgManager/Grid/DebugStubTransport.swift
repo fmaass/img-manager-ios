@@ -32,11 +32,7 @@
             coverage: .init(imagesActive: 0, imagesMissing: 0, tiers: []),
             maintenance: .init(enabled: false), runs: []))
       case Operations.FolderTreeApiFoldersGet.id:
-        // "dated" is the LIVE vocabulary (IMGMGR-173) — a fixture kind the API never emits
-        // is how the empty-sidebar defect stayed green.
-        let node = Components.Schemas.FolderNode(
-          id: 1, kind: "dated", name: "2026-08-27 — Stub Shoot", path: "stub")
-        return try jsonResponse(.ok, Components.Schemas.FolderTree(items: [node]))
+        return try jsonResponse(.ok, Components.Schemas.FolderTree(items: Self.fixtureFolders()))
       case Operations.FolderSummariesApiFolderSummariesGet.id:
         return try jsonResponse(
           .ok, Components.Schemas.FolderSummaryList(items: Self.fixtureSummaries()))
@@ -141,6 +137,33 @@
     /// (row 1), each precedence kind isolated alone (rows 2-5), an all-zero sync rollup (row 6,
     /// proving "no sync signal"), `nothingLeftUnmarked` both true and false, and exactly one
     /// null `lastTouched` (row 3).
+    /// The folder tree the fixture browses. Kinds are the LIVE vocabulary (IMGMGR-173) — a
+    /// fixture kind the API never emits is how the empty-sidebar defect stayed green — and since
+    /// P7 (IMGMGR-217) the SHAPE is live too: a shoot at the tier root (`folderRow-1`, the row
+    /// P6's browse test drives, still exactly where it was), plus a container whose child shoot
+    /// carries a `template` subfolder of its own. Two levels, so the hierarchy P7 renders is
+    /// something a UI test can actually walk instead of a single flat leaf.
+    ///
+    /// The counts are deliberately NOT self-consistent sums: `2026` reports 12 descendants while
+    /// its visible child reports 9 of its own. A client that rolled the numbers up itself would
+    /// show a different figure here, which is the point.
+    private static func fixtureFolders() -> [Components.Schemas.FolderNode] {
+      [
+        .init(
+          descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated",
+          name: "2026-08-27 — Stub Shoot", path: "stub"),
+        .init(
+          descendantImageCount: 12, id: 2, imageCount: 0, kind: "other", name: "2026",
+          path: "2026"),
+        .init(
+          descendantImageCount: 12, id: 3, imageCount: 9, kind: "dated",
+          name: "2026-09-14 — Wandern", parentId: 2, path: "2026/2026-09-14-wandern"),
+        .init(
+          descendantImageCount: 3, id: 4, imageCount: 3, kind: "template", name: "template",
+          parentId: 3, path: "2026/2026-09-14-wandern/template"),
+      ]
+    }
+
     private static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
       [
         Components.Schemas.FolderSummary(
