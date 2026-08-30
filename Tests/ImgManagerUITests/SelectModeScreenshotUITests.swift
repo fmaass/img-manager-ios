@@ -46,12 +46,17 @@ final class SelectModeScreenshotUITests: XCTestCase {
   /// nothing about which control, at what size, in what tree — this makes a red run decisive
   /// instead of another round of hypotheses.
   private func recordBarGeometry(
-    _ app: XCUIApplication, configuration: String, controls: [(String, XCUIElement)]
+    _ app: XCUIApplication, configuration: String, tierProbe: String,
+    controls: [(String, XCUIElement)]
   ) {
     XCTContext.runActivity(named: "Action-bar geometry (\(configuration))") { activity in
       var report = "configuration=\(configuration)\n"
       report += "orientation=\(XCUIDevice.shared.orientation.rawValue)\n"
       report += "app frame=\(app.frame)\n"
+      // The tier the app itself says it rendered, stamped on the More control by the DEBUG
+      // fixture — so a red run names the chosen layout instead of leaving it to be inferred
+      // from the pixel deltas between control origins.
+      report += "chosen \(tierProbe.isEmpty ? "tier=<probe missing>" : tierProbe)\n"
       var anomalous = false
       for (name, element) in controls {
         let exists = element.exists
@@ -163,7 +168,7 @@ final class SelectModeScreenshotUITests: XCTestCase {
       barControls.append(("Clear", clear))
     }
     recordBarGeometry(
-      app, configuration: configuration,
+      app, configuration: configuration, tierProbe: (more.value as? String) ?? "",
       controls: barControls + [("Undo", undo), ("selectModeCaption", caption)])
 
     // Reachability, not just presence: `ActionBarMetrics` claims each tier keeps every control

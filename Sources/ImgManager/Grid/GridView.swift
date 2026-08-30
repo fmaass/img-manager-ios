@@ -51,10 +51,7 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
-      // The bar is told the COLUMN's width; it must not measure its own. `scrollArea`'s
-      // `onGeometryChange` above reports the pane the grid is laid out in (it fills that pane
-      // and never overflows it, which is why the same value already drives row packing).
-      ActionBarView(store: store, availableWidth: paneWidth)
+      ActionBarView(store: store)
     }
     .onChange(of: store.images) { _, _ in publishRows() }
     .onChange(of: store.sceneRows) { _, _ in publishRows() }
@@ -333,8 +330,13 @@ extension View {
 /// How the action bar lays out at one width. A value type, not three properties read off the
 /// view, so `ActionBarMetrics.layout(forWidth:)` is a pure function a test can walk tier by tier.
 struct ActionBarLayout: Equatable {
+  /// Only for evidence: the DEBUG fixture stamps it onto the More control's accessibility value
+  /// so a gate attachment can say which tier actually rendered instead of leaving it to be
+  /// inferred from pixel arithmetic.
+  var name: String
   var spacing: CGFloat
   var horizontalPadding: CGFloat
+  var controlCount: Int
   /// Below the six-control floor, Clear moves INTO the More menu — still a chrome control with
   /// its own identifier and disabled rule, never a gesture-only action, and never a control
   /// squeezed under 44 pt.
@@ -393,32 +395,38 @@ enum ActionBarMetrics {
       + 2 * horizontalPadding
   }
 
-  /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
-  static var sixControlFloor: CGFloat {
-    requiredWidth(spacing: tightSpacing, horizontalPadding: tightHorizontalPadding)
+  static let roomy = ActionBarLayout(
+    name: "roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: controlCount, foldsClearIntoMore: false)
+  static let tight = ActionBarLayout(
+    name: "tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: controlCount, foldsClearIntoMore: false)
+  static let folded = ActionBarLayout(
+    name: "folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: foldedControlCount, foldsClearIntoMore: true)
+
+  /// Widest first. `ActionBarView` renders these in this order through `ViewThatFits`, and
+  /// `layout(forWidth:)` walks the SAME list — so the arithmetic the tests assert and the tier
+  /// the layout system actually picks cannot disagree.
+  static let tiers: [ActionBarLayout] = [roomy, tight, folded]
+
+  static func requiredWidth(for layout: ActionBarLayout) -> CGFloat {
+    requiredWidth(
+      controlCount: layout.controlCount, spacing: layout.spacing,
+      horizontalPadding: layout.horizontalPadding)
   }
+
+  /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
+  static var sixControlFloor: CGFloat { requiredWidth(for: tight) }
 
   /// The narrowest width the folded bar needs: 5×44 + 4×8 + 2×8 = 268 pt.
-  static var foldedFloor: CGFloat {
-    requiredWidth(
-      controlCount: foldedControlCount, spacing: tightSpacing,
-      horizontalPadding: tightHorizontalPadding)
-  }
+  static var foldedFloor: CGFloat { requiredWidth(for: folded) }
 
-  /// The tier for a measured width. Pure, total, and monotonic: roomy while the roomy layout
-  /// fits, tight while six controls still fit, folded below that.
+  /// The tier a given width selects — the arithmetic statement of what `ViewThatFits` decides
+  /// at run time. Total: the narrowest tier is the answer when nothing fits, because a bar that
+  /// must overflow should at least overflow least.
   static func layout(forWidth width: CGFloat) -> ActionBarLayout {
-    if width >= requiredWidth() {
-      return ActionBarLayout(
-        spacing: controlSpacing, horizontalPadding: horizontalPadding, foldsClearIntoMore: false)
-    }
-    if width >= sixControlFloor {
-      return ActionBarLayout(
-        spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
-        foldsClearIntoMore: false)
-    }
-    return ActionBarLayout(
-      spacing: tightSpacing, horizontalPadding: tightHorizontalPadding, foldsClearIntoMore: true)
+    tiers.first { requiredWidth(for: $0) <= width } ?? folded
   }
 }
 
@@ -465,26 +473,35 @@ enum ActionBarMarkControl: CaseIterable {
 /// frame is never applied to the containing `HStack` alone.
 struct ActionBarView: View {
   @Bindable var store: GridStore
-  /// The width of the COLUMN the bar sits in, handed down by `GridView` from the same
-  /// measurement that drives row packing.
-  ///
-  /// The bar cannot measure this itself, which is what the previous attempt got wrong: a bar
-  /// that overflows its column reports its OWN width, not the column's. The gate's landscape
-  /// geometry dump is the proof — six controls laid out to 374 pt inside a ~315 pt Regular-3
-  /// grid column, centred, so `Pick` came out at x = -13.5 (off the window's left edge, hence
-  /// "no suggested hit points based on element frame") while a self-measurement would have read
-  /// the 374 and happily concluded everything fit.
-  var availableWidth: CGFloat
 
-  /// A width of zero means "not measured yet", not "no room": the roomy tier is what the bar
-  /// rendered before any of this, and the first geometry pass corrects it in the same
-  /// transaction.
-  private var layout: ActionBarLayout {
-    ActionBarMetrics.layout(
-      forWidth: availableWidth > 0 ? availableWidth : ActionBarMetrics.requiredWidth())
+  /// Widest tier first, and the LAYOUT SYSTEM picks — not a measurement this view took.
+  ///
+  /// Two measured attempts failed the same way. A bar that overflows its column reports its own
+  /// overflowing width, and plumbing `GridView`'s pane width in changed nothing: the gate's
+  /// landscape attachment shows byte-identical geometry across both, a 16-pt (roomy) rhythm with
+  /// `Pick` at x = -13.5 in a ~315-pt Regular-3 grid column. `ViewThatFits` asks the question the
+  /// right way round — it proposes the CONTAINER's width to each child and takes the first that
+  /// fits — so there is no first pass with a default width, no state to arrive late, and no way
+  /// for the bar to paint wider than what it was handed.
+  var body: some View {
+    ViewThatFits(in: .horizontal) {
+      bar(ActionBarMetrics.roomy)
+      bar(ActionBarMetrics.tight)
+      bar(ActionBarMetrics.folded)
+    }
+    .frame(maxWidth: .infinity)
+    .background(.bar)
+    .sheet(isPresented: $store.isTagEntryPresented) {
+      TagEntrySheet(store: store)
+    }
   }
 
-  var body: some View {
+  /// One tier's rendering. Deliberately NOT `.frame(maxWidth: .infinity)`: a child that claims
+  /// infinite width always "fits", which would make `ViewThatFits` pick the first one every
+  /// time. Its ideal width is its content, which is exactly what has to be compared with the
+  /// column.
+  @ViewBuilder
+  private func bar(_ layout: ActionBarLayout) -> some View {
     HStack(spacing: layout.spacing) {
       let presentation = PickButtonPresentation.for(store.pickLock.state)
       pickButton(presentation: presentation)
@@ -544,17 +561,26 @@ struct ActionBarView: View {
       // secondaryAction toolbar items into an overflow control with the same label, and a UI
       // test that matched on the label alone could drive the wrong one.
       .accessibilityIdentifier("gridMoreMenu")
+      // EVIDENCE, fixture-only: whichever tier `ViewThatFits` chose is the one that renders, so
+      // the chosen child stamps its own name here and a gate attachment can report the tier
+      // instead of inferring it from pixel deltas. Never set outside the DEBUG fixture launch.
+      .accessibilityValue(tierProbeValue(layout))
       .actionBarControlSize()
     }
     .labelStyle(.iconOnly)
     .font(.title3)
     .padding(.horizontal, layout.horizontalPadding)
     .padding(.vertical, ActionBarMetrics.verticalPadding)
-    .frame(maxWidth: .infinity)
-    .background(.bar)
-    .sheet(isPresented: $store.isTagEntryPresented) {
-      TagEntrySheet(store: store)
-    }
+  }
+
+  /// Empty outside the DEBUG screenshot fixture, so nothing about production accessibility
+  /// changes: an empty accessibility value is what an unset one already is.
+  private func tierProbeValue(_ layout: ActionBarLayout) -> String {
+    #if DEBUG
+      return DebugStubLaunch.isActive ? "tier=\(layout.name)" : ""
+    #else
+      return ""
+    #endif
   }
 
   /// The two plain mark controls (Dislike, Clear). Pick is not one of them only because its

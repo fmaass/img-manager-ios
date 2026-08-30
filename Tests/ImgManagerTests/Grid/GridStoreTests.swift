@@ -2338,6 +2338,24 @@ struct ActionBarMetricsTests {
         == ActionBarMetrics.minimumControlSide + ActionBarMetrics.tightSpacing)
   }
 
+  @Test("The tier list is ordered widest-first, which is the order the bar renders them in")
+  func tiersAreOrderedWidestFirst() {
+    // `ActionBarView` feeds these three, in this order, to `ViewThatFits`, which takes the first
+    // that fits the column. `layout(forWidth:)` walks the same list, so this ordering is what
+    // makes the arithmetic below and the rendered result the same statement.
+    let widths = ActionBarMetrics.tiers.map(ActionBarMetrics.requiredWidth(for:))
+    #expect(widths == [376, 320, 268])
+    #expect(widths == widths.sorted(by: >))
+    #expect(ActionBarMetrics.tiers.map(\.name) == ["roomy", "tight", "folded"])
+    #expect(ActionBarMetrics.tiers.filter(\.foldsClearIntoMore).map(\.name) == ["folded"])
+    // Only the folded tier drops a control, and it drops exactly one.
+    #expect(
+      ActionBarMetrics.tiers.map(\.controlCount) == [
+        ActionBarMetrics.controlCount, ActionBarMetrics.controlCount,
+        ActionBarMetrics.foldedControlCount,
+      ])
+  }
+
   @Test("A seventh control would not fit the roomy tier — the guard covers the count too")
   func aSeventhControlWouldNotFit() {
     #expect(
