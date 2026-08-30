@@ -22,13 +22,27 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
       "Action bar (Dislike button) never appeared — expected the DEBUG fixture composition's "
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
+    // A tile carries no accessibility identifier, so the loupe is opened by probing the content
+    // area with taps. The probe is a GRID of points rather than a handful, because the pane the
+    // tiles occupy differs by layout mode (full width on Compact, the middle pane of three on a
+    // large iPad) and this test must not encode which — no idiom branching, and no guess about
+    // pane widths that would silently rot.
     let close = app.buttons["loupeClose"]
-    let candidates: [(CGFloat, CGFloat)] = [
-      (0.25, 0.35), (0.5, 0.35), (0.45, 0.45), (0.25, 0.55), (0.6, 0.5), (0.35, 0.62),
-    ]
-    for (dx, dy) in candidates where !close.exists {
-      app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
-      _ = close.waitForExistence(timeout: 3)
+    let columns: [CGFloat] = [0.5, 0.4, 0.6, 0.7, 0.3, 0.8, 0.25, 0.85]
+    let rows: [CGFloat] = [0.35, 0.45, 0.55, 0.28]
+    for dy in rows {
+      for dx in columns where !close.exists {
+        app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
+        _ = close.waitForExistence(timeout: 1)
+      }
+    }
+    if !close.exists {
+      // Retained so a failure here is diagnosable from the log alone instead of costing another
+      // gate cycle to find out what was actually on screen.
+      XCTContext.runActivity(named: "element tree when no tile was hit") { activity in
+        activity.add(XCTAttachment(string: app.debugDescription))
+      }
+      attach(name: "loupe-never-opened")
     }
     XCTAssertTrue(
       close.exists,
