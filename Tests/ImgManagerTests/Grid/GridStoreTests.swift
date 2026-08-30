@@ -384,7 +384,7 @@ struct GridStoreTests {
   func lockEntryDisabledDuringSelect() async {
     let (store, _) = makeStore()
     store.selection.enterSelectExplicitly()
-    await store.activatePickButton()
+    await store.activateLatchButton(.pick)
     #expect(store.pickLock.state == .idle)
   }
 
@@ -499,8 +499,8 @@ struct GridStoreTests {
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
 
     // Two presses in immediate succession: outside Select this pair latches.
-    await store.activateDislikeButton()
-    await store.activateDislikeButton()
+    await store.activateLatchButton(.dislike)
+    await store.activateLatchButton(.dislike)
     #expect(store.pickLock.state == .idle)
     let bulk = await transport.lastMarkStateRequest
     #expect(bulk?.state == .dislike)
@@ -521,7 +521,7 @@ struct GridStoreTests {
 
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
-    await store.activateDislikeButton()
+    await store.activateLatchButton(.dislike)
 
     #expect(store.pickLock.state == .idle)
     let applied = await transport.lastMarkStateRequest
@@ -2161,7 +2161,7 @@ struct GridStoreBulkMarkTests {
             .init(imageId: 40, revision: "r1"), .init(imageId: 10, revision: "r1"),
             .init(imageId: 30, revision: "r1"), .init(imageId: 20, revision: "r1"),
           ])))
-    await store.activatePickButton()
+    await store.activateLatchButton(.pick)
 
     let sent = await transport.lastMarkStateRequest
     #expect(sent?.imageIds == [40, 10, 30, 20])
@@ -2333,7 +2333,7 @@ struct GridStoreBulkMarkTests {
     #expect(store.markTargetImageIDs.isEmpty)
     #expect(store.tagTargetImageIDs.isEmpty)
 
-    await store.activatePickButton()
+    await store.activateLatchButton(.pick)
     await store.applyMarkToTarget(.dislike)
     await store.applyMarkToTarget(.none)
     await store.handlePickShortcut(shiftHeld: false)
@@ -2353,7 +2353,7 @@ struct GridStoreBulkMarkTests {
     await store.tapTile(2)
     #expect(store.markTargetImageIDs == [2])
     await transport.setMarkStateOutcome(.success(.init(applied: 1, requested: 1, revisions: [])))
-    await store.activatePickButton()
+    await store.activateLatchButton(.pick)
     #expect(await transport.callCount(markStateOperation) == 1)
     let sent = await transport.lastMarkStateRequest
     #expect(sent?.imageIds == [2])

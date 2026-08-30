@@ -1114,16 +1114,11 @@ final class GridStore {
 
   // MARK: - Pick Lock / Dislike Lock (WP13 P2, IMGMGR-222)
 
-  func activatePickButton() async { await activateLatchButton(.pick) }
-
-  /// Dislike's button is a latch-capable control exactly as Pick's is (owner decision 4,
-  /// 2026-08-30). It is the SAME method with the other verb, not a parallel one — which is what
-  /// makes "the two locks are mutually exclusive" a fact about `PickLockState` rather than a
-  /// rule this coordinator has to police.
-  func activateDislikeButton() async { await activateLatchButton(.dislike) }
-
-  /// The one entry point both latch-capable bar buttons call — `GridView.latchButton(_:)` passes
-  /// the verb, so the view holds no rule of its own about what a press means.
+  /// The ONE entry point both latch-capable bar buttons call — `GridView.latchButton(_:)` passes
+  /// the verb, so the view holds no rule of its own about what a press means, and Dislike is a
+  /// latch-capable control on exactly the terms Pick is (owner decision 4, 2026-08-30). That
+  /// single funnel is what makes "the two locks are mutually exclusive" a fact about
+  /// `PickLockState` rather than a rule this coordinator has to police.
   func activateLatchButton(_ verb: LatchVerb) async {
     // Lock ENTRY stays disabled while Select is active (pin e) — but the button itself is no
     // longer disabled with it: in Select mode a mark control is an ordinary bulk mark on the
@@ -1300,7 +1295,7 @@ final class GridStore {
   /// REFUSED no-op (no snapshot is ever taken while `true`) — the sanctioned alternative to a
   /// serialization queue the addendum names ("serialize... or disable mark chrome while one is
   /// in flight"). The view also disables the mark bar's controls while this is true, same
-  /// "the guard is the source of truth independent of the view" posture `activatePickButton`'s
+  /// "the guard is the source of truth independent of the view" posture `activateLatchButton`'s
   /// own `selection.mode != .select` guard already uses.
   ///
   /// P6: the SAME flag is now the "one ordered mark/refresh lane" (plan item 2) -- `applyMark`/
