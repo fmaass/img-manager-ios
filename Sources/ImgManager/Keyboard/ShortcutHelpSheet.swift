@@ -17,7 +17,7 @@ struct ShortcutHelpRow: Identifiable, Equatable, Sendable {
 /// here, and one that IS active cannot be missing.
 enum ShortcutHelpModel {
   static var rows: [ShortcutHelpRow] {
-    ShortcutCatalog.activeEntries.dropLast().map { entry in
+    ShortcutCatalog.activeEntries.map { entry in
       ShortcutHelpRow(id: entry.id.rawValue, key: entry.id.keyLabel, meaning: entry.id.meaning)
     }
   }

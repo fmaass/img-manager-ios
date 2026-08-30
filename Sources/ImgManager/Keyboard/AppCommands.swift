@@ -158,7 +158,7 @@ extension AppCommands {
   /// enum's own case list with the digits, so a seventh step cannot silently lose its key —
   /// `ShortcutCatalogTests` asserts the two counts are equal rather than trusting the zip.
   @MainActor static let zoomDeclarations: [MenuCommandDeclaration] =
-    zip(GridRowHeight.allCases, "12345a").map { step, digit in
+    zip(GridRowHeight.allCases, "123456").map { step, digit in
       MenuCommandDeclaration(
         id: "view.zoom.\(Int(step.rawValue))", shortcut: .zoomStep,
         title: "\(Int(step.rawValue)) pt", key: KeyEquivalent(digit), modifiers: [.command],
@@ -187,6 +187,16 @@ extension AppCommands {
     MenuCommandGroup(id: "view.zoom", items: AppCommands.zoomDeclarations),
     // `?` is the web set's own key and ⌘/ is its Command-equivalent — decision 9's "both,
     // never one replacing the other". Two declarations, one action, exactly like Open above.
+    MenuCommandGroup(
+      id: "view.help",
+      items: [
+        MenuCommandDeclaration(
+          id: "view.help.command", shortcut: .help, title: "Keyboard Shortcuts",
+          key: KeyEquivalent("/"), modifiers: [.command], run: { $0.showShortcutHelp() }),
+        MenuCommandDeclaration(
+          id: "view.help.question", shortcut: .help, title: "Keyboard Shortcuts",
+          key: KeyEquivalent("?"), modifiers: [], run: { $0.showShortcutHelp() }),
+      ]),
   ]
 
   /// Every declaration in every menu, flattened — the set `ShortcutCatalogTests` reconciles
