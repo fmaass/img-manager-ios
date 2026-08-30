@@ -12,9 +12,8 @@
   /// `operationID`, exactly like the test-target `GridStubTransport` — this is its Debug-build
   /// sibling, for retained SCREENSHOT evidence rather than `swift test`.
   actor DebugStubTransport: ClientTransport {
-    /// A minimal valid 1×1 JPEG — screenshots need SOME decodable image, not a photorealistic
-    /// one, to prove tiles render rather than show placeholders.
-    private let tinyJPEG = Data(
+    /// A minimal valid 1×1 JPEG — the last-resort fallback where no drawing API exists.
+    private static let tinyJPEG = Data(
       base64Encoded:
         "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k="
     )!
@@ -60,7 +59,9 @@
       case Operations.GetProxyApiImagesImageIdProxyTierGet.id:
         var response = HTTPResponse(status: .ok)
         response.headerFields[.contentType] = "image/jpeg"
-        return (response, HTTPBody(tinyJPEG))
+        let tier = request.path.flatMap { URLComponents(string: $0)?.path }?
+          .split(separator: "/").last.map(String.init)
+        return (response, HTTPBody(Self.fixtureProxy(tier: tier)))
       case Operations.SetMarkStateApiMarksStatePost.id:
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
@@ -81,6 +82,28 @@
       encoder.dateEncodingStrategy = .iso8601
       let data = try encoder.encode(body)
       return (response, HTTPBody(data))
+    }
+
+    /// WP13 P3 (IMGMGR-213): the retained zoom screenshots need a fixture proxy with REAL
+    /// production geometry — the deployed backend renders `preview` at 1600 px on the long edge
+    /// and `grid` at 400 px (probed 2026-08-30), and the phase's own probe measured 16 deployed
+    /// previews at exactly 1600x1067. A 1x1 placeholder makes the fitted extent square and the
+    /// 1:1 ceiling meaningless, so "fit versus 100 %" could not be photographed at all. The
+    /// pattern is a resolution wedge: hairlines whose pitch widens across the frame, so the
+    /// difference between fit and 1:1 is visible in a screenshot rather than asserted.
+    private static func fixtureProxy(tier: String?) -> Data {
+      tier == ProxyTier.grid.rawValue ? gridFixture : previewFixture
+    }
+
+    private static let previewFixture: Data = renderFixture(width: 1600, height: 1067)
+    private static let gridFixture: Data = renderFixture(width: 400, height: 267)
+
+    private static func renderFixture(width: Int, height: Int) -> Data {
+      #if canImport(UIKit)
+        return DebugStubProxyRenderer.jpeg(width: width, height: height) ?? tinyJPEG
+      #else
+        return tinyJPEG
+      #endif
     }
 
     /// A dozen fixture images spanning several aspect ratios — including a panorama (index 3)
@@ -208,4 +231,42 @@
       ProcessInfo.processInfo.arguments.contains("-UITestStubSkipAutoSelect")
     }
   }
+
+  #if canImport(UIKit)
+    import UIKit
+
+    /// Draws the DEBUG fixture proxy. Offscreen only, never on a shipping path — this whole
+    /// file sits inside `#if DEBUG`, so a Release/TestFlight archive contains none of it.
+    enum DebugStubProxyRenderer {
+      static func jpeg(width: Int, height: Int) -> Data? {
+        let size = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+          UIColor(white: 0.10, alpha: 1).setFill()
+          context.fill(CGRect(origin: .zero, size: size))
+          UIColor(white: 0.90, alpha: 1).setStroke()
+          let wedge = UIBezierPath()
+          wedge.lineWidth = 1
+          var x = size.width * 0.04
+          var pitch: CGFloat = 2
+          while x < size.width * 0.96 {
+            wedge.move(to: CGPoint(x: x.rounded() + 0.5, y: size.height * 0.06))
+            wedge.addLine(to: CGPoint(x: x.rounded() + 0.5, y: size.height * 0.94))
+            x += pitch
+            pitch = min(24, pitch * 1.012)
+          }
+          wedge.stroke()
+          UIColor(red: 0.95, green: 0.55, blue: 0.15, alpha: 1).setFill()
+          let bar = CGRect(
+            x: size.width * 0.04, y: size.height * 0.46,
+            width: size.width * 0.92, height: max(1, size.height * 0.01))
+          context.fill(bar)
+        }
+        // The deployed render profile encodes at quality 85 (`PROXY_JPEG_QUALITY`, probed
+        // 2026-08-30), so the fixture carries the same compression character.
+        return image.jpegData(compressionQuality: 0.85)
+      }
+    }
+  #endif
 #endif

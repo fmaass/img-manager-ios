@@ -13,6 +13,18 @@ import SwiftUI
 ///
 /// Pixels: `.preview` tier only (spec: "the loupe never requests originals") — this view never
 /// requests `.grid` for its own main image (the filmstrip's thumbnails do, same as `TileView`).
+/// WP13 P3 (IMGMGR-213) adds zoom, and zoom does NOT change that: magnification is 1:1 against
+/// the SAME `preview` proxy at every scale, because 1600 px is the largest proxy the backend
+/// renders. `theLoupeNeverRequestsAnythingButThePreviewTier` pins it.
+///
+/// ## Zoom state: normalise on read, normalise on write
+///
+/// `zoomModel` holds the last COMMITTED zoom. Every read (`resolvedZoom`) and every write
+/// (`mutateZoom`) first routes the currently focused image id through `zoomInstaller`
+/// `applyFrameChange`, so a frame change resets the zoom even before the `.task` below has run —
+/// and `body` itself therefore exercises the seam, which is what
+/// `LoupeZoomWiringTests.bodyRoutesAFocusChangeIntoTheInstaller` observes. The `.task` still
+/// commits the reset to storage so that stepping A -> B -> A cannot restore A's old zoom.
 struct LoupeView: View {
   @Bindable var store: GridStore
   let layoutMode: LayoutMode
@@ -20,7 +32,27 @@ struct LoupeView: View {
   /// full-screen presentations of this same loupe (they are mutually exclusive but swap freely,
   /// and a prepared export must not be lost — or leaked — across that swap).
   let share: ShareExportStore
+
+  /// The production reset adapter; a test substitutes a spy (see the type's own doc comment for
+  /// why it is a value and not a view-wrapping closure).
+  var zoomInstaller: LoupeZoomInstaller = .live
+  /// The production zoom surfaces (chrome twin + gestures); a test substitutes a spy.
+  var zoomControls: LoupeZoomControls = .live
+
   @State private var proxyImage: PlatformImage?
+  @State private var zoomModel: LoupeZoomModel
+  @State private var imageViewport: CGSize = .zero
+  @Environment(\.displayScale) private var displayScale
+
+  init(
+    store: GridStore, layoutMode: LayoutMode, share: ShareExportStore,
+    zoomModel: LoupeZoomModel = LoupeZoomModel()
+  ) {
+    self.store = store
+    self.layoutMode = layoutMode
+    self.share = share
+    _zoomModel = State(initialValue: zoomModel)
+  }
 
   private var focusedImage: Components.Schemas.ImageSummary? {
     guard let id = store.focusedImageID else { return nil }
@@ -29,11 +61,53 @@ struct LoupeView: View {
     return store.actionableImages.first { $0.id == id }
   }
 
+  /// The zoom AS RENDERED: committed storage, normalised against the photograph currently in the
+  /// loupe. Pure — it never writes, so reading it during `body` is not a state mutation.
+  var resolvedZoom: LoupeZoomState {
+    // RED SCAFFOLD (WP13 P3): the call site leg 3 exists to catch is not here yet.
+    return zoomModel.state
+  }
+
+  /// Every zoom write goes through here: normalise for the current frame first, then apply, then
+  /// commit. One place, so no call site can forget the reset.
+  func mutateZoom(_ change: (inout LoupeZoomState) -> Void) {
+    var next = zoomModel.state
+    change(&next)
+    zoomModel.state = next
+  }
+
+  /// THE zoom action, built once per `body` and handed to both surfaces — the chrome control and
+  /// the double-tap. Two call sites, one function: "100 %" cannot come to mean two things.
+  private var zoomToggleAction: () -> Void {
+    { mutateZoom { $0.toggle() } }
+  }
+
+  /// Real pixel dimensions of the decoded proxy — `UIImage.size` is in POINTS, so a proxy decoded
+  /// at a non-1 scale would otherwise understate the pixels the zoom ceiling is derived from.
+  private var proxyPixelSize: CGSize {
+    guard let proxyImage else { return .zero }
+    #if canImport(UIKit)
+      return CGSize(
+        width: proxyImage.size.width * proxyImage.scale,
+        height: proxyImage.size.height * proxyImage.scale)
+    #else
+      return proxyImage.size
+    #endif
+  }
+
+  private func syncZoomGeometry() {
+    mutateZoom {
+      $0.updateGeometry(
+        proxyPixels: proxyPixelSize, viewport: imageViewport, displayScale: displayScale)
+    }
+  }
+
   var body: some View {
-    VStack(spacing: 0) {
-      header
+    let zoomToggle = zoomToggleAction
+    return VStack(spacing: 0) {
+      header(zoomToggle: zoomToggle)
       ShareStatusBar(share: share)
-      mainImageArea
+      mainImageArea(zoomToggle: zoomToggle)
       if layoutMode != .compact {
         FilmstripView(store: store)
       }
@@ -41,16 +115,21 @@ struct LoupeView: View {
       LoupeMarkBar(store: store)
     }
     .task(id: store.focusedImageID) {
+      // Commit the frame-change reset to storage (the render already reflects it through
+      // `resolvedZoom`): without this, stepping away from a zoomed frame and back would restore
+      // the old magnification instead of opening at fit.
+      mutateZoom { _ in }
       // A prepared export names the photograph it was made from, so it never outlives that
       // photograph being the focused one — the temp file is deleted the moment focus moves, not
       // left behind for whatever the user shares next. This is the SUPERSEDE, not a completion:
       // the context changed, so it abandons every generation rather than ending a named one.
       share.supersede()
       await loadMainImage()
+      syncZoomGeometry()
     }
   }
 
-  private var header: some View {
+  private func header(zoomToggle: @escaping () -> Void) -> some View {
     HStack {
       Button {
         store.closeLoupe()
@@ -72,6 +151,11 @@ struct LoupeView: View {
 
       Spacer()
 
+      // The chrome twin for zoom (persistent-chrome rule: zero gesture-only actions). Present in
+      // EVERY layout mode, including Compact where the header is at its tightest — the rule is
+      // not conditional on there being room.
+      zoomControls.makeToggleControl(LoupeZoomControlModel(resolvedZoom), zoomToggle)
+
       // Both idioms — on Compact this is the only trailing control, which is exactly the point:
       // sharing is reachable from persistent chrome on the phone too, not just where there is
       // room for a toolbar full of things.
@@ -92,20 +176,40 @@ struct LoupeView: View {
     .padding(.horizontal)
   }
 
-  private var mainImageArea: some View {
-    ZStack {
-      Group {
-        if let proxyImage {
-          PlatformImageView(image: proxyImage)
-            .aspectRatio(contentMode: .fit)
-        } else {
-          Rectangle().fill(.quaternary)
-        }
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .contentShape(Rectangle())
-      .gesture(swipeGesture)
-      .accessibilityIdentifier("loupeImage")
+  private func mainImageArea(zoomToggle: @escaping () -> Void) -> some View {
+    let zoom = resolvedZoom
+    return ZStack {
+      zoomControls.attachGestures(
+        AnyView(
+          Group {
+            if let proxyImage {
+              PlatformImageView(image: proxyImage)
+                .aspectRatio(contentMode: .fit)
+            } else {
+              Rectangle().fill(.quaternary)
+            }
+          }
+          .scaleEffect(zoom.scale)
+          .offset(zoom.offset)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .clipped()
+          .contentShape(Rectangle())
+          .accessibilityIdentifier("loupeImage")
+          .onGeometryChange(for: CGSize.self) {
+            $0.size
+          } action: { size in
+            imageViewport = size
+            syncZoomGeometry()
+          }
+        ),
+        LoupeZoomGestureHandlers(
+          onToggle: zoomToggle,
+          onMagnify: { magnification in mutateZoom { $0.magnify(to: magnification) } },
+          onMagnifyEnded: { mutateZoom { $0.endMagnify() } },
+          onDrag: { translation in mutateZoom { $0.pan(to: translation) } },
+          onDragEnded: { translation in handleDragEnded(translation) }
+        )
+      )
 
       // Chrome prev/next controls ALONGSIDE swipe (spec: "never gesture-only") — overlaid on
       // the image, never the sole way to advance.
@@ -141,18 +245,26 @@ struct LoupeView: View {
     .frame(maxHeight: .infinity)
   }
 
-  private var swipeGesture: some Gesture {
-    DragGesture(minimumDistance: 30)
-      .onEnded { value in
-        if value.translation.width < -30 {
-          Task { await store.loupeNext() }
-        } else if value.translation.width > 30 {
-          store.loupePrevious()
-        }
+  /// The arbitration invariant: while zoomed a drag PANS, at fit it advances the frame on the
+  /// same +/-30 pt threshold the shipped loupe used. Decided by the pure `dragOutcome`, never by
+  /// gesture-priority luck — `aHorizontalDragAdvancesAtFitAndPansWhenZoomed` pins it.
+  func handleDragEnded(_ translation: CGSize) {
+    switch LoupeZoomState.dragOutcome(translation: translation, isZoomed: resolvedZoom.isZoomed) {
+    case .pan(let committed):
+      mutateZoom {
+        $0.pan(to: committed)
+        $0.endPan()
       }
+    case .advanceNext:
+      Task { await store.loupeNext() }
+    case .advancePrevious:
+      store.loupePrevious()
+    case .ignored:
+      break
+    }
   }
 
-  private func loadMainImage() async {
+  func loadMainImage() async {
     guard let image = focusedImage else {
       proxyImage = nil
       return
