@@ -37,7 +37,7 @@ final class SelectModeScreenshotUITests: XCTestCase {
       "Select mode is active but no mode row is on screen — the only way out would be the More "
         + "menu, which is the discoverability defect this phase closes.")
 
-    let pick = app.buttons["Pick"]
+    let pick = app.buttons["gridPickButton"]
     let dislike = app.buttons["gridDislikeButton"]
     let clear = app.buttons["gridClearButton"]
     let undo = app.buttons["gridUndoButton"]
