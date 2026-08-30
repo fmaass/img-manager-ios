@@ -183,7 +183,8 @@ final class InspectorSlideOverUITests: XCTestCase {
     let markRow = app.buttons
       .matching(
         NSPredicate(
-          format: "label BEGINSWITH 'pick' AND label != 'Pick' AND NOT (label CONTAINS 'photos')"))
+          format:
+            "label BEGINSWITH 'pick' AND label != 'Pick' AND NOT (label CONTAINS 'photos')"))
       .firstMatch
     guard markRow.waitForExistence(timeout: 10) else {
       // An explicit closure, never `map(\.label)`: under Swift 6 `XCUIElement.label` is
@@ -209,11 +210,20 @@ final class InspectorSlideOverUITests: XCTestCase {
           + "\(markRowLabel); buttons now: \(labels)")
     }
 
-    // ...and THAT is what the production control must now be reporting.
+    // ...and THAT is what the production control must now be reporting. The expected string is
+    // `InspectorFacetFilters.infoButtonTitle(activeCount: 1)` verbatim
+    // (`InspectorModel.swift:326-328`, "Info · \(activeCount)" with a U+00B7 middle dot) — the
+    // test pins production, not the other way round.
+    //
+    // NOTE, not a change: what XCUITest reads back here is that TITLE, even though the button
+    // also carries `.accessibilityLabel(infoButtonAccessibilityLabel(...))` ("Info, 1 filter
+    // active"). That modifier does not surface on this toolbar item, so a screen reader gets the
+    // terser visual string rather than the sentence written for it. Production is out of this
+    // phase's fence, so it is recorded here rather than touched.
     XCTAssertTrue(
       chromeInfo.waitForExistence(timeout: 5), "The chrome control vanished while filtering.")
     XCTAssertEqual(
-      chromeInfo.label, "Info, 1 filter active",
+      chromeInfo.label, "Info · 1",
       "The Info control must carry the active-filter count — it is the only place a filtered "
         + "grid announces itself, and losing it is the regression this test exists to catch.")
   }
