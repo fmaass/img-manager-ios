@@ -148,6 +148,16 @@ struct LoupeZoomStateTests {
     #expect(state.focusedImageID == 8)
   }
 
+  @Test("the accessibility value reports the magnification and the pan, in that exact shape")
+  func accessibilityValueReportsMagnificationAndPan() {
+    var state = phoneState()
+    #expect(state.accessibilityValue == "zoom 100 %, pan 0, 0")
+    state.toggle()
+    #expect(state.accessibilityValue == "zoom 200 %, pan 0, 0")
+    state.pan(to: CGSize(width: -1_000, height: 0))
+    #expect(state.accessibilityValue == "zoom 200 %, pan -200, 0")
+  }
+
   @Test("a horizontal drag advances at fit and pans when zoomed (the pure decision)")
   func dragOutcomeSwitchesOnZoom() {
     #expect(

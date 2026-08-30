@@ -197,6 +197,8 @@ struct LoupeView: View {
           .clipped()
           .contentShape(Rectangle())
           .accessibilityIdentifier("loupeImage")
+          .accessibilityLabel("Photograph")
+          .accessibilityValue(zoom.accessibilityValue)
           .onGeometryChange(for: CGSize.self) {
             $0.size
           } action: { size in

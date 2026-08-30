@@ -95,6 +95,18 @@ struct LoupeZoomState: Equatable, Sendable {
 
   var isZoomed: Bool { scale > 1 }
 
+  /// What the zoomed photograph announces about its own state — the magnification it is showing
+  /// and how far it has been panned from centre. It exists first for VoiceOver, which otherwise
+  /// has no way to know a pinch or a drag changed anything; the loupe's zoom UI test reads the
+  /// same value, which is what gives the PRODUCTION `MagnifyGesture` and `DragGesture`
+  /// attachments causal coverage (diff-gate round 1, blocker 1: the spy-substituted unit tests
+  /// cannot see whether `.live` attaches them at all). Percentages are against the PROXY, never
+  /// the original — the same honesty the control's own title keeps.
+  var accessibilityValue: String {
+    let percent = Int((scale * 100).rounded())
+    return "zoom \(percent) %, pan \(Int(offset.width.rounded())), \(Int(offset.height.rounded()))"
+  }
+
   // MARK: - Mutations
 
   /// Re-states the geometry after a layout or image change and re-clamps whatever was already
