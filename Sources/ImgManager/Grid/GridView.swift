@@ -246,6 +246,13 @@ struct GridGroupControl: View {
     } label: {
       Label(Self.title(for: store.displayMode), systemImage: "square.stack")
     }
+    // The value has to stay VISIBLE, not just present in the accessibility label: a nav-bar
+    // `Label` renders icon-only by default, and an icon-only menu is precisely what the owner
+    // could not find (gap audit /link/3282, owner feedback (c)). Observed on the iPad Pro 13"
+    // simulator before this line existed — the two toolbar items showed a box and a 2x2 grid
+    // and nothing else. No effect on Compact's options row, where a `Label` in a plain HStack
+    // already draws both.
+    .labelStyle(.titleAndIcon)
     .accessibilityIdentifier("gridGroupControl")
   }
 
@@ -281,6 +288,7 @@ struct GridZoomControl: View {
     } label: {
       Label(Self.title(for: store.rowHeight), systemImage: "square.grid.2x2")
     }
+    .labelStyle(.titleAndIcon)
     .accessibilityIdentifier("gridZoomControl")
   }
 
