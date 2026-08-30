@@ -2255,30 +2255,78 @@ struct GridStoreBulkMarkTests {
   }
 }
 
-/// WP13 P1, diff-gate round 1: adding Clear made the action bar SIX controls, and six 44-pt
-/// controls at the shipped 24-pt rhythm do not fit an iPhone. Every number here comes from
-/// `ActionBarMetrics`, which is what `ActionBarView` lays out with — there is no second
-/// declaration for this suite to agree with while the view drifts away from it.
-@Suite("Grid action bar geometry (six controls must still fit Compact)")
+/// WP13 P1, diff-gate rounds 1 and 5. Adding Clear made the action bar SIX controls, and six
+/// 44-pt controls at the shipped 24-pt rhythm do not fit an iPhone (416 pt against 402). The
+/// iPad landscape leg then showed the roomy 376-pt layout does not fit the Regular-3 GRID COLUMN
+/// either — the middle column of a three-pane split whose width this app never pins. So the
+/// bar no longer bets on a width: `ActionBarMetrics.layout(forWidth:)` picks a tier for the
+/// width it is handed, and every number below comes from that type, which is what
+/// `ActionBarView` lays out with.
+@Suite("Grid action bar geometry (the bar must fit the column it is given)")
 struct ActionBarMetricsTests {
 
-  @Test("Six 44-pt controls, their gaps and the bar's padding fit the narrowest Compact width")
-  func sixControlsFitTheNarrowestCompactWidth() {
+  @Test("Six 44-pt controls fit BOTH the narrowest Compact width and a Regular-3 grid column")
+  func sixControlsFitTheNarrowestCompactAndRegular3Widths() {
     #expect(ActionBarMetrics.controlCount == 6)
+    #expect(ActionBarMetrics.minimumControlSide == 44)
+    // Compact: the roomy tier fits outright.
     #expect(ActionBarMetrics.requiredWidth() <= ActionBarMetrics.narrowestCompactWidth)
+    // Regular-3: the app pins no column widths, so the pin is a conservative worst case built
+    // from the layout's OWN constant — the grid is one of three columns in the narrowest window
+    // that resolves Regular-3, so a third of it is a floor no equal-or-better split falls under.
+    #expect(ActionBarMetrics.sixControlFloor <= ActionBarMetrics.narrowestRegular3Window / 3)
+    #expect(ActionBarMetrics.narrowestRegular3Window == LayoutResolver.regular3Threshold)
   }
 
-  @Test("The rhythm that stopped fitting is pinned as an executable fact, not a comment")
-  func theShippedSpacingWouldNotHaveFit() {
-    // 6×44 + 5×24 + 2×16 = 416 against 402: the overflow the diff gate found. Asserted so
-    // the gap cannot drift back up without a failing test, and so the REASON for 16 pt is
-    // written down where it is executed.
+  @Test("The rhythms that stopped fitting are pinned as executable facts, not comments")
+  func theShippedRhythmsWouldNotHaveFit() {
+    // 6×44 + 5×24 + 2×16 = 416 against 402: the Compact overflow the first diff gate found.
     #expect(ActionBarMetrics.requiredWidth(spacing: 24) == 416)
     #expect(ActionBarMetrics.requiredWidth(spacing: 24) > ActionBarMetrics.narrowestCompactWidth)
-    #expect(ActionBarMetrics.requiredWidth(spacing: 16) == 376)
+    // 6×44 + 5×16 + 2×16 = 376: fits Compact, and is exactly what the iPad landscape leg
+    // showed does NOT fit a Regular-3 grid column — hence a tier below it rather than a wider
+    // promise.
+    #expect(ActionBarMetrics.requiredWidth() == 376)
+    #expect(ActionBarMetrics.sixControlFloor == 320)
+    #expect(ActionBarMetrics.foldedFloor == 268)
   }
 
-  @Test("A seventh control would not fit either — the guard covers the count, not just the gap")
+  @Test("The bar tightens, then folds Clear into More, as the column narrows")
+  func layoutTightensThenFoldsAsTheColumnNarrows() {
+    let roomy = ActionBarMetrics.layout(forWidth: ActionBarMetrics.requiredWidth())
+    #expect(roomy.spacing == ActionBarMetrics.controlSpacing)
+    #expect(roomy.horizontalPadding == ActionBarMetrics.horizontalPadding)
+    #expect(!roomy.foldsClearIntoMore)
+
+    let tight = ActionBarMetrics.layout(forWidth: ActionBarMetrics.requiredWidth() - 1)
+    #expect(tight.spacing == ActionBarMetrics.tightSpacing)
+    #expect(tight.horizontalPadding == ActionBarMetrics.tightHorizontalPadding)
+    #expect(!tight.foldsClearIntoMore)
+
+    let atFloor = ActionBarMetrics.layout(forWidth: ActionBarMetrics.sixControlFloor)
+    #expect(!atFloor.foldsClearIntoMore)
+
+    let folded = ActionBarMetrics.layout(forWidth: ActionBarMetrics.sixControlFloor - 1)
+    #expect(folded.foldsClearIntoMore)
+    #expect(folded.spacing == ActionBarMetrics.tightSpacing)
+  }
+
+  @Test("Every tier fits the width that selects it, with no control under 44 pt")
+  func everyTierFitsTheWidthThatSelectsIt() {
+    #expect(
+      ActionBarMetrics.requiredWidth(
+        spacing: ActionBarMetrics.tightSpacing,
+        horizontalPadding: ActionBarMetrics.tightHorizontalPadding)
+        == ActionBarMetrics.sixControlFloor)
+    #expect(ActionBarMetrics.foldedFloor < ActionBarMetrics.sixControlFloor)
+    // The folded tier buys exactly one control's worth of room, and buys it by MOVING the
+    // control into the More menu — never by shrinking one.
+    #expect(
+      ActionBarMetrics.sixControlFloor - ActionBarMetrics.foldedFloor
+        == ActionBarMetrics.minimumControlSide + ActionBarMetrics.tightSpacing)
+  }
+
+  @Test("A seventh control would not fit the roomy tier — the guard covers the count too")
   func aSeventhControlWouldNotFit() {
     #expect(
       ActionBarMetrics.requiredWidth(controlCount: 7) > ActionBarMetrics.narrowestCompactWidth)

@@ -327,34 +327,88 @@ extension View {
   }
 }
 
+/// How the action bar lays out at one width. A value type, not three properties read off the
+/// view, so `ActionBarMetrics.layout(forWidth:)` is a pure function a test can walk tier by tier.
+struct ActionBarLayout: Equatable {
+  var spacing: CGFloat
+  var horizontalPadding: CGFloat
+  /// Below the six-control floor, Clear moves INTO the More menu — still a chrome control with
+  /// its own identifier and disabled rule, never a gesture-only action, and never a control
+  /// squeezed under 44 pt.
+  var foldsClearIntoMore: Bool
+}
+
 /// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
-/// it against — no second, drifting declaration. Adding Clear made the bar SIX controls, and the
-/// shipped 24-pt rhythm no longer fits: 6×44 + 5×24 + 2×16 = 416 pt against a 402-pt Compact
-/// width, which clips the edge controls out of their required 44-pt reachable region. The gap is
-/// 16 pt instead, for 376 pt, and `ActionBarMetricsTests` fails if that stops being true.
+/// it against — no second, drifting declaration.
+///
+/// Two failures shaped this. Adding Clear made the bar SIX controls and the shipped 24-pt rhythm
+/// stopped fitting an iPhone: 6×44 + 5×24 + 2×16 = 416 pt against 402. Then the iPad
+/// landscape leg (gate GREEN-8) showed the roomy 376-pt layout does not fit the Regular-3 GRID
+/// COLUMN either — the middle column of a three-pane split, whose width this app never pins
+/// (`NavigationSplitView` sizes it, `.prominentDetail`). So the bar no longer bets on a width at
+/// all: it measures the one it is given and picks a tier — roomy, tight, or tight-with-Clear-
+/// folded — each of which keeps every control at its full 44 pt.
 enum ActionBarMetrics {
   /// The narrowest Compact width this app targets — the gate's own iPhone destination
-  /// (iPhone 17 Pro, 402 pt portrait). A bar that fits here fits every wider layout.
+  /// (iPhone 17 Pro, 402 pt portrait).
   static let narrowestCompactWidth: CGFloat = 402
-  /// Fold item 4: every control keeps its OWN — never the row's — 44×44 hit region.
+  /// The narrowest WINDOW that resolves Regular-3, taken from the layout's own constant rather
+  /// than restated here. The app pins no column widths, so the grid column's share of this is
+  /// system-chosen; `sixControlFloor` is checked against a conservative third of it, and the
+  /// runtime tiers below cover anything narrower still.
+  static let narrowestRegular3Window: CGFloat = LayoutResolver.regular3Threshold
+  /// Fold item 4: every control keeps its OWN — never the row's — 44×44 hit region. This is
+  /// the one number no tier is allowed to shrink.
   static let minimumControlSide: CGFloat = 44
   static let horizontalPadding: CGFloat = 16
   static let verticalPadding: CGFloat = 16
   static let controlSpacing: CGFloat = 16
-  /// Pick, Dislike, Clear, Undo, Tag, More. Kept beside the layout it describes; the retained
-  /// screenshot test asserts each of the six is present AND hittable at Compact width, which is
-  /// what catches a seventh control being added without re-checking this arithmetic.
+  /// The narrow tier's gap and padding. Chosen so six full-size controls still fit 320 pt.
+  static let tightSpacing: CGFloat = 8
+  static let tightHorizontalPadding: CGFloat = 8
+  /// Pick, Dislike, Clear, Undo, Tag, More.
   static let controlCount = 6
+  /// The same bar with Clear folded into the More menu.
+  static let foldedControlCount = 5
 
   /// The width the bar needs for `controlCount` controls at `spacing`, all at their minimum
   /// side, including both paddings.
   static func requiredWidth(
     controlCount: Int = ActionBarMetrics.controlCount,
-    spacing: CGFloat = ActionBarMetrics.controlSpacing
+    spacing: CGFloat = ActionBarMetrics.controlSpacing,
+    horizontalPadding: CGFloat = ActionBarMetrics.horizontalPadding
   ) -> CGFloat {
     CGFloat(controlCount) * minimumControlSide
       + CGFloat(max(controlCount - 1, 0)) * spacing
       + 2 * horizontalPadding
+  }
+
+  /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
+  static var sixControlFloor: CGFloat {
+    requiredWidth(spacing: tightSpacing, horizontalPadding: tightHorizontalPadding)
+  }
+
+  /// The narrowest width the folded bar needs: 5×44 + 4×8 + 2×8 = 268 pt.
+  static var foldedFloor: CGFloat {
+    requiredWidth(
+      controlCount: foldedControlCount, spacing: tightSpacing,
+      horizontalPadding: tightHorizontalPadding)
+  }
+
+  /// The tier for a measured width. Pure, total, and monotonic: roomy while the roomy layout
+  /// fits, tight while six controls still fit, folded below that.
+  static func layout(forWidth width: CGFloat) -> ActionBarLayout {
+    if width >= requiredWidth() {
+      return ActionBarLayout(
+        spacing: controlSpacing, horizontalPadding: horizontalPadding, foldsClearIntoMore: false)
+    }
+    if width >= sixControlFloor {
+      return ActionBarLayout(
+        spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+        foldsClearIntoMore: false)
+    }
+    return ActionBarLayout(
+      spacing: tightSpacing, horizontalPadding: tightHorizontalPadding, foldsClearIntoMore: true)
   }
 }
 
@@ -401,14 +455,22 @@ enum ActionBarMarkControl: CaseIterable {
 /// frame is never applied to the containing `HStack` alone.
 struct ActionBarView: View {
   @Bindable var store: GridStore
+  /// The width the bar is actually GIVEN, measured rather than assumed. The Compact width is
+  /// only the initial value: the Regular-3 grid column is the middle pane of a split this app
+  /// does not size, and betting on a number for it is what turned the iPad leg red.
+  @State private var paneWidth: CGFloat = ActionBarMetrics.narrowestCompactWidth
+
+  private var layout: ActionBarLayout { ActionBarMetrics.layout(forWidth: paneWidth) }
 
   var body: some View {
-    HStack(spacing: ActionBarMetrics.controlSpacing) {
+    HStack(spacing: layout.spacing) {
       let presentation = PickButtonPresentation.for(store.pickLock.state)
       pickButton(presentation: presentation)
 
       markControl(.dislike)
-      markControl(.clear)
+      if !layout.foldsClearIntoMore {
+        markControl(.clear)
+      }
 
       Button {
         Task { await store.undoLastMark() }
@@ -431,6 +493,17 @@ struct ActionBarView: View {
       .actionBarControlSize()
 
       Menu {
+        // The folded Clear: still a chrome control, with the same identifier, the same disabled
+        // rule and the same state from the same table — a narrower column moves it, never
+        // removes it, and never leaves the action reachable by gesture alone.
+        if layout.foldsClearIntoMore {
+          let clear = ActionBarMarkControl.clear
+          Button(clear.title, systemImage: clear.systemImage) {
+            Task { await store.applyMarkToTarget(clear.state) }
+          }
+          .disabled(store.isMarkActionUnavailable)
+          .accessibilityIdentifier(clear.accessibilityIdentifier)
+        }
         Button(store.selection.mode == .select ? "Exit Select" : "Select") {
           if store.selection.mode == .select {
             store.done()
@@ -453,9 +526,18 @@ struct ActionBarView: View {
     }
     .labelStyle(.iconOnly)
     .font(.title3)
-    .padding(.horizontal, ActionBarMetrics.horizontalPadding)
+    .padding(.horizontal, layout.horizontalPadding)
     .padding(.vertical, ActionBarMetrics.verticalPadding)
+    .frame(maxWidth: .infinity)
     .background(.bar)
+    // Measured AFTER the bar is stretched to its pane, so this is the width available to the
+    // controls rather than the width they happen to occupy — the two are the same only when
+    // everything already fits, which is precisely the case this has to stop assuming.
+    .onGeometryChange(for: CGFloat.self) { proxy in
+      proxy.size.width
+    } action: { width in
+      paneWidth = width
+    }
     .sheet(isPresented: $store.isTagEntryPresented) {
       TagEntrySheet(store: store)
     }

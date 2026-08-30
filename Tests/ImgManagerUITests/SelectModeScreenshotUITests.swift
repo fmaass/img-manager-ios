@@ -2,9 +2,9 @@ import XCTest
 
 /// WP13 P1 (IMGMGR-212, and the shipped defect IMGMGR-223): the retained visual evidence the
 /// phase's Verification asks for — the Select mode row at ZERO and at a non-zero count, the four
-/// selection-consuming controls refusing then live, and every control of the six-control bar
-/// still reachable at the narrowest Compact width. One test class, both gate destinations, so
-/// the `.compact` (iPhone) and `.regular3` (iPad) captures both come out of a normal gate run.
+/// selection-consuming controls refusing then live, and every bar control reachable — captured in
+/// BOTH iPad configurations, portrait (Regular-2) and landscape (Regular-3), because those are
+/// two different layouts and only one of them was ever being checked.
 ///
 /// Select is entered through the DEBUG `-UITestEnterSelectMode` launch hook rather than a
 /// gesture: on Regular-3 the tile long press never arrives (the grid's own pointer-drag
@@ -14,27 +14,43 @@ import XCTest
 /// shipped state reached through the shipped entry point, not a test-only mode.
 final class SelectModeScreenshotUITests: XCTestCase {
 
-  private func launchInSelectMode() -> XCUIApplication {
+  /// Orientation is DEVICE state that outlives the class that set it. This class was itself the
+  /// victim of that — it inherited `landscapeLeft` from `RegularThreeScreenshotUITests`, which
+  /// sorts before it, and silently ran every iPad assertion against the wrong layout. Ours is
+  /// reset so nothing downstream inherits it in turn.
+  override func tearDown() {
+    XCUIDevice.shared.orientation = .portrait
+    super.tearDown()
+  }
+
+  private func launchInSelectMode(landscape: Bool) -> XCUIApplication {
+    XCUIDevice.shared.orientation = landscape ? .landscapeLeft : .portrait
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestEnterSelectMode"]
     app.launch()
-    // PORTRAIT, explicitly. `XCUIDevice.orientation` is device state that PERSISTS across test
-    // classes in one run, and `RegularThreeScreenshotUITests` rotates it to landscapeLeft —
-    // that class sorts before this one, so this test inherited landscape on the iPad
-    // destination. Landscape on iPad is the Regular-3 three-pane layout, where the grid is a
-    // narrow middle column; portrait is Regular-2, where the grid is the wide content surface
-    // this phase's bar is laid out for. The iPhone leg is unaffected either way (Compact).
-    XCUIDevice.shared.orientation = .portrait
+    // Again after launch: the sibling screenshot test rotates post-launch and that is the
+    // sequence known to take on this destination.
+    XCUIDevice.shared.orientation = landscape ? .landscapeLeft : .portrait
     return app
   }
 
-  /// What the harness can actually SEE of the bar, recorded BEFORE anything asserts hittability.
+  private func tile(_ imageID: Int, in app: XCUIApplication) -> XCUIElement {
+    // Addressed by the fixture's own ids (`DebugStubTransport` serves 1...12), never by bound
+    // index: one tile surfaces as several accessibility elements, so an index-addressed pair can
+    // be the same photograph twice — selecting it and then deselecting it.
+    app.descendants(matching: .any).matching(identifier: "gridTile-\(imageID)").firstMatch
+  }
+
+  /// What the harness can actually SEE of the bar, recorded BEFORE anything asserts reachability.
   /// A bare "Activation point invalid and no suggested hit points based on element frame" says
   /// nothing about which control, at what size, in what tree — this makes a red run decisive
   /// instead of another round of hypotheses.
-  private func recordBarGeometry(_ app: XCUIApplication, controls: [(String, XCUIElement)]) {
-    XCTContext.runActivity(named: "Action-bar geometry") { activity in
-      var report = "orientation=\(XCUIDevice.shared.orientation.rawValue)\n"
+  private func recordBarGeometry(
+    _ app: XCUIApplication, configuration: String, controls: [(String, XCUIElement)]
+  ) {
+    XCTContext.runActivity(named: "Action-bar geometry (\(configuration))") { activity in
+      var report = "configuration=\(configuration)\n"
+      report += "orientation=\(XCUIDevice.shared.orientation.rawValue)\n"
       report += "app frame=\(app.frame)\n"
       var anomalous = false
       for (name, element) in controls {
@@ -45,117 +61,147 @@ final class SelectModeScreenshotUITests: XCTestCase {
         report += "frame=\(frame)\n"
       }
       let geometry = XCTAttachment(string: report)
-      geometry.name = "action-bar-geometry"
+      geometry.name = "action-bar-geometry-\(configuration)"
       geometry.lifetime = .keepAlways
       activity.add(geometry)
       // Only on an anomaly, because the whole tree is large: it is the artefact that names the
       // real container an element ended up inside.
       if anomalous {
         let tree = XCTAttachment(string: app.debugDescription)
-        tree.name = "element-tree"
+        tree.name = "element-tree-\(configuration)"
         tree.lifetime = .keepAlways
         activity.add(tree)
       }
     }
   }
 
-  private func tile(_ imageID: Int, in app: XCUIApplication) -> XCUIElement {
-    // Addressed by the fixture's own ids (`DebugStubTransport` serves 1...12), never by bound
-    // index: one tile surfaces as several accessibility elements, so an index-addressed pair can
-    // be the same photograph twice — selecting it and then deselecting it.
-    app.descendants(matching: .any).matching(identifier: "gridTile-\(imageID)").firstMatch
+  private func capture(_ name: String) {
+    let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
   }
 
   func testSelectModeRowCountsAndGatesTheMarkControls() throws {
-    let app = launchInSelectMode()
+    // BOTH iPad configurations. Portrait is Regular-2 (the grid is the wide content surface),
+    // landscape is Regular-3 (the grid is the middle column of three) — different widths, and
+    // the bar has to hold up in both. On the iPhone destination both are Compact, so the run is
+    // simply the same assertions twice.
+    for (configuration, landscape) in [("portrait", false), ("landscape", true)] {
+      let app = launchInSelectMode(landscape: landscape)
+      assertSelectModeRow(in: app, configuration: configuration)
+      app.terminate()
+    }
+  }
 
+  private func assertSelectModeRow(in app: XCUIApplication, configuration: String) {
     let caption = app.staticTexts["selectModeCaption"]
     XCTAssertTrue(
       caption.waitForExistence(timeout: 30),
-      "Select mode is active but no mode row is on screen — the only way out would be the More "
-        + "menu, which is the discoverability defect this phase closes.")
+      "\(configuration): Select mode is active but no mode row is on screen — the only way out "
+        + "would be the More menu, which is the discoverability defect this phase closes.")
 
     let pick = app.buttons["gridPickButton"]
     let dislike = app.buttons["gridDislikeButton"]
-    let clear = app.buttons["gridClearButton"]
     let undo = app.buttons["gridUndoButton"]
     let tag = app.buttons["gridTagButton"]
     let more = app.buttons["gridMoreMenu"]
-    for control in [pick, dislike, clear, undo, tag, more] {
+    for control in [pick, dislike, undo, tag, more] {
       XCTAssertTrue(
-        control.waitForExistence(timeout: 10), "A control is missing from the six-control bar.")
+        control.waitForExistence(timeout: 10),
+        "\(configuration): a control is missing from the bar.")
     }
+
+    // Clear is in the BAR when the column is wide enough and inside the MORE MENU when it is not
+    // (`ActionBarMetrics.layout(forWidth:)` folds it below the six-control floor). Both are
+    // chrome, neither is gesture-only, and which one this configuration renders is a width fact,
+    // so the test resolves the control rather than assuming its surface.
+    let clear = app.buttons["gridClearButton"]
+    let clearIsInTheBar = clear.waitForExistence(timeout: 5)
 
     // ZERO selected: the row states the count rather than hiding it behind an instruction, and
     // every selection-consuming control refuses. This is IMGMGR-223's UI half.
-    XCTAssertEqual(caption.label, "0 selected", "An explicit Select entry starts empty.")
-    XCTAssertFalse(pick.isEnabled, "Pick must refuse an empty selection.")
-    XCTAssertFalse(dislike.isEnabled, "Dislike must refuse an empty selection.")
-    XCTAssertFalse(clear.isEnabled, "Clear must refuse an empty selection.")
-    XCTAssertFalse(tag.isEnabled, "Tag must refuse an empty selection.")
-
-    let emptyCapture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-    emptyCapture.name = "Select-mode-row-zero-selected"
-    emptyCapture.lifetime = .keepAlways
-    add(emptyCapture)
+    XCTAssertEqual(
+      caption.label, "0 selected", "\(configuration): an explicit Select entry starts empty.")
+    XCTAssertFalse(pick.isEnabled, "\(configuration): Pick must refuse an empty selection.")
+    XCTAssertFalse(dislike.isEnabled, "\(configuration): Dislike must refuse an empty selection.")
+    XCTAssertFalse(tag.isEnabled, "\(configuration): Tag must refuse an empty selection.")
+    if clearIsInTheBar {
+      XCTAssertFalse(clear.isEnabled, "\(configuration): Clear must refuse an empty selection.")
+    }
+    capture("Select-mode-row-zero-selected-\(configuration)")
 
     let firstTile = tile(1, in: app)
     let secondTile = tile(2, in: app)
-    XCTAssertTrue(firstTile.waitForExistence(timeout: 10), "No grid tiles to select.")
+    XCTAssertTrue(
+      firstTile.waitForExistence(timeout: 10), "\(configuration): no grid tiles to select.")
     firstTile.tap()
-    XCTAssertEqual(caption.label, "1 selected", "Tapping a tile in Select mode must select it.")
-    XCTAssertTrue(secondTile.waitForExistence(timeout: 5), "The second fixture tile is missing.")
+    XCTAssertEqual(
+      caption.label, "1 selected",
+      "\(configuration): tapping a tile in Select mode must select it.")
+    XCTAssertTrue(
+      secondTile.waitForExistence(timeout: 5), "\(configuration): the second tile is missing.")
     secondTile.tap()
 
     // Attached BEFORE the assertions below, so the run keeps its visual evidence whatever the
     // verdict is — a failing capture is the more interesting one.
-    let capture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-    capture.name = "Select-mode-row-two-selected"
-    capture.lifetime = .keepAlways
-    add(capture)
+    capture("Select-mode-row-two-selected-\(configuration)")
 
     XCTAssertEqual(
       caption.label, "2 selected",
-      "The mode row must state the count of what the next mark would write to.")
+      "\(configuration): the mode row must state the count of what the next mark would write to.")
     XCTAssertTrue(
       pick.isEnabled,
-      "Pick must be live in Select mode — it is the whole point of the phase; only Pick LOCK "
-        + "entry stays disabled there.")
-    XCTAssertTrue(dislike.isEnabled, "Dislike must be live on a non-empty selection.")
-    XCTAssertTrue(clear.isEnabled, "Clear must be live on a non-empty selection.")
-    XCTAssertTrue(tag.isEnabled, "Tag must be live on a non-empty selection.")
+      "\(configuration): Pick must be live in Select mode — it is the whole point of the phase; "
+        + "only Pick LOCK entry stays disabled there.")
+    XCTAssertTrue(dislike.isEnabled, "\(configuration): Dislike must be live on a selection.")
+    XCTAssertTrue(tag.isEnabled, "\(configuration): Tag must be live on a selection.")
 
+    var barControls = [("Pick", pick), ("Dislike", dislike), ("Tag", tag), ("More", more)]
+    if clearIsInTheBar {
+      XCTAssertTrue(clear.isEnabled, "\(configuration): Clear must be live on a selection.")
+      barControls.append(("Clear", clear))
+    }
     recordBarGeometry(
-      app,
-      controls: [
-        ("Pick", pick), ("Dislike", dislike), ("Clear", clear), ("Undo", undo), ("Tag", tag),
-        ("More", more), ("selectModeCaption", caption),
-      ])
+      app, configuration: configuration,
+      controls: barControls + [("Undo", undo), ("selectModeCaption", caption)])
 
-    // Reachability, not just presence: the bar's own arithmetic (`ActionBarMetrics`) claims six
-    // 44-pt controls fit the narrowest Compact width, and this is that claim at the rendered
-    // level. Undo is excluded here only because it is legitimately disabled until a mark
-    // commits — the Clear-wiring test below reaches it in its enabled state.
-    for (name, control) in [
-      ("Pick", pick), ("Dislike", dislike), ("Clear", clear), ("Tag", tag), ("More", more),
-    ] {
+    // Reachability, not just presence: `ActionBarMetrics` claims each tier keeps every control
+    // at 44 pt in the width that selects it, and this is that claim at the rendered level. Undo
+    // is excluded only because it is legitimately disabled until a mark commits — the
+    // Clear-wiring test reaches it in its enabled state.
+    for (name, control) in barControls {
       XCTAssertFalse(
         control.frame.isEmpty,
-        "\(name) is rendered with an empty frame — see the action-bar-geometry and element-tree "
-          + "attachments for the tree it ended up in.")
+        "\(configuration): \(name) is rendered with an empty frame — see the "
+          + "action-bar-geometry and element-tree attachments for the tree it ended up in.")
       XCTAssertTrue(
-        control.isHittable, "\(name) has no reachable hit region at this width.")
+        control.isHittable, "\(configuration): \(name) has no reachable hit region.")
+    }
+
+    // The folded half of the same contract: a narrower column MOVES Clear into the More menu, it
+    // never removes the control.
+    if !clearIsInTheBar {
+      more.tap()
+      XCTAssertTrue(
+        clear.waitForExistence(timeout: 5),
+        "\(configuration): Clear is in neither the bar nor the More menu — the fold dropped a "
+          + "control instead of relocating it.")
+      XCTAssertTrue(clear.isEnabled, "\(configuration): the folded Clear must be live too.")
+      capture("Select-mode-folded-clear-\(configuration)")
+      more.tap()
     }
   }
 
   /// The Clear control's WIRING, through the production button rather than the store: pressing
   /// the bar's Clear must actually drive the shipped mutation lane. Undo is the observable — it
-  /// is disabled until a mark commits, so a Clear button that is missing, inert, or wired to
-  /// nothing leaves Undo disabled and turns this red. WHICH state Clear writes is pinned where
-  /// it cannot drift instead: the button and `clearAppliesToTheSelectionFromTheGridBar` both
-  /// read `ActionBarMarkControl.clear.state`, so there is no second declaration to disagree.
+  /// is disabled until a mark commits, so a Clear that is missing, inert, or wired to nothing
+  /// leaves Undo disabled and turns this red. WHICH state Clear writes is pinned where it cannot
+  /// drift instead: the button and `clearAppliesToTheSelectionFromTheGridBar` both read
+  /// `ActionBarMarkControl.clear.state`, so there is no second declaration to disagree.
+  /// Portrait only, deliberately: this is about the wiring, not about the layout tiers.
   func testClearControlInTheGridBarDrivesTheMarkLane() throws {
-    let app = launchInSelectMode()
+    let app = launchInSelectMode(landscape: false)
 
     let caption = app.staticTexts["selectModeCaption"]
     XCTAssertTrue(caption.waitForExistence(timeout: 30), "No Select mode row.")
@@ -175,9 +221,9 @@ final class SelectModeScreenshotUITests: XCTestCase {
     clear.tap()
 
     // `XCTWaiter` rather than `waitForExpectations(timeout:handler:)`: that handler closure
-    // captures the test case itself, which Swift 6 refuses to send across the waiter's
-    // isolation boundary (non-Sendable `XCTestCase`). Waiting for a result value instead needs
-    // no closure at all, and the diagnostic message survives.
+    // captures the test case itself, which Swift 6 refuses to send across the waiter's isolation
+    // boundary (non-Sendable `XCTestCase`). Waiting for a result value needs no closure at all,
+    // and the diagnostic message survives.
     let undoBecameAvailable = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "enabled == true"), object: undo)
     let outcome = XCTWaiter().wait(for: [undoBecameAvailable], timeout: 15)
