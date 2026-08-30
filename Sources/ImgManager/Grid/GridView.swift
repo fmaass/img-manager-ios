@@ -36,11 +36,18 @@ struct GridView: View {
       if layoutMode == .compact {
         GridOptionsRow(store: store)
       }
-      if store.pickLock.state == .latched {
-        PickLockModeRow(store: store)
-      }
+      // Pinned order: the Scene row above the mode row, the mode row above the recovery banner,
+      // the banner above the action bar. At most ONE of the two mode rows can ever render —
+      // Pick Lock and Select are mutually exclusive in `GridStore` (`enterSelectExplicitly` and
+      // `longPressTile` both unlatch first), and the `else if` makes that a structural fact of
+      // this view rather than a coincidence two independent `if`s would let drift apart.
       if store.displayMode == .scene {
         SceneModeRow(store: store)
+      }
+      if store.pickLock.state == .latched {
+        PickLockModeRow(store: store)
+      } else if store.selection.mode == .select {
+        SelectModeRow(store: store)
       }
       scrollArea
         .onGeometryChange(for: CGFloat.self) {
@@ -407,25 +414,239 @@ struct PickLockModeRow: View {
   }
 }
 
-/// iPhone: `Pick · Dislike · Undo · Tag · More`. Persistent in every grid layout (P4 Approach).
+/// Select mode's own persistent row, structurally identical to `PickLockModeRow` — same
+/// `.thinMaterial` band, same `Done` trailing at ≥44×44, never overlaying a tile — so "you are in a
+/// mode, here is what it acts on, and here is the way out" reads the same for every mode this
+/// screen can be in. Before this row, the only exit from Select was an item in the More menu.
+///
+/// The count is stated at N = 0 too ("0 selected"), never replaced by an instructional caption
+/// that hides it: an empty Select is exactly the state where every mark control refuses to
+/// write, so the number is the thing that explains why they are dim. The instruction is a
+/// second, subordinate line.
+struct SelectModeRow: View {
+  let store: GridStore
+
+  var body: some View {
+    HStack {
+      Text(SelectCopy.caption(selectedCount: store.selectedCount))
+        .font(.subheadline)
+        .accessibilityIdentifier("selectModeCaption")
+        .accessibilityValue("\(store.selectedCount)")
+      if store.selectedCount == 0 {
+        Text(SelectCopy.emptyHint)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("selectModeEmptyHint")
+      }
+      Spacer()
+      Button("Done") { store.done() }
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .padding(.horizontal)
+    .padding(.vertical, 8)
+    .background(.thinMaterial)
+  }
+}
+
+extension View {
+  /// Every bar control keeps its OWN — never the row's — 44×44 hit region (fold item 4),
+  /// sized from the same constant the bar's width arithmetic uses, so no control can be given a
+  /// target `ActionBarMetrics.requiredWidth` did not account for.
+  fileprivate func actionBarControlSize() -> some View {
+    let side = ActionBarMetrics.minimumControlSide
+    return frame(minWidth: side, minHeight: side)
+  }
+}
+
+/// How the action bar lays out at one width. A value type, not three properties read off the
+/// view, so `ActionBarMetrics.layout(forWidth:)` is a pure function a test can walk tier by tier.
+struct ActionBarLayout: Equatable {
+  /// Only for evidence: the DEBUG fixture stamps it onto the More control's accessibility value
+  /// so a gate attachment can say which tier actually rendered instead of leaving it to be
+  /// inferred from pixel arithmetic.
+  var name: String
+  var spacing: CGFloat
+  var horizontalPadding: CGFloat
+  var controlCount: Int
+  /// Below the six-control floor, Clear moves INTO the More menu — still a chrome control with
+  /// its own identifier and disabled rule, never a gesture-only action, and never a control
+  /// squeezed under 44 pt.
+  var foldsClearIntoMore: Bool
+}
+
+/// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
+/// it against — no second, drifting declaration.
+///
+/// Two failures shaped this. Adding Clear made the bar SIX controls and the shipped 24-pt rhythm
+/// stopped fitting an iPhone: 6×44 + 5×24 + 2×16 = 416 pt against 402. Then the iPad
+/// landscape leg (gate GREEN-8) showed the roomy 376-pt layout does not fit the Regular-3 GRID
+/// COLUMN either — the middle column of a three-pane split, whose width this app never pins
+/// (`NavigationSplitView` sizes it, `.prominentDetail`). So the bar no longer bets on a width at
+/// all: it measures the one it is given and picks a tier — roomy, tight, or tight-with-Clear-
+/// folded — each of which keeps every control at its full 44 pt.
+enum ActionBarMetrics {
+  /// The narrowest Compact width this app targets — the gate's own iPhone destination
+  /// (iPhone 17 Pro, 402 pt portrait).
+  static let narrowestCompactWidth: CGFloat = 402
+  /// The narrowest WINDOW that resolves Regular-3, taken from the layout's own constant rather
+  /// than restated here. The app pins no COLUMN widths — `NavigationSplitView` sizes them —
+  /// so the grid column's share of this window is system-chosen.
+  static let narrowestRegular3Window: CGFloat = LayoutResolver.regular3Threshold
+
+  /// The grid column's actual width at Regular-3, MEASURED rather than guessed: the gate's
+  /// landscape geometry attachment (GREEN-10, iPad Pro 13" landscape, window 1376×1032) shows
+  /// the bar's six controls laid out to 374 pt with `Pick`'s frame at x = -13.5. A centred
+  /// 374-pt row whose left edge lands at -29.5 (16 pt of padding before Pick) sits in a column
+  /// of 374 - 2×29.5 = 315 pt. Recorded so the tier this column selects is a test, not a
+  /// hypothesis; the runtime measurement is what the bar actually uses.
+  static let measuredRegular3GridColumn: CGFloat = 315
+  /// Fold item 4: every control keeps its OWN — never the row's — 44×44 hit region. This is
+  /// the one number no tier is allowed to shrink.
+  static let minimumControlSide: CGFloat = 44
+  static let horizontalPadding: CGFloat = 16
+  static let verticalPadding: CGFloat = 16
+  static let controlSpacing: CGFloat = 16
+  /// The narrow tier's gap and padding. Chosen so six full-size controls still fit 320 pt.
+  static let tightSpacing: CGFloat = 8
+  static let tightHorizontalPadding: CGFloat = 8
+  /// Pick, Dislike, Clear, Undo, Tag, More.
+  static let controlCount = 6
+  /// The same bar with Clear folded into the More menu.
+  static let foldedControlCount = 5
+
+  /// The width the bar needs for `controlCount` controls at `spacing`, all at their minimum
+  /// side, including both paddings.
+  static func requiredWidth(
+    controlCount: Int = ActionBarMetrics.controlCount,
+    spacing: CGFloat = ActionBarMetrics.controlSpacing,
+    horizontalPadding: CGFloat = ActionBarMetrics.horizontalPadding
+  ) -> CGFloat {
+    CGFloat(controlCount) * minimumControlSide
+      + CGFloat(max(controlCount - 1, 0)) * spacing
+      + 2 * horizontalPadding
+  }
+
+  static let roomy = ActionBarLayout(
+    name: "roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: controlCount, foldsClearIntoMore: false)
+  static let tight = ActionBarLayout(
+    name: "tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: controlCount, foldsClearIntoMore: false)
+  static let folded = ActionBarLayout(
+    name: "folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: foldedControlCount, foldsClearIntoMore: true)
+
+  /// Widest first. `ActionBarView` renders these in this order through `ViewThatFits`, and
+  /// `layout(forWidth:)` walks the SAME list — so the arithmetic the tests assert and the tier
+  /// the layout system actually picks cannot disagree.
+  static let tiers: [ActionBarLayout] = [roomy, tight, folded]
+
+  static func requiredWidth(for layout: ActionBarLayout) -> CGFloat {
+    requiredWidth(
+      controlCount: layout.controlCount, spacing: layout.spacing,
+      horizontalPadding: layout.horizontalPadding)
+  }
+
+  /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
+  static var sixControlFloor: CGFloat { requiredWidth(for: tight) }
+
+  /// The narrowest width the folded bar needs: 5×44 + 4×8 + 2×8 = 268 pt.
+  static var foldedFloor: CGFloat { requiredWidth(for: folded) }
+
+  /// The tier a given width selects — the arithmetic statement of what `ViewThatFits` decides
+  /// at run time. Total: the narrowest tier is the answer when nothing fits, because a bar that
+  /// must overflow should at least overflow least.
+  static func layout(forWidth width: CGFloat) -> ActionBarLayout {
+    tiers.first { requiredWidth(for: $0) <= width } ?? folded
+  }
+}
+
+/// The three mark controls of the bar, as DATA. The point is the `state` property: a button that
+/// named its own target state inline could be wired to the wrong one and every store-level test
+/// would stay green (diff-gate round 1). The view renders from this table and
+/// `clearAppliesToTheSelectionFromTheGridBar` writes through `ActionBarMarkControl.clear.state`,
+/// so the button and its test cannot name different states.
+enum ActionBarMarkControl: CaseIterable {
+  case pick, dislike, clear
+
+  var state: MarkStateValue {
+    switch self {
+    case .pick: return .pick
+    case .dislike: return .dislike
+    case .clear: return MarkStateValue.none
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .pick: return "Pick"
+    case .dislike: return "Dislike"
+    case .clear: return "Clear"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .pick: return "hand.thumbsup"
+    case .dislike: return "hand.thumbsdown"
+    // The loupe's own Clear already uses this symbol; one vocabulary for one verb.
+    case .clear: return "xmark.circle"
+    }
+  }
+
+  var accessibilityIdentifier: String { "grid\(title)Button" }
+}
+
+/// iPhone: `Pick · Dislike · Clear · Undo · Tag · More`. Persistent in every grid layout (P4
+/// Approach). Clear joined it in WP13 P1: the ticket names Pick/Dislike/Clear as the Select-mode
+/// actions, and the grid bar had no Clear — its only chrome surface was the loupe's mark bar.
 /// Diff-gate round 2, blocker 2: EACH icon-only control carries its OWN ≥44×44 hit region — the
 /// frame is never applied to the containing `HStack` alone.
 struct ActionBarView: View {
   @Bindable var store: GridStore
 
+  /// Widest tier first — straight out of `ActionBarMetrics.tiers` — and the LAYOUT SYSTEM
+  /// picks, not a measurement this view took. Every per-tier difference (its gap, its padding,
+  /// whether Clear folds into the More menu) is data on the tier, so `bar(_:)` renders any
+  /// entry of that list and there is nothing left for a hardcoded child to drift from.
+  ///
+  /// Two measured attempts failed the same way. A bar that overflows its column reports its own
+  /// overflowing width, and plumbing `GridView`'s pane width in changed nothing: the gate's
+  /// landscape attachment shows byte-identical geometry across both, a 16-pt (roomy) rhythm with
+  /// `Pick` at x = -13.5 in a ~315-pt Regular-3 grid column. `ViewThatFits` asks the question the
+  /// right way round — it proposes the CONTAINER's width to each child and takes the first that
+  /// fits — so there is no first pass with a default width, no state to arrive late, and no way
+  /// for the bar to paint wider than what it was handed.
   var body: some View {
-    HStack(spacing: 24) {
+    ViewThatFits(in: .horizontal) {
+      // Derived FROM the list, never a hand-written copy of it beside the list: adding,
+      // removing or reordering a tier changes what renders, by construction. Keyed by the
+      // tier's own name, never by index (IMGMGR-210).
+      ForEach(ActionBarMetrics.tiers, id: \.name) { tier in
+        bar(tier)
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .background(.bar)
+    .sheet(isPresented: $store.isTagEntryPresented) {
+      TagEntrySheet(store: store)
+    }
+  }
+
+  /// One tier's rendering. Deliberately NOT `.frame(maxWidth: .infinity)`: a child that claims
+  /// infinite width always "fits", which would make `ViewThatFits` pick the first one every
+  /// time. Its ideal width is its content, which is exactly what has to be compared with the
+  /// column.
+  @ViewBuilder
+  private func bar(_ layout: ActionBarLayout) -> some View {
+    HStack(spacing: layout.spacing) {
       let presentation = PickButtonPresentation.for(store.pickLock.state)
       pickButton(presentation: presentation)
 
-      Button {
-        guard let id = store.focusedImageID else { return }
-        Task { await store.applyMark(.dislike, to: [id]) }
-      } label: {
-        Label("Dislike", systemImage: "hand.thumbsdown")
+      markControl(.dislike)
+      if !layout.foldsClearIntoMore {
+        markControl(.clear)
       }
-      .buttonStyle(.bordered)
-      .frame(minWidth: 44, minHeight: 44)
 
       Button {
         Task { await store.undoLastMark() }
@@ -434,7 +655,8 @@ struct ActionBarView: View {
       }
       .buttonStyle(.bordered)
       .disabled(!store.undo.canUndo)
-      .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("gridUndoButton")
+      .actionBarControlSize()
 
       Button {
         store.handleTagShortcut()
@@ -442,10 +664,22 @@ struct ActionBarView: View {
         Label("Tag", systemImage: "tag")
       }
       .buttonStyle(.bordered)
-      .disabled(store.tagTargetImageIDs.isEmpty)
-      .frame(minWidth: 44, minHeight: 44)
+      .disabled(store.isMarkActionUnavailable)
+      .accessibilityIdentifier("gridTagButton")
+      .actionBarControlSize()
 
       Menu {
+        // The folded Clear: still a chrome control, with the same identifier, the same disabled
+        // rule and the same state from the same table — a narrower column moves it, never
+        // removes it, and never leaves the action reachable by gesture alone.
+        if layout.foldsClearIntoMore {
+          let clear = ActionBarMarkControl.clear
+          Button(clear.title, systemImage: clear.systemImage) {
+            Task { await store.applyMarkToTarget(clear.state) }
+          }
+          .disabled(store.isMarkActionUnavailable)
+          .accessibilityIdentifier(clear.accessibilityIdentifier)
+        }
         Button(store.selection.mode == .select ? "Exit Select" : "Select") {
           if store.selection.mode == .select {
             store.done()
@@ -453,46 +687,91 @@ struct ActionBarView: View {
             store.enterSelectExplicitly()
           }
         }
+        // Identified because its LABEL changes with the mode, and because a menu item inside a
+        // popover is not addressable by label on every idiom (Regular-3 — see
+        // SelectModeScreenshotUITests).
+        .accessibilityIdentifier("gridSelectCommand")
       } label: {
         Label("More", systemImage: "ellipsis.circle")
       }
-      .frame(minWidth: 44, minHeight: 44)
+      // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
+      // secondaryAction toolbar items into an overflow control with the same label, and a UI
+      // test that matched on the label alone could drive the wrong one.
+      .accessibilityIdentifier("gridMoreMenu")
+      // EVIDENCE, fixture-only: whichever tier `ViewThatFits` chose is the one that renders, so
+      // the chosen child stamps its own name here and a gate attachment can report the tier
+      // instead of inferring it from pixel deltas. Never set outside the DEBUG fixture launch.
+      .accessibilityValue(tierProbeValue(layout))
+      .actionBarControlSize()
     }
     .labelStyle(.iconOnly)
     .font(.title3)
-    .padding()
-    .background(.bar)
-    .sheet(isPresented: $store.isTagEntryPresented) {
-      TagEntrySheet(store: store)
-    }
+    .padding(.horizontal, layout.horizontalPadding)
+    .padding(.vertical, ActionBarMetrics.verticalPadding)
   }
 
+  /// Empty outside the DEBUG screenshot fixture, so nothing about production accessibility
+  /// changes: an empty accessibility value is what an unset one already is.
+  private func tierProbeValue(_ layout: ActionBarLayout) -> String {
+    #if DEBUG
+      return DebugStubLaunch.isActive ? "tier=\(layout.name)" : ""
+    #else
+      return ""
+    #endif
+  }
+
+  /// The two plain mark controls (Dislike, Clear). Pick is not one of them only because its
+  /// presentation branches on the lock state, which needs two literal `Button` declarations
+  /// (see `pickButton`) — it still takes its title, symbol and STATE from the same table.
+  @ViewBuilder
+  private func markControl(_ control: ActionBarMarkControl) -> some View {
+    Button {
+      Task { await store.applyMarkToTarget(control.state) }
+    } label: {
+      Label(control.title, systemImage: control.systemImage)
+    }
+    .buttonStyle(.bordered)
+    .disabled(store.isMarkActionUnavailable)
+    .accessibilityIdentifier(control.accessibilityIdentifier)
+    .actionBarControlSize()
+  }
+
+  /// The identifier goes on the node that CARRIES THE FRAME — after `.actionBarControlSize()`,
+  /// so the element XCUITest resolves is the sized one. It sat on the wrapping `Group` first and
+  /// then on the two concrete `Button`s, and the iPad leg reported the identical "Activation
+  /// point invalid and no suggested hit points based on element frame" both times (gate GREEN-7
+  /// and GREEN-8), which is what a frameless element looks like from the harness.
+  ///
   /// Factored out because `.buttonStyle(_:)` requires a single CONCRETE style per call site —
   /// a ternary between `.borderedProminent` and `.bordered` does not type-check (they are
   /// different concrete `ButtonStyle` types) — so the two presentations are two literal button
   /// declarations sharing the same action/label/menu, branched once here instead.
   @ViewBuilder
   private func pickButton(presentation: PickButtonPresentation) -> some View {
+    let pick = ActionBarMarkControl.pick
     Group {
       if presentation.isProminent {
         Button {
           Task { await store.activatePickButton() }
         } label: {
-          Label("Pick", systemImage: "hand.thumbsup")
+          Label(pick.title, systemImage: pick.systemImage)
         }
         .buttonStyle(.borderedProminent)
       } else {
         Button {
           Task { await store.activatePickButton() }
         } label: {
-          Label("Pick", systemImage: "hand.thumbsup")
+          Label(pick.title, systemImage: pick.systemImage)
         }
         .buttonStyle(.bordered)
       }
     }
     .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
-    .disabled(store.selection.mode == .select)
-    .frame(minWidth: 44, minHeight: 44)
+    // Select mode alone no longer disables Pick — it is the phase's whole point. What stays
+    // disabled is Pick LOCK entry, in the context menu below and in the store's own guard.
+    .disabled(store.isPickControlDisabled)
+    .actionBarControlSize()
+    .accessibilityIdentifier(pick.accessibilityIdentifier)
     .contextMenu {
       // Gate's unasked issue: the amendment's discoverable visible "Lock Pick" alternative to
       // the undiscoverable double-tap gesture.

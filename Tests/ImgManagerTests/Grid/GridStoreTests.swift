@@ -1946,3 +1946,430 @@ struct GridStoreTests {
     #expect(store.mutationCommitCount == 1)
   }
 }
+
+/// WP13 P1 (IMGMGR-212, and the shipped defect IMGMGR-223 it closes): Select mode stops being a
+/// tagging-only mode. Every test here drives a REAL loaded page through `GridStubTransport` and
+/// reads what the generated client actually put on the wire — an assertion about
+/// `markTargetImageIDs` alone would pass just as well if no control consumed it.
+@MainActor
+@Suite("GridStore — bulk marks consume the selection set (WP13 P1)")
+struct GridStoreBulkMarkTests {
+
+  private func makeImage(
+    id: Int, mark: Components.Schemas.MarkView.StatePayload = .none, revision: String = "r0"
+  ) -> Components.Schemas.ImageSummary {
+    Components.Schemas.ImageSummary(
+      aspectRatio: 1.0, ext: "jpg", filename: "img\(id).jpg", folderId: 1, hasEdit: false, id: id,
+      lightroom: .init(sidecarPresent: false),
+      mark: .init(revision: revision, state: mark, tags: []),
+      missing: false, proxies: .init(additionalProperties: [:]), sourceTier: "local")
+  }
+
+  private func makeStore() -> (GridStore, GridStubTransport) {
+    let transport = GridStubTransport()
+    let client = ImgManagerAPIClient.make(transport: transport)
+    return (GridStore(service: GridService(client: client)), transport)
+  }
+
+  private func loadedStore(_ images: [Components.Schemas.ImageSummary]) async -> (
+    GridStore, GridStubTransport
+  ) {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: images, limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    return (store, transport)
+  }
+
+  private var markStateOperation: String { Operations.SetMarkStateApiMarksStatePost.id }
+  private var tagsOperation: String { Operations.EditMarkTagsApiMarksTagsPost.id }
+
+  // MARK: - The whole selection, in the actionable order
+
+  @Test(
+    "Bulk Pick from the action bar writes EVERY selected id, ordered by actionableImages position"
+  )
+  func bulkPickAppliesToEveryOrderedSelectionMember() async {
+    // Loaded in an order that is neither ascending nor the tap order below, so the assertion
+    // pins the ACTIONABLE order specifically — not "sorted", and not a Set's own iteration
+    // order, which is unspecified and would reach the wire and the undo entry.
+    let (store, transport) = await loadedStore(
+      [makeImage(id: 40), makeImage(id: 10), makeImage(id: 30), makeImage(id: 20)])
+    store.enterSelectExplicitly()
+    await store.tapTile(20)
+    await store.tapTile(40)
+    await store.tapTile(30)
+    await store.tapTile(10)
+
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 4, requested: 4,
+          revisions: [
+            .init(imageId: 40, revision: "r1"), .init(imageId: 10, revision: "r1"),
+            .init(imageId: 30, revision: "r1"), .init(imageId: 20, revision: "r1"),
+          ])))
+    await store.activatePickButton()
+
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [40, 10, 30, 20])
+    #expect(sent?.preconditions?.map(\.imageId) == [40, 10, 30, 20])
+    #expect(sent?.state == .pick)
+    // ONE call through the shipped multi-id lane, never a loop of single-id writes.
+    #expect(await transport.callCount(markStateOperation) == 1)
+    #expect(store.images.allSatisfy { $0.mark.state == .pick })
+  }
+
+  @Test("P/X/U in Select mode mark the whole selection, never the focused photograph")
+  func shortcutsMarkTheWholeSelectionInSelectMode() async {
+    let (store, transport) = await loadedStore(
+      [makeImage(id: 5), makeImage(id: 6), makeImage(id: 7)])
+    await store.tapTile(5)  // browse: a real focus, deliberately NOT part of the selection
+    store.enterSelectExplicitly()
+    await store.tapTile(6)
+    await store.tapTile(7)
+    #expect(store.focusedImageID == 5)
+
+    await transport.setMarkStateOutcome(.success(.init(applied: 2, requested: 2, revisions: [])))
+
+    // ALL THREE, not one: a focused-id regression in P or U would hide behind a correct X, and
+    // each shortcut has its own guard and its own state argument to get wrong.
+    await store.handlePickShortcut(shiftHeld: false)
+    var sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [6, 7])
+    #expect(sent?.state == .pick)
+
+    await store.handleDislikeShortcut(shiftHeld: false)
+    sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [6, 7])
+    #expect(sent?.state == .dislike)
+
+    await store.handleClearShortcut(shiftHeld: false)
+    sent = await transport.lastMarkStateRequest
+    let clearState = Components.Schemas.MarkStateRequest.StatePayload.none
+    #expect(sent?.imageIds == [6, 7])
+    #expect(sent?.state == clearState)
+
+    // One call per shortcut, never a per-id loop; and the focused photograph is untouched by
+    // all three.
+    #expect(await transport.callCount(markStateOperation) == 3)
+    #expect(store.focusedImageID == 5)
+  }
+
+  @Test("Clear from the grid bar applies to the whole selection")
+  func clearAppliesToTheSelectionFromTheGridBar() async {
+    let (store, transport) = await loadedStore(
+      [makeImage(id: 7, mark: .pick), makeImage(id: 8, mark: .dislike)])
+    store.enterSelectExplicitly()
+    await store.tapTile(8)
+    await store.tapTile(7)
+
+    await transport.setMarkStateOutcome(.success(.init(applied: 2, requested: 2, revisions: [])))
+    // Written through the SAME table the bar's Clear button renders and acts from, so a button
+    // wired to the wrong state fails HERE rather than shipping green: this test asserts the
+    // wire carries `none`, and `ActionBarMarkControl.clear.state` is the only declaration of
+    // what that control writes. That the button EXISTS and reaches the mark lane at all is the
+    // rendered half, in `SelectModeScreenshotUITests.testClearControlInTheGridBarDrivesTheMarkLane`.
+    await store.applyMarkToTarget(ActionBarMarkControl.clear.state)
+
+    let sent = await transport.lastMarkStateRequest
+    // Type-qualified: a bare `.none` here matches `Optional.none`, not the wire state.
+    let clearState = Components.Schemas.MarkStateRequest.StatePayload.none
+    #expect(sent?.state == clearState)
+    #expect(sent?.imageIds == [7, 8])
+    let noneMark = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.allSatisfy { $0.mark.state == noneMark })
+  }
+
+  @Test("Outside Select mode the target is the focused photograph, and only it")
+  func markTargetIsTheFocusedImageOutsideSelectMode() async {
+    let (store, transport) = await loadedStore(
+      [makeImage(id: 1), makeImage(id: 2), makeImage(id: 3)])
+    await store.tapTile(2)
+
+    #expect(store.selection.mode == .browse)
+    #expect(store.markTargetImageIDs == [2])
+
+    await transport.setMarkStateOutcome(.success(.init(applied: 1, requested: 1, revisions: [])))
+    await store.applyMarkToTarget(.pick)
+
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [2])
+    #expect(await transport.callCount(markStateOperation) == 1)
+  }
+
+  // MARK: - Undo, and the actionable-only write boundary
+
+  @Test("One undo entry covers every member and restores each to its OWN prior state")
+  func bulkMarkRetainsSelectionAndRecordsOneUndoEntryCoveringEveryMember() async {
+    // DIFFERENT priors per member on purpose: an implementation that restores them all to one
+    // state (the entry's `appliedState`, or the first prior it sees) passes a same-prior fixture.
+    let (store, transport) = await loadedStore([
+      makeImage(id: 1, mark: .pick, revision: "r1"),
+      makeImage(id: 2, mark: .dislike, revision: "r2"),
+      makeImage(id: 3, mark: .none, revision: "r3"),
+    ])
+    store.enterSelectExplicitly()
+    await store.tapTile(1)
+    await store.tapTile(2)
+    await store.tapTile(3)
+
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 3, requested: 3,
+          revisions: [
+            .init(imageId: 1, revision: "s1"), .init(imageId: 2, revision: "s2"),
+            .init(imageId: 3, revision: "s3"),
+          ])))
+    await store.applyMarkToTarget(.dislike)
+
+    #expect(store.undo.entry?.priorStates.count == 3)
+    #expect(store.undo.entry?.appliedState == .dislike)
+    #expect(store.undo.entry?.priorStates.map(\.state) == [.pick, .dislike, MarkStateValue.none])
+    // A successful bulk action RETAINS the selection for a second bulk action.
+    #expect(store.selection.mode == .select)
+    #expect(store.selection.members == [1, 2, 3])
+
+    await transport.setMarkStateOutcome(.success(.init(applied: 3, requested: 3, revisions: [])))
+    await store.undoLastMark()
+
+    let noneMark = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.first { $0.id == 1 }?.mark.state == .pick)
+    #expect(store.images.first { $0.id == 2 }?.mark.state == .dislike)
+    #expect(store.images.first { $0.id == 3 }?.mark.state == noneMark)
+    #expect(!store.undo.canUndo)
+  }
+
+  @Test("A selected id that is no longer actionable never reaches the wire")
+  func bulkMarkExcludesAMemberThatIsNoLongerActionable() async {
+    let (store, transport) = await loadedStore(
+      [makeImage(id: 1), makeImage(id: 2), makeImage(id: 3)])
+    store.enterSelectExplicitly()
+    await store.tapTile(1)
+    await store.tapTile(2)
+    await store.tapTile(3)
+
+    // A real, reachable state: the refreshed window no longer holds 3, and the FLAT refresh
+    // publishes the smaller window without pruning the selection (only Scene's refresh prunes
+    // today). So a selected id genuinely outlives its own actionability here, which is exactly
+    // what the actionable-only filter on the write target exists for.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1), makeImage(id: 2)], limit: 100, nextCursor: nil))
+    #expect(await store.authoritativeRefresh())
+    #expect(store.selection.members == [1, 2, 3])
+    #expect(store.markTargetImageIDs == [1, 2])
+
+    await transport.setMarkStateOutcome(.success(.init(applied: 2, requested: 2, revisions: [])))
+    await store.applyMarkToTarget(.pick)
+
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [1, 2])
+    #expect(sent?.preconditions?.map(\.imageId) == [1, 2])
+  }
+
+  // MARK: - The empty Select (IMGMGR-223)
+
+  @Test("An empty Select is an empty target: Pick, Dislike, Clear and Tag all write NOTHING")
+  func anEmptySelectionIsAnEmptyTargetAndWritesNothing() async {
+    let (store, transport) = await loadedStore([makeImage(id: 1), makeImage(id: 2)])
+    await store.tapTile(1)  // a focused photograph IS present — the one a fallback would take
+    #expect(store.focusedImageID == 1)
+
+    store.enterSelectExplicitly()  // ... and an explicit Select starts EMPTY
+    #expect(store.selection.members.isEmpty)
+    #expect(store.markTargetImageIDs.isEmpty)
+    #expect(store.tagTargetImageIDs.isEmpty)
+
+    await store.activatePickButton()
+    await store.applyMarkToTarget(.dislike)
+    await store.applyMarkToTarget(.none)
+    await store.handlePickShortcut(shiftHeld: false)
+    await store.handleClearShortcut(shiftHeld: false)
+    store.handleTagShortcut()
+
+    #expect(await transport.callCount(markStateOperation) == 0)
+    #expect(await transport.callCount(tagsOperation) == 0)
+    #expect(!store.isTagEntryPresented)
+    #expect(!store.undo.canUndo)
+    let noneMark = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.allSatisfy { $0.mark.state == noneMark })
+
+    // Positive control, in this SAME test: with one member selected the very same controls
+    // record exactly one mutation — a transport recorder that never sees anything at all
+    // cannot pass the zero-assertions above vacuously.
+    await store.tapTile(2)
+    #expect(store.markTargetImageIDs == [2])
+    await transport.setMarkStateOutcome(.success(.init(applied: 1, requested: 1, revisions: [])))
+    await store.activatePickButton()
+    #expect(await transport.callCount(markStateOperation) == 1)
+    let sent = await transport.lastMarkStateRequest
+    #expect(sent?.imageIds == [2])
+  }
+
+  @Test("An empty Select disables every mark control, and the row still states the count")
+  func anEmptySelectionDisablesTheMarkControlsAndShowsZeroSelected() async {
+    let (store, _) = await loadedStore([makeImage(id: 1), makeImage(id: 2)])
+    await store.tapTile(1)
+    store.enterSelectExplicitly()
+
+    #expect(store.selectedCount == 0)
+    #expect(SelectCopy.caption(selectedCount: store.selectedCount) == "0 selected")
+    #expect(store.isMarkActionUnavailable)
+    #expect(store.isPickControlDisabled)
+
+    // Positive control: one member and every control is live again, with an honest count.
+    await store.tapTile(2)
+    #expect(store.selectedCount == 1)
+    #expect(SelectCopy.caption(selectedCount: store.selectedCount) == "1 selected")
+    #expect(!store.isMarkActionUnavailable)
+    #expect(!store.isPickControlDisabled)
+
+    // BROWSE with nothing focused is a different case on purpose: there is nothing to write to,
+    // but Pick also owns Pick Lock entry (a latched tap acts on the tile it lands on), so the
+    // control stays live there.
+    let (fresh, _) = makeStore()
+    #expect(fresh.markTargetImageIDs.isEmpty)
+    #expect(fresh.isMarkActionUnavailable)
+    #expect(!fresh.isPickControlDisabled)
+  }
+
+  @Test("Tag obeys the same empty-Select rule as the marks (the shipped-defect guard)")
+  func tagTargetObeysTheSameEmptySelectRuleAsMarkTarget() async {
+    let (store, _) = await loadedStore(
+      [makeImage(id: 1), makeImage(id: 2), makeImage(id: 3)])
+    await store.tapTile(1)
+    store.enterSelectExplicitly()
+
+    #expect(store.tagTargetImageIDs.isEmpty)
+    #expect(store.tagTargetImageIDs == store.markTargetImageIDs)
+    store.handleTagShortcut()
+    #expect(!store.isTagEntryPresented)
+
+    // And once there IS a selection, the tag target is the mark target — same ids, same order.
+    await store.tapTile(3)
+    await store.tapTile(2)
+    #expect(store.tagTargetImageIDs == [2, 3])
+    #expect(store.tagTargetImageIDs == store.markTargetImageIDs)
+    store.handleTagShortcut()
+    #expect(store.isTagEntryPresented)
+  }
+}
+
+/// WP13 P1, diff-gate rounds 1 and 5. Adding Clear made the action bar SIX controls, and six
+/// 44-pt controls at the shipped 24-pt rhythm do not fit an iPhone (416 pt against 402). The
+/// iPad landscape leg then showed the roomy 376-pt layout does not fit the Regular-3 GRID COLUMN
+/// either — the middle column of a three-pane split whose width this app never pins. So the
+/// bar no longer bets on a width: `ActionBarMetrics.layout(forWidth:)` picks a tier for the
+/// width it is handed, and every number below comes from that type, which is what
+/// `ActionBarView` lays out with.
+@Suite("Grid action bar geometry (the bar must fit the column it is given)")
+struct ActionBarMetricsTests {
+
+  @Test("Six 44-pt controls fit the narrowest Compact width")
+  func sixControlsFitTheNarrowestCompactWidth() {
+    #expect(ActionBarMetrics.controlCount == 6)
+    #expect(ActionBarMetrics.minimumControlSide == 44)
+    #expect(ActionBarMetrics.requiredWidth() <= ActionBarMetrics.narrowestCompactWidth)
+    let compact = ActionBarMetrics.layout(forWidth: ActionBarMetrics.narrowestCompactWidth)
+    #expect(!compact.foldsClearIntoMore)
+    #expect(compact.spacing == ActionBarMetrics.controlSpacing)
+  }
+
+  @Test("The MEASURED Regular-3 grid column is too narrow for six controls, so Clear folds")
+  func theMeasuredRegular3ColumnFoldsClearIntoMore() {
+    // 315 pt, derived from the gate's own landscape geometry attachment rather than assumed —
+    // see `ActionBarMetrics.measuredRegular3GridColumn`. Six controls need 320 even at the
+    // tight rhythm, which is exactly why the bar came out at x = -13.5 there.
+    #expect(ActionBarMetrics.sixControlFloor > ActionBarMetrics.measuredRegular3GridColumn)
+    #expect(ActionBarMetrics.foldedFloor <= ActionBarMetrics.measuredRegular3GridColumn)
+    let column = ActionBarMetrics.layout(forWidth: ActionBarMetrics.measuredRegular3GridColumn)
+    #expect(column.foldsClearIntoMore)
+    #expect(column.spacing == ActionBarMetrics.tightSpacing)
+    // The window constant stays the layout's own, never a second copy of 1197.
+    #expect(ActionBarMetrics.narrowestRegular3Window == LayoutResolver.regular3Threshold)
+    #expect(ActionBarMetrics.measuredRegular3GridColumn < ActionBarMetrics.narrowestRegular3Window)
+  }
+
+  @Test("The rhythms that stopped fitting are pinned as executable facts, not comments")
+  func theShippedRhythmsWouldNotHaveFit() {
+    // 6×44 + 5×24 + 2×16 = 416 against 402: the Compact overflow the first diff gate found.
+    #expect(ActionBarMetrics.requiredWidth(spacing: 24) == 416)
+    #expect(ActionBarMetrics.requiredWidth(spacing: 24) > ActionBarMetrics.narrowestCompactWidth)
+    // 6×44 + 5×16 + 2×16 = 376: fits Compact, and is exactly what the iPad landscape leg
+    // showed does NOT fit a Regular-3 grid column — hence a tier below it rather than a wider
+    // promise.
+    #expect(ActionBarMetrics.requiredWidth() == 376)
+    #expect(ActionBarMetrics.sixControlFloor == 320)
+    #expect(ActionBarMetrics.foldedFloor == 268)
+  }
+
+  @Test("The bar tightens, then folds Clear into More, as the column narrows")
+  func layoutTightensThenFoldsAsTheColumnNarrows() {
+    let roomy = ActionBarMetrics.layout(forWidth: ActionBarMetrics.requiredWidth())
+    #expect(roomy.spacing == ActionBarMetrics.controlSpacing)
+    #expect(roomy.horizontalPadding == ActionBarMetrics.horizontalPadding)
+    #expect(!roomy.foldsClearIntoMore)
+
+    let tight = ActionBarMetrics.layout(forWidth: ActionBarMetrics.requiredWidth() - 1)
+    #expect(tight.spacing == ActionBarMetrics.tightSpacing)
+    #expect(tight.horizontalPadding == ActionBarMetrics.tightHorizontalPadding)
+    #expect(!tight.foldsClearIntoMore)
+
+    let atFloor = ActionBarMetrics.layout(forWidth: ActionBarMetrics.sixControlFloor)
+    #expect(!atFloor.foldsClearIntoMore)
+
+    let folded = ActionBarMetrics.layout(forWidth: ActionBarMetrics.sixControlFloor - 1)
+    #expect(folded.foldsClearIntoMore)
+    #expect(folded.spacing == ActionBarMetrics.tightSpacing)
+  }
+
+  @Test("Every tier fits the width that selects it, with no control under 44 pt")
+  func everyTierFitsTheWidthThatSelectsIt() {
+    #expect(
+      ActionBarMetrics.requiredWidth(
+        spacing: ActionBarMetrics.tightSpacing,
+        horizontalPadding: ActionBarMetrics.tightHorizontalPadding)
+        == ActionBarMetrics.sixControlFloor)
+    #expect(ActionBarMetrics.foldedFloor < ActionBarMetrics.sixControlFloor)
+    // The folded tier buys exactly one control's worth of room, and buys it by MOVING the
+    // control into the More menu — never by shrinking one.
+    #expect(
+      ActionBarMetrics.sixControlFloor - ActionBarMetrics.foldedFloor
+        == ActionBarMetrics.minimumControlSide + ActionBarMetrics.tightSpacing)
+  }
+
+  @Test("The tier list is ordered widest-first, which is the order the bar renders them in")
+  func tiersAreOrderedWidestFirst() {
+    // `ActionBarView` feeds these three, in this order, to `ViewThatFits`, which takes the first
+    // that fits the column. `layout(forWidth:)` walks the same list, so this ordering is what
+    // makes the arithmetic below and the rendered result the same statement.
+    let widths = ActionBarMetrics.tiers.map(ActionBarMetrics.requiredWidth(for:))
+    #expect(widths == [376, 320, 268])
+    #expect(widths == widths.sorted(by: >))
+    #expect(ActionBarMetrics.tiers.map(\.name) == ["roomy", "tight", "folded"])
+    #expect(ActionBarMetrics.tiers.filter(\.foldsClearIntoMore).map(\.name) == ["folded"])
+    // Only the folded tier drops a control, and it drops exactly one.
+    #expect(
+      ActionBarMetrics.tiers.map(\.controlCount) == [
+        ActionBarMetrics.controlCount, ActionBarMetrics.controlCount,
+        ActionBarMetrics.foldedControlCount,
+      ])
+    // The renderer branches on `foldsClearIntoMore` while the arithmetic counts `controlCount`:
+    // this is the one place those two could drift, so it is asserted rather than assumed.
+    #expect(
+      ActionBarMetrics.tiers.allSatisfy {
+        $0.controlCount
+          == ($0.foldsClearIntoMore
+            ? ActionBarMetrics.foldedControlCount : ActionBarMetrics.controlCount)
+      })
+    // Names are the ForEach identity `ActionBarView` renders the list with — they must be
+    // unique or a tier would silently replace another in the rendered candidates.
+    #expect(Set(ActionBarMetrics.tiers.map(\.name)).count == ActionBarMetrics.tiers.count)
+  }
+
+  @Test("A seventh control would not fit the roomy tier — the guard covers the count too")
+  func aSeventhControlWouldNotFit() {
+    #expect(
+      ActionBarMetrics.requiredWidth(controlCount: 7) > ActionBarMetrics.narrowestCompactWidth)
+  }
+}

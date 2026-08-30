@@ -34,6 +34,13 @@ struct TileView: View {
     )
     .contentShape(Rectangle())
     .accessibilityAddTraits(isSelected ? .isSelected : [])
+    // A stable, non-positional handle for the UI-test lane (WP13 P1's retained Select-mode
+    // screenshots): the tiles are otherwise unnamed, and a screenshot test that selects
+    // photographs by screen COORDINATE proves nothing reproducibly. Keyed by IMAGE ID, not
+    // shared: one tile surfaces as SEVERAL accessibility elements, so a shared identifier makes
+    // "tap element 0, then element 1" tap the same photograph twice — selecting it and then
+    // deselecting it, which is exactly how the first version of that test read "0 selected".
+    .accessibilityIdentifier("gridTile-\(image.id)")
     // ≥44×44pt hit region (fold item 4) even for a tile whose rendered/reflowed size is
     // smaller — the tap target is never shrunk along with a capped/placeholder tile.
     .frame(minWidth: 44, minHeight: 44)
