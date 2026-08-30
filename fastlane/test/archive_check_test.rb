@@ -268,6 +268,20 @@ class ArchiveCheckTest < Minitest::Test
     assert_match(/does not carry/, failure.message)
   end
 
+  # Portal-minted distribution profiles authorise keychain groups through the team wildcard
+  # ("<TEAMID>.*"), never the literal group -- Apple accepts that at install, so this check
+  # must too (the literal-only form failed the first real 0.7.0 archive).
+  def test_a_team_wildcard_profile_entry_authorises_the_shared_group
+    results = verdict(extension: { profile_keychain_groups: ["#{TEAM_ID}.*", "com.apple.token"] })
+    assert_nil(ArchiveCheck.failures(results).find { |r| r.name == "extension_keychain_group" })
+  end
+
+  def test_another_teams_wildcard_does_not_authorise_the_shared_group
+    results = verdict(extension: { profile_keychain_groups: ["OTHERTEAM.*"] })
+    failure = ArchiveCheck.failures(results).find { |r| r.name == "extension_keychain_group" }
+    refute_nil(failure)
+  end
+
   def test_extension_get_task_allow_true_is_refused
     results = verdict(extension: { get_task_allow: true })
     assert_equal(["extension_get_task_allow"], ArchiveCheck.failures(results).map(&:name))

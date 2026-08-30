@@ -353,7 +353,17 @@ module ArchiveCheck
                         "#{Array(app_groups).inspect}")
     end
 
-    unauthorised = credential_groups - Array(profile_groups)
+    # A profile authorises a group either literally or through a team wildcard entry
+    # ("<TEAMID>.*") -- portal-minted distribution profiles carry the wildcard, never the
+    # literal group, and Apple's install-time check accepts it. Demanding the literal string
+    # here failed the first real 0.7.0 archive on a profile that authorised the group fine.
+    unauthorised = credential_groups.reject do |group|
+      Array(profile_groups).any? do |authorised|
+        authorised == group ||
+          (authorised.to_s.end_with?(".*") &&
+           group.to_s.start_with?(authorised.to_s.delete_suffix("*")))
+      end
+    end
     unless unauthorised.empty?
       return Result.new(false, "extension_keychain_group",
                         "extension profile does not carry #{unauthorised.inspect} -- signed " \
