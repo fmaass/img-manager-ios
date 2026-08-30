@@ -20,29 +20,13 @@ struct FolderTreeSection: View {
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
-  @State private var isExpanded: Bool
+  @State private var expansion = FolderTreeExpansion()
   @State private var localFolders: [Components.Schemas.FolderNode] = []
   @State private var archiveFolders: [Components.Schemas.FolderNode] = []
   @State private var didLoad = false
 
-  init(
-    gridService: GridService,
-    layoutMode: LayoutMode,
-    selectedFolderID: Binding<Int?>,
-    onSelect: @escaping (Int, GridSourceTier) -> Void
-  ) {
-    self.gridService = gridService
-    self.layoutMode = layoutMode
-    self._selectedFolderID = selectedFolderID
-    self.onSelect = onSelect
-    // Seeded, never bound: a later layout-mode change (rotation, window resize) must not stomp
-    // an expansion the reader chose by hand, and `@State`'s initial value is read once per view
-    // identity, which is exactly that rule.
-    self._isExpanded = State(initialValue: FolderTreePresentation.startsExpanded(in: layoutMode))
-  }
-
   var body: some View {
-    DisclosureGroup("Folders", isExpanded: $isExpanded) {
+    DisclosureGroup(isExpanded: expansionBinding) {
       if didLoad {
         tierBranch("Local", folders: localFolders, tier: .local)
         tierBranch("Archive", folders: archiveFolders, tier: .archive)
@@ -55,6 +39,8 @@ struct FolderTreeSection: View {
         // anyone who expands during the first load.)
         ProgressView()
       }
+    } label: {
+      Text("Folders").accessibilityIdentifier("foldersDisclosure")
     }
     .task {
       if let tree = try? await gridService.folders(sourceTier: .local) {
@@ -67,13 +53,25 @@ struct FolderTreeSection: View {
     }
   }
 
+  /// Derived on every read, never frozen at mount: `RootView.layoutMode` is still `.compact`
+  /// when this section first mounts (`RootView.swift:28`; `applyWidth` only corrects it on the
+  /// first `.onGeometryChange` pass), so a value captured at mount time makes an iPad launch
+  /// inherit Compact's opened default and start with the secondary tree expanded, against D13.
+  /// `FolderTreeExpansion` holds the reader's own choice instead, and defers to the CURRENT
+  /// mode until there is one.
+  private var expansionBinding: Binding<Bool> {
+    Binding(
+      get: { expansion.isExpanded(in: layoutMode) },
+      set: { expansion.setExpanded($0) })
+  }
+
   @ViewBuilder
   private func tierBranch(
     _ title: String, folders: [Components.Schemas.FolderNode], tier: GridSourceTier
   ) -> some View {
     let shoots = FolderTreePresentation.shootRows(for: layoutMode, folders: folders)
     if !shoots.isEmpty {
-      DisclosureGroup(title) {
+      DisclosureGroup {
         ForEach(shoots, id: \.id) { folder in
           // Same row-navigation pattern as the pre-P7 sidebar (RootView's own doc comment on
           // this exact fix): `.simultaneousGesture` layered on TOP of the enclosing List's own
@@ -84,6 +82,9 @@ struct FolderTreeSection: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .tag(folder.id)
+            // Stable, id-derived identifiers so the UI test drives the REAL rows rather than
+            // matching a localizable label (the shoot name is server data).
+            .accessibilityIdentifier("folderRow-\(folder.id)")
             .simultaneousGesture(
               TapGesture().onEnded {
                 selectedFolderID = folder.id
@@ -91,9 +92,29 @@ struct FolderTreeSection: View {
               }
             )
         }
+      } label: {
+        Text(title).accessibilityIdentifier("folderTreeTier-\(title)")
       }
     }
   }
+}
+
+/// Whether the "Folders" disclosure is open, as a value a test can drive. A reader's own choice
+/// wins from the moment it is made; until then the answer is re-derived from the CURRENT layout
+/// mode on every read. That distinction is the whole point (diff-gate round 1, blocker 1): the
+/// first shipped version seeded `@State` at mount time, when `RootView.layoutMode` is still its
+/// pre-geometry `.compact` default, so an iPad launch started with the secondary tree expanded
+/// and D13's Regular-collapsed contract was broken by a value nobody could see.
+struct FolderTreeExpansion {
+  private var readerChoice: Bool?
+
+  init(readerChoice: Bool? = nil) { self.readerChoice = readerChoice }
+
+  func isExpanded(in mode: LayoutMode) -> Bool {
+    readerChoice ?? FolderTreePresentation.startsExpanded(in: mode)
+  }
+
+  mutating func setExpanded(_ expanded: Bool) { readerChoice = expanded }
 }
 
 /// The two — and only two — presentation decisions the folder tree makes, both pure and both

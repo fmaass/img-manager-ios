@@ -52,4 +52,23 @@ struct FolderTreeSectionTests {
     #expect(!FolderTreePresentation.startsExpanded(in: .regular2))
     #expect(!FolderTreePresentation.startsExpanded(in: .regular3))
   }
+
+  /// Diff-gate round 1, blocker 1. `RootView.layoutMode` is `.compact` until the first
+  /// `.onGeometryChange` pass resolves it (`RootView.swift:28`), and this section mounts before
+  /// that — so an expansion frozen at mount time makes an iPad launch open the secondary tree,
+  /// against D13. The state model must answer from the CURRENT mode until the reader has chosen.
+  @Test("a Regular launch never inherits the transient Compact default")
+  func regularLaunchStaysCollapsedThroughTheUnresolvedCompactDefault() {
+    var expansion = FolderTreeExpansion()
+    #expect(expansion.isExpanded(in: .compact))
+    #expect(!expansion.isExpanded(in: .regular2))
+    #expect(!expansion.isExpanded(in: .regular3))
+
+    // And once the reader has chosen, the choice wins in every mode — a resize must not stomp it.
+    expansion.setExpanded(true)
+    #expect(expansion.isExpanded(in: .regular2))
+    #expect(expansion.isExpanded(in: .regular3))
+    expansion.setExpanded(false)
+    #expect(!expansion.isExpanded(in: .compact))
+  }
 }
