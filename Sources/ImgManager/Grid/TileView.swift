@@ -34,6 +34,12 @@ struct TileView: View {
     )
     .contentShape(Rectangle())
     .accessibilityAddTraits(isSelected ? .isSelected : [])
+    // A stable, non-positional handle for the UI-test lane (WP13 P1's retained Select-mode
+    // screenshots): the tiles are otherwise unnamed, and a screenshot test that selects
+    // photographs by screen COORDINATE proves nothing reproducibly. Shared by every tile on
+    // purpose — a test addresses them by bound index, never by image id, so a fixture change
+    // never silently re-points it.
+    .accessibilityIdentifier("gridTile")
     // ≥44×44pt hit region (fold item 4) even for a tile whose rendered/reflowed size is
     // smaller — the tap target is never shrunk along with a capped/placeholder tile.
     .frame(minWidth: 44, minHeight: 44)

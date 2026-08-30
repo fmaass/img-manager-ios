@@ -288,8 +288,7 @@ struct ActionBarView: View {
       pickButton(presentation: presentation)
 
       Button {
-        guard let id = store.focusedImageID else { return }
-        Task { await store.applyMark(.dislike, to: [id]) }
+        Task { await store.applyMarkToTarget(.dislike) }
       } label: {
         Label("Dislike", systemImage: "hand.thumbsdown")
       }
