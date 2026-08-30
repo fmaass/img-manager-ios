@@ -122,13 +122,17 @@ final class SelectModeScreenshotUITests: XCTestCase {
 
     clear.tap()
 
-    _ = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo)
-    waitForExpectations(timeout: 15) { error in
-      XCTAssertNil(
-        error,
-        "Tapping the bar's Clear committed nothing: Undo never became available, so that "
-          + "control is not wired to the mark lane.")
-    }
+    // `XCTWaiter` rather than `waitForExpectations(timeout:handler:)`: that handler closure
+    // captures the test case itself, which Swift 6 refuses to send across the waiter's
+    // isolation boundary (non-Sendable `XCTestCase`). Waiting for a result value instead needs
+    // no closure at all, and the diagnostic message survives.
+    let undoBecameAvailable = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"), object: undo)
+    let outcome = XCTWaiter().wait(for: [undoBecameAvailable], timeout: 15)
+    XCTAssertEqual(
+      outcome, .completed,
+      "Tapping the bar's Clear committed nothing: Undo never became available, so that control "
+        + "is not wired to the mark lane.")
     XCTAssertTrue(undo.isHittable, "Undo has no reachable hit region once it is enabled.")
   }
 }

@@ -2255,7 +2255,6 @@ struct GridStoreBulkMarkTests {
   }
 }
 
-
 /// WP13 P1, diff-gate round 1: adding Clear made the action bar SIX controls, and six 44-pt
 /// controls at the shipped 24-pt rhythm do not fit an iPhone. Every number here comes from
 /// `ActionBarMetrics`, which is what `ActionBarView` lays out with — there is no second

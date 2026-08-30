@@ -317,6 +317,16 @@ struct SelectModeRow: View {
   }
 }
 
+extension View {
+  /// Every bar control keeps its OWN — never the row's — 44×44 hit region (fold item 4),
+  /// sized from the same constant the bar's width arithmetic uses, so no control can be given a
+  /// target `ActionBarMetrics.requiredWidth` did not account for.
+  fileprivate func actionBarControlSize() -> some View {
+    let side = ActionBarMetrics.minimumControlSide
+    return frame(minWidth: side, minHeight: side)
+  }
+}
+
 /// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
 /// it against — no second, drifting declaration. Adding Clear made the bar SIX controls, and the
 /// shipped 24-pt rhythm no longer fits: 6×44 + 5×24 + 2×16 = 416 pt against a 402-pt Compact
@@ -408,9 +418,7 @@ struct ActionBarView: View {
       .buttonStyle(.bordered)
       .disabled(!store.undo.canUndo)
       .accessibilityIdentifier("gridUndoButton")
-      .frame(
-        minWidth: ActionBarMetrics.minimumControlSide,
-        minHeight: ActionBarMetrics.minimumControlSide)
+      .actionBarControlSize()
 
       Button {
         store.handleTagShortcut()
@@ -420,9 +428,7 @@ struct ActionBarView: View {
       .buttonStyle(.bordered)
       .disabled(store.isMarkActionUnavailable)
       .accessibilityIdentifier("gridTagButton")
-      .frame(
-        minWidth: ActionBarMetrics.minimumControlSide,
-        minHeight: ActionBarMetrics.minimumControlSide)
+      .actionBarControlSize()
 
       Menu {
         Button(store.selection.mode == .select ? "Exit Select" : "Select") {
@@ -443,9 +449,7 @@ struct ActionBarView: View {
       // secondaryAction toolbar items into an overflow control with the same label, and a UI
       // test that matched on the label alone could drive the wrong one.
       .accessibilityIdentifier("gridMoreMenu")
-      .frame(
-        minWidth: ActionBarMetrics.minimumControlSide,
-        minHeight: ActionBarMetrics.minimumControlSide)
+      .actionBarControlSize()
     }
     .labelStyle(.iconOnly)
     .font(.title3)
@@ -470,9 +474,7 @@ struct ActionBarView: View {
     .buttonStyle(.bordered)
     .disabled(store.isMarkActionUnavailable)
     .accessibilityIdentifier(control.accessibilityIdentifier)
-    .frame(
-      minWidth: ActionBarMetrics.minimumControlSide,
-      minHeight: ActionBarMetrics.minimumControlSide)
+    .actionBarControlSize()
   }
 
   /// Factored out because `.buttonStyle(_:)` requires a single CONCRETE style per call site —
@@ -504,9 +506,7 @@ struct ActionBarView: View {
     // Select mode alone no longer disables Pick — it is the phase's whole point. What stays
     // disabled is Pick LOCK entry, in the context menu below and in the store's own guard.
     .disabled(store.isPickControlDisabled)
-    .frame(
-      minWidth: ActionBarMetrics.minimumControlSide,
-      minHeight: ActionBarMetrics.minimumControlSide)
+    .actionBarControlSize()
     .contextMenu {
       // Gate's unasked issue: the amendment's discoverable visible "Lock Pick" alternative to
       // the undiscoverable double-tap gesture.
