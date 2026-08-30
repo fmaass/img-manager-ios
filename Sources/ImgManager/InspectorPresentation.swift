@@ -38,10 +38,7 @@ enum InspectorPlacement {
   static func presentation(for mode: LayoutMode) -> InspectorPresentation {
     switch mode {
     case .compact: return .sheet
-    // RED STEP (WP13 P10, commit 1 of 2): this is the SHIPPED placement, unchanged — Regular-2
-    // still gets the modal sheet. `LayoutPresentationTests` demands `.slideOver` here and is
-    // expected RED at this commit; the next commit flips this line and builds the panel.
-    case .regular2: return .sheet
+    case .regular2: return .slideOver
     case .regular3: return .permanentColumn
     }
   }

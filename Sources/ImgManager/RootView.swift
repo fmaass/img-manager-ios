@@ -336,6 +336,18 @@ struct RootView: View {
               }
             }
           }
+          .overlay(alignment: .trailing) {
+            // The ONE place P10 could have gone wrong: the slide-over is an overlay ON THE
+            // DETAIL PANE, never a third column. `workspace`'s 2-column `NavigationSplitView`
+            // for Compact/Regular-2 is a deliberate WP8 diff-gate round-3 fix (reusing the
+            // 3-column initializer with an empty `detailColumn` still reserved a wasted pane
+            // under `.doubleColumn`, squeezing the grid), and a panel built as a column would
+            // undo it. An overlay sits outside NavigationSplitView's column management
+            // entirely, so the two cannot fight over the same space.
+            if showInspector && inspectorPresentation == .slideOver {
+              inspectorSlideOver
+            }
+          }
           .sheet(isPresented: inspectorSheetBinding) {
             InspectorView(store: gridStore, service: gridService)
           }
@@ -359,6 +371,27 @@ struct RootView: View {
       set: { showInspector = $0 })
   }
 
+  /// [/link/3220] §2.2's side panel: anchored to the trailing edge of the grid pane,
+  /// width-limited by `InspectorSlideOverMetrics`, and NON-MODAL — nothing dims, nothing is
+  /// disabled, and the grid keeps taking taps beside it. Two details carry that guarantee:
+  /// `GeometryReader` measures the PANE the overlay covers (so the width rule applies to the
+  /// space actually available, including a half-width iPad window), and the widened frame around
+  /// the panel carries no background, so it has no hit region of its own and taps in it reach the
+  /// grid underneath. System materials only, never a custom `glassEffect` (ADR-N1) — `.bar` and
+  /// `.thinMaterial` are already this app's chrome backing (`ActionBarView`, `GridView`).
+  private var inspectorSlideOver: some View {
+    GeometryReader { proxy in
+      InspectorView(store: gridStore, service: gridService)
+        .frame(width: InspectorSlideOverMetrics.width(inPane: proxy.size.width))
+        .frame(maxHeight: .infinity)
+        .background(.regularMaterial)
+        .overlay(alignment: .leading) { Divider() }
+        .accessibilityIdentifier("inspectorSlideOver")
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+    .transition(.move(edge: .trailing))
+  }
+
   /// The Info button doubles as the "filters are on" indicator: on Compact the Info·Stats sheet
   /// is the ONLY filter surface, so the count has to ride the control that opens it — there is
   /// no other chrome to put it on, and a filtered grid that looks unfiltered is exactly the
@@ -371,7 +404,7 @@ struct RootView: View {
       // A TOGGLE, not a one-way open: the slide-over has no sheet grabber to dismiss it, so the
       // persistent chrome control is also how it closes (zero gesture-only actions). At Compact
       // the sheet covers this control while it is up, so toggling reads exactly as before.
-      showInspector.toggle()
+      withAnimation(.snappy(duration: 0.25)) { showInspector.toggle() }
     } label: {
       if activeFilters > 0 {
         Label(
