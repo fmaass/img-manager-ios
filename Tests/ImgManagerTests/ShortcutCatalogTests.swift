@@ -108,7 +108,10 @@ struct ShortcutCatalogTests {
     #expect(ShortcutHelpModel.rows.contains { $0.id == ShortcutID.help.rawValue })
 
     // Nothing is left PLANNED after this phase: `help` was the last inactive entry.
-    #expect(ShortcutCatalog.entries.allSatisfy(\.isActive))
+    // Closure form, not `allSatisfy(\.isActive)`: inside `#expect` the macro re-emits the
+    // predicate as a generic function value, and a key path passed to a `rethrows` call
+    // there is treated as throwing ("call can throw, but it is not marked with 'try'").
+    #expect(ShortcutCatalog.entries.allSatisfy { $0.isActive })
   }
 
   @MainActor
