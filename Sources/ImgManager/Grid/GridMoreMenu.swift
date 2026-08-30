@@ -52,13 +52,7 @@ enum GridMoreMenu {
     systemImage: "checkmark.circle",
     title: { $0.selection.mode == .select ? "Exit Select" : "Select" },
     isEnabled: { _ in true },
-    surface: .action { store in
-      if store.selection.mode == .select {
-        store.done()
-      } else {
-        store.enterSelectExplicitly()
-      }
-    })
+    surface: .action { _ in })  // RED stub
 
   /// A SECOND ENTRY POINT to the store's one clear action, never a second implementation: the
   /// menu entry, the `U` key equivalent and the View menu's Clear all dispatch into
@@ -74,18 +68,14 @@ enum GridMoreMenu {
     systemImage: "minus.circle",
     title: { _ in "Clear mark" },
     isEnabled: { !$0.tagTargetImageIDs.isEmpty },
-    surface: .action { store in
-      Task { await store.handleClearShortcut(shiftHeld: false) }
-    })
+    surface: .action { _ in })  // RED stub
 
   static let copyForLightroom = GridMoreMenuEntry(
     id: "more.copyForLightroom",
     systemImage: "doc.on.clipboard",
     title: { _ in "Copy for Lightroom" },
     isEnabled: { !$0.isCopyingMarksForLightroom },
-    surface: .action { store in
-      Task { await store.copyMarkedFilenamesForLightroom() }
-    })
+    surface: .action { _ in })  // RED stub
 
   /// The filename UNDER each tile — never a path (p3220 §4.5). Persisted through
   /// `GridPreferences`, this app's first scalar preference.
@@ -96,7 +86,7 @@ enum GridMoreMenu {
     isEnabled: { _ in true },
     surface: .toggle(
       isOn: { $0.preferences.filenamePlates },
-      set: { store, isOn in store.preferences.filenamePlates = isOn }))
+      set: { _, _ in }))  // RED stub
 
   /// DENSITY, mapped onto the grid's EXISTING six row-height steps (`GridRowHeight`) rather
   /// than a second persisted property. The native grid already has six measured zoom steps
@@ -115,7 +105,7 @@ enum GridMoreMenu {
     title: { "Density: \(Int($0.rowHeight.rawValue)) pt" },
     isEnabled: { _ in true },
     surface: .rowHeightSteps(
-      set: { store, step in store.setRowHeight(step) },
+      set: { _, _ in },  // RED stub
       isCurrent: { store, step in store.rowHeight == step }))
 
   /// READ ONLY (`StatusSheet`): maintenance state, last indexed, store health, coverage, recent
@@ -125,7 +115,7 @@ enum GridMoreMenu {
     systemImage: "info.circle",
     title: { _ in "Status" },
     isEnabled: { _ in true },
-    surface: .action { store in store.presentStatus() })
+    surface: .action { _ in })  // RED stub
 }
 
 /// The menu's rendered body: EXACTLY `GridMoreMenu.entries`, in order, with no second list.

@@ -41,7 +41,7 @@ enum StatusSheetModel {
   }()
 
   static func timestamp(_ date: Date) -> String {
-    "\(formatter.string(from: date)) \(zoneLabel)"
+    ISO8601DateFormatter().string(from: date)  // RED stub
   }
 
   static func sections(_ status: Components.Schemas.StatusResponse) -> [StatusSheetSection] {
@@ -76,12 +76,12 @@ enum StatusSheetModel {
           id: "maintenance.lastIndexed", label: "Last indexed",
           value: timestamp(indexed)))
     }
-    if let active = status.activeRun {
-      rows.append(
-        StatusSheetRow(
-          id: "maintenance.activeRun", label: "Running now",
-          value: "\(active.trigger) — started \(timestamp(active.startedAt))"))
-    }
+    // NO "running now" row: the vendored document declares `active_run` as
+    // `anyOf: [MaintenanceRunView, null]`, and swift-openapi-generator DROPS that property
+    // entirely — the generated `StatusResponse` has coverage/lastIndexedAt/maintenance/runs/
+    // stores and no `activeRun` at all (verified in the gate's own generated Types.swift,
+    // run p5a-red 22:38). Rendering it would need a re-vendor, which this phase does not do.
+    // The most recent entry of `runs` is what the sheet shows instead.
     return StatusSheetSection(id: "maintenance", title: "Maintenance", rows: rows)
   }
 
