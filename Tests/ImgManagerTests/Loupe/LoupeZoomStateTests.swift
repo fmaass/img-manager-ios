@@ -148,14 +148,28 @@ struct LoupeZoomStateTests {
     #expect(state.focusedImageID == 8)
   }
 
-  @Test("the accessibility value reports the magnification and the pan, in that exact shape")
+  @Test("the accessibility value speaks the SAME proxy-relative magnification as the control")
   func accessibilityValueReportsMagnificationAndPan() {
     var state = phoneState()
-    #expect(state.accessibilityValue == "zoom 100 %, pan 0, 0")
+    #expect(state.accessibilityValue == "zoom fit, pan 0, 0")
+
+    // Half way up a 2.0x ceiling is 75 % of 1:1 — proxy-relative, never scale-from-fit (which
+    // would say "150 %" here and "200 %" at the very ceiling the control calls "100 %").
+    state.magnify(to: 1.5)
+    #expect(state.accessibilityValue == "zoom 75 %, pan 0, 0")
+    state.endMagnify()
+
     state.toggle()
-    #expect(state.accessibilityValue == "zoom 200 %, pan 0, 0")
+    #expect(state.accessibilityValue == "zoom fit, pan 0, 0")
+
+    state.toggle()
+    #expect(state.accessibilityValue == "zoom 100 %, pan 0, 0")
+    #expect(LoupeZoomControlModel(state).title == "Fit")
+    // Both surfaces name the SAME end state, so "100 %" cannot mean two things.
+    #expect(state.accessibilityValue.contains(LoupeZoomState.name(.oneToOne)))
+
     state.pan(to: CGSize(width: -1_000, height: 0))
-    #expect(state.accessibilityValue == "zoom 200 %, pan -200, 0")
+    #expect(state.accessibilityValue == "zoom 100 %, pan -200, 0")
   }
 
   @Test("a horizontal drag advances at fit and pans when zoomed (the pure decision)")

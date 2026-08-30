@@ -66,7 +66,7 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
 
     let image = loupeImage(app)
     XCTAssertTrue(image.waitForExistence(timeout: 10))
-    XCTAssertEqual(image.value as? String, "zoom 100 %, pan 0, 0")
+    XCTAssertEqual(image.value as? String, "zoom fit, pan 0, 0")
 
     image.pinch(withScale: 3, velocity: 3)
     Thread.sleep(forTimeInterval: 1.0)
@@ -76,8 +76,13 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
         + "MagnifyGesture.")
     let zoomed = image.value as? String ?? ""
     XCTAssertFalse(
-      zoomed.hasPrefix("zoom 100 %"),
+      zoomed.hasPrefix("zoom fit"),
       "The pinch left the magnification at fit (\(zoomed)).")
+    // A 3x pinch far exceeds every ceiling this fixture can produce (1.14x-1.33x), so it must
+    // land ON 1:1 against the proxy — the same "100 %" the chrome control names.
+    XCTAssertTrue(
+      zoomed.hasPrefix("zoom 100 %"),
+      "The pinch did not reach 1:1 against the proxy (\(zoomed)).")
     XCTContext.runActivity(named: "after pinch out: \(zoomed)") { _ in }
     attach(name: "loupe-pinched-out")
 
@@ -88,7 +93,7 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
       zoomToggle.value as? String, "100 %",
       "Pinching back in did not return the photograph to fit.")
     XCTAssertEqual(
-      image.value as? String, "zoom 100 %, pan 0, 0",
+      image.value as? String, "zoom fit, pan 0, 0",
       "Pinching below fit was not clamped to fit.")
   }
 
@@ -104,8 +109,9 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
     zoomToggle.tap()
     Thread.sleep(forTimeInterval: 1.0)
     let centred = image.value as? String ?? ""
-    XCTAssertTrue(
-      centred.hasSuffix("pan 0, 0"), "the zoomed photograph should start centred (\(centred))")
+    XCTAssertEqual(
+      centred, "zoom 100 %, pan 0, 0",
+      "the chrome twin should put the photograph at 1:1, centred (\(centred))")
 
     let start = image.coordinate(withNormalizedOffset: CGVector(dx: 0.78, dy: 0.5))
     let end = image.coordinate(withNormalizedOffset: CGVector(dx: 0.22, dy: 0.5))

@@ -95,16 +95,37 @@ struct LoupeZoomState: Equatable, Sendable {
 
   var isZoomed: Bool { scale > 1 }
 
-  /// What the zoomed photograph announces about its own state — the magnification it is showing
-  /// and how far it has been panned from centre. It exists first for VoiceOver, which otherwise
-  /// has no way to know a pinch or a drag changed anything; the loupe's zoom UI test reads the
-  /// same value, which is what gives the PRODUCTION `MagnifyGesture` and `DragGesture`
-  /// attachments causal coverage (diff-gate round 1, blocker 1: the spy-substituted unit tests
-  /// cannot see whether `.live` attaches them at all). Percentages are against the PROXY, never
-  /// the original — the same honesty the control's own title keeps.
+  /// The two end states of the zoom, NAMED ONCE (delta-gate blocker: the spoken value used to
+  /// report scale-from-fit — "zoom 133 %" at the very ceiling the chrome control calls
+  /// "100 %" — so the two surfaces told a VoiceOver user contradictory things). Both
+  /// surfaces derive their wording from here, so "100 %" means 1:1 against the PROXY in both,
+  /// and neither can drift.
+  enum EndState: Equatable, Sendable {
+    case fit
+    case oneToOne
+  }
+
+  static func name(_ endState: EndState) -> String {
+    endState == .fit ? "Fit" : "100 %"
+  }
+
+  /// What the photograph announces about its own state — the magnification it is showing, in the
+  /// SAME proxy-relative terms the chrome control uses, and how far it has been panned from
+  /// centre. It exists first for VoiceOver, which otherwise has no way to know a pinch or a drag
+  /// changed anything; the loupe's zoom UI tests read the same value, which is what gives the
+  /// PRODUCTION `MagnifyGesture` and `DragGesture` attachments causal coverage (diff-gate round 1,
+  /// blocker 1: the spy-substituted unit tests cannot see whether `.live` attaches them at all).
   var accessibilityValue: String {
-    let percent = Int((scale * 100).rounded())
-    return "zoom \(percent) %, pan \(Int(offset.width.rounded())), \(Int(offset.height.rounded()))"
+    let magnification: String
+    if isZoomed {
+      let percent = Int((scale / oneToOneScale * 100).rounded())
+      magnification = percent >= 100 ? Self.name(.oneToOne) : "\(percent) %"
+    } else {
+      magnification = Self.name(.fit).lowercased()
+    }
+    let x = Int(offset.width.rounded())
+    let y = Int(offset.height.rounded())
+    return "zoom \(magnification), pan \(x), \(y)"
   }
 
   // MARK: - Mutations
@@ -209,9 +230,10 @@ struct LoupeZoomControlModel: Equatable, Sendable {
   var isAvailable: Bool
   var isZoomed: Bool
 
-  /// "Fit" when zoomed (what tapping does next), "100 %" when at fit. Both are 1:1 against the
-  /// PROXY — no string here claims original-resolution fidelity.
-  var title: String { isZoomed ? "Fit" : "100 %" }
+  /// What tapping does NEXT: "Fit" when zoomed, "100 %" when at fit. Both names come from
+  /// `LoupeZoomState.name(_:)`, the single source the photograph's spoken value also uses, so
+  /// "100 %" cannot mean 1:1-against-the-proxy on one surface and something else on the other.
+  var title: String { LoupeZoomState.name(isZoomed ? .fit : .oneToOne) }
 
   var accessibilityHint: String {
     isAvailable
