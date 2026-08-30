@@ -60,8 +60,8 @@ struct LoupeZoomState: Equatable, Sendable {
   static func oneToOneScale(proxyPixels: CGSize, fitted: CGSize, displayScale: CGFloat)
     -> CGFloat
   {
-    // RED SCAFFOLD (WP13 P3): no ceiling derived yet.
-    return 1
+    guard proxyPixels.width > 0, fitted.width > 0, displayScale > 0 else { return 1 }
+    return proxyPixels.width / (fitted.width * displayScale)
   }
 
   /// Clamps pan so the scaled image never detaches from the viewport: along an axis where the
@@ -70,8 +70,13 @@ struct LoupeZoomState: Equatable, Sendable {
   static func clampedOffset(_ offset: CGSize, fitted: CGSize, viewport: CGSize, scale: CGFloat)
     -> CGSize
   {
-    // RED SCAFFOLD (WP13 P3): no clamping yet.
-    return offset
+    let scaledWidth = fitted.width * scale
+    let scaledHeight = fitted.height * scale
+    let limitX = max(0, (scaledWidth - viewport.width) / 2)
+    let limitY = max(0, (scaledHeight - viewport.height) / 2)
+    return CGSize(
+      width: min(max(offset.width, -limitX), limitX),
+      height: min(max(offset.height, -limitY), limitY))
   }
 
   // MARK: - Derived
@@ -106,13 +111,21 @@ struct LoupeZoomState: Equatable, Sendable {
   /// exactly this — there is no second target value anywhere, so "100 %" cannot come to mean two
   /// different things in the two places.
   mutating func toggle() {
-    // RED SCAFFOLD (WP13 P3): no toggle yet.
+    guard isZoomAvailable else { return }
+    scale = isZoomed ? 1 : oneToOneScale
+    offset = .zero
+    pinchAnchorScale = nil
+    panAnchorOffset = nil
   }
 
   /// Continuous pinch. `magnification` is the gesture's cumulative factor since it began, so the
   /// anchor is captured on the first change and the scale is always anchor x magnification.
   mutating func magnify(to magnification: CGFloat) {
-    // RED SCAFFOLD (WP13 P3): no pinch yet.
+    guard isZoomAvailable else { return }
+    let anchor = pinchAnchorScale ?? scale
+    pinchAnchorScale = anchor
+    scale = min(max(anchor * magnification, 1), maxScale)
+    offset = Self.clampedOffset(offset, fitted: fittedExtent, viewport: viewport, scale: scale)
   }
 
   mutating func endMagnify() { pinchAnchorScale = nil }
@@ -120,7 +133,12 @@ struct LoupeZoomState: Equatable, Sendable {
   /// Continuous pan, cumulative translation since the drag began. Inert at fit — at fit a
   /// horizontal drag is the shipped prev/next advance, and `dragOutcome` is where that is decided.
   mutating func pan(to translation: CGSize) {
-    // RED SCAFFOLD (WP13 P3): no pan yet.
+    guard isZoomed else { return }
+    let anchor = panAnchorOffset ?? offset
+    panAnchorOffset = anchor
+    offset = Self.clampedOffset(
+      CGSize(width: anchor.width + translation.width, height: anchor.height + translation.height),
+      fitted: fittedExtent, viewport: viewport, scale: scale)
   }
 
   mutating func endPan() { panAnchorOffset = nil }
@@ -129,8 +147,12 @@ struct LoupeZoomState: Equatable, Sendable {
   /// the one this state holds returns it to fit with no pan. Deleting the reset turns
   /// `focusOnADifferentImageIdResetsScaleAndOffset` RED.
   mutating func focus(on imageID: Int?) {
-    // RED SCAFFOLD (WP13 P3): remembers the frame, does not reset.
+    guard imageID != focusedImageID else { return }
     focusedImageID = imageID
+    scale = 1
+    offset = .zero
+    pinchAnchorScale = nil
+    panAnchorOffset = nil
   }
 
   // MARK: - Gesture arbitration
@@ -166,8 +188,7 @@ struct LoupeZoomState: Equatable, Sendable {
 struct LoupeZoomInstaller: Sendable {
   var applyFrameChange: @Sendable (inout LoupeZoomState, Int?) -> Void
 
-  // RED SCAFFOLD (WP13 P3): a hollow .live, exactly the failure mode leg 2 exists to catch.
-  static let live = LoupeZoomInstaller { _, _ in }
+  static let live = LoupeZoomInstaller { state, imageID in state.focus(on: imageID) }
 }
 
 /// What the chrome twin needs to render itself, derived from the zoom state — never from a device
@@ -175,15 +196,6 @@ struct LoupeZoomInstaller: Sendable {
 struct LoupeZoomControlModel: Equatable, Sendable {
   var isAvailable: Bool
   var isZoomed: Bool
-
-  init(isAvailable: Bool, isZoomed: Bool) {
-    self.isAvailable = isAvailable
-    self.isZoomed = isZoomed
-  }
-
-  init(_ zoom: LoupeZoomState) {
-    self.init(isAvailable: zoom.isZoomAvailable, isZoomed: zoom.isZoomed)
-  }
 
   /// "Fit" when zoomed (what tapping does next), "100 %" when at fit. Both are 1:1 against the
   /// PROXY — no string here claims original-resolution fidelity.
@@ -194,6 +206,12 @@ struct LoupeZoomControlModel: Equatable, Sendable {
       ? "Toggles between fitting the photograph and viewing it at 100 % of the preview proxy."
       : "Unavailable: the preview proxy is already enlarged to fill this view, so there is no "
         + "further detail to show."
+  }
+}
+
+extension LoupeZoomControlModel {
+  init(_ zoom: LoupeZoomState) {
+    self.init(isAvailable: zoom.isZoomAvailable, isZoomed: zoom.isZoomed)
   }
 }
 

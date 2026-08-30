@@ -64,14 +64,16 @@ struct LoupeView: View {
   /// The zoom AS RENDERED: committed storage, normalised against the photograph currently in the
   /// loupe. Pure — it never writes, so reading it during `body` is not a state mutation.
   var resolvedZoom: LoupeZoomState {
-    // RED SCAFFOLD (WP13 P3): the call site leg 3 exists to catch is not here yet.
-    return zoomModel.state
+    var resolved = zoomModel.state
+    zoomInstaller.applyFrameChange(&resolved, store.focusedImageID)
+    return resolved
   }
 
   /// Every zoom write goes through here: normalise for the current frame first, then apply, then
   /// commit. One place, so no call site can forget the reset.
   func mutateZoom(_ change: (inout LoupeZoomState) -> Void) {
     var next = zoomModel.state
+    zoomInstaller.applyFrameChange(&next, store.focusedImageID)
     change(&next)
     zoomModel.state = next
   }
