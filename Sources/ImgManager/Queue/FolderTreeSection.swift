@@ -1,25 +1,60 @@
 import ImgManagerAPI
 import SwiftUI
 
-/// Q5: the iPad-only SECONDARY, collapsed "Folders" disclosure below the queue sidebar — built
-/// from the EXISTING `GET /api/folders` (`FolderNode`: parent_id + name), NEVER from summaries
-/// (flat, no tree fields). Local and Archive tier branches; each row routes through the ONE
-/// atomic `GridStore.selectShoot(folderID:sourceTier:)` entry point, so a tree tap always sets
-/// the complete destination `(folderID, sourceTier)` in a single scope transition — never a
-/// separate follow-up `applyFilterChange` call.
+/// The "Folders" disclosure below the queue: the second way into the grid, on BOTH idioms since
+/// P6 (IMGMGR-216). Built from the EXISTING `GET /api/folders` (`FolderNode`: parent_id + name),
+/// NEVER from summaries (flat, no tree fields). Local and Archive tier branches; each row routes
+/// through the ONE atomic `GridStore.selectShoot(folderID:sourceTier:)` entry point, so a tree
+/// tap always sets the complete destination `(folderID, sourceTier)` in a single scope
+/// transition — never a separate follow-up `applyFilterChange` call.
+///
+/// P6 (IMGMGR-216): this used to be iPad-only. `RootView.sidebar` passed `treeSection: nil` on
+/// Compact, so the phone's only navigation was whichever shoots happened to be queue cards, and
+/// every other shoot was unreachable there. No such branch exists anywhere now — one component,
+/// both idioms — and `QueueView.treeSection` is non-optional so it cannot come back without a
+/// type change. The ONLY thing that varies with the layout mode is the disclosure's INITIAL
+/// expansion, decided once in `FolderTreePresentation` where a test can read it.
 struct FolderTreeSection: View {
   let gridService: GridService
+  let layoutMode: LayoutMode
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
-  @State private var isExpanded = false
+  @State private var isExpanded: Bool
   @State private var localFolders: [Components.Schemas.FolderNode] = []
   @State private var archiveFolders: [Components.Schemas.FolderNode] = []
+  @State private var didLoad = false
+
+  init(
+    gridService: GridService,
+    layoutMode: LayoutMode,
+    selectedFolderID: Binding<Int?>,
+    onSelect: @escaping (Int, GridSourceTier) -> Void
+  ) {
+    self.gridService = gridService
+    self.layoutMode = layoutMode
+    self._selectedFolderID = selectedFolderID
+    self.onSelect = onSelect
+    // Seeded, never bound: a later layout-mode change (rotation, window resize) must not stomp
+    // an expansion the reader chose by hand, and `@State`'s initial value is read once per view
+    // identity, which is exactly that rule.
+    self._isExpanded = State(initialValue: FolderTreePresentation.startsExpanded(in: layoutMode))
+  }
 
   var body: some View {
     DisclosureGroup("Folders", isExpanded: $isExpanded) {
-      tierBranch("Local", folders: localFolders, tier: .local)
-      tierBranch("Archive", folders: archiveFolders, tier: .archive)
+      if didLoad {
+        tierBranch("Local", folders: localFolders, tier: .local)
+        tierBranch("Archive", folders: archiveFolders, tier: .archive)
+      } else {
+        // Compact opens this disclosure by default (see `FolderTreePresentation`), and the two
+        // folder calls it waits on measured ~0.6 s (local) and ~2.5 s (archive) server-side
+        // against production on 2026-08-30 — an already-open disclosure with no rows under it
+        // reads as "this library has no folders" for those seconds. It says Loading instead.
+        // (Regular keeps its collapsed default; this also fixes the same silence there for
+        // anyone who expands during the first load.)
+        ProgressView()
+      }
     }
     .task {
       if let tree = try? await gridService.folders(sourceTier: .local) {
@@ -28,6 +63,7 @@ struct FolderTreeSection: View {
       if let tree = try? await gridService.folders(sourceTier: .archive) {
         archiveFolders = tree.items
       }
+      didLoad = true
     }
   }
 
@@ -35,7 +71,7 @@ struct FolderTreeSection: View {
   private func tierBranch(
     _ title: String, folders: [Components.Schemas.FolderNode], tier: GridSourceTier
   ) -> some View {
-    let shoots = ShootListFilter.shoots(folders)
+    let shoots = FolderTreePresentation.shootRows(for: layoutMode, folders: folders)
     if !shoots.isEmpty {
       DisclosureGroup(title) {
         ForEach(shoots, id: \.id) { folder in
@@ -60,19 +96,28 @@ struct FolderTreeSection: View {
   }
 }
 
-/// TEMPORARY — mutation-loop RED probe (disciplined-implementation §1: a test written against
-/// already-working code proves nothing until it has been seen failing for the BEHAVIOUR's
-/// absence). These two bodies reproduce the PRE-P6 behaviour on purpose — Compact reaches no
-/// shoot at all, and the disclosure never opens itself — so this commit's gate run shows
-/// `FolderTreeSectionTests` red. The next commit replaces them with the real decisions and wires
-/// them into the view. `ShootListFilter.shootKinds` is mutated in the same commit and for the
-/// same reason.
+/// The two — and only two — presentation decisions the folder tree makes, both pure and both
+/// readable by a test. P6 (IMGMGR-216) exists because the equivalent decision used to be an
+/// inline ternary in `RootView.sidebar` (`treeSection: layoutMode == .compact ? nil : …`), where
+/// nothing could assert it and the phone silently had no browse surface at all. Neither function
+/// reads `UIDevice.current.userInterfaceIdiom` — `LayoutMode` is resolved from measured width
+/// plus `horizontalSizeClass` (`LayoutResolver`), and this is the one place the tree consults it.
 enum FolderTreePresentation {
-  static func startsExpanded(in mode: LayoutMode) -> Bool { false }
+  /// The Folders disclosure opens itself on Compact, where it is the only way to reach a shoot
+  /// that is not currently a queue card; on Regular it stays the collapsed SECONDARY surface
+  /// below the queue (D13, unchanged since WP8 P7). Nothing else about the tree varies by mode.
+  static func startsExpanded(in mode: LayoutMode) -> Bool { mode == .compact }
 
+  /// The shoot rows the tree offers. `mode` is taken and DELIBERATELY not consulted: "the phone
+  /// reaches every shoot the iPad reaches" is this phase's acceptance criterion, so the mode is
+  /// routed through the one function a test can pin
+  /// (`FolderTreeSectionTests.compactRendersTheSameShootSetAsRegular`) instead of being absent
+  /// from the type system entirely. Any future mode-dependent filtering has to be written here,
+  /// and goes RED there. Which leaves are shoots stays `ShootListFilter`'s single definition —
+  /// the server's `kind` vocabulary, never a second client-side classification.
   static func shootRows(
     for mode: LayoutMode, folders: [Components.Schemas.FolderNode]
   ) -> [Components.Schemas.FolderNode] {
-    mode == .compact ? [] : ShootListFilter.shoots(folders)
+    ShootListFilter.shoots(folders)
   }
 }

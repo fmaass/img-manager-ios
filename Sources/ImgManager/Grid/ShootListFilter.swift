@@ -14,9 +14,7 @@ enum ShootListFilter {
   /// (`...-1` / `...-2` continuation directories). Deliberately narrower than the full
   /// tree — import/project/template/other stay out of the shoot list, as P4 intended
   /// ("browsable shoot leaves, not the full tree").
-  // TEMPORARY — mutation-loop RED probe (reverted in the next commit): the retired "day"
-  // value, so this commit's gate run proves the vocabulary pins fail when the filter is wrong.
-  static let shootKinds: Set<String> = ["day"]
+  static let shootKinds: Set<String> = ["dated", "dated_split"]
 
   static func shoots(
     _ nodes: [Components.Schemas.FolderNode]
