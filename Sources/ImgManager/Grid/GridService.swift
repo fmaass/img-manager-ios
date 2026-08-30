@@ -226,6 +226,38 @@ struct GridService: Sendable {
     return body
   }
 
+  // MARK: - Status + marks export (WP13 P5a, IMGMGR-221)
+
+  /// P3's own read-only boundary, over the SAME generated client this type already holds —
+  /// deliberately vended rather than re-implemented. `ImgManagerAPIService.status()` exists,
+  /// is tested, and its single-case opaque error is exactly the granularity a status read
+  /// needs ("reachable or not"); copying it here would give one endpoint two client methods.
+  var statusService: ImgManagerAPIService { ImgManagerAPIService(client: client) }
+
+  /// `GET /api/marks/export` with the server's DEFAULTS — `state=pick`, `format=json`.
+  ///
+  /// `format=txt` is never requested: the vendored document declares only `application/json`
+  /// for the 200 response, so a `txt` request is unrepresentable by the generated client (it
+  /// would decode as `.undocumented`). Live-probed 2026-08-30 against the deployed backend:
+  /// `count=211`, `state=["pick"]`, `truncated=false`, bare stems with no path separator.
+  ///
+  /// The response describes the WHOLE marked set, never the browse scope, and may be
+  /// truncated — see `MarksExportCopy`, which is where that is turned into what the reader is
+  /// told. This method deliberately passes no query at all, so no filter can leak in and make
+  /// the answer look scoped when it is not.
+  func marksExport() async throws -> Components.Schemas.MarksExport {
+    let output: Operations.ExportMarksApiMarksExportGet.Output
+    do {
+      output = try await client.exportMarksApiMarksExportGet(.init(query: .init()))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    guard case .ok(let ok) = output, let body = try? ok.body.json else {
+      throw GridServiceError.unreachable
+    }
+    return body
+  }
+
   // MARK: - Detail (inspector)
 
   func detail(imageID: Int) async throws -> Components.Schemas.ImageDetail {

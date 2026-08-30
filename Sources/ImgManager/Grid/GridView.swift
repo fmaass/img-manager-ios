@@ -55,6 +55,7 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
+      MarksCopyBanner(store: store)
       ActionBarView(store: store)
     }
     .onChange(of: store.images) { _, _ in publishRows() }
@@ -151,6 +152,9 @@ struct GridView: View {
         isFocused: store.focusedImageID == image.id,
         isSelected: store.selection.members.contains(image.id),
         isSelectMode: store.selection.mode == .select,
+        // WP13 P5a (IMGMGR-221): read here, in the one place that builds a tile, so the More
+        // menu's toggle and what every tile draws are the same fact.
+        showsFilenamePlate: store.preferences.filenamePlates,
         store: store
       )
     case .stack(let stackRow, let isExpanded):
@@ -445,18 +449,18 @@ struct ActionBarView: View {
       .disabled(store.tagTargetImageIDs.isEmpty)
       .frame(minWidth: 44, minHeight: 44)
 
+      // WP13 P5a (IMGMGR-221): the decided set, rendered from `GridMoreMenu.entries` and from
+      // nothing else — this view holds no second list of what the menu contains. It stays the
+      // OVERFLOW: the action bar is at its 6-control limit (`ActionBarMetrics`) and Regular's
+      // toolbar already carries three `.primaryAction` items, so no entry here becomes a bar
+      // control.
       Menu {
-        Button(store.selection.mode == .select ? "Exit Select" : "Select") {
-          if store.selection.mode == .select {
-            store.done()
-          } else {
-            store.enterSelectExplicitly()
-          }
-        }
+        GridMoreMenuContent(store: store)
       } label: {
         Label("More", systemImage: "ellipsis.circle")
       }
       .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("gridMoreMenu")
     }
     .labelStyle(.iconOnly)
     .font(.title3)
@@ -464,6 +468,9 @@ struct ActionBarView: View {
     .background(.bar)
     .sheet(isPresented: $store.isTagEntryPresented) {
       TagEntrySheet(store: store)
+    }
+    .sheet(isPresented: $store.isStatusPresented) {
+      StatusSheet(store: store)
     }
   }
 
@@ -498,6 +505,30 @@ struct ActionBarView: View {
       // the undiscoverable double-tap gesture.
       Button("Lock Pick") { store.lockPickFromMenu() }
         .disabled(store.pickLock.state == .latched || store.selection.mode == .select)
+    }
+  }
+}
+
+/// WP13 P5a (IMGMGR-221): what "Copy for Lightroom" just did, stated where the reader is —
+/// non-modal, same shape as `ConflictRecoveryBanner` beside it, never an alert. The text is
+/// built by `MarksExportCopy.confirmation`, which is where the endpoint's real scope ("the
+/// whole marked set, not the browse scope") and its truncation flag are turned into words.
+struct MarksCopyBanner: View {
+  @Bindable var store: GridStore
+
+  var body: some View {
+    if let message = store.marksCopyMessage {
+      HStack(spacing: 12) {
+        Label(message, systemImage: "doc.on.clipboard")
+          .font(.footnote)
+          .accessibilityIdentifier("marksCopyMessage")
+        Spacer()
+        Button("Dismiss") { store.dismissMarksCopyMessage() }
+          .font(.footnote)
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .background(.thinMaterial)
     }
   }
 }

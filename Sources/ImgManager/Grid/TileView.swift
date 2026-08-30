@@ -10,6 +10,10 @@ struct TileView: View {
   let isFocused: Bool
   let isSelected: Bool
   let isSelectMode: Bool
+  /// WP13 P5a (IMGMGR-221): the More menu's "Filename plates" toggle, resolved ONCE by
+  /// `GridView` from `GridPreferences` and passed down — never re-read here, so every tile in a
+  /// pass draws the same answer.
+  let showsFilenamePlate: Bool
   @State private var proxyImage: PlatformImage?
   let store: GridStore
 
@@ -28,6 +32,10 @@ struct TileView: View {
       }
       badges
     }
+    // An OVERLAY, never an extra row in a stack: the justified layout renders exactly the size
+    // `packWithTierPlan` computed for this tile, so a plate that added height would put a second
+    // size computation in the grid (`GridView`'s own doc comment forbids exactly that).
+    .overlay(alignment: .bottom) { filenamePlate }
     .overlay(
       RoundedRectangle(cornerRadius: 2)
         .stroke(isFocused ? Color.accentColor : .clear, lineWidth: 3)
@@ -90,6 +98,36 @@ struct TileView: View {
       }
     }
     .frame(minWidth: 44, minHeight: 44)
+  }
+
+  /// The FILENAME, and only ever the filename — never a path (p3220 §4.5, the path-leak
+  /// contract). `ImageSummary.filename` is the same string the inspector already renders;
+  /// `ImageSummary` carries no path at all, so there is nothing here that could leak one.
+  @ViewBuilder
+  private var filenamePlate: some View {
+    if let text = Self.plateText(for: image, showsPlate: showsFilenamePlate) {
+      Text(text)
+        .font(.caption2)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity)
+        .background(.black.opacity(0.55))
+        .foregroundStyle(.white)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .accessibilityIdentifier("tileFilenamePlate")
+    }
+  }
+
+  /// A pure function so "the plate says the filename, and says nothing when it is off" is
+  /// testable without a render host — the same posture `GridGroupControl.title(for:)` uses.
+  static func plateText(
+    for image: Components.Schemas.ImageSummary, showsPlate: Bool
+  ) -> String? {
+    _ = showsPlate
+    return nil  // RED stub
   }
 
   @ViewBuilder
