@@ -178,7 +178,9 @@ final class InspectorSlideOverUITests: XCTestCase {
       .matching(NSPredicate(format: "label BEGINSWITH[c] 'pick' AND NOT (label CONTAINS 'photos')"))
       .firstMatch
     guard markRow.waitForExistence(timeout: 10) else {
-      let labels = app.buttons.allElementsBoundByIndex.map(\.label)
+      // An explicit closure, never `map(\.label)`: under Swift 6 `XCUIElement.label` is
+      // main-actor-isolated, and a key-path literal into it does not compile.
+      let labels = app.buttons.allElementsBoundByIndex.map { $0.label }
       XCTFail(
         "The Stats section never offered the stub's 'pick' mark facet row. Buttons seen: \(labels)")
       return
