@@ -311,7 +311,11 @@ struct GridOptionsRow: View {
     .padding(.horizontal)
     .padding(.vertical, 6)
     .background(.thinMaterial)
-    .accessibilityIdentifier("gridOptionsRow")
+    // NO `.accessibilityIdentifier` on this HStack: an identifier set on a container OVERRIDES
+    // its descendants'. Observed on the iPhone 17 Pro gate leg — both controls came back as
+    // `identifier: 'gridOptionsRow'` and neither `gridGroupControl` nor `gridZoomControl`
+    // existed, so the row's own two controls were unaddressable. The controls are what anything
+    // needs to name; the row is just where they sit on Compact.
   }
 }
 

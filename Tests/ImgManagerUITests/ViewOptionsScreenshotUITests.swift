@@ -39,6 +39,20 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     XCTAssertTrue(group.isHittable, "The Group control exists but cannot be tapped where it is.")
     XCTAssertTrue(zoom.isHittable, "The Zoom control exists but cannot be tapped where it is.")
 
+    // The other half of "primary surface": the nav-bar overflow chevron that used to hide these
+    // two is gone. Asserted by the identifier UIKit gives it, with a positive control in the
+    // same check — the nav bar's own Info button — so a 0-hit proves the scan looked at a real
+    // nav bar rather than at nothing (LSN-0033).
+    let navBar = app.navigationBars.element(boundBy: 0)
+    XCTAssertTrue(
+      navBar.buttons["Info"].exists,
+      "Positive control failed: the navigation bar has no Info button, so the overflow check "
+        + "below would pass vacuously.")
+    XCTAssertFalse(
+      navBar.buttons["OverflowBarButtonItem"].exists,
+      "The navigation bar still has an overflow chevron — something is back in "
+        + "`.secondaryAction`, which is exactly where these controls could not be found.")
+
     // Value-in-label: the state must be readable WITHOUT opening anything. Both controls are
     // menus, so their rendered label is what a reader sees at rest.
     XCTAssertTrue(
