@@ -1,3 +1,4 @@
+import Foundation
 import ImgManagerAPI
 import SwiftUI
 
@@ -14,6 +15,22 @@ import SwiftUI
 /// both idioms — and `QueueView.treeSection` is non-optional so it cannot come back without a
 /// type change. The ONLY thing that varies with the layout mode is the disclosure's INITIAL
 /// expansion, decided once in `FolderTreePresentation` where a test can read it.
+///
+/// P7 (IMGMGR-217) turns the flat dated-leaf list into the server's actual hierarchy, with the
+/// server's counts and a search field: `FolderTreeModel` does the thinking (forest from
+/// `parent_id`, client-side name filter), this file only renders it. Three properties are worth
+/// stating because they are easy to break:
+///
+/// - a row that is not a shoot EXPANDS but does not navigate (`FolderTreeNode.isSelectableShoot`,
+///   still `ShootListFilter`'s single definition), so the tree can show containers without
+///   inventing a second navigation entry point;
+/// - the count on every row is `descendant_image_count` straight off the wire, which is exactly
+///   the population a tap opens (`/api/images` resolves `folder_id` to the whole subtree), so the
+///   badge and the grid can never disagree;
+/// - a shoot that ALSO has a subtree (110 of them in production — `dated` folders with a
+///   `template`/`project` child) both enters the grid and reveals its children on a label tap;
+///   the chevron alone is the pure expand affordance. Nothing here is gesture-only: every row,
+///   every chevron and the search field are chrome.
 struct FolderTreeSection: View {
   let gridService: GridService
   let layoutMode: LayoutMode
@@ -24,12 +41,21 @@ struct FolderTreeSection: View {
   @State private var localFolders: [Components.Schemas.FolderNode] = []
   @State private var archiveFolders: [Components.Schemas.FolderNode] = []
   @State private var didLoad = false
+  @State private var searchText = ""
+  @State private var expandedBranches: Set<Int> = []
+  @State private var expandedTiers: Set<GridSourceTier> = []
 
   var body: some View {
     DisclosureGroup(isExpanded: expansionBinding) {
       if didLoad {
+        searchField
         tierBranch("Local", folders: localFolders, tier: .local)
         tierBranch("Archive", folders: archiveFolders, tier: .archive)
+        if isSearching, branches(localFolders).isEmpty, branches(archiveFolders).isEmpty {
+          Text("No folders match")
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("folderTreeNoMatches")
+        }
       } else {
         // Compact opens this disclosure by default (see `FolderTreePresentation`), and the two
         // folder calls it waits on measured ~0.6 s (local) and ~2.5 s (archive) server-side
@@ -65,37 +91,173 @@ struct FolderTreeSection: View {
       set: { expansion.setExpanded($0) })
   }
 
+  private var trimmedSearch: String {
+    searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var isSearching: Bool { !trimmedSearch.isEmpty }
+
+  /// The tier's rows: the server's forest, narrowed by whatever is in the search field. Both
+  /// steps are pure and live in `FolderTreeModel` — this view holds no derived state of its own,
+  /// so there is nothing here that can go stale against the loaded response.
+  private func branches(_ folders: [Components.Schemas.FolderNode]) -> [FolderTreeNode] {
+    FolderTreeModel.filter(
+      FolderTreePresentation.tree(for: layoutMode, folders: folders), matching: searchText)
+  }
+
+  /// Searching the 855 already-loaded folder NAMES, in memory. Never `GridImagesQuery.q` — that
+  /// one is an image-level browse filter and answers a different question — and never a second
+  /// call to the server for something the client is already holding.
+  private var searchField: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .foregroundStyle(.secondary)
+        .accessibilityHidden(true)
+      TextField("Search folders", text: $searchText)
+        .textFieldStyle(.plain)
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+        .submitLabel(.search)
+        .accessibilityIdentifier("folderTreeSearchField")
+      if isSearching {
+        Button {
+          searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Clear the folder search")
+        .accessibilityIdentifier("folderTreeSearchClear")
+      }
+    }
+  }
+
   @ViewBuilder
   private func tierBranch(
     _ title: String, folders: [Components.Schemas.FolderNode], tier: GridSourceTier
   ) -> some View {
-    let shoots = FolderTreePresentation.shootRows(for: layoutMode, folders: folders)
-    if !shoots.isEmpty {
-      DisclosureGroup {
-        ForEach(shoots, id: \.id) { folder in
-          // Same row-navigation pattern as the pre-P7 sidebar (RootView's own doc comment on
-          // this exact fix): `.simultaneousGesture` layered on TOP of the enclosing List's own
-          // selection recognizer, never a bare `Button` and never `.onChange(of:
-          // selectedFolderID)` — a plain Button never pushes NavigationSplitView's column on
-          // Compact, and onChange never fires on a same-value re-tap.
-          Text(folder.name)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .tag(folder.id)
-            // Stable, id-derived identifiers so the UI test drives the REAL rows rather than
-            // matching a localizable label (the shoot name is server data).
-            .accessibilityIdentifier("folderRow-\(folder.id)")
-            .simultaneousGesture(
-              TapGesture().onEnded {
-                selectedFolderID = folder.id
-                onSelect(folder.id, tier)
-              }
-            )
+    let roots = branches(folders)
+    if !roots.isEmpty {
+      DisclosureGroup(isExpanded: tierBinding(tier)) {
+        ForEach(roots, id: \.id) { node in
+          FolderTreeRow(
+            node: node, tier: tier, isSearching: isSearching,
+            expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
+            onSelect: onSelect)
         }
       } label: {
         Text(title).accessibilityIdentifier("folderTreeTier-\(title)")
       }
     }
+  }
+
+  /// A live search opens both tier branches for the same reason it opens the matched folders: a
+  /// hit the reader cannot see is not a search result. The reader's own choice is what decides
+  /// once the field is empty again.
+  private func tierBinding(_ tier: GridSourceTier) -> Binding<Bool> {
+    Binding(
+      get: {
+        FolderTreePresentation.isExpanded(
+          for: tier, in: expandedTiers, isSearching: isSearching)
+      },
+      set: { open in
+        if open {
+          expandedTiers.insert(tier)
+        } else {
+          expandedTiers.remove(tier)
+        }
+      })
+  }
+}
+
+/// One folder, and — when the server put anything under it — its subtree. Recursive by design:
+/// the depth is the server's (4 at most across both tiers on 2026-08-30), and a `List` builds a
+/// collapsed `DisclosureGroup`'s children lazily, so an unopened branch of 689 archive folders
+/// costs nothing.
+private struct FolderTreeRow: View {
+  let node: FolderTreeNode
+  let tier: GridSourceTier
+  let isSearching: Bool
+  @Binding var expandedBranches: Set<Int>
+  @Binding var selectedFolderID: Int?
+  let onSelect: (Int, GridSourceTier) -> Void
+
+  var body: some View {
+    if node.children.isEmpty {
+      label
+    } else {
+      DisclosureGroup(isExpanded: branchBinding) {
+        // Stable, server-issued ids — never `ForEach(0..<n)` (IMGMGR-210, the 0.7.0 (9) Scene
+        // crash).
+        ForEach(node.children, id: \.id) { child in
+          FolderTreeRow(
+            node: child, tier: tier, isSearching: isSearching,
+            expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
+            onSelect: onSelect)
+        }
+      } label: {
+        label
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var label: some View {
+    if node.isSelectableShoot {
+      // Same row-navigation pattern as the pre-P7 sidebar (RootView's own doc comment on this
+      // exact fix): `.simultaneousGesture` layered on TOP of the enclosing List's own selection
+      // recognizer, never a bare `Button` and never `.onChange(of: selectedFolderID)` — a plain
+      // Button never pushes NavigationSplitView's column on Compact, and onChange never fires on
+      // a same-value re-tap.
+      rowContent
+        .contentShape(Rectangle())
+        .tag(node.id)
+        // Stable, id-derived identifiers so the UI test drives the REAL rows rather than
+        // matching a localizable label (the shoot name is server data).
+        .accessibilityIdentifier("folderRow-\(node.id)")
+        .simultaneousGesture(
+          TapGesture().onEnded {
+            selectedFolderID = node.id
+            onSelect(node.id, tier)
+          }
+        )
+    } else {
+      // A container: it expands, and it does NOT navigate. Its identifier is deliberately a
+      // different prefix, so `folderRow-<id>` keeps meaning "a row that enters the grid".
+      rowContent
+        .accessibilityIdentifier("folderContainer-\(node.id)")
+    }
+  }
+
+  private var rowContent: some View {
+    HStack(spacing: 8) {
+      Text(node.name)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 8)
+      // The server's own roll-up, formatted and never recomputed.
+      Text(node.descendantImageCount.formatted())
+        .font(.caption)
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var branchBinding: Binding<Bool> {
+    Binding(
+      get: {
+        FolderTreePresentation.isExpanded(
+          node.id, readerExpanded: expandedBranches, isSearching: isSearching)
+      },
+      set: { open in
+        if open {
+          expandedBranches.insert(node.id)
+        } else {
+          expandedBranches.remove(node.id)
+        }
+      })
   }
 }
 
@@ -117,29 +279,31 @@ struct FolderTreeExpansion {
   mutating func setExpanded(_ expanded: Bool) { readerChoice = expanded }
 }
 
-/// The two — and only two — presentation decisions the folder tree makes, both pure and both
-/// readable by a test. P6 (IMGMGR-216) exists because the equivalent decision used to be an
-/// inline ternary in `RootView.sidebar` (`treeSection: layoutMode == .compact ? nil : …`), where
-/// nothing could assert it and the phone silently had no browse surface at all. Neither function
-/// reads the device idiom — `LayoutMode` is resolved from measured width
-/// plus `horizontalSizeClass` (`LayoutResolver`), and this is the one place the tree consults it.
+/// The presentation decisions the folder tree makes, all pure and all readable by a test. P6
+/// (IMGMGR-216) exists because the equivalent decision used to be an inline ternary in
+/// `RootView.sidebar` (`treeSection: layoutMode == .compact ? nil : …`), where nothing could
+/// assert it and the phone silently had no browse surface at all. None of these functions reads
+/// the device idiom — `LayoutMode` is resolved from measured width plus `horizontalSizeClass`
+/// (`LayoutResolver`), and this is the one place the tree consults it.
 enum FolderTreePresentation {
   /// The Folders disclosure opens itself on Compact, where it is the only way to reach a shoot
   /// that is not currently a queue card; on Regular it stays the collapsed SECONDARY surface
   /// below the queue (D13, unchanged since WP8 P7). Nothing else about the tree varies by mode.
   static func startsExpanded(in mode: LayoutMode) -> Bool { mode == .compact }
 
-  /// The shoot rows the tree offers. `mode` is taken and DELIBERATELY not consulted: "the phone
-  /// reaches every shoot the iPad reaches" is this phase's acceptance criterion, so the mode is
-  /// routed through the one function a test can pin
+  /// The shoot rows the tree offers, flattened out of the tree that actually renders. `mode` is
+  /// taken and DELIBERATELY not consulted: "the phone reaches every shoot the iPad reaches" is
+  /// P6's acceptance criterion, so the mode is routed through the one function a test can pin
   /// (`FolderTreeSectionTests.compactRendersTheSameShootSetAsRegular`) instead of being absent
   /// from the type system entirely. Any future mode-dependent filtering has to be written here,
-  /// and goes RED there. Which leaves are shoots stays `ShootListFilter`'s single definition —
-  /// the server's `kind` vocabulary, never a second client-side classification.
+  /// and goes RED there. Deriving this from `tree(for:folders:)` rather than from the raw
+  /// response is what keeps that pin honest under P7: if the hierarchy ever drops a shoot on one
+  /// idiom, this is the projection that notices. Which leaves are shoots stays `ShootListFilter`'s
+  /// single definition — the server's `kind` vocabulary, never a second client-side one.
   static func shootRows(
     for mode: LayoutMode, folders: [Components.Schemas.FolderNode]
   ) -> [Components.Schemas.FolderNode] {
-    ShootListFilter.shoots(folders)
+    FolderTreeModel.selectableShoots(in: tree(for: mode, folders: folders))
   }
 
   /// The tree the section renders, from the one mode-routing seam `shootRows` already
@@ -156,8 +320,13 @@ enum FolderTreePresentation {
   /// normally; while a search term is live, every surviving branch opens so the matches the
   /// filter kept are actually on screen instead of hidden inside collapsed ancestors.
   static func isExpanded(_ id: Int, readerExpanded: Set<Int>, isSearching: Bool) -> Bool {
-    // RED PROBE (this commit only): the PRE-P7 truth — there is no search, so only the reader's
-    // own choice ever opens a branch.
-    readerExpanded.contains(id)
+    isSearching || readerExpanded.contains(id)
+  }
+
+  /// The same rule for a tier branch, whose identity is the tier rather than a folder id.
+  static func isExpanded(
+    for tier: GridSourceTier, in readerExpanded: Set<GridSourceTier>, isSearching: Bool
+  ) -> Bool {
+    isSearching || readerExpanded.contains(tier)
   }
 }

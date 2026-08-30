@@ -31,11 +31,7 @@ struct FolderTreeNode: Identifiable {
   /// browsable shoot is (ADR-0004: shoot ≡ folder; IMGMGR-173: the vocabulary is the server's);
   /// P7 only adds the other half of the answer — a folder that is not a shoot is a container that
   /// expands and does not navigate, instead of being absent from the tree altogether.
-  var isSelectableShoot: Bool {
-    // RED PROBE (this commit only): the PRE-P7 truth — the flat list rendered shoot leaves and
-    // nothing else, so every row in the tree was selectable.
-    true
-  }
+  var isSelectableShoot: Bool { ShootListFilter.shootKinds.contains(kind) }
 }
 
 /// The pure half of the folder tree: flat `[FolderNode]` in, forest out, plus the client-side
@@ -63,10 +59,32 @@ enum FolderTreeModel {
   /// node stranded inside a `parent_id` cycle the server could never mean: the guard is one place
   /// (nothing is built twice, nothing is left behind) instead of a special case per cause.
   static func forest(_ nodes: [Components.Schemas.FolderNode]) -> [FolderTreeNode] {
-    // RED PROBE (this commit only): the PRE-P7 truth — a flat list of every folder, no nesting.
-    // The phase's tests are written against the real forest and must fail here, for the
-    // behaviour's absence rather than for a typo.
-    nodes.map { FolderTreeNode(folder: $0, children: []) }
+    let present = Set(nodes.map(\.id))
+    var childrenByParent: [Int: [Components.Schemas.FolderNode]] = [:]
+    var tops: [Components.Schemas.FolderNode] = []
+    for node in nodes {
+      if let parent = node.parentId, parent != node.id, present.contains(parent) {
+        childrenByParent[parent, default: []].append(node)
+      } else {
+        tops.append(node)
+      }
+    }
+
+    var built: Set<Int> = []
+    func build(_ node: Components.Schemas.FolderNode) -> FolderTreeNode {
+      built.insert(node.id)
+      let children = (childrenByParent[node.id] ?? [])
+        .filter { !built.contains($0.id) }
+        .map(build)
+      return FolderTreeNode(folder: node, children: children)
+    }
+
+    var forest = tops.map(build)
+    // Whatever a parent cycle kept out of every root's subtree is still the reader's folder.
+    for node in nodes where !built.contains(node.id) {
+      forest.append(build(node))
+    }
+    return forest
   }
 
   /// The tree narrowed to `query`, client-side over the already-loaded folder list — never a
@@ -78,8 +96,16 @@ enum FolderTreeModel {
   /// drill into. A node that does not match survives only if something under it did, which is what
   /// keeps an ancestor chain visible above a deep hit.
   static func filter(_ forest: [FolderTreeNode], matching query: String) -> [FolderTreeNode] {
-    // RED PROBE (this commit only): the PRE-P7 truth — there is no search, so nothing filters.
-    forest
+    let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !needle.isEmpty else { return forest }
+    return forest.compactMap { pruned($0, matching: needle) }
+  }
+
+  private static func pruned(_ node: FolderTreeNode, matching needle: String) -> FolderTreeNode? {
+    if matches(node.name, needle) { return node }
+    let kept = node.children.compactMap { pruned($0, matching: needle) }
+    guard !kept.isEmpty else { return nil }
+    return FolderTreeNode(folder: node.folder, children: kept)
   }
 
   /// The shoot rows reachable in `forest`, flattened in render order — the P6 acceptance property
