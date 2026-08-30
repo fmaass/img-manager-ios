@@ -96,6 +96,12 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
   /// evidence existed on either layout. This opens the real sheet and reads its rows back out
   /// of the live accessibility tree.
   ///
+  /// EXACTLY the active catalog, from ONE source: the sheet publishes
+  /// `ShortcutCatalog.activeEntries.count` in its header, every element whose identifier starts
+  /// with `shortcutHelpRow.` is harvested (never a hand-written list), and the two numbers must
+  /// be equal — so an extra rendered row fails as surely as a missing one. The delta-gate
+  /// finding this replaces was a 15-entry literal inventory here that asserted only presence.
+  ///
   /// HOW IT OPENS THE SHEET, and why: the render assertions go through the CHROME control,
   /// which both layouts carry (Compact's options row, Regular's `.primaryAction` toolbar).
   /// Pressing ⌘/ is attempted first but only LOGGED, never asserted — the queue-p4-green2 gate
@@ -144,17 +150,27 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     openedAttachment.lifetime = .keepAlways
     add(openedAttachment)
 
-    // Exactly the ACTIVE catalog, in the order it renders. Pinned here as literals because a UI
-    // test cannot see the app's types; the `everyRowCarriesItsRenderedIdentifier` test in
-    // `ShortcutHelpSheetTests` binds this same list to `ShortcutCatalog.activeEntries`, so a
-    // catalog change breaks one of the two loudly rather than drifting silently.
-    let expected = [
-      "shortcutHelpRow.arrowUp", "shortcutHelpRow.arrowDown", "shortcutHelpRow.arrowLeft",
-      "shortcutHelpRow.arrowRight", "shortcutHelpRow.openSpaceEnter", "shortcutHelpRow.pick",
-      "shortcutHelpRow.dislike", "shortcutHelpRow.clear", "shortcutHelpRow.shiftAdvance",
-      "shortcutHelpRow.tag", "shortcutHelpRow.undo", "shortcutHelpRow.help",
-      "shortcutHelpRow.zoomStep", "shortcutHelpRow.sceneToggle", "shortcutHelpRow.groupMode",
-    ]
+    // HOW MANY rows there should be comes from the APP, not from a list copied into this file:
+    // the sheet's header publishes `ShortcutCatalog.activeEntries.count`, read off the catalog
+    // itself rather than off the rows the body renders. So a row the sheet invents, a row it
+    // drops, and a catalog entry that never reaches the screen all break the equality below,
+    // and this test holds no second inventory that could drift.
+    //
+    // The other half of "exactly the active catalog" is closed in the unit suite, which CAN see
+    // the types: `ShortcutHelpSheetTests.listsExactlyTheActiveCatalogEntries` pins model ==
+    // catalog and `…everyRowCarriesItsRenderedIdentifier` pins the identifier scheme and its
+    // uniqueness. Rendered == published count, model == catalog, identifiers unique — with no
+    // literal copy of the inventory anywhere.
+    let counter = app.descendants(matching: .any)["shortcutHelpRowCount"]
+    XCTAssertTrue(
+      counter.waitForExistence(timeout: 10),
+      "The sheet does not publish its active-shortcut count (nothing named "
+        + "'shortcutHelpRowCount'), so 'exactly the active catalog' cannot be checked.")
+    let published = (counter.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? counter.label
+    guard let expectedCount = Int(published.filter { $0.isNumber }), expectedCount > 0 else {
+      XCTFail("The sheet's row counter published '\(published)', which is not a positive count.")
+      return
+    }
 
     // A `List` only materialises the rows it has laid out, so the sheet is TRAVERSED and every
     // row read while it happens to be on screen — never "scroll until row N appears", which is
@@ -188,43 +204,41 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
       return true
     }
 
-    guard let lastRow = expected.last else {
-      XCTFail("The expected-row list is empty — nothing to traverse to.")
-      return
-    }
+    // The traverse ends when the sheet's own count has been accounted for, or when two
+    // consecutive steps turn up nothing new — the end of the list. Either way the equality
+    // below is what decides the test; stopping early simply fails it with the shortfall named.
     harvestVisibleRows()
     var forwardSteps = 0
-    while forwardSteps < 20 && (rendered[lastRow] == nil || rendered.count < expected.count) {
+    var barrenSteps = 0
+    while forwardSteps < 20 && rendered.count < expectedCount && barrenSteps < 2 {
+      let before = rendered.count
       guard dragInsideARow(by: -220) else { break }
       forwardSteps += 1
       guard helpBar.exists else {
         return XCTFail(
           "The traverse dismissed the sheet: it was gone after \(forwardSteps) forward "
-            + "steps, with \(rendered.count) of \(expected.count) rows collected.")
+            + "steps, with \(rendered.count) of \(expectedCount) rows collected.")
       }
       harvestVisibleRows()
+      barrenSteps = rendered.count == before ? barrenSteps + 1 : 0
     }
-    // The end of the sheet was reached — that is what makes "found N of 15" a statement about
-    // the SHEET rather than about how far the traverse happened to get.
-    XCTAssertNotNil(
-      rendered[lastRow],
-      "The traverse never reached the sheet's last row (\(lastRow)) in \(forwardSteps) steps; "
-        + "found \(rendered.count) of \(expected.count): \(rendered.keys.sorted()).")
 
     // Only if the forward pass actually skipped something — on a destination that renders the
     // whole sheet at once neither loop runs at all.
     var reverseSteps = 0
-    while reverseSteps < 20 && rendered.count < expected.count {
+    barrenSteps = 0
+    while reverseSteps < 20 && rendered.count < expectedCount && barrenSteps < 2 {
+      let before = rendered.count
       guard dragInsideARow(by: 220) else { break }
       reverseSteps += 1
       guard helpBar.exists else {
         return XCTFail(
           "The traverse dismissed the sheet on the way back: gone after \(reverseSteps) "
-            + "reverse steps, with \(rendered.count) of \(expected.count) rows collected.")
+            + "reverse steps, with \(rendered.count) of \(expectedCount) rows collected.")
       }
       harvestVisibleRows()
+      barrenSteps = rendered.count == before ? barrenSteps + 1 : 0
     }
-    let missing = expected.filter { rendered[$0] == nil }
 
     let end = XCUIScreen.main.screenshot()
     let endAttachment = XCTAttachment(screenshot: end)
@@ -232,11 +246,13 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     endAttachment.lifetime = .keepAlways
     add(endAttachment)
 
+    // EXACT, not "at least": the rendered rows are counted against the number the sheet itself
+    // publishes from the catalog, so an extra row fails here just as loudly as a missing one.
     XCTAssertEqual(
-      missing, [],
-      "Rows the sheet never rendered, in a traverse that DID reach its last row. Opened via "
-        + "\(openedVia); found \(rendered.count) of \(expected.count) in \(forwardSteps) "
-        + "forward steps and \(reverseSteps) back.")
+      rendered.count, expectedCount,
+      "The sheet rendered \(rendered.count) distinct rows but publishes \(expectedCount) active "
+        + "shortcuts. Opened via \(openedVia); traversed \(forwardSteps) forward and "
+        + "\(reverseSteps) back; found: \(rendered.keys.sorted()).")
 
     // The rows a reader came for, asserted on the RENDERED text rather than on the model that
     // produced it: the ⌘ discovery half is the whole point of the sheet.

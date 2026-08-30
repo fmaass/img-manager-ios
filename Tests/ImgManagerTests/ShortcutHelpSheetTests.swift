@@ -46,8 +46,10 @@ struct ShortcutHelpSheetTests {
   @Test("Every row carries the ASCII identifier the rendered sheet is addressed by")
   func everyRowCarriesItsRenderedIdentifier() {
     // The UI test can only see the sheet through these — it has no access to the catalog. So
-    // the identifier scheme itself is pinned here, in the same place the rows are built, and
-    // the UI test asserts the rendered set against exactly these strings.
+    // the identifier scheme itself is pinned here, in the same place the rows are built: the UI
+    // test harvests every element whose identifier carries this prefix and counts them against
+    // the active-entry count the sheet's header publishes. Model == catalog (the test above),
+    // identifiers unique and schematic (here), rendered count == published count (there).
     let rows = ShortcutHelpModel.rows
     let expected = ShortcutCatalog.activeEntries.map {
       "shortcutHelpRow.\($0.id.accessibilityToken)"
