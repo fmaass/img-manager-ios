@@ -20,7 +20,6 @@ struct InspectorView: View {
   @Bindable var store: GridStore
   @State private var tab: InspectorTab = .info
   @State private var detail: Components.Schemas.ImageDetail?
-  @State private var facets: Components.Schemas.ImageFacets?
   let service: GridService
 
   var body: some View {
@@ -44,7 +43,9 @@ struct InspectorView: View {
       detail = try? await service.detail(imageID: id)
     }
     .task(id: store.queryIdentity) {
-      facets = try? await service.facets(store.currentQuery)
+      // The trigger itself lives in the store (`refreshFacets` is idempotent per query), so the
+      // "a filter change refetches the counts" chain is testable; this modifier only says WHEN.
+      await store.refreshFacets()
     }
   }
 
@@ -104,16 +105,16 @@ struct InspectorView: View {
 
   @ViewBuilder
   private var statsSection: some View {
-    // Touch-sized facet rows — never the web's dense icon filter row (Do-NOT).
+    // Touch-sized facet rows — never the web's dense icon filter row (Do-NOT). On Compact this
+    // IS the filter surface (the sheet is the only place filters live on the phone), which is
+    // why the Clear row and the row-level selected state matter here and not only on iPad.
     List {
-      if let facets {
-        facetRows("Mark", facets.mark) { value, query in query.mark = value }
-        facetRows("Rating", facets.rating) { value, query in query.ratingMin = Int(value) }
-        facetRows("Label", facets.label) { value, query in query.label = value }
-        facetRows("Keyword", facets.keyword) { value, query in query.keyword = value }
-        facetRows("Tag", facets.tag) { value, query in query.tag = value }
-        facetRows("Source", facets.sourceTier) { value, query in
-          query.sourceTier = GridSourceTier(rawValue: value)
+      // Deliberately OUTSIDE the `facets` branch: when the counts fail to load with a filter
+      // still active, the way out must not disappear along with them.
+      clearFiltersRow
+      if let facets = store.facets {
+        ForEach(InspectorFacetField.allCases) { field in
+          facetRows(field, facets)
         }
       } else {
         ProgressView()
@@ -122,28 +123,58 @@ struct InspectorView: View {
     .listStyle(.plain)
   }
 
-  /// Tapping a facet row sets that dimension's filter to the tapped value — a clean toggle
-  /// (tap a different value in the same dimension to switch, no explicit "clear" row here) —
-  /// and routes through `GridStore.applyFilterChange`, which is what fires the "any effective
-  /// filter change resets selection" rule.
+  /// Present only while something is actually filtered: an always-visible "Clear" row would
+  /// claim a filter surface is active when none is. It clears the FACET fields only — never the
+  /// shoot scope, never the free-text query (see `InspectorFacetFilters`).
+  @ViewBuilder
+  private var clearFiltersRow: some View {
+    let activeFilters = InspectorFacetFilters.activeCount(store.currentQuery)
+    if activeFilters > 0 {
+      Section {
+        Button {
+          Task { await store.clearFacetFilters() }
+        } label: {
+          HStack {
+            Label("Clear filters", systemImage: "xmark.circle")
+            Spacer()
+            Text("\(activeFilters)").foregroundStyle(.secondary).monospacedDigit()
+          }
+        }
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("inspectorClearFilters")
+      }
+    }
+  }
+
+  /// Tapping a facet row sets that dimension's filter to the tapped value; tapping the value
+  /// that is ALREADY active clears the dimension (one value per dimension — the web's chip
+  /// semantics). Every tap routes through `GridStore.applyFilterChange`, which is what fires the
+  /// "any effective filter change resets selection" rule and the generation-fenced reload; the
+  /// Stats counts refresh with it because the inspector's own `.task(id: store.queryIdentity)`
+  /// re-fires on the same mutation. A dimension the server sent nothing for renders as absence.
   @ViewBuilder
   private func facetRows(
-    _ title: String, _ counts: [Components.Schemas.FacetCount]?,
-    apply: @escaping (String, inout GridImagesQuery) -> Void
+    _ field: InspectorFacetField, _ facets: Components.Schemas.ImageFacets
   ) -> some View {
-    if let counts, !counts.isEmpty {
-      Section(title) {
+    let counts = field.counts(from: facets)
+    if !counts.isEmpty {
+      Section(field.title) {
         ForEach(counts, id: \.value) { count in
+          let active = field.isActive(count.value, in: store.currentQuery)
           Button {
-            Task { await store.applyFilterChange { apply(count.value, &$0) } }
+            Task { await store.applyFacetFilter(field, value: count.value) }
           } label: {
             HStack {
-              Text(count.value)
+              Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(active ? .primary : .tertiary)
+              Text(field.displayValue(count.value))
+                .fontWeight(active ? .semibold : .regular)
               Spacer()
-              Text("\(count.count)").foregroundStyle(.secondary)
+              Text("\(count.count)").foregroundStyle(.secondary).monospacedDigit()
             }
           }
           .frame(minHeight: 44)
+          .accessibilityAddTraits(active ? [.isSelected] : [])
         }
       }
     }

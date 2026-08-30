@@ -105,6 +105,182 @@ struct InspectorModelTests {
     #expect(block.tags.isEmpty)
   }
 
+  // MARK: - Stats-tab facet filters (WP12: the Compact filter surface)
+
+  /// One row per dimension `GET /api/facets` actually returns, with the real wire values the
+  /// backend emits (`app/api/images.py`'s facet builder: booleans as "true"/"false", the
+  /// sidecar dimension as "present"/"absent", a NULL rating as "unset").
+  private func serverFacets() -> Components.Schemas.ImageFacets {
+    Components.Schemas.ImageFacets(
+      cameraPreviewOnly: [.init(count: 3, value: "true")],
+      ext: [.init(count: 9, value: "raf")],
+      good: [.init(count: 2, value: "true"), .init(count: 7, value: "false")],
+      hasMaster: [.init(count: 4, value: "true"), .init(count: 5, value: "false")],
+      keyword: [.init(count: 6, value: "wedding")],
+      label: [.init(count: 1, value: "Red")],
+      mark: [.init(count: 8, value: "pick"), .init(count: 1, value: "dislike")],
+      rating: [.init(count: 5, value: "3"), .init(count: 2, value: "unset")],
+      sidecar: [.init(count: 10, value: "present"), .init(count: 4, value: "absent")],
+      sourceTier: [.init(count: 12, value: "archive")],
+      tag: [.init(count: 2, value: "to-print")],
+      total: 20)
+  }
+
+  @Test("Every dimension the Stats tab renders is actionable: a tap applies, a second clears")
+  func everyRenderedDimensionIsActionable() {
+    let facets = serverFacets()
+    for field in InspectorFacetField.allCases {
+      let counts = field.counts(from: facets)
+      #expect(!counts.isEmpty, "\(field.rawValue) renders no row for a populated facet list")
+      guard let value = counts.first?.value else { continue }
+
+      var query = GridImagesQuery()
+      field.toggle(value, in: &query)
+      #expect(field.isActive(value, in: query), "\(field.rawValue) = \(value) did not apply")
+
+      field.toggle(value, in: &query)
+      #expect(!field.isActive(value, in: query), "\(field.rawValue) did not clear on a second tap")
+    }
+  }
+
+  @Test("The active-filter count counts ONLY facet fields — never scope, q, tree, dates, missing")
+  func activeCountCountsOnlyFacetFields() {
+    var query = GridImagesQuery(folderID: 7)
+    query.sourceTier = .archive
+    query.q = "beach"
+    query.tree = "photo_incoming"
+    query.dateFrom = Date(timeIntervalSince1970: 0)
+    query.dateTo = Date(timeIntervalSince1970: 86_400)
+    query.missing = true
+    #expect(InspectorFacetFilters.activeCount(query) == 0)
+
+    query.mark = "pick"
+    query.ratingMin = 3
+    query.ext = "raf"
+    #expect(InspectorFacetFilters.activeCount(query) == 3)
+  }
+
+  @Test("Clear resets every facet field and NOTHING else — the shoot scope and q survive")
+  func clearResetsOnlyFacetFields() {
+    var query = GridImagesQuery(folderID: 7)
+    query.sourceTier = .archive
+    query.q = "beach"
+    query.tree = "photo_incoming"
+    query.dateFrom = Date(timeIntervalSince1970: 0)
+    query.dateTo = Date(timeIntervalSince1970: 86_400)
+    query.missing = true
+    query.mark = "pick"
+    query.ratingMin = 3
+    query.label = "Red"
+    query.keyword = "wedding"
+    query.tag = "to-print"
+    query.ext = "raf"
+    query.good = true
+    query.hasMaster = true
+    query.cameraPreviewOnly = true
+
+    InspectorFacetFilters.clear(&query)
+
+    #expect(InspectorFacetFilters.activeCount(query) == 0)
+    #expect(query.mark == nil)
+    #expect(query.ratingMin == nil)
+    #expect(query.label == nil)
+    #expect(query.keyword == nil)
+    #expect(query.tag == nil)
+    #expect(query.ext == nil)
+    #expect(query.good == nil)
+    #expect(query.hasMaster == nil)
+    #expect(query.cameraPreviewOnly == nil)
+    // Untouched: the shoot scope, and every surface no facet row renders.
+    #expect(query.folderID == 7)
+    #expect(query.sourceTier == .archive)
+    #expect(query.q == "beach")
+    #expect(query.tree == "photo_incoming")
+    #expect(query.dateFrom != nil)
+    #expect(query.dateTo != nil)
+    #expect(query.missing == true)
+  }
+
+  @Test("One value per dimension: a different value switches, the active value clears")
+  func oneValuePerDimension() {
+    var query = GridImagesQuery()
+    InspectorFacetField.mark.toggle("pick", in: &query)
+    #expect(query.mark == "pick")
+    InspectorFacetField.mark.toggle("dislike", in: &query)
+    #expect(query.mark == "dislike")
+    #expect(!InspectorFacetField.mark.isActive("pick", in: query))
+    InspectorFacetField.mark.toggle("dislike", in: &query)
+    #expect(query.mark == nil)
+  }
+
+  @Test("Rating rows bind to ratingMin; the server's 'unset' row is not a filterable value")
+  func ratingRowsBindToRatingMin() {
+    var query = GridImagesQuery()
+    InspectorFacetField.rating.toggle("3", in: &query)
+    #expect(query.ratingMin == 3)
+    #expect(InspectorFacetField.rating.isActive("3", in: query))
+    #expect(!InspectorFacetField.rating.isActive("4", in: query))
+
+    InspectorFacetField.rating.toggle("unset", in: &query)
+    #expect(query.ratingMin == nil)
+    #expect(!InspectorFacetField.rating.isActive("unset", in: query))
+  }
+
+  @Test("The boolean dimensions read as Yes/No; every other row shows the server's own value")
+  func booleanDimensionsRenderReadably() {
+    #expect(InspectorFacetField.good.displayValue("true") == "Yes")
+    #expect(InspectorFacetField.good.displayValue("false") == "No")
+    #expect(InspectorFacetField.hasMaster.displayValue("false") == "No")
+    #expect(InspectorFacetField.cameraPreviewOnly.displayValue("true") == "Yes")
+    #expect(InspectorFacetField.keyword.displayValue("wedding") == "wedding")
+    #expect(InspectorFacetField.mark.displayValue("pick") == "pick")
+    #expect(InspectorFacetField.ext.displayValue("raf") == "raf")
+  }
+
+  @Test("The Info button carries the active-filter count, and says so out loud")
+  func infoButtonCarriesTheActiveFilterCount() {
+    #expect(InspectorFacetFilters.infoButtonTitle(activeCount: 0) == "Info")
+    #expect(InspectorFacetFilters.infoButtonTitle(activeCount: 2) == "Info · 2")
+    #expect(InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: 0) == "Info")
+    #expect(
+      InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: 1) == "Info, 1 filter active")
+    #expect(
+      InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: 3)
+        == "Info, 3 filters active")
+  }
+
+  @Test("The tier is shoot SCOPE: its row toggles, but Clear and the count leave it alone")
+  func sourceTierIsShootScopeNotAFilter() {
+    var query = GridImagesQuery(folderID: 7)
+    InspectorFacetField.sourceTier.toggle("archive", in: &query)
+    #expect(query.sourceTier == .archive)
+    #expect(InspectorFacetField.sourceTier.isActive("archive", in: query))
+    // `selectShoot` sets folderID and sourceTier atomically as ONE destination, so the tier is
+    // scope, not a filter: clearing it alone would publish a folder whose tier no longer
+    // matches, and an archive shoot would badge "1 filter" with nothing filtered.
+    #expect(InspectorFacetFilters.activeCount(query) == 0)
+    InspectorFacetFilters.clear(&query)
+    #expect(query.sourceTier == .archive)
+    #expect(query.folderID == 7)
+    // The row itself stays self-clearing — a second tap on the active tier still clears it.
+    InspectorFacetField.sourceTier.toggle("archive", in: &query)
+    #expect(query.sourceTier == nil)
+  }
+
+  @Test("The sidecar facet is not offered as a row — the generated client cannot carry it")
+  func sidecarIsNotOfferedAsAFilterRow() {
+    // Contract truth, not a preference: `sidecar` is declared
+    // `anyOf: [$ref SidecarPresence, {"type": "null"}]`, the idiom swift-openapi-generator
+    // drops silently (docs/OPENAPI_NORMALIZATION_DEBT.md — the 12 `$ref` + null forms the
+    // retired bridge deliberately left alone). Neither images' nor facets' generated
+    // `Input.Query` has the parameter at all (docs/evidence/p0a-probe/
+    // Types-BRIDGED-COMPLETE.swift.gz), so a sidecar row could show its count but never apply
+    // one — and a row that cannot filter is not offered.
+    #expect(!InspectorFacetField.allCases.contains { $0.rawValue.contains("sidecar") })
+    #expect(serverFacets().sidecar?.isEmpty == false)  // positive control: the server DOES send it
+    #expect(InspectorFacetField.allCases.count == 10)
+  }
+
   @Test("InspectorInfo has NO property a path could bind to — structural 'no path row'")
   func noPathRowIsStructural() {
     // Reflect the actual field list of the built value and assert none of the labels even

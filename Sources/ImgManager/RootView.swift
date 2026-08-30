@@ -313,11 +313,7 @@ struct RootView: View {
             // never a second phone-only surface.
             if layoutMode != .regular3 {
               ToolbarItem(placement: .primaryAction) {
-                Button {
-                  showInspectorSheet = true
-                } label: {
-                  Label("Info", systemImage: "info.circle")
-                }
+                inspectorSheetButton
               }
             }
           }
@@ -326,6 +322,31 @@ struct RootView: View {
           }
       }
     }
+  }
+
+  /// The Info button doubles as the "filters are on" indicator: on Compact the Info·Stats sheet
+  /// is the ONLY filter surface, so the count has to ride the control that opens it — there is
+  /// no other chrome to put it on, and a filtered grid that looks unfiltered is exactly the
+  /// failure this prevents. The count is the facet fields only, never the shoot scope
+  /// (`InspectorFacetFilters`), so browsing an archive shoot never reads as "filtered".
+  @ViewBuilder
+  private var inspectorSheetButton: some View {
+    let activeFilters = InspectorFacetFilters.activeCount(gridStore.currentQuery)
+    Button {
+      showInspectorSheet = true
+    } label: {
+      if activeFilters > 0 {
+        Label(
+          InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters),
+          systemImage: "line.3.horizontal.decrease.circle.fill"
+        )
+        .labelStyle(.titleAndIcon)
+      } else {
+        Label("Info", systemImage: "info.circle")
+      }
+    }
+    .accessibilityLabel(
+      InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: activeFilters))
   }
 
   private var detailColumn: some View {
