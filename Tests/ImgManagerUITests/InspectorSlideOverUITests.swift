@@ -8,7 +8,7 @@ import XCTest
 ///    `treeSection: nil` on Compact) and the inspector's own "Stats" segment already on screen
 ///    with nothing tapped (only Regular-3's permanent column does that). Plus the measured window
 ///    size, printed for the record. Never a device idiom — this target is inside the gate's
-///    `userInterfaceIdiom` absence grep like every other source directory.
+///    device-idiom absence grep like every other source directory.
 ///
 /// 2. **The acceptance assertion** — at Regular-2 the inspector is a NON-MODAL panel: the grid's
 ///    own controls stay hittable beside it. Under the pre-P10 modal sheet that assertion fails,
