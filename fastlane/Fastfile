@@ -213,6 +213,29 @@ def prepare_signing(key)
     use_automatic_signing: false, path: PROJECT, team_id: TEAM_ID,
     targets: [SCHEME], code_sign_identity: "Apple Distribution", profile_name: prof_app,
   )
+
+  # WP12 (IMGMGR-199): the widget extension is its own signing subject — its own App ID and its
+  # own distribution profile, applied to its own target. The App ID is ensured HERE (idempotent,
+  # exact-identifier match — the ASC filter is a prefix match, so the .any? re-check is the real
+  # gate) rather than assumed, so the first release cut after the widget merge needs no manual
+  # portal ceremony. Keychain access groups need no portal capability: every profile carries the
+  # team-prefixed keychain-access-groups entitlement, which is all the shared credentials group
+  # uses.
+  Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: key)
+  ext_ids = Spaceship::ConnectAPI::BundleId.all(filter: { identifier: EXT_ID })
+  unless ext_ids.any? { |b| b.identifier == EXT_ID }
+    Spaceship::ConnectAPI::BundleId.create(
+      name: "ImgManager Readiness Widget", identifier: EXT_ID, platform: "IOS")
+    UI.message("prepare_signing: registered the widget extension App ID #{EXT_ID}")
+  end
+  prof_ext = get_provisioning_profile(
+    api_key: key, app_identifier: EXT_ID, force: true,
+    output_path: "#{ROOT}/fastlane/profiles", filename: "widget.mobileprovision",
+  )
+  update_code_signing_settings(
+    use_automatic_signing: false, path: PROJECT, team_id: TEAM_ID,
+    targets: [EXT_NAME], code_sign_identity: "Apple Distribution", profile_name: prof_ext,
+  )
 end
 
 # Signing identity resolution searches keychains IN LIST ORDER, so with more than one keychain
