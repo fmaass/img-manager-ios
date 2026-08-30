@@ -53,6 +53,34 @@ enum TileRenderPlan: Equatable, Sendable {
   case placeholder(reason: TilePlaceholderReason)
 }
 
+/// What a cell actually DRAWS, once the tombstone question is asked before the proxy question.
+///
+/// WP12: `ImageSummary.missing` says the original is gone from the store, and an expanded scene's
+/// membership deliberately includes tombstoned members ("every member of the scene,
+/// capture-ordered, tombstones included"). A cached or still-servable proxy would otherwise draw
+/// a photograph that no longer exists — the one thing a culling surface must never do — so the
+/// tombstone OUTRANKS the render plan rather than being one more placeholder reason inside it.
+/// Kept separate from `TilePlaceholderReason.missing` deliberately: that one means "no proxy has
+/// been generated at this tier YET", a preparation state about the derivative, and collapsing the
+/// two would make "not rendered yet" and "no longer exists" the same message when only one of
+/// them is permanent.
+///
+/// A pure function, so the rule is testable without a render host: the views below are a switch
+/// over its result and carry no second copy of the decision.
+enum TilePresentation: Equatable, Sendable {
+  case tombstone
+  case display(tier: ProxyTier, size: CGSize)
+  case placeholder(reason: TilePlaceholderReason)
+
+  static func resolve(missing: Bool?, plan: TileRenderPlan) -> TilePresentation {
+    if missing == true { return .tombstone }
+    switch plan {
+    case .display(let tier, let size): return .display(tier: tier, size: size)
+    case .placeholder(let reason): return .placeholder(reason: reason)
+    }
+  }
+}
+
 /// Pure tier-CHOICE (diff-gate blocker 2, round 2): given a tile's ACTUAL rendered size — the
 /// real edge that justified packing computed for it, never a nominal row-height guess — decide
 /// grid vs preview. Placeholder/never-upscale reflow is a ROW-level concern now

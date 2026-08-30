@@ -9,13 +9,18 @@ import CoreGraphics
 /// This is what both the rendered layout AND `GridStore.rows` (Up/Down navigation) are built
 /// from — one packing pass feeds both, so navigation always agrees with what is actually on
 /// screen.
+/// WP12: the packer keys tiles by `GridDisplayID`, not by a bare image id, because Scene mode
+/// packs two different kinds of thing into the same justified row — photographs and collapsed
+/// scene cards. Flat mode passes `.image(id)` for every tile, so its packing is unchanged; what
+/// the typed key buys is that a card's cell can never hand a downstream consumer (the hit-test
+/// frames, `GridStore.rows`, a drag) an image id it could write to.
 struct JustifiedTile: Equatable {
-  var imageID: Int
+  var id: GridDisplayID
   var aspectRatio: Double
 }
 
 struct PackedTile: Equatable {
-  var imageID: Int
+  var id: GridDisplayID
   var size: CGSize
 }
 
@@ -42,7 +47,7 @@ enum JustifiedRowLayout {
       rows.append(
         currentRow.map {
           PackedTile(
-            imageID: $0.imageID,
+            id: $0.id,
             size: CGSize(width: rowHeight * CGFloat($0.aspectRatio), height: rowHeight))
         })
       currentRow = []
@@ -68,7 +73,7 @@ enum JustifiedRowLayout {
 /// (diff-gate blocker 2, round 2: "reflow/cap the ROW not individual tiles"; "tier-select from
 /// the actual rendered edge").
 struct PackedTilePlan: Equatable {
-  var imageID: Int
+  var id: GridDisplayID
   var plan: TileRenderPlan
 }
 
@@ -87,7 +92,7 @@ extension JustifiedRowLayout {
     targetRowHeight: CGFloat,
     displayScale: CGFloat,
     spacing: CGFloat = 2,
-    availability: (Int, ProxyTier) -> ProxyAvailability
+    availability: (GridDisplayID, ProxyTier) -> ProxyAvailability
   ) -> [[PackedTilePlan]] {
     let naturalRows = pack(
       tiles: tiles, paneWidth: paneWidth, targetRowHeight: targetRowHeight, spacing: spacing)
@@ -96,7 +101,7 @@ extension JustifiedRowLayout {
       // Pass 1: tier per tile from its NATURAL (pre-cap) size — the actual rendered edge
       // justification computed, never a nominal row-height guess.
       struct Resolved {
-        var imageID: Int
+        var id: GridDisplayID
         var naturalSize: CGSize
         var tier: ProxyTier
         var availability: ProxyAvailability
@@ -104,8 +109,8 @@ extension JustifiedRowLayout {
       let resolved = row.map { tile -> Resolved in
         let tier = GridTierResolver.chooseTier(for: tile.size, displayScale: displayScale)
         return Resolved(
-          imageID: tile.imageID, naturalSize: tile.size, tier: tier,
-          availability: availability(tile.imageID, tier))
+          id: tile.id, naturalSize: tile.size, tier: tier,
+          availability: availability(tile.id, tier))
       }
 
       // Pass 2: the ROW's cap scale — the smallest ratio (available pixels / required pixels)
@@ -125,17 +130,17 @@ extension JustifiedRowLayout {
       return resolved.map { item -> PackedTilePlan in
         switch item.availability {
         case .pending:
-          return PackedTilePlan(imageID: item.imageID, plan: .placeholder(reason: .pending))
+          return PackedTilePlan(id: item.id, plan: .placeholder(reason: .pending))
         case .permanentFail:
-          return PackedTilePlan(imageID: item.imageID, plan: .placeholder(reason: .permanentFail))
+          return PackedTilePlan(id: item.id, plan: .placeholder(reason: .permanentFail))
         case .missing:
-          return PackedTilePlan(imageID: item.imageID, plan: .placeholder(reason: .missing))
+          return PackedTilePlan(id: item.id, plan: .placeholder(reason: .missing))
         case .ok:
           let finalSize = CGSize(
             width: item.naturalSize.width * rowCapScale,
             height: item.naturalSize.height * rowCapScale)
           return PackedTilePlan(
-            imageID: item.imageID, plan: .display(tier: item.tier, size: finalSize))
+            id: item.id, plan: .display(tier: item.tier, size: finalSize))
         }
       }
     }

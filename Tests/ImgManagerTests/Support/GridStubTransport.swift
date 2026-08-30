@@ -206,6 +206,66 @@ actor GridStubTransport: ClientTransport {
     listImagesHasStarted = false
   }
 
+  // MARK: - WP12 Scene browse (stacks as display rows)
+
+  /// Always what a `cursor == nil` (first-page / restart) `GET /api/browse/stacks` receives.
+  private var browseStacksPage = Components.Schemas.StackBrowsePage(items: [], limit: 100)
+  /// A SECOND (and beyond) page, keyed by the exact cursor value a request carries — the same
+  /// shape `listImagesPagesByCursor` uses for flat paging.
+  private var browseStacksPagesByCursor: [String: Components.Schemas.StackBrowsePage] = [:]
+  /// The stack-mode twin of `listImagesRejectNonNilCursor`: models `cursor_scope_mismatch`, the
+  /// undocumented 400 the endpoint answers a stale or foreign cursor with.
+  private var browseStacksRejectNonNilCursor = false
+  /// Each stack's FIRST membership page (`cursor == nil`), by stack id.
+  private var stackMemberPages: [Int: Components.Schemas.StackMemberPage] = [:]
+  /// Further membership pages, by the exact cursor value carried.
+  private var stackMemberPagesByCursor: [String: Components.Schemas.StackMemberPage] = [:]
+  /// What `GET /api/stacks/{id}` answers — the cover-refresh read, by stack id.
+  private var stackRows: [Int: Components.Schemas.StackBrowseStackRow] = [:]
+
+  func setBrowseStacksPage(_ page: Components.Schemas.StackBrowsePage) { browseStacksPage = page }
+  func setBrowseStacksPage(
+    _ page: Components.Schemas.StackBrowsePage, forCursor cursor: String
+  ) {
+    browseStacksPagesByCursor[cursor] = page
+  }
+  func setBrowseStacksRejectNonNilCursor(_ reject: Bool) { browseStacksRejectNonNilCursor = reject }
+  func setStackMemberPage(_ page: Components.Schemas.StackMemberPage, forStack stackID: Int) {
+    stackMemberPages[stackID] = page
+  }
+  func setStackMemberPage(
+    _ page: Components.Schemas.StackMemberPage, forCursor cursor: String
+  ) {
+    stackMemberPagesByCursor[cursor] = page
+  }
+  func setStackRow(_ row: Components.Schemas.StackBrowseStackRow, forStack stackID: Int) {
+    stackRows[stackID] = row
+  }
+
+  /// The same hold/release pattern as the other operations, for
+  /// `GET /api/stacks/{id}/members` — what makes the single-flight guard testable
+  /// deterministically: a second expand of the same scene lands while the first page is
+  /// genuinely still on the wire, not after a sleep and a hope.
+  private var membersHoldEnabled = false
+  private var membersHasStarted = false
+  private var membersStartedContinuation: CheckedContinuation<Void, Never>?
+  private var membersReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdStackMembersRequests(_ hold: Bool) { membersHoldEnabled = hold }
+
+  func waitUntilStackMembersStarted() async {
+    if membersHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.membersStartedContinuation = continuation
+    }
+  }
+
+  func releaseStackMembers() {
+    membersReleaseContinuation?.resume()
+    membersReleaseContinuation = nil
+    membersHasStarted = false
+  }
+
   enum ProxyOutcome: Sendable {
     case ok(Data)
     case notModified
@@ -302,6 +362,52 @@ actor GridStubTransport: ClientTransport {
         }
       }
       return try jsonResponse(.ok, resolvedPage)
+
+    case Operations.BrowseStacksApiBrowseStacksGet.id:
+      let cursorValue = request.path.flatMap(URLComponents.init(string:))?
+        .queryItems?.first(where: { $0.name == "cursor" })?.value
+      if browseStacksRejectNonNilCursor, let cursorValue, !cursorValue.isEmpty {
+        // No declared content for 400 on this operation either (the vendored document declares
+        // 200 and 422 only), so the status code alone is what `.undocumented` exposes.
+        return (HTTPResponse(status: .badRequest), nil)
+      }
+      if let cursorValue, !cursorValue.isEmpty, let page = browseStacksPagesByCursor[cursorValue] {
+        return try jsonResponse(.ok, page)
+      }
+      return try jsonResponse(.ok, browseStacksPage)
+
+    case Operations.ListStackMembersApiStacksStackIdMembersGet.id:
+      let components = request.path.flatMap(URLComponents.init(string:))
+      let cursorValue = components?.queryItems?.first(where: { $0.name == "cursor" })?.value
+      // `/api/stacks/{id}/members` — the id is the second-to-last path component.
+      let stackID = (components?.path.split(separator: "/").dropLast().last).flatMap { Int($0) }
+      if membersHoldEnabled {
+        membersHasStarted = true
+        membersStartedContinuation?.resume()
+        membersStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.membersReleaseContinuation = continuation
+        }
+      }
+      if let cursorValue, !cursorValue.isEmpty, let page = stackMemberPagesByCursor[cursorValue] {
+        return try jsonResponse(.ok, page)
+      }
+      guard let stackID, let page = stackMemberPages[stackID] else {
+        let named = stackID.map { String($0) } ?? "?"
+        throw SentinelTransportError(
+          raw: "GridStubTransport: no stackMemberPage configured for \(named)")
+      }
+      return try jsonResponse(.ok, page)
+
+    case Operations.GetStackApiStacksStackIdGet.id:
+      let stackID = request.path.flatMap(URLComponents.init(string:))?
+        .path.split(separator: "/").last.flatMap { Int($0) }
+      guard let stackID, let row = stackRows[stackID] else {
+        let named = stackID.map { String($0) } ?? "?"
+        throw SentinelTransportError(
+          raw: "GridStubTransport: no stackRow configured for \(named)")
+      }
+      return try jsonResponse(.ok, row)
 
     case Operations.ImageFacetsApiFacetsGet.id:
       return try jsonResponse(.ok, facetsResult)

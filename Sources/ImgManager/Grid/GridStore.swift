@@ -90,10 +90,60 @@ final class GridStore {
   private(set) var query = GridImagesQuery()
   private(set) var rowHeight: GridRowHeight = .step200
   /// Set by the view after every justified-packing pass (`JustifiedRowLayout.pack`) — the
-  /// packed rows of image ids, in the SAME order as `images`. A justified grid's column count
-  /// varies per row (unlike a uniform `LazyVGrid`), so Up/Down navigation below looks up the
-  /// focused tile's actual row/column position rather than dividing by a single constant.
-  var rows: [[Int]] = []
+  /// packed rows of display ids, in the SAME order the grid renders them. A justified grid's
+  /// column count varies per row (unlike a uniform `LazyVGrid`), so Up/Down navigation below
+  /// looks up the focused tile's actual row/column position rather than dividing by a single
+  /// constant. WP12: typed ids, so a row that contains a scene card is navigable THROUGH rather
+  /// than into — arrow keys land on photographs, which are the only focusable things.
+  var rows: [[GridDisplayID]] = []
+
+  // MARK: - Scene mode (WP12: stacks as display rows)
+
+  /// Flat browse or Scene browse. Not a filter and not a query field: the two modes call
+  /// different endpoints, serve different row vocabularies and mint mutually unusable cursors.
+  private(set) var displayMode: GridDisplayMode = .flat
+
+  /// The rows `GET /api/browse/stacks` served, in ITS order. A SEPARATE slice from `images`,
+  /// deliberately: `images` stays EMPTY while Scene mode is on, so a collapsed card's
+  /// `representative.id` — display-only, and impossible to keep off the wire — has no way into
+  /// the array the flat paths read.
+  private(set) var sceneRows: [SceneBrowseRow] = []
+  /// Scene browse's OWN cursor. Never `nextCursor`: the two endpoints fingerprint their cursors
+  /// differently and each refuses the other's with a 400 (`cursor_scope_mismatch`).
+  private(set) var sceneNextCursor: String?
+  /// Which scenes the reader has opened.
+  private(set) var sceneExpanded: Set<Int> = []
+  /// Each opened scene's members, as `GET /api/stacks/{id}/members` served them: capture-ordered,
+  /// tombstones included, and UNFILTERED — the card's `matched_count` is the filtered question.
+  private(set) var sceneMembers: [Int: [Components.Schemas.ImageSummary]] = [:]
+  /// How to ask for the rest of a long scene, per opened scene. Absent = never opened.
+  private(set) var sceneMemberCursors: [Int: SceneMemberCursor] = [:]
+  /// Single-flight: which scenes have a membership request in flight right now. A second tap on
+  /// an opening card, or a second "load more" while one page is still on the wire, is dropped
+  /// rather than duplicating the page into the strip.
+  private(set) var sceneMembersInFlight: Set<Int> = []
+
+  /// The grid's row sequence in Scene mode: cards and loose photographs in the server's order,
+  /// each opened scene followed by the members loaded for it.
+  var sceneDisplayRows: [SceneDisplayRow] {
+    SceneRowBuilder.displayRows(
+      rows: sceneRows, expanded: sceneExpanded, members: sceneMembers)
+  }
+
+  /// THE list of "photographs on screen" — the single projection every mark, tag, undo, focus,
+  /// arrow-navigation and loupe path in this type reads instead of `images` directly.
+  ///
+  /// In flat mode it IS `images`, so every shipped behaviour is unchanged. In Scene mode it is
+  /// the display sequence's photographs: loose rows and the members of EXPANDED scenes, never a
+  /// collapsed card's cover. Deriving it once, here, is what makes "a card is not a write target"
+  /// and "an expanded member IS one" the same fact rather than two rules a dozen call sites each
+  /// have to remember — including the loupe's filmstrip, which walks this same list.
+  var actionableImages: [Components.Schemas.ImageSummary] {
+    switch displayMode {
+    case .flat: return images
+    case .scene: return SceneRowBuilder.actionableImages(sceneDisplayRows)
+    }
+  }
 
   var focusedImageID: Int?
   /// `T`/the action bar's Tag control opens tag entry for the focused image (browse mode) or
@@ -148,10 +198,18 @@ final class GridStore {
   /// maintains, never a filmstrip-local page.
   func loupeNext() async {
     guard let current = focusedImageID else { return }
-    if let idx = images.firstIndex(where: { $0.id == current }), images.indices.contains(idx + 1) {
-      focusedImageID = images[idx + 1].id
+    let pool = actionableImages
+    if let idx = pool.firstIndex(where: { $0.id == current }), pool.indices.contains(idx + 1) {
+      focusedImageID = pool[idx + 1].id
       return
     }
+    // WP12: the forward-neighbour prefetch is a FLAT-browse mechanism — it asks
+    // `/api/images/{id}/neighbours` "what follows this in the current filter's order", a question
+    // Scene mode's row stream (cards and members, one stored anchor) does not have an answer to,
+    // and the merge target it feeds (`images`) is deliberately empty here. Scene mode's loupe is
+    // therefore bounded by what the grid has loaded, which is also the fold's "one paging path"
+    // rule kept: the grid owns Scene paging, the loupe consumes no cursor of its own.
+    guard displayMode == .flat else { return }
     await fetchAndMergeNeighbours(after: current)
   }
 
@@ -159,10 +217,11 @@ final class GridStore {
   /// retains a prefix of every loaded page through the paging frontier) — never a network call,
   /// disabled at index 0.
   func loupePrevious() {
+    let pool = actionableImages
     guard let current = focusedImageID,
-      let idx = images.firstIndex(where: { $0.id == current }), idx > 0
+      let idx = pool.firstIndex(where: { $0.id == current }), idx > 0
     else { return }
-    focusedImageID = images[idx - 1].id
+    focusedImageID = pool[idx - 1].id
   }
 
   /// A filmstrip thumbnail tap: the image is already loaded (it is IN `images`, or the
@@ -172,16 +231,20 @@ final class GridStore {
   }
 
   var canLoupeGoPrevious: Bool {
-    guard let current = focusedImageID, let idx = images.firstIndex(where: { $0.id == current })
+    let pool = actionableImages
+    guard let current = focusedImageID, let idx = pool.firstIndex(where: { $0.id == current })
     else { return false }
     return idx > 0
   }
 
   var canLoupeGoNext: Bool {
-    guard let current = focusedImageID, let idx = images.firstIndex(where: { $0.id == current })
+    let pool = actionableImages
+    guard let current = focusedImageID, let idx = pool.firstIndex(where: { $0.id == current })
     else { return false }
-    if idx + 1 < images.count { return true }
-    return !loupeExhausted
+    if idx + 1 < pool.count { return true }
+    // Scene mode has no forward prefetch to reach for (see `loupeNext`), so the loaded tail IS
+    // the end as far as the loupe is concerned — never an enabled control that would do nothing.
+    return displayMode == .flat && !loupeExhausted
   }
 
   /// The loupe's own small, targeted forward-look — distinct from the grid's own large
@@ -289,6 +352,36 @@ final class GridStore {
     await reloadFirstPage()
   }
 
+  /// Enter or leave Scene mode — the Group control's own action.
+  ///
+  /// A mode switch is a SCOPE change of the strongest kind: a different endpoint, a different row
+  /// vocabulary, a different cursor namespace, and no 1:1 mapping between the two row sequences.
+  /// So it takes `selectShoot`'s full reset — Pick Lock exited, selection reset, focus cleared,
+  /// the undo slot cleared, any live conflict recovery abandoned — and not `applyFilterChange`'s
+  /// lighter one, which deliberately leaves Pick Lock and Undo standing because a filter edit
+  /// keeps the same photographs addressable. Here they are not: an id selected among loose rows
+  /// may be inside a collapsed card after the switch, and an undo entry's priors would name
+  /// photographs the new window cannot show. Zero-leak over zero-loss, the same adjudication the
+  /// web made for the identical switch.
+  ///
+  /// What this does NOT do is stash a sort/group presentation to put back on the way out. The
+  /// brief's reset semantics assume the web's three suspended fields (sort, direction, group_by),
+  /// and this client has none of them: `GridImagesQuery` declares no sort key, no group key and
+  /// no direction, and no view sets one (verified across `Sources/` — the only `sort`/`direction`
+  /// identifiers in the tree are `GridArrowDirection` and the queue's local sorting). There is
+  /// therefore nothing to suspend; inventing a sort control here to have something to stash would
+  /// be a second feature riding along on this lane. Recorded as a deviation in the phase ledger.
+  func setDisplayMode(_ next: GridDisplayMode) async {
+    guard next != displayMode else { return }
+    displayMode = next
+    pickLock.exit()
+    selection.reset(.shootChange)
+    focusedImageID = nil
+    undo.clear()
+    conflictRecovery = nil
+    await reloadFirstPage()
+  }
+
   /// Foreground/retry: same scope, fresh data.
   func fullReload() async {
     selection.reset(.fullReload)
@@ -311,16 +404,59 @@ final class GridStore {
     isLoupeOpen = false
     isLoupeFullScreen = false
     loupeExhausted = false
+    // WP12: the whole Scene window dies with the scope for exactly the reason the flat window
+    // does — and so does every expansion, which describes a membership OF a result set that is
+    // being replaced. Cleared in BOTH modes: a scope change while flat must not leave a stale
+    // scene slice behind for the next entry into Scene mode to find.
+    clearSceneWindow()
+    if displayMode == .scene {
+      // "`images` stays EMPTY in Scene mode" has to be something this code DOES, not something
+      // its doc comment says. Nothing below ever assigns `images` in this mode, so without this
+      // the flat window simply survives the switch — carrying the previous mode's photographs
+      // into the shared actionable projection, which is the one thing that projection exists to
+      // prevent. Caught by `sceneRowsAreKindDiscriminated`/`enteringSceneModeIsAFullReset`, which
+      // asserted the claim rather than trusting it. Its flat cursor goes with it: a cursor minted
+      // by `/api/images` is refused outright by the stacks endpoint.
+      images = []
+      nextCursor = nil
+    }
     do {
-      let page = try await service.images(query, cursor: nil, limit: 100)
-      guard generation == loadGeneration else { return }
-      images = page.items
-      nextCursor = page.nextCursor
+      switch displayMode {
+      case .flat:
+        let page = try await service.images(query, cursor: nil, limit: 100)
+        guard generation == loadGeneration else { return }
+        // Assigned only on success, deliberately: a failed flat reload keeps the rows the reader
+        // was looking at rather than blanking the grid (pre-existing behaviour, unchanged).
+        images = page.items
+        nextCursor = page.nextCursor
+      case .scene:
+        let page = try await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
+        guard generation == loadGeneration else { return }
+        sceneRows = page.rows
+        sceneNextCursor = page.nextCursor
+      }
       lastPageLoadError = nil
     } catch {
       guard generation == loadGeneration else { return }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
     }
+  }
+
+  /// `GET /api/browse/stacks` counts DISPLAY ROWS, not photographs ("a page of 100 may stand for
+  /// thousands of frames" — the schema's own words), so the flat grid's 100 is if anything
+  /// generous here rather than tight. Its declared maximum is 200.
+  private static let scenePageLimit = 100
+
+  /// Drops everything that describes a Scene RESULT SET: the served rows, its cursor, which
+  /// scenes are open and every membership page loaded for them. Never touches `displayMode` —
+  /// the reader is still in Scene mode, the window under them is simply being rebuilt.
+  private func clearSceneWindow() {
+    sceneRows = []
+    sceneNextCursor = nil
+    sceneExpanded = []
+    sceneMembers = [:]
+    sceneMemberCursors = [:]
+    sceneMembersInFlight = []
   }
 
   // MARK: - Authoritative refresh (P6: foreground + genuine same-shoot re-entry)
@@ -367,6 +503,82 @@ final class GridStore {
     isLoadingPage = true
     defer { if generation == loadGeneration { isLoadingPage = false } }
 
+    switch displayMode {
+    case .flat: return await refreshFlatPages(generation: generation)
+    case .scene: return await refreshScenePage(generation: generation)
+    }
+  }
+
+  /// Scene mode's authoritative re-read: page one of the CURRENT scene scope, plus a fresh
+  /// membership page for every scene that is currently open, published together.
+  ///
+  /// It exists so the mark/undo lane behaves identically in both modes rather than degrading:
+  /// the 409 recovery machine and the foreground refresh both call `performAuthoritativeRefresh`
+  /// and both need it to actually publish server truth for the photographs on screen — which in
+  /// Scene mode live in `sceneMembers` and the loose rows, not in `images`. Expansion is
+  /// PRESERVED (the reader's open scenes are not a data question), memberships are re-fetched
+  /// rather than kept, and a failure anywhere leaves the existing window untouched — a partial
+  /// refresh would be a window nobody asked for.
+  private func refreshScenePage(generation: Int) async -> Bool {
+    let openScenes = sceneExpanded
+    do {
+      let page = try await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
+      guard generation == loadGeneration else { return false }
+      var refreshedMembers: [Int: [Components.Schemas.ImageSummary]] = [:]
+      var refreshedCursors: [Int: SceneMemberCursor] = [:]
+      // Only scenes the refreshed page still contains: one the reader had open that a filter or
+      // a split has removed from the stream has no card to sit under any more.
+      let survivingScenes = Set(
+        page.rows.compactMap { row -> Int? in
+          guard case .stack(let stack) = row else { return nil }
+          return openScenes.contains(stack.stackId) ? stack.stackId : nil
+        })
+      for stackID in survivingScenes.sorted() {
+        let members = try await service.stackMembers(
+          stackID: stackID, cursor: nil, limit: Self.sceneMemberPageLimit)
+        guard generation == loadGeneration else { return false }
+        refreshedMembers[stackID] = members.items
+        refreshedCursors[stackID] = members.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
+      }
+      guard generation == loadGeneration else { return false }
+      sceneRows = page.rows
+      sceneNextCursor = page.nextCursor
+      sceneExpanded = survivingScenes
+      sceneMembers = refreshedMembers
+      sceneMemberCursors = refreshedCursors
+      sceneMembersInFlight = []
+      let actionable = actionableImages
+      pruneSelectionOutside(actionable)
+      publishRefreshedFocusAndUndo(actionable: actionable)
+      return true
+    } catch {
+      guard generation == loadGeneration else { return false }
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+      return false
+    }
+  }
+
+  /// A Scene refresh REPLACES the window rather than extending it — page one of the scene stream,
+  /// plus a FIRST membership page for each surviving open scene — so a photograph the reader
+  /// selected deeper in a long scene, or further down the stream, can simply stop being loaded.
+  /// Its id leaves the selection with it, for the same reason collapsing a card prunes
+  /// (`toggleSceneExpanded`): the selection is a set of ids, so nothing downstream can tell that
+  /// one of them is no longer on screen. `tagTargetImageIDs` would keep advertising it while
+  /// `capturePriorTagSnapshots` drops anything outside `actionableImages` — a mixed selection
+  /// would then write only its visible part and an all-hidden one would write nothing, in both
+  /// cases with no signal to the reader that the rest was skipped.
+  ///
+  /// Pruning, not preserving the extent: a refresh's whole point is that the window it publishes
+  /// is what the server says is there now, and re-fetching every page a reader had scrolled
+  /// through to keep a selection alive would make the resync unbounded.
+  private func pruneSelectionOutside(_ actionable: [Components.Schemas.ImageSummary]) {
+    guard !selection.members.isEmpty else { return }
+    let vanished = selection.members.subtracting(actionable.map(\.id))
+    guard !vanished.isEmpty else { return }
+    selection.removeHidden(Array(vanished))
+  }
+
+  private func refreshFlatPages(generation: Int) async -> Bool {
     var snapshot: [Components.Schemas.ImageSummary] = []
     var cursor: String?
     var restarts = 0
@@ -407,12 +619,21 @@ final class GridStore {
   /// the loupe closed — a deterministic choice, never the prior unconditional clear `fullReload`
   /// still uses for its own (unrelated) manual-retry callers.
   private func publishAuthoritativeSnapshot(_ snapshot: [Components.Schemas.ImageSummary]) {
-    let previousFocus = focusedImageID
     images = snapshot
     nextCursor = nil
+    publishRefreshedFocusAndUndo(actionable: snapshot)
+  }
+
+  /// The half of a publish that is mode-independent: the undo slot is invalidated (item 2: stale
+  /// priors must never be replayed over refreshed state) and focus/loupe survive only if the
+  /// previously-focused photograph is still among the refreshed ACTIONABLE photographs. Scene
+  /// mode's refresh calls it with its own derived list, so "survived" means the same thing in
+  /// both modes: still reachable by a gesture, not merely still somewhere in the response.
+  private func publishRefreshedFocusAndUndo(actionable: [Components.Schemas.ImageSummary]) {
+    let previousFocus = focusedImageID
     lastPageLoadError = nil
     undo.clear()
-    let survived = previousFocus.map { id in snapshot.contains { $0.id == id } } ?? false
+    let survived = previousFocus.map { id in actionable.contains { $0.id == id } } ?? false
     guard !survived else { return }
     focusedImageID = nil
     if isLoupeOpen { closeLoupe() }
@@ -423,6 +644,10 @@ final class GridStore {
   /// rows (`SelectionState.pageAppended()` is a documented no-op called here for exactly that
   /// reason).
   func loadMoreIfNeeded(currentItemID: Int) async {
+    // WP12: flat paging only. Scene mode pages DISPLAY ROWS through its own cursor
+    // (`loadMoreScenesIfNeeded`); routing an image id through here would consume the flat cursor,
+    // which the stacks endpoint refuses outright as a scope mismatch.
+    guard displayMode == .flat else { return }
     guard images.last?.id == currentItemID, let cursor = nextCursor, !isLoadingPage else {
       return
     }
@@ -451,48 +676,251 @@ final class GridStore {
     }
   }
 
+  // MARK: - Scene paging, expansion, and the cover that follows a mark (WP12)
+
+  /// `GET /api/stacks/{id}/members` page size. A scene can be large — gap clustering is
+  /// transitive, so a half-hour burst is one scene — which is exactly why the endpoint pages at
+  /// all rather than being "small by construction".
+  private static let sceneMemberPageLimit = 100
+
+  /// Scene mode's own paging append, called by the view when the LAST display row appears.
+  /// Consumes `sceneNextCursor` and only ever that — the flat cursor is a different namespace.
+  func loadMoreScenesIfNeeded(currentRowID: GridDisplayID) async {
+    guard displayMode == .scene else { return }
+    guard sceneDisplayRows.last?.id == currentRowID, let cursor = sceneNextCursor, !isLoadingPage
+    else { return }
+    let generation = loadGeneration
+    isLoadingPage = true
+    defer { if generation == loadGeneration { isLoadingPage = false } }
+    do {
+      let page = try await service.browseStacks(
+        query, cursor: cursor, limit: Self.scenePageLimit)
+      guard generation == loadGeneration else { return }
+      // Dedup by display id, the same guarantee `mergeImages` gives the flat grid: a server that
+      // repeats a row across a page boundary must never produce two cards for one scene.
+      let known = Set(sceneRows.map(\.displayID))
+      sceneRows.append(contentsOf: page.rows.filter { !known.contains($0.displayID) })
+      sceneNextCursor = page.nextCursor
+      selection.pageAppended()
+      lastPageLoadError = nil
+    } catch GridServiceError.cursorInvalid {
+      // The same pinned disposition the flat grid uses: discard the cursor, restart the SAME
+      // scope from page one, rather than surfacing a dead-end paging error.
+      guard generation == loadGeneration else { return }
+      await reloadFirstPage()
+    } catch {
+      guard generation == loadGeneration else { return }
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  /// Open or close ONE scene — the only thing a collapsed card can do.
+  ///
+  /// Opening fetches its MEMBERSHIP: every member including tombstones, in capture order,
+  /// deliberately unfiltered, because that is the authoritative answer to "what is in this
+  /// scene". Members already in hand are not re-fetched — closing and reopening is a display
+  /// change, not a reason to ask the server again.
+  ///
+  /// Closing PRUNES that scene's members from the selection. Not defensiveness: select a member
+  /// while the scene is open, close the scene, then press Pick — the mark path reads the
+  /// selection, and without this the write would land on photographs now hidden inside a
+  /// collapsed card, which is the exact thing the actionability boundary exists to prevent. The
+  /// ids come out at the moment they stop being visible.
+  func toggleSceneExpanded(_ stackID: Int) async {
+    guard displayMode == .scene else { return }
+    if sceneExpanded.contains(stackID) {
+      sceneExpanded.remove(stackID)
+      let hidden = sceneMembers[stackID] ?? []
+      if !hidden.isEmpty && !selection.members.isEmpty {
+        selection.removeHidden(hidden.map(\.id))
+      }
+      // Focus cannot stay on a photograph nobody can see any more.
+      if let focused = focusedImageID, hidden.contains(where: { $0.id == focused }) {
+        focusedImageID = nil
+        if isLoupeOpen { closeLoupe() }
+      }
+      return
+    }
+    sceneExpanded.insert(stackID)
+    guard sceneMembers[stackID] == nil else { return }
+    await fetchSceneMembers(stackID: stackID, cursor: nil)
+  }
+
+  /// Appear-driven membership paging: called when a member tile appears, it asks the ONE question
+  /// the view cannot answer — "is this the last member currently loaded for some opened scene?" —
+  /// and pages that scene if so.
+  ///
+  /// Deliberately not the brief's "more members" affordance. An explicit button would have to be
+  /// a cell in the justified row (it has no aspect ratio and no pixels), i.e. a THIRD cell kind
+  /// whose only job is to be tapped — a new gesture target in the one place this lane is trying
+  /// to keep gesture targets to a minimum. Appearing at the tail is the same trigger the grid's
+  /// own paging already uses, adds no tappable surface, and cannot be aimed at the wrong scene.
+  /// Recorded as a deviation in the phase ledger.
+  func loadMoreSceneMembersIfNeeded(afterMemberID imageID: Int) async {
+    guard displayMode == .scene else { return }
+    guard let stackID = sceneMembers.first(where: { $0.value.last?.id == imageID })?.key else {
+      return
+    }
+    await loadMoreSceneMembers(stackID: stackID)
+  }
+
+  /// The rest of a long scene's membership. Appends in place; the card never moves.
+  func loadMoreSceneMembers(stackID: Int) async {
+    guard displayMode == .scene, sceneExpanded.contains(stackID) else { return }
+    guard case .more(let cursor) = sceneMemberCursors[stackID] else { return }
+    await fetchSceneMembers(stackID: stackID, cursor: cursor)
+  }
+
+  /// One membership page, single-flighted per scene and generation-fenced like every other read
+  /// here. `cursor == nil` is the first page (replaces), a cursor appends.
+  private func fetchSceneMembers(stackID: Int, cursor: String?) async {
+    guard !sceneMembersInFlight.contains(stackID) else { return }
+    sceneMembersInFlight.insert(stackID)
+    defer { sceneMembersInFlight.remove(stackID) }
+    let generation = loadGeneration
+    do {
+      let page = try await service.stackMembers(
+        stackID: stackID, cursor: cursor, limit: Self.sceneMemberPageLimit)
+      // The window may have been replaced while the membership was on the wire — its rows belong
+      // to a result set the reader has left, exactly as a late grid page would.
+      guard generation == loadGeneration else { return }
+      // And the reader may have closed the scene in the meantime: splicing members under a card
+      // that is no longer open would put photographs on screen nobody asked to see.
+      guard sceneExpanded.contains(stackID) else { return }
+      if cursor == nil {
+        sceneMembers[stackID] = page.items
+      } else {
+        let held = sceneMembers[stackID] ?? []
+        let known = Set(held.map(\.id))
+        sceneMembers[stackID] = held + page.items.filter { !known.contains($0.id) }
+      }
+      sceneMemberCursors[stackID] = page.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
+      lastPageLoadError = nil
+    } catch {
+      guard generation == loadGeneration else { return }
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+    }
+  }
+
+  /// Which OPENED scenes hold any of these photographs — the question a finished write asks so it
+  /// can re-read exactly the cards whose badges or cover it may have changed.
+  private func scenesHolding(_ imageIDs: [Int]) -> [Int] {
+    let wanted = Set(imageIDs)
+    return sceneMembers.compactMap { stackID, members in
+      members.contains { wanted.contains($0.id) } ? stackID : nil
+    }.sorted()
+  }
+
+  /// "The cover follows the pick" — after a mark, an undo or a tag write touching a scene's
+  /// member, re-read that scene's row and merge it IN PLACE.
+  ///
+  /// ONE request per DISTINCT touched scene, and only the four fields a write can change:
+  /// `member_count`, `has_pick`, `matched_count` and `representative`. Everything else about the
+  /// row is left exactly as it was — its POSITION in the stream (the stored anchor never moves
+  /// for a mark), its expansion, the selection, and the page cursor. A reload would be the easy
+  /// way to get a fresh cover and would cost the reader their scroll position, their open scenes
+  /// and their selection on every press of P.
+  ///
+  /// A row whose `matched_count` has fallen to zero is still merged and still rendered: a mutated
+  /// row stays in the window until an explicit reload, and the badge simply tells the truth
+  /// about it. A refresh that fails is a non-event — the card keeps the numbers it has.
+  private func refreshScenesFor(_ imageIDs: [Int]) async {
+    guard displayMode == .scene else { return }
+    let touched = scenesHolding(imageIDs)
+    guard !touched.isEmpty else { return }
+    let generation = loadGeneration
+    for stackID in touched {
+      guard let fresh = try? await service.stackRow(stackID: stackID, query: query) else {
+        continue
+      }
+      guard generation == loadGeneration else { return }
+      for index in sceneRows.indices {
+        guard case .stack(var row) = sceneRows[index], row.stackId == stackID else { continue }
+        row.memberCount = fresh.memberCount
+        row.hasPick = fresh.hasPick
+        row.matchedCount = fresh.matchedCount
+        row.representative = fresh.representative
+        sceneRows[index] = .stack(row)
+      }
+    }
+  }
+
   // MARK: - Focus / arrow navigation
 
+  /// WP12: navigation moves between PHOTOGRAPHS. A scene card occupies a cell in a packed row
+  /// like anything else, but focus is an image concept — the mark bar, the loupe and every
+  /// shortcut act on `focusedImageID` — so a card is navigated PAST rather than into, and these
+  /// three helpers are what "past" means. In flat mode every cell is `.image`, so each of them
+  /// degenerates to the arithmetic this method used before and behaviour is unchanged.
+  private func firstImageID(in row: [GridDisplayID], from start: Int, step: Int) -> Int? {
+    var index = start
+    while row.indices.contains(index) {
+      if let id = row[index].imageID { return id }
+      index += step
+    }
+    return nil
+  }
+
+  /// The photograph nearest to `column` in `row`, searching outward — so Up/Down from a tile
+  /// above a card lands on the closest real photograph rather than doing nothing.
+  private func nearestImageID(in row: [GridDisplayID], toward column: Int) -> Int? {
+    guard !row.isEmpty else { return nil }
+    let clamped = min(max(column, 0), row.count - 1)
+    for offset in 0..<row.count {
+      if let id = row[safe: clamped - offset]?.imageID { return id }
+      if let id = row[safe: clamped + offset]?.imageID { return id }
+    }
+    return nil
+  }
+
   func moveFocus(_ direction: GridArrowDirection) {
-    guard !images.isEmpty else { return }
+    let pool = actionableImages
+    guard !pool.isEmpty else { return }
     guard let current = focusedImageID else {
-      focusedImageID = images.first?.id
+      focusedImageID = pool.first?.id
       return
     }
     // Fall back to flat left/right-only stepping if the view hasn't published packed rows yet
     // (e.g. before the first layout pass) — still correct, just without row-relative up/down.
     guard !rows.isEmpty,
-      let rowIndex = rows.firstIndex(where: { $0.contains(current) }),
-      let colIndex = rows[rowIndex].firstIndex(of: current)
+      let rowIndex = rows.firstIndex(where: { $0.contains(.image(current)) }),
+      let colIndex = rows[rowIndex].firstIndex(of: .image(current))
     else {
-      guard let idx = images.firstIndex(where: { $0.id == current }) else { return }
+      guard let idx = pool.firstIndex(where: { $0.id == current }) else { return }
       let delta = (direction == .left) ? -1 : (direction == .right ? 1 : 0)
       let target = idx + delta
-      guard delta != 0, images.indices.contains(target) else { return }
-      focusedImageID = images[target].id
+      guard delta != 0, pool.indices.contains(target) else { return }
+      focusedImageID = pool[target].id
       return
     }
     switch direction {
     case .left:
-      if colIndex > 0 {
-        focusedImageID = rows[rowIndex][colIndex - 1]
-      } else if rowIndex > 0 {
-        focusedImageID = rows[rowIndex - 1].last
+      if let target = firstImageID(in: rows[rowIndex], from: colIndex - 1, step: -1) {
+        focusedImageID = target
+      } else if rowIndex > 0,
+        let target = firstImageID(
+          in: rows[rowIndex - 1], from: rows[rowIndex - 1].count - 1, step: -1)
+      {
+        focusedImageID = target
       }
     case .right:
-      if colIndex + 1 < rows[rowIndex].count {
-        focusedImageID = rows[rowIndex][colIndex + 1]
-      } else if rowIndex + 1 < rows.count {
-        focusedImageID = rows[rowIndex + 1].first
+      if let target = firstImageID(in: rows[rowIndex], from: colIndex + 1, step: 1) {
+        focusedImageID = target
+      } else if rowIndex + 1 < rows.count,
+        let target = firstImageID(in: rows[rowIndex + 1], from: 0, step: 1)
+      {
+        focusedImageID = target
       }
     case .up:
       guard rowIndex > 0 else { return }
-      let target = min(colIndex, rows[rowIndex - 1].count - 1)
-      focusedImageID = rows[rowIndex - 1][target]
+      if let target = nearestImageID(in: rows[rowIndex - 1], toward: colIndex) {
+        focusedImageID = target
+      }
     case .down:
       guard rowIndex + 1 < rows.count else { return }
-      let target = min(colIndex, rows[rowIndex + 1].count - 1)
-      focusedImageID = rows[rowIndex + 1][target]
+      if let target = nearestImageID(in: rows[rowIndex + 1], toward: colIndex) {
+        focusedImageID = target
+      }
     }
   }
 
@@ -501,17 +929,41 @@ final class GridStore {
   /// this stays a separate named step so a culling advance never silently depends on
   /// `columnsPerRow` being set correctly by the view.
   private func advanceToNext() {
-    guard !images.isEmpty else { return }
-    guard let current = focusedImageID, let idx = images.firstIndex(where: { $0.id == current })
+    let pool = actionableImages
+    guard !pool.isEmpty else { return }
+    guard let current = focusedImageID, let idx = pool.firstIndex(where: { $0.id == current })
     else {
-      focusedImageID = images.first?.id
+      focusedImageID = pool.first?.id
       return
     }
-    guard images.indices.contains(idx + 1) else { return }
-    focusedImageID = images[idx + 1].id
+    guard pool.indices.contains(idx + 1) else { return }
+    focusedImageID = pool[idx + 1].id
   }
 
   // MARK: - Tile interaction (tap / long-press)
+
+  /// A tap on a CELL. WP12: the parameter is a display id, so the one place a card's tap is
+  /// interpreted is here, and it is interpreted as "open me" and nothing else — never a mark,
+  /// never a selection entry, whatever mode the grid is in. A latched Pick Lock does not change
+  /// that: there is no image id in a `.stack` to apply a pick to.
+  func tapCell(_ id: GridDisplayID) async {
+    switch id {
+    case .image(let imageID):
+      await tapTile(imageID)
+    case .stack(let stackID):
+      await toggleSceneExpanded(stackID)
+    }
+  }
+
+  /// A long-press on a CELL. On a photograph it enters Select with that photograph selected; on a
+  /// scene card it does NOTHING — the card is not selectable, so there is no Select entry it
+  /// could make. Written as an explicit, doc-commented no-op rather than an absent branch,
+  /// because "a gesture that silently does nothing" is a thing a reader has to be able to find in
+  /// the code: the card's own accessibility hint says the same in the UI.
+  func longPressCell(_ id: GridDisplayID) {
+    guard case .image(let imageID) = id else { return }
+    longPressTile(imageID)
+  }
 
   func tapTile(_ imageID: Int) async {
     if pickLock.state == .latched {
@@ -555,8 +1007,15 @@ final class GridStore {
   /// iPad pointer drag over the grid (diff-gate round 2, blocker 3): one call per tile the
   /// pointer crosses, wired to a real `PrimaryPointerDragGesture` in `GridView`. "Once per
   /// crossed tile per drag" is enforced by `dragSession`, reset at the start of each gesture.
-  func pointerDragCrossed(_ imageID: Int) async {
-    guard dragSession.crossedTile(imageID) else { return }
+  /// WP12: the drag lane takes a DISPLAY id. A drag that crosses a scene card is recorded as
+  /// crossed (so the dedup session is honest about the path the pointer took) and then produces
+  /// nothing — a `.stack` has no image id, so neither the Pick-Lock branch nor the Select branch
+  /// below has anything to name. That is the actionability boundary holding for the one gesture
+  /// that cannot be stopped at its own site: a pointer drag does not choose which cells it
+  /// crosses.
+  func pointerDragCrossed(_ id: GridDisplayID) async {
+    guard dragSession.crossedTile(id) else { return }
+    guard let imageID = id.imageID else { return }
     if pickLock.state == .latched {
       await applyMark(.pick, to: [imageID])
     } else if selection.mode == .select {
@@ -771,7 +1230,11 @@ final class GridStore {
     // The generation THIS successful refresh just published under (B1) -- used below to detect
     // a scope change racing the per-id detail fetches that can follow.
     let generation = loadGeneration
-    let freshMarkByID = Dictionary(uniqueKeysWithValues: images.map { ($0.id, $0.mark) })
+    // The shared projection, not `images`: in Scene mode the refreshed photographs live in the
+    // loose rows and the opened scenes' member strips, and a recovery that read `images` here
+    // would find nothing and fall through to a per-id `detail()` fetch for every id in the batch.
+    let freshMarkByID = Dictionary(
+      uniqueKeysWithValues: actionableImages.map { ($0.id, $0.mark) })
     var freshMarkViews: [Int: FreshMarkSnapshot] = [:]
     var changed = Set<Int>()
     // Diff-gate round 3, B6: a FAILED per-id detail() read must never produce a silent PARTIAL
@@ -881,6 +1344,9 @@ final class GridStore {
       undo.record(UndoEntry(appliedState: state, priorStates: priors))
       if priors.count > 1 { selection.bulkActionSucceeded() }
       lastMutationError = nil
+      // WP12: the cover follows the pick. Still inside this call's own lane hold, so it is
+      // serialised against other mutations by construction rather than by a second lock.
+      await refreshScenesFor(priors.map(\.imageID))
     } catch {
       guard generation == loadGeneration else { return }
       rollback(priors)
@@ -975,6 +1441,7 @@ final class GridStore {
         // unloaded sibling in the same group was never attempted and stays pending.
         remaining.removeAll { loadedIDs.contains($0.imageID) }
         lastMutationError = nil
+        await refreshScenesFor(priors.map(\.imageID))
       } catch {
         guard generation == loadGeneration else { return }
         rollback(priors)
@@ -1070,6 +1537,7 @@ final class GridStore {
       guard generation == loadGeneration else { return }
       reconcileRevisions(applied.revisions ?? [])
       lastMutationError = nil
+      await refreshScenesFor(priors.map(\.imageID))
     } catch {
       guard generation == loadGeneration else { return }
       rollbackTag(tag, priors: priors)
@@ -1086,36 +1554,72 @@ final class GridStore {
 
   // MARK: - Private snapshot / apply / rollback helpers
 
+  /// The WRITE half of the shared actionable projection: apply `transform` to every photograph on
+  /// screen whose id is in `ids`, wherever that photograph actually lives.
+  ///
+  /// `actionableImages` answers "which photographs may a gesture act on"; a mark also has to write
+  /// the answer back, and in Scene mode the photographs are stored in two places — loose rows and
+  /// the member strips of opened scenes — neither of which is `images`. Routing every optimistic
+  /// apply, rollback and revision reconcile through this ONE function is what keeps the read and
+  /// the write looking at the same set: a photograph reachable by a gesture is by construction
+  /// also reachable by the write that gesture triggers.
+  ///
+  /// A collapsed card's `representative` is deliberately NOT written here even when the mark
+  /// landed on the photograph it happens to show — the card carries no mark badge (it is not a
+  /// write target), and its aggregate fields come back from the server's own re-read
+  /// (`refreshScenesFor`) rather than being guessed at locally.
+  private func mutateActionable(
+    _ ids: Set<Int>, _ transform: (inout Components.Schemas.ImageSummary) -> Void
+  ) {
+    switch displayMode {
+    case .flat:
+      for i in images.indices where ids.contains(images[i].id) {
+        transform(&images[i])
+      }
+    case .scene:
+      for i in sceneRows.indices {
+        guard case .image(var image) = sceneRows[i], ids.contains(image.id) else { continue }
+        transform(&image)
+        sceneRows[i] = .image(image)
+      }
+      // Iterate a snapshot, write into the live dictionary — the two are deliberately separate so
+      // the loop's subject cannot change under it.
+      for (stackID, members) in sceneMembers.map({ ($0.key, $0.value) }) {
+        var updated = members
+        var changed = false
+        for i in updated.indices where ids.contains(updated[i].id) {
+          transform(&updated[i])
+          changed = true
+        }
+        if changed { sceneMembers[stackID] = updated }
+      }
+    }
+  }
+
   private func capturePriorSnapshots(for imageIDs: [Int]) -> [PriorMarkSnapshot] {
-    imageIDs.compactMap { id in
-      guard let img = images.first(where: { $0.id == id }) else { return nil }
+    let pool = actionableImages
+    return imageIDs.compactMap { id in
+      guard let img = pool.first(where: { $0.id == id }) else { return nil }
       return PriorMarkSnapshot(
         imageID: id, state: MarkStateValue(img.mark.state), revisionBefore: img.mark.revision)
     }
   }
 
   private func optimisticallyApply(_ state: MarkStateValue, to imageIDs: [Int]) {
-    let idSet = Set(imageIDs)
-    for i in images.indices where idSet.contains(images[i].id) {
-      images[i].mark.state = state.payload
-    }
+    mutateActionable(Set(imageIDs)) { $0.mark.state = state.payload }
   }
 
   private func rollback(_ priors: [PriorMarkSnapshot]) {
     let byID = Dictionary(uniqueKeysWithValues: priors.map { ($0.imageID, $0.state) })
-    for i in images.indices {
-      if let prior = byID[images[i].id] {
-        images[i].mark.state = prior.payload
-      }
+    mutateActionable(Set(byID.keys)) { image in
+      if let prior = byID[image.id] { image.mark.state = prior.payload }
     }
   }
 
   private func reconcileRevisions(_ revisions: [Components.Schemas.MarkRevision]) {
     let byID = Dictionary(uniqueKeysWithValues: revisions.map { ($0.imageId, $0.revision) })
-    for i in images.indices {
-      if let revision = byID[images[i].id] {
-        images[i].mark.revision = revision
-      }
+    mutateActionable(Set(byID.keys)) { image in
+      if let revision = byID[image.id] { image.mark.revision = revision }
     }
   }
 
@@ -1129,28 +1633,26 @@ final class GridStore {
   }
 
   private func capturePriorTagSnapshots(for imageIDs: [Int]) -> [PriorTagSnapshot] {
-    imageIDs.compactMap { id in
-      guard let img = images.first(where: { $0.id == id }) else { return nil }
+    let pool = actionableImages
+    return imageIDs.compactMap { id in
+      guard let img = pool.first(where: { $0.id == id }) else { return nil }
       return PriorTagSnapshot(
         imageID: id, tags: img.mark.tags ?? [], revisionBefore: img.mark.revision)
     }
   }
 
   private func optimisticallyAddTag(_ tag: String, to imageIDs: [Int]) {
-    let idSet = Set(imageIDs)
-    for i in images.indices where idSet.contains(images[i].id) {
-      var tags = images[i].mark.tags ?? []
+    mutateActionable(Set(imageIDs)) { image in
+      var tags = image.mark.tags ?? []
       if !tags.contains(tag) { tags.append(tag) }
-      images[i].mark.tags = tags
+      image.mark.tags = tags
     }
   }
 
   private func rollbackTag(_ tag: String, priors: [PriorTagSnapshot]) {
     let byID = Dictionary(uniqueKeysWithValues: priors.map { ($0.imageID, $0.tags) })
-    for i in images.indices {
-      if let priorTags = byID[images[i].id] {
-        images[i].mark.tags = priorTags
-      }
+    mutateActionable(Set(byID.keys)) { image in
+      if let priorTags = byID[image.id] { image.mark.tags = priorTags }
     }
   }
 }

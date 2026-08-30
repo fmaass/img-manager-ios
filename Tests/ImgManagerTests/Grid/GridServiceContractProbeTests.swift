@@ -129,7 +129,7 @@ struct GridServiceContractProbeTests {
     ])
     await transport.setDetailResult(
       Components.Schemas.ImageDetail(
-        exif: exif, ext: "jpg", filename: "a.jpg", folderId: 1, id: 1,
+        exif: exif, ext: "jpg", fileSize: 4_096, filename: "a.jpg", folderId: 1, id: 1,
         lightroom: .init(sidecarPresent: false), mark: .init(revision: "r0"),
         proxies: .init(additionalProperties: [:]), sourceTier: "local"))
     let service = makeService(transport)

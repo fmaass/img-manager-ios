@@ -16,7 +16,10 @@ struct TileView: View {
   var body: some View {
     ZStack(alignment: .topTrailing) {
       Group {
-        switch plan {
+        // The tombstone question is asked BEFORE the proxy question — see `TilePresentation`.
+        switch TilePresentation.resolve(missing: image.missing, plan: plan) {
+        case .tombstone:
+          missingTile
         case .display(let tier, let size):
           content(tier: tier, size: size)
         case .placeholder(let reason):
@@ -55,6 +58,22 @@ struct TileView: View {
         proxyImage = decoded
       }
     }
+  }
+
+  /// The tombstone presentation: the photograph is gone from the tier, whatever the proxy cache
+  /// still holds. Distinct from `placeholder(reason: .missing)`, which means "no proxy has been
+  /// generated at this tier yet" — a preparation state about the DERIVATIVE, not about the
+  /// original. Sharing one visual would make "not rendered yet" and "no longer exists" the same
+  /// message, and only one of them is permanent.
+  @ViewBuilder
+  private var missingTile: some View {
+    ZStack {
+      Rectangle().fill(.tertiary)
+      Image(systemName: "questionmark.square.dashed")
+    }
+    .frame(minWidth: 44, minHeight: 44)
+    .accessibilityLabel("Missing — this photograph is no longer on the store")
+    .accessibilityIdentifier("tileMissing")
   }
 
   @ViewBuilder

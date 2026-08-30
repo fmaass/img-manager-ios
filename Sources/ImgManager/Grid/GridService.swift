@@ -110,6 +110,107 @@ struct GridService: Sendable {
     return GridImagesPage(items: page.items, nextCursor: page.nextCursor)
   }
 
+  // MARK: - Scene browse (WP12: stacks as display rows)
+
+  /// One page of `GET /api/browse/stacks` — DISPLAY ROWS, not photographs: a loose photo is one
+  /// row and a whole scene is one row, so `limit` counts rows and a page of 100 can stand for
+  /// thousands of frames.
+  ///
+  /// Chronological only, by the contract's own words ("stack mode has no other order"): there is
+  /// no `sort` and no `group_by` parameter to pass, because a stack carries ONE stored capture-
+  /// order anchor. `seekDate` is the endpoint's own way to jump to a Europe/Zurich calendar day
+  /// and is mutually exclusive with `cursor` — passing both is the caller's error, and the server
+  /// answers 422.
+  ///
+  /// The 400 mapping is the same as `images(_:cursor:limit:)`'s and for the same reason, with one
+  /// extra edge this endpoint adds: a stack cursor and an `/api/images` cursor carry DIFFERENT
+  /// fingerprints, so handing this endpoint a flat cursor is refused as `cursor_scope_mismatch` —
+  /// a 400 the vendored document does not declare (the operation declares 200 and 422 only,
+  /// verified against `openapi.json` at the vendored commit), so it arrives as
+  /// `.undocumented(400, _)` exactly like the flat refusal does.
+  func browseStacks(
+    _ query: GridImagesQuery, direction: SceneBrowseDirection = .asc, cursor: String?,
+    seekDate: String? = nil, limit: Int
+  ) async throws -> StackBrowsePageResult {
+    let output: Operations.BrowseStacksApiBrowseStacksGet.Output
+    do {
+      output = try await client.browseStacksApiBrowseStacksGet(
+        .init(
+          query: query.asBrowseStacksQuery(
+            direction: direction, cursor: cursor, seekDate: seekDate, limit: limit)))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let page = try? ok.body.json else { throw GridServiceError.unreachable }
+      // A row that narrows to NEITHER branch is an unusable page, not a photograph to skip
+      // quietly: silently dropping it would leave a hole in capture order that no badge, count
+      // or cursor accounts for. `compactMap` + a count check keeps the whole page honest.
+      let rows = page.items.compactMap(SceneBrowseRow.narrow(_:))
+      guard rows.count == page.items.count else { throw GridServiceError.unreachable }
+      return StackBrowsePageResult(rows: rows, nextCursor: page.nextCursor)
+    case .unprocessableContent:
+      throw GridServiceError.unreachable
+    case .undocumented(let statusCode, _):
+      if statusCode == 400 { throw GridServiceError.cursorInvalid }
+      throw GridServiceError.unreachable
+    }
+  }
+
+  /// One page of `GET /api/stacks/{id}/members` — the AUTHORITATIVE membership: every member
+  /// including tombstoned ones, in capture order, and deliberately UNFILTERED (the filtered
+  /// number is the card's own `matched_count`; conflating the two would make an opened scene show
+  /// fewer photographs than its badge claims — the handler's own docstring,
+  /// `app/api/stacks.py`).
+  ///
+  /// The members cursor has its own fingerprint too, so the same undocumented-400 mapping applies.
+  func stackMembers(stackID: Int, cursor: String?, limit: Int) async throws -> StackMemberPageResult
+  {
+    let output: Operations.ListStackMembersApiStacksStackIdMembersGet.Output
+    do {
+      output = try await client.listStackMembersApiStacksStackIdMembersGet(
+        .init(path: .init(stackId: stackID), query: .init(cursor: cursor, limit: limit)))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let page = try? ok.body.json else { throw GridServiceError.unreachable }
+      return StackMemberPageResult(
+        stackID: page.stackId, items: page.items, nextCursor: page.nextCursor)
+    case .unprocessableContent:
+      throw GridServiceError.unreachable
+    case .undocumented(let statusCode, _):
+      if statusCode == 400 { throw GridServiceError.cursorInvalid }
+      throw GridServiceError.unreachable
+    }
+  }
+
+  /// `GET /api/stacks/{id}` — ONE scene's row, re-read in the SAME filter context the page was
+  /// browsed in so its `matched_count` answers the question the active filters are asking.
+  ///
+  /// This is the cover-refresh read: after a write touches a member, the card's aggregate fields
+  /// are stale (the representative is derived at read time and moves the moment a member is
+  /// picked). Re-reading one row is what lets the card tell the truth without a reload costing the
+  /// reader their scroll position, their open scenes and their selection on every press of P.
+  /// No `direction`: a single row has no order.
+  func stackRow(stackID: Int, query: GridImagesQuery) async throws
+    -> Components.Schemas.StackBrowseStackRow
+  {
+    let output: Operations.GetStackApiStacksStackIdGet.Output
+    do {
+      output = try await client.getStackApiStacksStackIdGet(
+        .init(path: .init(stackId: stackID), query: query.asStackRowQuery()))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    guard case .ok(let ok) = output, let row = try? ok.body.json else {
+      throw GridServiceError.unreachable
+    }
+    return row
+  }
+
   // MARK: - Facets (Stats tab filter rows)
 
   func facets(_ query: GridImagesQuery) async throws -> Components.Schemas.ImageFacets {
@@ -252,6 +353,36 @@ struct GridImagesPage: Sendable, Equatable {
   var nextCursor: String?
 }
 
+/// The one order `GET /api/browse/stacks` serves ("asc or desc over capture time; stack mode has
+/// no other order"). A mode-local presentation control, deliberately NOT part of
+/// `GridImagesQuery`: the flat endpoint in this client has never had a direction, and adding one
+/// there would be a second, unrelated feature riding along on this lane.
+enum SceneBrowseDirection: Sendable, Equatable {
+  case asc
+  case desc
+
+  var payload: Operations.BrowseStacksApiBrowseStacksGet.Input.Query.DirectionPayload {
+    switch self {
+    case .asc: return .asc
+    case .desc: return .desc
+    }
+  }
+}
+
+/// One page of Scene browse, with the wire union already narrowed onto `SceneBrowseRow`.
+struct StackBrowsePageResult: Sendable, Equatable {
+  var rows: [SceneBrowseRow]
+  var nextCursor: String?
+}
+
+/// One page of ONE scene's membership. `stackID` is echoed by the server and carried through
+/// rather than assumed, so a page can never be spliced into the wrong card.
+struct StackMemberPageResult: Sendable, Equatable {
+  var stackID: Int
+  var items: [Components.Schemas.ImageSummary]
+  var nextCursor: String?
+}
+
 /// Opaque by construction, same discipline as P3's `APIServiceError`: every case carries zero
 /// associated raw data. `.conflict` and `.cursorInvalid` add DISTINGUISHABILITY, not detail —
 /// there is still no server body, hostname, or transport string reachable from any case here.
@@ -309,6 +440,33 @@ struct GridImagesQuery: Sendable, Equatable {
       missing: missing)
   }
 
+  /// WP12: the SAME filter surface `asListImagesQuery` sends, plus the two things Scene browse
+  /// has of its own (`direction`, `seekDate`) and WITHOUT the two it does not accept — there is
+  /// no sort key and no `group_by` on this endpoint at all (chronological only). The generator
+  /// gives every operation its own `Input.Query` type even when the shapes match, which is why
+  /// this is a fourth mapping rather than a shared one.
+  func asBrowseStacksQuery(
+    direction: SceneBrowseDirection, cursor: String?, seekDate: String?, limit: Int
+  ) -> Operations.BrowseStacksApiBrowseStacksGet.Input.Query {
+    .init(
+      direction: direction.payload, cursor: cursor, seekDate: seekDate, limit: limit,
+      folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
+      tag: tag, sourceTier: sourceTier?.browseStacksPayload, tree: tree, ext: ext,
+      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+  }
+
+  /// The filter context ONE card is re-read in (`GET /api/stacks/{id}`) so its `matched_count`
+  /// answers the question the reader's current filters are asking. No paging and no direction: a
+  /// single row has neither.
+  func asStackRowQuery() -> Operations.GetStackApiStacksStackIdGet.Input.Query {
+    .init(
+      folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
+      tag: tag, sourceTier: sourceTier?.stackRowPayload, tree: tree, ext: ext,
+      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+  }
+
   /// P5's own forward-neighbour call shape — the same filter surface as `asListImagesQuery`,
   /// minus `cursor` (the endpoint has none) and with its own `limit` (the loupe's small
   /// prefetch window, never the grid's page size).
@@ -354,6 +512,20 @@ enum GridSourceTier: String, Sendable, Equatable {
   var neighboursPayload:
     Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.SourceTierPayload
   {
+    switch self {
+    case .local: return .local
+    case .archive: return .archive
+    }
+  }
+
+  var browseStacksPayload: Operations.BrowseStacksApiBrowseStacksGet.Input.Query.SourceTierPayload {
+    switch self {
+    case .local: return .local
+    case .archive: return .archive
+    }
+  }
+
+  var stackRowPayload: Operations.GetStackApiStacksStackIdGet.Input.Query.SourceTierPayload {
     switch self {
     case .local: return .local
     case .archive: return .archive

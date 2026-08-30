@@ -66,24 +66,39 @@ import Testing
 
 @Suite("Grid hit-test (pure geometry)")
 struct GridHitTestTests {
-  @Test("A point inside exactly one tile's frame resolves to that tile")
+  @Test("A point inside exactly one cell's frame resolves to that cell")
   func pointInsideOneFrame() {
-    let frames: [Int: CGRect] = [
-      1: CGRect(x: 0, y: 0, width: 100, height: 100),
-      2: CGRect(x: 100, y: 0, width: 100, height: 100),
+    let frames: [GridDisplayID: CGRect] = [
+      .image(1): CGRect(x: 0, y: 0, width: 100, height: 100),
+      .image(2): CGRect(x: 100, y: 0, width: 100, height: 100),
     ]
-    #expect(GridHitTest.imageID(at: CGPoint(x: 50, y: 50), in: frames) == 1)
-    #expect(GridHitTest.imageID(at: CGPoint(x: 150, y: 50), in: frames) == 2)
+    #expect(GridHitTest.displayID(at: CGPoint(x: 50, y: 50), in: frames) == .image(1))
+    #expect(GridHitTest.displayID(at: CGPoint(x: 150, y: 50), in: frames) == .image(2))
   }
 
   @Test("A point outside every frame resolves to nil")
   func pointOutsideEveryFrame() {
-    let frames: [Int: CGRect] = [1: CGRect(x: 0, y: 0, width: 100, height: 100)]
-    #expect(GridHitTest.imageID(at: CGPoint(x: 500, y: 500), in: frames) == nil)
+    let frames: [GridDisplayID: CGRect] = [.image(1): CGRect(x: 0, y: 0, width: 100, height: 100)]
+    #expect(GridHitTest.displayID(at: CGPoint(x: 500, y: 500), in: frames) == nil)
   }
 
   @Test("An empty frame set always resolves to nil")
   func emptyFramesResolveToNil() {
-    #expect(GridHitTest.imageID(at: .zero, in: [:]) == nil)
+    #expect(GridHitTest.displayID(at: .zero, in: [:]) == nil)
+  }
+
+  @Test(
+    "WP12: a point inside a SCENE CARD's frame resolves to .stack — an id with no image to write to"
+  )
+  func pointInsideStackCardResolvesToStack() {
+    // A card and a photograph that happen to share the number 7: a bare-Int frame map could not
+    // tell them apart at all, which is the whole reason this dictionary is typed.
+    let frames: [GridDisplayID: CGRect] = [
+      .image(7): CGRect(x: 0, y: 0, width: 100, height: 100),
+      .stack(7): CGRect(x: 100, y: 0, width: 100, height: 100),
+    ]
+    let hit = GridHitTest.displayID(at: CGPoint(x: 150, y: 50), in: frames)
+    #expect(hit == .stack(7))
+    #expect(hit?.imageID == nil)  // nothing a mark or a selection could be built from
   }
 }

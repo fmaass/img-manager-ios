@@ -172,7 +172,7 @@
         "FNumber": .init(value1: nil, value2: nil, value3: 2.8),
       ])
       return Components.Schemas.ImageDetail(
-        exif: exif, ext: "jpg", filename: "STUB_0001.jpg", folderId: 1, id: 1,
+        exif: exif, ext: "jpg", fileSize: 12_345_678, filename: "STUB_0001.jpg", folderId: 1, id: 1,
         lightroom: .init(good: true, rating: 4, sidecarPresent: true),
         mark: .init(revision: "r0", state: .pick),
         proxies: .init(additionalProperties: [:]), sourceTier: "local")

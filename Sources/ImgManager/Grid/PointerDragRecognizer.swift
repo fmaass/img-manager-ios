@@ -104,23 +104,31 @@ struct PointerGestureInstaller {
   }
 }
 
-/// Pure geometry hit-test: which tile (by image id) contains `point`, from the frames each tile
-/// reports via `TileFramePreferenceKey`. Independently testable without SwiftUI or UIKit.
+/// Pure geometry hit-test: which CELL contains `point`, from the frames each cell reports via
+/// `TileFramePreferenceKey`. Independently testable without SwiftUI or UIKit.
+///
+/// WP12: the answer is a `GridDisplayID`, never a bare image id. A collapsed scene card is a cell
+/// like any other — it has a frame and a drag crosses it — but what it reports is `.stack`, which
+/// carries no image id, so the drag lane below it has nothing to mark or select even when the
+/// pointer passes straight over the card's cover. That is the boundary as a TYPE rather than as a
+/// remembered rule at each of the gesture sites.
 enum GridHitTest {
-  static func imageID(at point: CGPoint, in frames: [Int: CGRect]) -> Int? {
+  static func displayID(at point: CGPoint, in frames: [GridDisplayID: CGRect]) -> GridDisplayID? {
     frames.first(where: { $0.value.contains(point) })?.key
   }
 }
 
-/// Each tile reports its own on-screen frame (in the grid's named coordinate space) here, so the
-/// container-level pointer-drag recognizer can hit-test its current point against every tile
-/// without any tile needing its own gesture recognizer.
+/// Each cell reports its own on-screen frame (in the grid's named coordinate space) here, so the
+/// container-level pointer-drag recognizer can hit-test its current point against every cell
+/// without any cell needing its own gesture recognizer.
 struct TileFramePreferenceKey: PreferenceKey {
   // A computed property (never a stored static var) — sidesteps Swift 6 strict-concurrency's
   // "static stored property is not concurrency-safe" diagnostic entirely, since there is no
   // shared mutable state to race on: every access just builds a fresh empty dictionary.
-  static var defaultValue: [Int: CGRect] { [:] }
-  static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+  static var defaultValue: [GridDisplayID: CGRect] { [:] }
+  static func reduce(
+    value: inout [GridDisplayID: CGRect], nextValue: () -> [GridDisplayID: CGRect]
+  ) {
     value.merge(nextValue(), uniquingKeysWith: { _, new in new })
   }
 }

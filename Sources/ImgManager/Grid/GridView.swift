@@ -13,7 +13,7 @@ struct GridView: View {
   @Bindable var store: GridStore
   @Environment(\.displayScale) private var displayScale
   @State private var paneWidth: CGFloat = 0
-  @State private var tileFrames: [Int: CGRect] = [:]
+  @State private var tileFrames: [GridDisplayID: CGRect] = [:]
 
   /// Injectable factory for the live pointer-drag gesture bridge (diff-gate round 3, blocker 2):
   /// `.live` is the only installer the running app ever uses; a test substitutes a spy so the
@@ -28,6 +28,9 @@ struct GridView: View {
       if store.pickLock.state == .latched {
         PickLockModeRow(store: store)
       }
+      if store.displayMode == .scene {
+        SceneModeRow(store: store)
+      }
       scrollArea
         .onGeometryChange(for: CGFloat.self) {
           $0.size.width
@@ -36,7 +39,7 @@ struct GridView: View {
           publishRows()
         }
         .overlay {
-          if store.images.isEmpty && !store.isLoadingPage {
+          if displayRows.isEmpty && !store.isLoadingPage {
             ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
           }
         }
@@ -44,8 +47,40 @@ struct GridView: View {
       ActionBarView(store: store)
     }
     .onChange(of: store.images) { _, _ in publishRows() }
+    .onChange(of: store.sceneRows) { _, _ in publishRows() }
+    .onChange(of: store.sceneExpanded) { _, _ in publishRows() }
+    .onChange(of: store.sceneMembers) { _, _ in publishRows() }
     .onChange(of: store.rowHeight) { _, _ in publishRows() }
     .toolbar {
+      ToolbarItem(placement: .secondaryAction) {
+        // Scene is a MODE, not a `group_by` wire value — it calls a different endpoint with a
+        // different row vocabulary. It lives in a Group menu anyway because that is where a
+        // reader looks for "how is this stream arranged", and because the two entries are
+        // mutually exclusive by construction when they share one single-select list.
+        Menu {
+          Button {
+            Task { await store.setDisplayMode(.flat) }
+          } label: {
+            if store.displayMode == .flat {
+              Label("None", systemImage: "checkmark")
+            } else {
+              Text("None")
+            }
+          }
+          Button {
+            Task { await store.setDisplayMode(.scene) }
+          } label: {
+            if store.displayMode == .scene {
+              Label("Scene", systemImage: "checkmark")
+            } else {
+              Text("Scene")
+            }
+          }
+        } label: {
+          Label("Group", systemImage: "square.stack")
+        }
+        .accessibilityIdentifier("gridGroupMenu")
+      }
       ToolbarItem(placement: .secondaryAction) {
         // Diff-gate round 2, blocker 2: the six native row-height steps must be reachable —
         // this is their one real UI call site.
@@ -77,30 +112,21 @@ struct GridView: View {
         LazyVStack(alignment: .leading, spacing: 2) {
           ForEach(packedRows.indices, id: \.self) { rowIndex in
             HStack(spacing: 2) {
-              ForEach(packedRows[rowIndex], id: \.imageID) { packed in
-                if let image = imagesByID[packed.imageID] {
-                  TileView(
-                    image: image,
-                    plan: packed.plan,
-                    isFocused: store.focusedImageID == image.id,
-                    isSelected: store.selection.members.contains(image.id),
-                    isSelectMode: store.selection.mode == .select,
-                    store: store
-                  )
-                  .background(
-                    GeometryReader { proxy in
-                      Color.clear.preference(
-                        key: TileFramePreferenceKey.self,
-                        value: [packed.imageID: proxy.frame(in: .named("gridSpace"))])
+              ForEach(packedRows[rowIndex], id: \.id) { packed in
+                if let row = rowsByID[packed.id] {
+                  cell(for: row, plan: packed.plan)
+                    .background(
+                      GeometryReader { proxy in
+                        Color.clear.preference(
+                          key: TileFramePreferenceKey.self,
+                          value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+                      }
+                    )
+                    .onTapGesture { Task { await store.tapCell(packed.id) } }
+                    .onLongPressGesture(minimumDuration: 0.5) {
+                      store.longPressCell(packed.id)
                     }
-                  )
-                  .onTapGesture { Task { await store.tapTile(image.id) } }
-                  .onLongPressGesture(minimumDuration: 0.5) {
-                    store.longPressTile(image.id)
-                  }
-                  .task(id: image.id) {
-                    await store.loadMoreIfNeeded(currentItemID: image.id)
-                  }
+                    .task(id: packed.id) { await page(from: packed.id) }
                 }
               }
             }
@@ -114,29 +140,99 @@ struct GridView: View {
     return pointerGestureInstaller.attach(
       content,
       { point in
-        guard let hitID = GridHitTest.imageID(at: point, in: tileFrames) else { return }
+        // WP12: a TYPED hit. A drag that crosses a scene card resolves to `.stack`, which the
+        // store's drag lane cannot turn into a mark or a selection entry — the card contributes
+        // nothing, exactly as it contributes nothing to `actionableImages`.
+        guard let hitID = GridHitTest.displayID(at: point, in: tileFrames) else { return }
         Task { await store.pointerDragCrossed(hitID) }
       },
       { store.beginPointerDrag() }
     )
   }
 
-  private var imagesByID: [Int: Components.Schemas.ImageSummary] {
-    Dictionary(uniqueKeysWithValues: store.images.map { ($0.id, $0) })
+  @ViewBuilder
+  private func cell(for row: SceneDisplayRow, plan: TileRenderPlan) -> some View {
+    switch row {
+    case .image(let image):
+      TileView(
+        image: image,
+        plan: plan,
+        isFocused: store.focusedImageID == image.id,
+        isSelected: store.selection.members.contains(image.id),
+        isSelectMode: store.selection.mode == .select,
+        store: store
+      )
+    case .stack(let stackRow, let isExpanded):
+      SceneCardView(row: stackRow, plan: plan, isExpanded: isExpanded, store: store)
+    }
+  }
+
+  /// Appear-driven paging, routed by the cell's own kind. Each call is a no-op in the wrong mode
+  /// (the store guards both), so the three questions — "page the flat grid", "page the scene
+  /// stream", "page THIS scene's membership" — are asked at the one place that knows a cell just
+  /// appeared, rather than needing three separate trigger mechanisms in the view.
+  private func page(from id: GridDisplayID) async {
+    if let imageID = id.imageID {
+      await store.loadMoreIfNeeded(currentItemID: imageID)
+      await store.loadMoreSceneMembersIfNeeded(afterMemberID: imageID)
+    }
+    await store.loadMoreScenesIfNeeded(currentRowID: id)
+  }
+
+  /// The one sequence this view renders, in both modes. Flat browse is the degenerate case of the
+  /// same shape — every row an `.image` — so there is ONE packing pass, ONE frame dictionary and
+  /// ONE gesture routing table rather than a parallel set per mode.
+  private var displayRows: [SceneDisplayRow] {
+    switch store.displayMode {
+    case .flat: return store.images.map(SceneDisplayRow.image)
+    case .scene: return store.sceneDisplayRows
+    }
+  }
+
+  private var rowsByID: [GridDisplayID: SceneDisplayRow] {
+    Dictionary(displayRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
 
   private var packedRows: [[PackedTilePlan]] {
-    JustifiedRowLayout.packWithTierPlan(
-      tiles: store.images.map { JustifiedTile(imageID: $0.id, aspectRatio: $0.aspectRatio ?? 1.0) },
+    let rows = displayRows
+    let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    return JustifiedRowLayout.packWithTierPlan(
+      tiles: rows.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) },
       paneWidth: paneWidth, targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale
-    ) { imageID, tier in
-      guard let image = imagesByID[imageID] else { return .missing }
-      return store.availability(for: image, tier: tier)
+    ) { displayID, tier in
+      guard let row = byID[displayID] else { return .missing }
+      switch row {
+      case .image(let image): return store.availability(for: image, tier: tier)
+      // A card draws its representative, so its pixel availability IS the representative's.
+      case .stack(let stackRow, _):
+        return store.availability(for: stackRow.representative, tier: tier)
+      }
     }
   }
 
   private func publishRows() {
-    store.rows = packedRows.map { $0.map(\.imageID) }
+    store.rows = packedRows.map { $0.map(\.id) }
+  }
+}
+
+/// Scene mode's own persistent caption row, directly above the grid — the same shape and
+/// placement `PickLockModeRow` uses for the other mode this screen can be in, so "you are in a
+/// mode, and here is the way out" reads identically either way. Never an overlay on a tile.
+struct SceneModeRow: View {
+  let store: GridStore
+
+  var body: some View {
+    HStack {
+      Label("Scene view — collapsed scenes are not selectable", systemImage: "square.stack")
+        .font(.subheadline)
+        .accessibilityIdentifier("sceneModeCaption")
+      Spacer()
+      Button("Exit") { Task { await store.setDisplayMode(.flat) } }
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .padding(.horizontal)
+    .padding(.vertical, 8)
+    .background(.thinMaterial)
   }
 }
 

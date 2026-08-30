@@ -82,6 +82,23 @@ struct NullableSurvivalTests {
     #expect(Bool(true))  // reaching here means every keypath above type-checked
   }
 
+  /// The stack-browse document (vendored at img-manager 5615fd9) adds three more properties
+  /// whose loss would be silent rather than loud, so they are named here individually — the
+  /// same reasoning that put `ImagePage.next_cursor` above. `anchor_taken_at` is the scene's
+  /// stored place in capture order and is the ONLY correct key for date sectioning (the cover
+  /// moves on a mark, the anchor does not); a dropped Optional here would not fail to compile
+  /// at the call site, it would silently section scenes under the wrong day. The two
+  /// `next_cursor`s are the paging terminators for the two new paged responses: dropped, the
+  /// client would page forever or stop after one page depending on how the absence read.
+  @Test("Stack-browse nullable properties survive generation (anchor + both next_cursors)")
+  func stackBrowseNullableProperties() {
+    let _: WritableKeyPath<Components.Schemas.StackBrowseStackRow, Foundation.Date?> =
+      \.anchorTakenAt
+    let _: WritableKeyPath<Components.Schemas.StackBrowsePage, Swift.String?> = \.nextCursor
+    let _: WritableKeyPath<Components.Schemas.StackMemberPage, Swift.String?> = \.nextCursor
+    #expect(Bool(true))  // reaching here means every keypath above type-checked
+  }
+
   @Test("ImagePage round-trips a present and an absent next_cursor through Codable")
   func imagePageRoundTrip() throws {
     let withCursor = Components.Schemas.ImagePage(

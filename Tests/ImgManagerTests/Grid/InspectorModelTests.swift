@@ -112,7 +112,7 @@ struct InspectorModelTests {
     // declaration (source of truth) simply has no such property to reflect in the first
     // place; this mirrors that fact at runtime over a real instance.
     let detail = Components.Schemas.ImageDetail(
-      ext: "jpg", filename: "a.jpg", folderId: 1, id: 1,
+      ext: "jpg", fileSize: 4_096, filename: "a.jpg", folderId: 1, id: 1,
       lightroom: .init(sidecarPresent: false), mark: .init(revision: "r1"),
       proxies: .init(additionalProperties: [:]), sourceTier: "local")
     let info = InspectorInfo.build(from: detail)

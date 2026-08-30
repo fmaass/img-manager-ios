@@ -85,19 +85,21 @@ struct GridViewPointerGestureWiringTests {
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
 
     let callsBefore = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
-    await store.pointerDragCrossed(1)  // first crossing of id 1 in this drag session -- applies
+    // first crossing of id 1 in this drag session -- applies
+    await store.pointerDragCrossed(.image(1))
     let callsAfterFirstCross = await transport.callCount(
       Operations.SetMarkStateApiMarksStatePost.id)
     #expect(callsAfterFirstCross == callsBefore + 1)
 
-    await store.pointerDragCrossed(1)  // re-crossing the SAME id, SAME session -- deduped
+    await store.pointerDragCrossed(.image(1))  // re-crossing the SAME id, SAME session -- deduped
     let callsAfterReCross = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
     #expect(callsAfterReCross == callsAfterFirstCross)  // no new call: dedup is still in effect
 
     capturedOnEnded?()  // must be the real store.beginPointerDrag(), starting a FRESH session
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])))
-    await store.pointerDragCrossed(1)  // same id, but a NEW session -- not deduped this time
+    // same id, but a NEW session -- not deduped this time
+    await store.pointerDragCrossed(.image(1))
     let callsAfterReset = await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id)
     #expect(callsAfterReset == callsAfterReCross + 1)
   }
