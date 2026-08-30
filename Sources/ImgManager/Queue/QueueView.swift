@@ -4,8 +4,10 @@ import SwiftUI
 /// P7 (WP8, IMGMGR-116): the work-queue home. Six server-derived readiness sections, rendered
 /// straight from `FolderSummary.readiness`/`nothingLeftUnmarked` — NEVER classified client-side
 /// (Q4 drift hazards: this view recomputes nothing). Compact: this IS the launch surface, a
-/// full-screen list. Regular: this IS the sidebar column, with the folder/tier tree collapsed
-/// below it (D13) via `treeSection`.
+/// full-screen list. Regular: this IS the sidebar column. BOTH carry the folder/tier tree below
+/// the readiness sections (D13) via `treeSection` — collapsed on Regular, opened on Compact
+/// (P6/IMGMGR-216: the tree used to be Regular-only, which left the phone with no browse surface
+/// at all beyond its queue cards).
 ///
 /// 396-item strategy (Q4): `List` gives lazy off-screen row instantiation for free — a collapsed
 /// section's rows, and any section's off-screen rows, are simply never built. There is no
@@ -16,8 +18,9 @@ struct QueueView: View {
   let heroLoader: HeroThumbnailLoader
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier?) -> Void
-  /// nil on Compact (Q's iPad-only "Folders" disclosure never appears there).
-  let treeSection: FolderTreeSection?
+  /// On BOTH idioms since P6 (IMGMGR-216), and non-optional on purpose: the `nil`-on-Compact
+  /// branch that left the phone without a browse surface cannot return without a type change.
+  let treeSection: FolderTreeSection
 
   @State private var expandedSections: Set<ReadinessSection> = Set(
     ReadinessSection.allCases.filter(\.isDefaultExpanded))
@@ -78,12 +81,12 @@ struct QueueView: View {
           }
         }
       }
-      if let treeSection {
-        // Q5: "One collapsed 'Folders' disclosure" — `FolderTreeSection` IS that one
-        // disclosure (its own DisclosureGroup titled "Folders"), so this Section carries no
-        // header of its own (avoiding a redundant second "Folders" label).
-        Section { treeSection }
-      }
+      // Q5: "One collapsed 'Folders' disclosure" — `FolderTreeSection` IS that one disclosure
+      // (its own DisclosureGroup titled "Folders"), so this Section carries no header of its own
+      // (avoiding a redundant second "Folders" label). It stays BELOW the readiness sections on
+      // both idioms: the queue is the launch surface and the tree is the secondary way in, never
+      // a competitor to it.
+      Section { treeSection }
     }
     .refreshable { await queueStore.refresh() }
     .overlay(alignment: .top) {

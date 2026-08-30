@@ -281,10 +281,14 @@ struct RootView: View {
 
   /// WP8 P7 (advisory 1 / Q's launch-surface change): this IS the queue now — Compact's launch
   /// surface (a full-screen list) and Regular's persistent sidebar column, with the pre-P7
-  /// shoot-tree List folded into `FolderTreeSection` as a secondary, collapsed disclosure
-  /// (Regular only; nil on Compact). The row-navigation discipline this replaces (selection-
-  /// bound List + `.simultaneousGesture`, never a bare `Button`, never `onChange`) is preserved
-  /// verbatim inside `QueueView`/`FolderTreeSection` themselves — see their own doc comments.
+  /// shoot-tree List folded into `FolderTreeSection` as a secondary disclosure below it. P6
+  /// (IMGMGR-216) deleted the `layoutMode == .compact ? nil` ternary that used to sit on
+  /// `treeSection` and gave the phone no browse surface: the tree ships on both idioms, from one
+  /// component, and the only mode-dependent thing left about it — whether the disclosure starts
+  /// open — is decided in `FolderTreePresentation`. The row-navigation discipline this replaces
+  /// (selection-bound List + `.simultaneousGesture`, never a bare `Button`, never `onChange`) is
+  /// preserved verbatim inside `QueueView`/`FolderTreeSection` themselves — see their own doc
+  /// comments.
   private var sidebar: some View {
     Group {
       // Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides
@@ -301,13 +305,12 @@ struct RootView: View {
             selectedFolderID = folderID
             Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
           },
-          treeSection: layoutMode == .compact
-            ? nil
-            : FolderTreeSection(
-              gridService: gridService, selectedFolderID: $selectedFolderID,
-              onSelect: { folderID, sourceTier in
-                Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
-              })
+          treeSection: FolderTreeSection(
+            gridService: gridService, layoutMode: layoutMode,
+            selectedFolderID: $selectedFolderID,
+            onSelect: { folderID, sourceTier in
+              Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
+            })
         )
       }
     }
