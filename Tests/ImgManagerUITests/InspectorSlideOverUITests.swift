@@ -111,7 +111,8 @@ final class InspectorSlideOverUITests: XCTestCase {
     // The probe's record. `print` (not only an activity) because the gate copies back the
     // xcodebuild log, which is where this has to be readable afterwards.
     print(
-      "P10-PROBE \(orientationName): window=\(app.frame.size) queueBesideGrid=\(queueIsBesideTheGrid) "
+      "P10-PROBE \(orientationName): window=\(app.frame.size) "
+        + "queueBesideGrid=\(queueIsBesideTheGrid) "
         + "inspectorAtLaunch=\(inspectorAlreadyOnScreen) chromeInfo=\(hasChromeInfo) "
         + "resolvedLayout=\(resolved.rawValue)")
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-atLaunch")
