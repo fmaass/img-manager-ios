@@ -474,7 +474,10 @@ enum ActionBarMarkControl: CaseIterable {
 struct ActionBarView: View {
   @Bindable var store: GridStore
 
-  /// Widest tier first, and the LAYOUT SYSTEM picks — not a measurement this view took.
+  /// Widest tier first — straight out of `ActionBarMetrics.tiers` — and the LAYOUT SYSTEM
+  /// picks, not a measurement this view took. Every per-tier difference (its gap, its padding,
+  /// whether Clear folds into the More menu) is data on the tier, so `bar(_:)` renders any
+  /// entry of that list and there is nothing left for a hardcoded child to drift from.
   ///
   /// Two measured attempts failed the same way. A bar that overflows its column reports its own
   /// overflowing width, and plumbing `GridView`'s pane width in changed nothing: the gate's
@@ -485,9 +488,12 @@ struct ActionBarView: View {
   /// for the bar to paint wider than what it was handed.
   var body: some View {
     ViewThatFits(in: .horizontal) {
-      bar(ActionBarMetrics.roomy)
-      bar(ActionBarMetrics.tight)
-      bar(ActionBarMetrics.folded)
+      // Derived FROM the list, never a hand-written copy of it beside the list: adding,
+      // removing or reordering a tier changes what renders, by construction. Keyed by the
+      // tier's own name, never by index (IMGMGR-210).
+      ForEach(ActionBarMetrics.tiers, id: \.name) { tier in
+        bar(tier)
+      }
     }
     .frame(maxWidth: .infinity)
     .background(.bar)

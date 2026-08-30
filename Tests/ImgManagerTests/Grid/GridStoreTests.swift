@@ -2354,6 +2354,17 @@ struct ActionBarMetricsTests {
         ActionBarMetrics.controlCount, ActionBarMetrics.controlCount,
         ActionBarMetrics.foldedControlCount,
       ])
+    // The renderer branches on `foldsClearIntoMore` while the arithmetic counts `controlCount`:
+    // this is the one place those two could drift, so it is asserted rather than assumed.
+    #expect(
+      ActionBarMetrics.tiers.allSatisfy {
+        $0.controlCount
+          == ($0.foldsClearIntoMore
+            ? ActionBarMetrics.foldedControlCount : ActionBarMetrics.controlCount)
+      })
+    // Names are the ForEach identity `ActionBarView` renders the list with — they must be
+    // unique or a tier would silently replace another in the rendered candidates.
+    #expect(Set(ActionBarMetrics.tiers.map(\.name)).count == ActionBarMetrics.tiers.count)
   }
 
   @Test("A seventh control would not fit the roomy tier — the guard covers the count too")
