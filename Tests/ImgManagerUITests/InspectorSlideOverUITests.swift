@@ -4,18 +4,20 @@ import XCTest
 /// WP13 P10 (IMGMGR-219), on the real simulator surface. Two jobs, one code path:
 ///
 /// 1. **The phase's live probe** — which real configurations resolve to which layout mode. The
-///    classification uses only facts INDEPENDENT of the inspector: whether the split view is
-///    showing two panes at once (queue card AND grid control both hittable) splits Compact from
-///    Regular, and the measured window width against the resolver's own Regular-3 pin splits
-///    Regular-2 from Regular-3. It deliberately does NOT read the "Folders" disclosure — P6
+///    classification uses only facts INDEPENDENT of the inspector, in this order: the measured
+///    window width against the resolver's own Regular-3 pin identifies Regular-3, and below that
+///    pin the queue's presence beside the grid separates Regular-2 from Compact. The order
+///    matters — at Regular-3 the queue is legitimately off screen (see the note at the
+///    classification itself), so a sidebar-first split would call a 1376 pt iPad "Compact".
+///    It deliberately does NOT read the "Folders" disclosure — P6
 ///    (IMGMGR-216) gives Compact that same section, so its presence stops meaning "Regular".
 ///    Width alone cannot make the Compact/Regular split either: the measured anchors are 874 pt
 ///    Compact (iPhone landscape) and 1032 pt Regular-2 (iPad portrait), while a genuine iPad
 ///    half-window is Regular from ~667 pt up — no width floor separates those. Production makes
 ///    the same call for the same reason: `horizontalSizeClass` gates B2 and `LayoutMode.swift`'s
-///    B2 section records why reimplementing it as a width would be a guess. The rendered column
-///    count is that trait's visible consequence, which is why it is the input here.
-///    The inspector's presence is never an input — it is what these
+///    B2 section records why reimplementing it as a width would be a guess. The queue beside the
+///    grid is that trait's visible consequence in the sub-pin range, which is why it is the input
+///    there and only there. The inspector's presence is never an input — it is what these
 ///    tests are here to judge, so using it would let a wrong presentation relabel the layout and
 ///    pass (diff-gate round 1, blocking finding 1). Never a device idiom — this target is inside
 ///    the gate's device-idiom absence grep like every other source directory.
@@ -76,25 +78,41 @@ final class InspectorSlideOverUITests: XCTestCase {
     let chromeInfo = app.navigationBars.buttons
       .matching(NSPredicate(format: "label BEGINSWITH 'Info'")).firstMatch
 
-    // Two panes on screen AT ONCE — the visible consequence of a regular horizontal size class.
-    // Compact's split view is collapsed, so its sidebar and its grid are never both hittable.
-    let panesSideBySide = queueCard.isHittable && dislike.isHittable
+    let width = app.frame.size.width
+
+    // The grid is on screen in EVERY layout, so it is the one input whose absence would make the
+    // sidebar reading below meaningless rather than informative. Asserted first, so that
+    // `queueIsBesideTheGrid` is unambiguously a statement about the QUEUE.
+    XCTAssertTrue(
+      dislike.isHittable,
+      "The grid must be reachable in every layout — a pane reading taken while the grid itself "
+        + "is missing classifies nothing.")
+
+    // Is the QUEUE on screen beside the grid? True only at Regular-2.
+    let queueIsBesideTheGrid = queueCard.isHittable && dislike.isHittable
     // Read, but NEVER used to classify — asserted per branch below instead.
     let inspectorAlreadyOnScreen = statsSegment.exists
     let hasChromeInfo = chromeInfo.exists
-    let width = app.frame.size.width
+
+    // Width FIRST, sidebar second — and only below the pin. Integration finding on merged main
+    // 428694d: at Regular-3 the queue is legitimately NOT on screen. The app asks for
+    // `columnVisibility == .all`, but under `.prominentDetail` the OS still renders only
+    // content + detail at these widths — exactly what `LayoutMode.swift`'s Pass 3 recorded (43
+    // samples, 672–1376 pt, rendered pane count constant at 2, "sidebar never shown"). The
+    // landscape probe proves it directly: 1376 pt with the permanent inspector up
+    // (inspectorAtLaunch=true, chromeInfo=false) and no queue card in the hierarchy. So a
+    // sidebar-first split mis-reads Regular-3 as Compact; the sidebar only ever separates
+    // Compact from Regular-2, which is the one range where the width pin cannot.
     let resolved: ResolvedLayout =
-      !panesSideBySide ? .compact : (width >= Self.regular3WidthThreshold ? .regular3 : .regular2)
-    // The two inputs must agree: nothing at or above the Regular-3 pin can be showing one pane.
-    XCTAssertFalse(
-      !panesSideBySide && width >= Self.regular3WidthThreshold,
-      "Contradictory layout inputs: \(width) pt is Regular-3 width but only one pane is on "
-        + "screen. Classification would be wrong either way — fix the app or this probe.")
+      width >= Self.regular3WidthThreshold
+      ? .regular3
+      : (queueIsBesideTheGrid ? .regular2 : .compact)
 
     // The probe's record. `print` (not only an activity) because the gate copies back the
     // xcodebuild log, which is where this has to be readable afterwards.
     print(
-      "P10-PROBE \(orientationName): window=\(app.frame.size) twoPanes=\(panesSideBySide) "
+      "P10-PROBE \(orientationName): window=\(app.frame.size) "
+        + "queueBesideGrid=\(queueIsBesideTheGrid) "
         + "inspectorAtLaunch=\(inspectorAlreadyOnScreen) chromeInfo=\(hasChromeInfo) "
         + "resolvedLayout=\(resolved.rawValue)")
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-atLaunch")
