@@ -14,6 +14,22 @@ import XCTest
 /// Compact's options row or Regular's `.primaryAction` toolbar.
 final class ViewOptionsScreenshotUITests: XCTestCase {
 
+  /// PORTRAIT, pinned. Device orientation is simulator-global and survives across test
+  /// classes: `RegularThreeScreenshotUITests` rotates to `.landscapeLeft` and sorts before this
+  /// class, so the 21:14 gate run launched the phone leg at 874x402 — landscape — and every
+  /// geometry assumption here (what fits on screen, how far a drag travels) was made against
+  /// somebody else's rotation. Set on the way in AND restored on the way out, so this class
+  /// neither inherits nor exports an orientation.
+  override func setUp() {
+    super.setUp()
+    XCUIDevice.shared.orientation = .portrait
+  }
+
+  override func tearDown() {
+    XCUIDevice.shared.orientation = .portrait
+    super.tearDown()
+  }
+
   func testGroupAndZoomAreOnAPrimarySurface() throws {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid"]
@@ -142,19 +158,14 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
 
     // A `List` only materialises the rows it has laid out, so the sheet is TRAVERSED and every
     // row read while it happens to be on screen — never "scroll until row N appears", which is
-    // what the 20:50 gate run caught: one momentum swipe carried `dislike` and `clear` past the
-    // viewport, and a per-row search that has already overshot can only burn its budget going
-    // further down (13 of 15 found, the two skipped ones stranded above). Slow swipes to keep
-    // each step short, a harvest between every one of them, and a second pass back UP for
-    // anything the downward pass still flew over.
-    let scroller: XCUIElement
-    if app.collectionViews.firstMatch.exists {
-      scroller = app.collectionViews.firstMatch
-    } else if app.tables.firstMatch.exists {
-      scroller = app.tables.firstMatch
-    } else {
-      scroller = app
-    }
+    // what the 20:50 gate run caught: one momentum drag carried `dislike` and `clear` past the
+    // viewport, and a per-row search that has already overshot can only burn its budget moving
+    // further away from them.
+    //
+    // Each step is a press-drag BETWEEN TWO POINTS INSIDE A ROW, never a view-level
+    // `swipeUp`/`swipeDown`: on a presented sheet those act as grabber drags and close it, which
+    // is what the 21:14 run hit (by the reverse pass the sheet's collection view was gone). The
+    // drag is slow and ends in a hold, so it stops where it is put instead of coasting.
     let rowQuery = app.descendants(matching: .any).matching(
       NSPredicate(format: "identifier BEGINSWITH %@", "shortcutHelpRow."))
     var rendered: [String: String] = [:]
@@ -166,29 +177,51 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
         }
       }
     }
+    func dragInsideARow(by dy: CGFloat) -> Bool {
+      guard let anchor = rowQuery.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
+        return false
+      }
+      let start = anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+      start.press(
+        forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: dy)),
+        withVelocity: .slow, thenHoldForDuration: 0.2)
+      return true
+    }
 
     guard let lastRow = expected.last else {
       XCTFail("The expected-row list is empty — nothing to traverse to.")
       return
     }
     harvestVisibleRows()
-    var downSwipes = 0
-    while downSwipes < 20 && (rendered[lastRow] == nil || rendered.count < expected.count) {
-      scroller.swipeUp(velocity: .slow)
-      downSwipes += 1
+    var forwardSteps = 0
+    while forwardSteps < 20 && (rendered[lastRow] == nil || rendered.count < expected.count) {
+      guard dragInsideARow(by: -220) else { break }
+      forwardSteps += 1
+      guard helpBar.exists else {
+        return XCTFail(
+          "The traverse dismissed the sheet: it was gone after \(forwardSteps) forward "
+            + "steps, with \(rendered.count) of \(expected.count) rows collected.")
+      }
       harvestVisibleRows()
     }
     // The end of the sheet was reached — that is what makes "found N of 15" a statement about
-    // the SHEET rather than about how far the scroll happened to get.
+    // the SHEET rather than about how far the traverse happened to get.
     XCTAssertNotNil(
       rendered[lastRow],
-      "The traverse never reached the sheet's last row (\(lastRow)) in \(downSwipes) swipes; "
+      "The traverse never reached the sheet's last row (\(lastRow)) in \(forwardSteps) steps; "
         + "found \(rendered.count) of \(expected.count): \(rendered.keys.sorted()).")
 
-    var upSwipes = 0
-    while upSwipes < 20 && rendered.count < expected.count {
-      scroller.swipeDown(velocity: .slow)
-      upSwipes += 1
+    // Only if the forward pass actually skipped something — on a destination that renders the
+    // whole sheet at once neither loop runs at all.
+    var reverseSteps = 0
+    while reverseSteps < 20 && rendered.count < expected.count {
+      guard dragInsideARow(by: 220) else { break }
+      reverseSteps += 1
+      guard helpBar.exists else {
+        return XCTFail(
+          "The traverse dismissed the sheet on the way back: gone after \(reverseSteps) "
+            + "reverse steps, with \(rendered.count) of \(expected.count) rows collected.")
+      }
       harvestVisibleRows()
     }
     let missing = expected.filter { rendered[$0] == nil }
@@ -202,8 +235,8 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     XCTAssertEqual(
       missing, [],
       "Rows the sheet never rendered, in a traverse that DID reach its last row. Opened via "
-        + "\(openedVia); found \(rendered.count) of \(expected.count) in \(downSwipes) swipes "
-        + "down and \(upSwipes) back up.")
+        + "\(openedVia); found \(rendered.count) of \(expected.count) in \(forwardSteps) "
+        + "forward steps and \(reverseSteps) back.")
 
     // The rows a reader came for, asserted on the RENDERED text rather than on the model that
     // produced it: the ⌘ discovery half is the whole point of the sheet.
@@ -221,7 +254,7 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
 
     XCTContext.runActivity(
       named: "Opened via \(openedVia) · ⌘/ reached the app: \(openedByKeyEquivalent) · "
-        + "\(rendered.count) rendered rows in \(downSwipes)+\(upSwipes) swipes · captured "
+        + "\(rendered.count) rendered rows in \(forwardSteps)+\(reverseSteps) steps · captured "
         + "\(opened.image.size)"
     ) { _ in }
   }
