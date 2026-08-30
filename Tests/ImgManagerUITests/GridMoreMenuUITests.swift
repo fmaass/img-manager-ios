@@ -59,6 +59,10 @@ final class GridMoreMenuUITests: XCTestCase {
 
   func testMoreMenuShowsTheDecidedSet() throws {
     let app = launchedApp()
+    // Read BEFORE presenting: the More control publishes which `ActionBarMetrics` tier
+    // `ViewThatFits` actually chose, so this test states the width fact instead of inferring it.
+    let tier = (app.descendants(matching: .any)["gridMoreMenu"].value as? String) ?? ""
+    let folded = tier.contains("folded")
     openMoreMenu(app)
 
     // EXACTLY the decided set, read off the rendered menu by the identifiers the entries ship
@@ -77,16 +81,27 @@ final class GridMoreMenuUITests: XCTestCase {
     }
 
     // The Clear row's IDENTITY depends on whether this column folded the bar's Clear into the
-    // menu (WP13 P1), which is a width fact — so resolve it rather than assume the surface, and
-    // require EXACTLY ONE of the two, never both (that would be two Clear rows).
-    let menuClear = app.descendants(matching: .any)["gridMoreMenu.more.clearMark"]
-    let foldedClear = app.descendants(matching: .any)["gridClearButton"]
-    let hasMenuClear = menuClear.waitForExistence(timeout: 5)
-    let hasFoldedClear = foldedClear.exists
-    XCTAssertTrue(
-      hasMenuClear != hasFoldedClear,
-      "Expected exactly one Clear row in the More menu — found menu-clear=\(hasMenuClear), "
-        + "folded-clear=\(hasFoldedClear).")
+    // menu (WP13 P1) — a width fact, so the test READS the tier off P1's own fixture probe (the
+    // More control stamps `tier=<name>` into its accessibility value under -UITestStubGrid)
+    // rather than assuming a surface.
+    //
+    // The first version of this check compared "a `gridMoreMenu.more.clearMark` exists" against
+    // "a `gridClearButton` exists" app-wide and required exactly one — which FAILED on the
+    // 01:24 gate run reporting `menu-clear=true, folded-clear=true`. That was the assertion
+    // being wrong, not the app: unfolded, `gridClearButton` is the BAR's Clear control, which is
+    // still in the hierarchy behind the presented menu. The invariant that actually matters is
+    // below, and it holds on both sides of the fold.
+    let clearButtons = app.descendants(matching: .any).matching(identifier: "gridClearButton")
+    XCTAssertEqual(
+      clearButtons.count, 1,
+      "Exactly one 'gridClearButton' may exist at a time — the BAR's when the bar is wide "
+        + "enough, the MENU row's when it folds, never both (tier=\(tier)).")
+
+    let menuClearExists = app.descendants(matching: .any)["gridMoreMenu.more.clearMark"].exists
+    XCTAssertEqual(
+      menuClearExists, !folded,
+      "The menu's own Clear row must be present exactly when the bar did NOT fold its Clear "
+        + "into the menu (tier=\(tier), folded=\(folded), menu-clear=\(menuClearExists)).")
 
     let screenshot = XCUIScreen.main.screenshot()
     let attachment = XCTAttachment(screenshot: screenshot)
