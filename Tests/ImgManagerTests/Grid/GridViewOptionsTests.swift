@@ -79,6 +79,51 @@ struct GridViewOptionsTests {
     #expect(store.isShortcutHelpPresented == true)
   }
 
+  @Test("Help opens THROUGH each declaration's own run closure — both `?` and ⌘/")
+  func helpDeclarationsDispatchThroughTheirOwnRunClosures() {
+    // Diff-gate r1 blocker 2: every retained test called `keyboardActions.showShortcutHelp()`
+    // directly, so replacing these declarations' `run` closures with no-ops left the suite
+    // green — the menu entry the user actually presses was never exercised. This test invokes
+    // the DECLARATION, exactly as `AppCommands.entry(_:)`'s Button does.
+    for id in ["view.help.question", "view.help.command"] {
+      let store = makeStore()
+      let declaration = AppCommands.declarations.first { $0.id == id }
+      #expect(declaration != nil, "no menu declaration with id \(id)")
+      #expect(store.isShortcutHelpPresented == false)
+      declaration?.run(store.keyboardActions)
+      #expect(store.isShortcutHelpPresented == true, "\(id)'s run closure did not raise the sheet")
+    }
+  }
+
+  @Test("Each ⌘1…⌘6 declaration sets its OWN step through its own run closure")
+  func zoomDeclarationsDispatchThroughTheirOwnRunClosures() {
+    let store = makeStore()
+    let actions = store.keyboardActions
+    let zoom = AppCommands.declarations.filter { $0.shortcut == .zoomStep }
+    #expect(zoom.count == GridRowHeight.allCases.count)
+    for (step, declaration) in zip(GridRowHeight.allCases, zoom) {
+      declaration.run(actions)
+      #expect(store.rowHeight == step, "\(declaration.id) did not set \(step)")
+    }
+  }
+
+  @Test("⌃⌘1 / ⌃⌘2 set the arrangement through their own run closures")
+  func groupDeclarationsDispatchThroughTheirOwnRunClosures() async {
+    let store = makeStore()
+    let actions = store.keyboardActions
+    #expect(store.displayMode == .flat)
+
+    let scene = AppCommands.declarations.first { $0.id == "view.group.scene" }
+    scene?.run(actions)
+    await waitFor { store.displayMode == .scene }
+    #expect(store.displayMode == .scene, "the Group: Scene declaration did not switch modes")
+
+    let none = AppCommands.declarations.first { $0.id == "view.group.none" }
+    none?.run(actions)
+    await waitFor { store.displayMode == .flat }
+    #expect(store.displayMode == .flat, "the Group: None declaration did not switch modes")
+  }
+
   /// The two display-mode closures hand off to an async `GridStore.setDisplayMode`, so the
   /// assertion has to outlast the hop. Bounded — a condition that never becomes true fails the
   /// following `#expect` rather than hanging the suite.
