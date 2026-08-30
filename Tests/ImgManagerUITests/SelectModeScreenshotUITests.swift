@@ -25,17 +25,24 @@ final class SelectModeScreenshotUITests: XCTestCase {
       selectCommand.waitForExistence(timeout: 10), "The More menu has no Select command.")
     selectCommand.tap()
 
-    let tiles = app.descendants(matching: .any).matching(identifier: "gridTile")
-    XCTAssertTrue(
-      tiles.element(boundBy: 0).waitForExistence(timeout: 10), "No grid tiles to select.")
-    tiles.element(boundBy: 0).tap()
-    tiles.element(boundBy: 1).tap()
+    // Two DIFFERENT photographs, addressed by the fixture's own ids (`DebugStubTransport`
+    // serves ids 1...12) rather than by bound index: one tile surfaces as several
+    // accessibility elements, so an index-addressed pair can be the same photograph twice.
+    let firstTile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
+    let secondTile = app.descendants(matching: .any).matching(identifier: "gridTile-2").firstMatch
+    XCTAssertTrue(firstTile.waitForExistence(timeout: 10), "No grid tiles to select.")
 
     let caption = app.staticTexts["selectModeCaption"]
     XCTAssertTrue(
       caption.waitForExistence(timeout: 10),
       "Select mode is active but no mode row is on screen — the only way out would be the "
         + "More menu again, which is the discoverability defect this phase closes.")
+    XCTAssertEqual(caption.label, "0 selected", "An explicit Select starts empty.")
+
+    firstTile.tap()
+    XCTAssertEqual(caption.label, "1 selected", "Tapping a tile in Select mode must select it.")
+    XCTAssertTrue(secondTile.waitForExistence(timeout: 5), "The second fixture tile is missing.")
+    secondTile.tap()
 
     // Attached BEFORE the assertions below, so the run keeps its visual evidence whatever the
     // verdict is — a failing capture is the more interesting one.
