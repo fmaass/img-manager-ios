@@ -170,12 +170,20 @@ final class InspectorSlideOverUITests: XCTestCase {
     let clearFilters = app.buttons["inspectorClearFilters"]
     XCTAssertFalse(clearFilters.exists, "No facet filter should be active at launch.")
 
-    // The stub serves exactly one mark facet — value "pick", count 3 (`DebugStubTransport`). The
-    // `photos` exclusion keeps a queue card ("40 photos · 10 picked") out of the match; the
-    // failure path dumps every button label so a miss is diagnosable from the gate log instead of
-    // being a mystery on the next round.
+    // The stub serves exactly one mark facet — value "pick", count 3 (`DebugStubTransport`), and
+    // `InspectorFacetField.displayValue` passes a mark value through verbatim, so the row's label
+    // starts with a LOWERCASE "pick".
+    //
+    // Case-sensitive on purpose. The previous `BEGINSWITH[c]` was case-INSENSITIVE and therefore
+    // also matched the grid action bar's "Pick" button, which `.firstMatch` reached first: the
+    // gate log for 9e162d6 shows the tap landing on the `hand.thumbsup` Button, so the test
+    // applied a mark instead of a filter and nothing was ever filtered. The action bar is "Pick",
+    // the facet row is "pick"; case alone separates them, and the exclusions below make the
+    // separation explicit rather than incidental.
     let markRow = app.buttons
-      .matching(NSPredicate(format: "label BEGINSWITH[c] 'pick' AND NOT (label CONTAINS 'photos')"))
+      .matching(
+        NSPredicate(
+          format: "label BEGINSWITH 'pick' AND label != 'Pick' AND NOT (label CONTAINS 'photos')"))
       .firstMatch
     guard markRow.waitForExistence(timeout: 10) else {
       // An explicit closure, never `map(\.label)`: under Swift 6 `XCUIElement.label` is
@@ -185,12 +193,21 @@ final class InspectorSlideOverUITests: XCTestCase {
         "The Stats section never offered the stub's 'pick' mark facet row. Buttons seen: \(labels)")
       return
     }
+    // Name what is about to be tapped, so a future mismatch is legible in the log rather than
+    // silently marking a photograph again.
+    let markRowLabel = markRow.label
+    XCTAssertTrue(
+      markRowLabel.hasPrefix("pick"),
+      "Resolved the wrong element as the mark facet row: \(markRowLabel).")
     markRow.tap()
 
     // The store actually applied it: the Clear row only renders while activeCount > 0.
-    XCTAssertTrue(
-      clearFilters.waitForExistence(timeout: 10),
-      "Tapping the facet row did not put the production query into a filtered state.")
+    if !clearFilters.waitForExistence(timeout: 10) {
+      let labels = app.buttons.allElementsBoundByIndex.map { $0.label }
+      XCTFail(
+        "Tapping the facet row did not put the production query into a filtered state. Tapped "
+          + "\(markRowLabel); buttons now: \(labels)")
+    }
 
     // ...and THAT is what the production control must now be reporting.
     XCTAssertTrue(
