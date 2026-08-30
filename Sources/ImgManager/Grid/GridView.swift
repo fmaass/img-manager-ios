@@ -51,7 +51,10 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
-      ActionBarView(store: store)
+      // The bar is told the COLUMN's width; it must not measure its own. `scrollArea`'s
+      // `onGeometryChange` above reports the pane the grid is laid out in (it fills that pane
+      // and never overflows it, which is why the same value already drives row packing).
+      ActionBarView(store: store, availableWidth: paneWidth)
     }
     .onChange(of: store.images) { _, _ in publishRows() }
     .onChange(of: store.sceneRows) { _, _ in publishRows() }
@@ -353,10 +356,17 @@ enum ActionBarMetrics {
   /// (iPhone 17 Pro, 402 pt portrait).
   static let narrowestCompactWidth: CGFloat = 402
   /// The narrowest WINDOW that resolves Regular-3, taken from the layout's own constant rather
-  /// than restated here. The app pins no column widths, so the grid column's share of this is
-  /// system-chosen; `sixControlFloor` is checked against a conservative third of it, and the
-  /// runtime tiers below cover anything narrower still.
+  /// than restated here. The app pins no COLUMN widths — `NavigationSplitView` sizes them —
+  /// so the grid column's share of this window is system-chosen.
   static let narrowestRegular3Window: CGFloat = LayoutResolver.regular3Threshold
+
+  /// The grid column's actual width at Regular-3, MEASURED rather than guessed: the gate's
+  /// landscape geometry attachment (GREEN-10, iPad Pro 13" landscape, window 1376×1032) shows
+  /// the bar's six controls laid out to 374 pt with `Pick`'s frame at x = -13.5. A centred
+  /// 374-pt row whose left edge lands at -29.5 (16 pt of padding before Pick) sits in a column
+  /// of 374 - 2×29.5 = 315 pt. Recorded so the tier this column selects is a test, not a
+  /// hypothesis; the runtime measurement is what the bar actually uses.
+  static let measuredRegular3GridColumn: CGFloat = 315
   /// Fold item 4: every control keeps its OWN — never the row's — 44×44 hit region. This is
   /// the one number no tier is allowed to shrink.
   static let minimumControlSide: CGFloat = 44
@@ -455,12 +465,24 @@ enum ActionBarMarkControl: CaseIterable {
 /// frame is never applied to the containing `HStack` alone.
 struct ActionBarView: View {
   @Bindable var store: GridStore
-  /// The width the bar is actually GIVEN, measured rather than assumed. The Compact width is
-  /// only the initial value: the Regular-3 grid column is the middle pane of a split this app
-  /// does not size, and betting on a number for it is what turned the iPad leg red.
-  @State private var paneWidth: CGFloat = ActionBarMetrics.narrowestCompactWidth
+  /// The width of the COLUMN the bar sits in, handed down by `GridView` from the same
+  /// measurement that drives row packing.
+  ///
+  /// The bar cannot measure this itself, which is what the previous attempt got wrong: a bar
+  /// that overflows its column reports its OWN width, not the column's. The gate's landscape
+  /// geometry dump is the proof — six controls laid out to 374 pt inside a ~315 pt Regular-3
+  /// grid column, centred, so `Pick` came out at x = -13.5 (off the window's left edge, hence
+  /// "no suggested hit points based on element frame") while a self-measurement would have read
+  /// the 374 and happily concluded everything fit.
+  var availableWidth: CGFloat
 
-  private var layout: ActionBarLayout { ActionBarMetrics.layout(forWidth: paneWidth) }
+  /// A width of zero means "not measured yet", not "no room": the roomy tier is what the bar
+  /// rendered before any of this, and the first geometry pass corrects it in the same
+  /// transaction.
+  private var layout: ActionBarLayout {
+    ActionBarMetrics.layout(
+      forWidth: availableWidth > 0 ? availableWidth : ActionBarMetrics.requiredWidth())
+  }
 
   var body: some View {
     HStack(spacing: layout.spacing) {
@@ -530,14 +552,6 @@ struct ActionBarView: View {
     .padding(.vertical, ActionBarMetrics.verticalPadding)
     .frame(maxWidth: .infinity)
     .background(.bar)
-    // Measured AFTER the bar is stretched to its pane, so this is the width available to the
-    // controls rather than the width they happen to occupy — the two are the same only when
-    // everything already fits, which is precisely the case this has to stop assuming.
-    .onGeometryChange(for: CGFloat.self) { proxy in
-      proxy.size.width
-    } action: { width in
-      paneWidth = width
-    }
     .sheet(isPresented: $store.isTagEntryPresented) {
       TagEntrySheet(store: store)
     }

@@ -175,6 +175,14 @@ final class SelectModeScreenshotUITests: XCTestCase {
         control.frame.isEmpty,
         "\(configuration): \(name) is rendered with an empty frame — see the "
           + "action-bar-geometry and element-tree attachments for the tree it ended up in.")
+      // Containment, not merely non-emptiness: the landscape failure had a perfectly non-empty
+      // 47×38.5 frame at x = -13.5, i.e. hanging off the window's left edge, which is what
+      // "Activation point invalid and no suggested hit points" actually means. A bar wider than
+      // its column overflows symmetrically, so this is the assertion that names it.
+      XCTAssertTrue(
+        app.frame.contains(control.frame),
+        "\(configuration): \(name) is laid out at \(control.frame), outside the window "
+          + "\(app.frame) — the bar is wider than the column it was given.")
       XCTAssertTrue(
         control.isHittable, "\(configuration): \(name) has no reachable hit region.")
     }

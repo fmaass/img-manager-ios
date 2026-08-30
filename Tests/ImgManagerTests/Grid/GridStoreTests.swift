@@ -2265,17 +2265,29 @@ struct GridStoreBulkMarkTests {
 @Suite("Grid action bar geometry (the bar must fit the column it is given)")
 struct ActionBarMetricsTests {
 
-  @Test("Six 44-pt controls fit BOTH the narrowest Compact width and a Regular-3 grid column")
-  func sixControlsFitTheNarrowestCompactAndRegular3Widths() {
+  @Test("Six 44-pt controls fit the narrowest Compact width")
+  func sixControlsFitTheNarrowestCompactWidth() {
     #expect(ActionBarMetrics.controlCount == 6)
     #expect(ActionBarMetrics.minimumControlSide == 44)
-    // Compact: the roomy tier fits outright.
     #expect(ActionBarMetrics.requiredWidth() <= ActionBarMetrics.narrowestCompactWidth)
-    // Regular-3: the app pins no column widths, so the pin is a conservative worst case built
-    // from the layout's OWN constant — the grid is one of three columns in the narrowest window
-    // that resolves Regular-3, so a third of it is a floor no equal-or-better split falls under.
-    #expect(ActionBarMetrics.sixControlFloor <= ActionBarMetrics.narrowestRegular3Window / 3)
+    let compact = ActionBarMetrics.layout(forWidth: ActionBarMetrics.narrowestCompactWidth)
+    #expect(!compact.foldsClearIntoMore)
+    #expect(compact.spacing == ActionBarMetrics.controlSpacing)
+  }
+
+  @Test("The MEASURED Regular-3 grid column is too narrow for six controls, so Clear folds")
+  func theMeasuredRegular3ColumnFoldsClearIntoMore() {
+    // 315 pt, derived from the gate's own landscape geometry attachment rather than assumed —
+    // see `ActionBarMetrics.measuredRegular3GridColumn`. Six controls need 320 even at the
+    // tight rhythm, which is exactly why the bar came out at x = -13.5 there.
+    #expect(ActionBarMetrics.sixControlFloor > ActionBarMetrics.measuredRegular3GridColumn)
+    #expect(ActionBarMetrics.foldedFloor <= ActionBarMetrics.measuredRegular3GridColumn)
+    let column = ActionBarMetrics.layout(forWidth: ActionBarMetrics.measuredRegular3GridColumn)
+    #expect(column.foldsClearIntoMore)
+    #expect(column.spacing == ActionBarMetrics.tightSpacing)
+    // The window constant stays the layout's own, never a second copy of 1197.
     #expect(ActionBarMetrics.narrowestRegular3Window == LayoutResolver.regular3Threshold)
+    #expect(ActionBarMetrics.measuredRegular3GridColumn < ActionBarMetrics.narrowestRegular3Window)
   }
 
   @Test("The rhythms that stopped fitting are pinned as executable facts, not comments")
