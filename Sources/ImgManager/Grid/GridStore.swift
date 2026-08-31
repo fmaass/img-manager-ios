@@ -430,8 +430,17 @@ final class GridStore {
   /// Scene mode row's Exit button — so the restore is a property of the mode switch rather than
   /// of one control remembering to do it.
   func setDisplayMode(_ next: GridDisplayMode) async {
-    // // WP13 P5b RED SKELETON — behaviour deliberately absent; wired in the GREEN commit.
     guard next != displayMode else { return }
+    switch next {
+    case .scene:
+      suspendedPresentation = SortGroupPresentation(of: query)
+      query = SortGroupPresentation.cleared.applied(to: query)
+    case .flat:
+      if let suspended = suspendedPresentation {
+        query = suspended.applied(to: query)
+      }
+      suspendedPresentation = nil
+    }
     displayMode = next
     pickLock.exit()
     selection.reset(.shootChange)
@@ -503,11 +512,13 @@ final class GridStore {
   /// Exclusivity holds BY CONSTRUCTION rather than by arithmetic: the menu is a single-select
   /// list over `GroupingChoice`, and `GroupingChoice` cannot express "Scene and Camera".
   func selectGrouping(_ choice: GroupingChoice) async {
-    // // WP13 P5b RED SKELETON — behaviour deliberately absent; wired in the GREEN commit.
     switch choice {
     case .scene:
       await setDisplayMode(.scene)
     case .none, .key:
+      if displayMode == .scene {
+        await setDisplayMode(.flat)
+      }
       await applyFilterChange { $0.groupBy = choice.groupByKey?.rawValue }
     }
   }
@@ -716,7 +727,8 @@ final class GridStore {
     // INSIDE this generation fence, so a header set for an abandoned scope is never published.
     // A no-op whenever `group_by` is nil (Scene mode included, which clears the presentation on
     // the way in) and idempotent per query identity, so the common re-entry costs no request.
-    // // WP13 P5b RED SKELETON — behaviour deliberately absent; wired in the GREEN commit.
+    guard generation == loadGeneration else { return }
+    await refreshGroupHeaders()
   }
 
   /// `GET /api/browse/stacks` counts DISPLAY ROWS, not photographs ("a page of 100 may stand for

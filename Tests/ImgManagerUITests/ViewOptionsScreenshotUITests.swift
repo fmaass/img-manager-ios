@@ -193,8 +193,16 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
         }
       }
     }
+    // WP13 P5b: the anchor is the row FARTHEST from where the drag is heading — the last
+    // hittable row for a forward (upward) drag, the first for a reverse one. Anchoring the
+    // forward drag on the FIRST hittable row, as this did, put its endpoint 220 pt above a row
+    // already near the top of the list: outside the scroll view, behind the navigation bar, so
+    // the scroll truncated. That stalled the traverse at a fixed 15 of 17 rows on BOTH gate
+    // legs identically — device-independent, therefore geometry of the gesture rather than of
+    // the screen (gate run 03:19, `.gate-artifacts/red-f579339-test-*.log`).
     func dragInsideARow(by dy: CGFloat) -> Bool {
-      guard let anchor = rowQuery.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
+      let hittable = rowQuery.allElementsBoundByIndex.filter { $0.isHittable }
+      guard let anchor = dy < 0 ? hittable.last : hittable.first else {
         return false
       }
       let start = anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -204,13 +212,13 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
       return true
     }
 
-    // The traverse ends when the sheet's own count has been accounted for, or when two
+    // The traverse ends when the sheet's own count has been accounted for, or when three
     // consecutive steps turn up nothing new — the end of the list. Either way the equality
     // below is what decides the test; stopping early simply fails it with the shortfall named.
     harvestVisibleRows()
     var forwardSteps = 0
     var barrenSteps = 0
-    while forwardSteps < 20 && rendered.count < expectedCount && barrenSteps < 2 {
+    while forwardSteps < 20 && rendered.count < expectedCount && barrenSteps < 3 {
       let before = rendered.count
       guard dragInsideARow(by: -220) else { break }
       forwardSteps += 1
@@ -227,7 +235,7 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     // whole sheet at once neither loop runs at all.
     var reverseSteps = 0
     barrenSteps = 0
-    while reverseSteps < 20 && rendered.count < expectedCount && barrenSteps < 2 {
+    while reverseSteps < 20 && rendered.count < expectedCount && barrenSteps < 3 {
       let before = rendered.count
       guard dragInsideARow(by: 220) else { break }
       reverseSteps += 1

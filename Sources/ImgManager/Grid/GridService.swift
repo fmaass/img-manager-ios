@@ -503,12 +503,15 @@ struct GridImagesQuery: Sendable, Equatable {
     -> Operations
     .ListImagesApiImagesGet.Input.Query
   {
-    // // WP13 P5b RED SKELETON — behaviour deliberately absent; wired in the GREEN commit.
     .init(
+      groupBy: groupBy.flatMap(Operations.ListImagesApiImagesGet.Input.Query.GroupByPayload.init),
       cursor: cursor, limit: limit, folderId: folderID, ratingMin: ratingMin, good: good,
       label: label, keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.listImagesPayload,
       tree: tree, ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      sort: sort.flatMap(Operations.ListImagesApiImagesGet.Input.Query.SortPayload.init),
+      direction: direction.flatMap(
+        Operations.ListImagesApiImagesGet.Input.Query.DirectionPayload.init))
   }
 
   func asFacetsQuery() -> Operations.ImageFacetsApiFacetsGet.Input.Query {
@@ -552,12 +555,17 @@ struct GridImagesQuery: Sendable, Equatable {
   func asNeighboursQuery(limit: Int)
     -> Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query
   {
-    // // WP13 P5b RED SKELETON — behaviour deliberately absent; wired in the GREEN commit.
     .init(
+      groupBy: groupBy.flatMap(
+        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.GroupByPayload.init),
       limit: limit, folderId: folderID, ratingMin: ratingMin, good: good, label: label,
       keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.neighboursPayload, tree: tree,
       ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      sort: sort.flatMap(
+        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.SortPayload.init),
+      direction: direction.flatMap(
+        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.DirectionPayload.init))
   }
 
   /// WP13 P5b: the header source, under the SAME filters the page is asking for.

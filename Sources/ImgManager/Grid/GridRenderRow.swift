@@ -133,8 +133,36 @@ enum GridSectionLayout {
       }
     }
 
-    // WP13 P5b RED SKELETON — behaviour deliberately absent; wired in the GREEN commit.
-    _ = (groupBy, headers, timezone)
-    return pack(rows)
+    guard let groupBy, !headers.isEmpty else { return pack(rows) }
+
+    var out: [GridRenderRow] = []
+    var run: [SceneDisplayRow] = []
+    var runKey: GroupKey?
+
+    func flushRun() {
+      guard let runKey, !run.isEmpty else { return }
+      if let header = headers[runKey] {
+        out.append(
+          .header(
+            GroupHeaderRow(
+              key: runKey, label: header.label, count: header.count,
+              // The zone is stated for the time keys only — it is what the server sends a
+              // non-nil `timezone` for, and the only case where a label is a rendered local time.
+              timezone: groupBy.isTimeKey ? timezone : nil)))
+      }
+      out.append(contentsOf: pack(run))
+      run = []
+    }
+
+    for row in rows {
+      let key = groupKey(of: row)
+      if key != runKey {
+        flushRun()
+        runKey = key
+      }
+      run.append(row)
+    }
+    flushRun()
+    return out
   }
 }
