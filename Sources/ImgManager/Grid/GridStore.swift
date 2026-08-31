@@ -322,7 +322,14 @@ final class GridStore {
         loupeExhausted = true
       } else {
         loupeExhausted = false
-        if focusedImageID == imageID,
+        // IMGMGR-269: the focus advance is LOUPE-scoped, the merge above is not. `applyLoupeMark`
+        // checks `isLoupeOpen` before it calls `loupeNext()`, but at the loaded tail that call
+        // awaits this fetch — and Close is never disabled by a write, so the reader can leave the
+        // loupe while the page is in flight. `closeLoupe()` neither clears `focusedImageID` nor
+        // bumps `loadGeneration` (the bumps belong to scope changes, and this is not one), so the
+        // generation guard above passes and, unfenced, this line would move GRID focus after the
+        // loupe is gone. The rows still merge: the grid legitimately gains what was fetched.
+        if isLoupeOpen, focusedImageID == imageID,
           let idx = images.firstIndex(where: { $0.id == imageID }),
           images.indices.contains(idx + 1)
         {
