@@ -82,6 +82,25 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     XCTAssertTrue(
       pick.waitForExistence(timeout: 10),
       "The loupe mark bar has no Pick control (IMGMGR-275).")
+
+    // STATE-INDEPENDENT, like every test in this file. Which frame the coordinate probe lands on
+    // differs by idiom and the DEBUG fixture ships some photographs already marked — the 00:30
+    // iPhone run opened on `STUB_0001.jpg, picked` while the iPad opened on an unmarked one, and
+    // a hard-coded starting verdict fails on exactly one of them for a reason that has nothing to
+    // do with the behaviour under test. So the frame is driven to unmarked first, through the
+    // bar's own Clear control, and the reading is asserted from there.
+    XCTContext.runActivity(named: "Pick reads \(pick.value as? String ?? "nil") on arrival") { _ in
+    }
+    if (pick.value as? String) != "Not picked" {
+      let clear = app.buttons
+        .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Clear'"))
+        .firstMatch
+      XCTAssertTrue(clear.waitForExistence(timeout: 10), "The loupe mark bar has no Clear control.")
+      clear.tap()
+      let cleared = expectation(
+        for: NSPredicate(format: "value == 'Not picked'"), evaluatedWith: pick)
+      wait(for: [cleared], timeout: 10)
+    }
     XCTAssertEqual(
       pick.value as? String, "Not picked",
       "The Pick control does not report an unmarked frame as unmarked — its state reading is "
