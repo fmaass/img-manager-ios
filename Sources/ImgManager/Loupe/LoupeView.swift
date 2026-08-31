@@ -5,9 +5,12 @@ import SwiftUI
 /// cull"). One view, branched only on `layoutMode` — never on the device-idiom API, whose very
 /// NAME is banned from this tree by a mac-gate absence grep (plan invariant (i)):
 ///
-/// - `.compact`: no filmstrip, no full-screen toggle control (the presenting view —
-///   `RootView` — always shows this full-screen here already).
-/// - `.regular2`/`.regular3`: a filmstrip below the main image (same `GridStore.images`/
+/// - `.compact`: the filmstrip below the main image, and no full-screen toggle control (the
+///   presenting view — `RootView` — always shows this full-screen here already). WP13 P9
+///   (IMGMGR-218) removed the filmstrip exclusion this bullet used to record: the phone gets the
+///   spec's thumb bar, and it is the SAME `FilmstripView` over the SAME projection the iPad's
+///   is, so Scene-mode frame walking is inherited rather than re-implemented.
+/// - `.regular2`/`.regular3`: the same filmstrip (same `GridStore.actionableImages`/
 ///   `loadMoreIfNeeded`, never a filmstrip-local page — fold's "one paging path" pivot) and a
 ///   full-screen toggle button in the header.
 ///
@@ -38,6 +41,11 @@ struct LoupeView: View {
   var zoomInstaller: LoupeZoomInstaller = .live
   /// The production zoom surfaces (chrome twin + gestures); a test substitutes a spy.
   var zoomControls: LoupeZoomControls = .live
+  /// The production filmstrip surface; a test substitutes a spy. A value adapter for the reason
+  /// `LoupeZoomInstaller`'s own doc comment gives: a call site that exists only inside a `body`
+  /// cannot be observed any other way, and WP13 P9's whole claim is about WHICH layout modes
+  /// reach this one.
+  var filmstrip: LoupeFilmstripSurface = .live
 
   @State private var proxyImage: PlatformImage?
   @State private var zoomModel: LoupeZoomModel
@@ -110,9 +118,7 @@ struct LoupeView: View {
       header(zoomToggle: zoomToggle)
       ShareStatusBar(share: share)
       mainImageArea(zoomToggle: zoomToggle)
-      if layoutMode != .compact {
-        FilmstripView(store: store)
-      }
+      filmstrip.make(store)
       ConflictRecoveryBanner(store: store)
       LoupeMarkBar(store: store)
     }
@@ -363,34 +369,105 @@ struct LoupeMarkBar: View {
   }
 }
 
-/// Regular-2/3 only: the grid retained as a filmstrip "so context is never lost" (spec) — the
-/// SAME `GridStore.actionableImages`/`focusedImageID`, and the SAME serialized `loadMoreIfNeeded`
-/// the grid's own `GridView` uses (fold's "one paging path" pivot), never a filmstrip-local
-/// cursor.
+/// EVERY layout mode since WP13 P9 (IMGMGR-218), the phone included: the grid retained as a
+/// filmstrip "so context is never lost" (spec) — the SAME `GridStore.actionableImages`/
+/// `focusedImageID`, and the SAME serialized `loadMoreIfNeeded` the grid's own `GridView` uses
+/// (fold's "one paging path" pivot), never a filmstrip-local cursor.
 ///
 /// WP12: walking the shared actionable projection is what makes the filmstrip agree with the grid
 /// in BOTH modes rather than only in flat browse — in Scene mode it shows the loose photographs
 /// and the members of opened scenes, in display order, and no collapsed card's cover.
+///
+/// WP13 P9: the strip FOLLOWS the focused frame. P8's advance-on-mark moves `focusedImageID` on
+/// every committed loupe mark, so a strip that only moved when the reader dragged it would
+/// silently stop tracking after the first advance — which on a phone, where the strip is the
+/// only context there is, would be worse than no strip. `revealTarget(in:)` names the frame to
+/// bring into view and `reveal(_:through:)` is the one seam that brings it.
 struct FilmstripView: View {
   @Bindable var store: GridStore
+  /// The scroll seam. Production drives the live `ScrollViewProxy`; a test substitutes a
+  /// recorder and passes `nil`, because a `ScrollViewProxy` cannot be constructed outside a
+  /// rendered `ScrollViewReader`.
+  var scroller: FilmstripFocusScroller = .live
+
+  /// THE projection the strip walks: the shared actionable one, never `store.images` — which is
+  /// empty in Scene mode — and so never a collapsed card's cover (ADR-0005 decision 4).
+  var frames: [Components.Schemas.ImageSummary] { store.actionableImages }
+
+  /// The frame the strip must bring into view, or `nil` when there is nothing to reveal.
+  ///
+  /// Takes the frames it judges against rather than re-reading `frames`: in Scene mode that
+  /// property rebuilds the display sequence, and `body` already evaluated it once for the rows.
+  /// Fenced to a frame the strip actually HAS a row for — after an advance the store's focus can
+  /// name a photograph this strip has not rendered, and `scrollTo` on an absent id reveals
+  /// nothing while reading as if it had.
+  func revealTarget(in frames: [Components.Schemas.ImageSummary]) -> Int? {
+    guard let id = store.focusedImageID, frames.contains(where: { $0.id == id }) else {
+      return nil
+    }
+    return id
+  }
+
+  /// The parameterless form the suites read.
+  var revealTarget: Int? { revealTarget(in: frames) }
+
+  /// The strip's paging hook: `GridStore.loadMoreIfNeeded` and nothing else. Named so the Do-NOT
+  /// ("no second paging path, no filmstrip-local cursor" — WP8 P5's pivot) is one function a
+  /// diff can read, rather than a closure buried in a row modifier.
+  func pageIfNeeded(around image: Components.Schemas.ImageSummary) async {
+    await store.loadMoreIfNeeded(currentItemID: image.id)
+  }
+
+  /// The one place a scroll is asked for; `body`'s `onChange` carries no logic of its own.
+  func reveal(_ target: Int?, through proxy: ScrollViewProxy?) {
+    guard let target else { return }
+    scroller.reveal(proxy, target)
+  }
 
   var body: some View {
-    ScrollView(.horizontal) {
-      LazyHStack(spacing: 4) {
-        ForEach(store.actionableImages, id: \.id) { image in
-          FilmstripThumbnail(
-            image: image, isFocused: store.focusedImageID == image.id, store: store
-          )
-          .onTapGesture { store.loupeFocus(on: image.id) }
-          .task(id: image.id) { await store.loadMoreIfNeeded(currentItemID: image.id) }
+    let frames = self.frames
+    return ScrollViewReader { proxy in
+      ScrollView(.horizontal) {
+        LazyHStack(spacing: 4) {
+          ForEach(frames, id: \.id) { image in
+            FilmstripThumbnail(
+              image: image, isFocused: store.focusedImageID == image.id, store: store
+            )
+            .onTapGesture { store.loupeFocus(on: image.id) }
+            .task(id: image.id) { await pageIfNeeded(around: image) }
+          }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
+      .frame(height: 72)
+      .background(.bar)
+      .accessibilityIdentifier("loupeFilmstrip")
+      .onChange(of: revealTarget(in: frames), initial: true) { _, target in
+        reveal(target, through: proxy)
+      }
     }
-    .frame(height: 72)
-    .background(.bar)
-    .accessibilityIdentifier("loupeFilmstrip")
+  }
+}
+
+/// The filmstrip surface `LoupeView.body` builds — see `LoupeView.filmstrip`. `@MainActor` for
+/// the same reason `LoupeZoomControls` is: `.live` closes over SwiftUI view construction, so a
+/// nonisolated `static let` of it is not concurrency-safe under `SWIFT_STRICT_CONCURRENCY`.
+@MainActor
+struct LoupeFilmstripSurface {
+  var make: (GridStore) -> AnyView
+
+  static let live = LoupeFilmstripSurface { AnyView(FilmstripView(store: $0)) }
+}
+
+/// The strip's scroll seam: given the live proxy and an id, bring that thumbnail into view.
+/// `@MainActor` for the same reason as `LoupeFilmstripSurface` above.
+@MainActor
+struct FilmstripFocusScroller {
+  var reveal: (ScrollViewProxy?, Int) -> Void
+
+  static let live = FilmstripFocusScroller { proxy, id in
+    withAnimation(.easeOut(duration: 0.2)) { proxy?.scrollTo(id, anchor: .center) }
   }
 }
 
