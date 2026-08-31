@@ -70,10 +70,18 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     XCTAssertEqual(
       toggle.value as? String, "Off", "Could not park the cadence for a same-frame reading.")
 
-    let pick = app.buttons["loupePickButton"]
+    // BY LABEL WITHIN THE BAR, not by an identifier of its own. The 23:26 gate run dumped the
+    // reason: `.accessibilityIdentifier("loupeMarkBar")` on the enclosing HStack propagates DOWN
+    // and overrides every child's, so all four controls report `identifier: 'loupeMarkBar'` —
+    // including `loupeClearButton`, which has carried a per-button identifier since P5 and has
+    // never surfaced either. Matching the container id AND the label is therefore both precise
+    // and the only thing that resolves one control.
+    let pick = app.buttons
+      .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Pick'"))
+      .firstMatch
     XCTAssertTrue(
       pick.waitForExistence(timeout: 10),
-      "The loupe mark bar has no identified Pick control (IMGMGR-275).")
+      "The loupe mark bar has no Pick control (IMGMGR-275).")
     XCTAssertEqual(
       pick.value as? String, "Not picked",
       "The Pick control does not report an unmarked frame as unmarked — its state reading is "
@@ -87,7 +95,9 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     attach(name: "loupe-mark-bar-picked")
 
     // Undo takes the verdict back, and the control's own reading with it.
-    let undo = app.buttons["loupeUndoButton"]
+    let undo = app.buttons
+      .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Undo'"))
+      .firstMatch
     XCTAssertTrue(undo.waitForExistence(timeout: 10), "The loupe mark bar has no Undo control.")
     undo.tap()
     let backToPlain = expectation(

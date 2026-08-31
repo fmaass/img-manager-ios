@@ -499,28 +499,33 @@ struct RootView: View {
       // the sheet covers this control while it is up, so toggling reads exactly as before.
       withAnimation(.snappy(duration: 0.25)) { showInspector.toggle() }
     } label: {
-      Group {
-        if activeFilters > 0 {
-          Label(
-            InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters),
-            systemImage: "line.3.horizontal.decrease.circle.fill"
-          )
-          .labelStyle(.titleAndIcon)
-        } else {
-          Label("Info", systemImage: "info.circle")
+      if activeFilters > 0 {
+        // IMGMGR-224: the spoken phrasing rides the TITLE TEXT itself. A `ToolbarItem`'s bar item
+        // is built from the button's title, and the WP13 P10 gate log recorded VoiceOver reading
+        // the visual "Info · 1" while `.accessibilityLabel` on the button sat there as dead code;
+        // the 23:26 run of this lane showed the same for the collapsed-content form. Labelling
+        // the Text is the remaining attachment point that travels with the title the bar item
+        // actually takes. The visual string is unchanged either way.
+        Label {
+          Text(InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters))
+            .accessibilityLabel(spokenLabel)
+        } icon: {
+          Image(systemName: "line.3.horizontal.decrease.circle.fill")
+        }
+        .labelStyle(.titleAndIcon)
+      } else {
+        Label {
+          Text("Info").accessibilityLabel(spokenLabel)
+        } icon: {
+          Image(systemName: "info.circle")
         }
       }
-      // IMGMGR-224: the spoken phrasing has to be attached to the button's own LABEL CONTENT, not
-      // only to the button. Inside a `ToolbarItem` the bar item is built from that content, and a
-      // modifier applied outside the button is dropped on the way — the WP13 P10 gate log has
-      // VoiceOver reading the visual "Info · 1" while this sentence sat there as dead code. The
-      // content is collapsed into one element first, so the derived label is this string rather
-      // than the title text it wraps. The outer copy below stays for every surface that does
-      // honour it, and both are the same function's output, so they cannot disagree.
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(spokenLabel)
     }
     .accessibilityLabel(spokenLabel)
+    // Diagnostic AND useful: the account item's own identifier surfaces through the same bridge
+    // (gate tree, `accountToolbarButton`), so if this one appears while the label still does not,
+    // the bridge drops labels specifically — which is the finding, not a guess.
+    .accessibilityIdentifier("inspectorChromeButton")
   }
 
   private var detailColumn: some View {

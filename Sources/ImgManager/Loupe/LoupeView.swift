@@ -346,7 +346,6 @@ struct LoupeMarkBar: View {
       .buttonStyle(.bordered)
       .disabled(!store.undo.canUndo || store.isMutatingMark)
       .frame(minWidth: 44, minHeight: 44)
-      .accessibilityIdentifier("loupeUndoButton")
     }
     .labelStyle(.iconOnly)
     .font(.title3)
@@ -375,7 +374,11 @@ struct LoupeMarkBar: View {
     .tint(isActive ? Color.accentColor : nil)
     .disabled(store.focusedImageID == nil || store.isMutatingMark)
     .frame(minWidth: 44, minHeight: 44)
-    .accessibilityIdentifier(control.accessibilityIdentifier)
+    // No per-button `accessibilityIdentifier` here: this bar's own identifier is set on the
+    // enclosing HStack and PROPAGATES down over every child's (gate run 23:26 dumped all four
+    // controls reporting `identifier: 'loupeMarkBar'`, `loupeClearButton` included). One that
+    // never surfaces would be a lie a test could not catch, so the controls are resolved by
+    // label within the bar instead.
     .accessibilityValue(LoupeMarkPresentation.accessibilityValue(for: control, state: state))
     .accessibilityAddTraits(isActive ? [.isSelected] : [])
   }
@@ -403,13 +406,6 @@ enum LoupeMarkPresentation {
       switch self {
       case .pick: return .pick
       case .dislike: return .dislike
-      }
-    }
-
-    var accessibilityIdentifier: String {
-      switch self {
-      case .pick: return "loupePickButton"
-      case .dislike: return "loupeDislikeButton"
       }
     }
 

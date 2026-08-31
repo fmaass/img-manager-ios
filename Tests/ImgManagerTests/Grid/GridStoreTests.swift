@@ -1433,7 +1433,11 @@ struct GridStoreTests {
     await transport.setListImagesPage(
       .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
-    store.focusedImageID = 1
+    // IMGMGR-269 made the tail advance loupe-scoped, so the setup opens the loupe rather than
+    // seeding focus alone: `loupeNext()` has exactly three call sites in production (the loupe's
+    // Next control, its drag advance, and `applyLoupeMark`) and every one of them runs with the
+    // loupe open. Seeding `focusedImageID` was a shortcut for a state the app cannot be in.
+    store.openLoupe(on: 1)
     // Optimistic until PROVEN exhausted (matches `canLoupeGoNext`'s own doc comment: true
     // unless a neighbours fetch already confirmed nothing further) -- at the tail with nothing
     // yet confirmed, the control stays enabled so the tap itself can do the check, rather than
@@ -1501,7 +1505,10 @@ struct GridStoreTests {
     await transport.setListImagesPage(
       .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: "cursor-a"))
     await store.selectShoot(folderID: 1)
-    store.focusedImageID = 1
+    // Open, not merely focused — same reason as `loupeNextFetchesAndMergesNeighboursAtTail`
+    // above: since IMGMGR-269 the tail advance only lands while the loupe is the surface, which
+    // is the only state production can reach `loupeNext()` from anyway.
+    store.openLoupe(on: 1)
 
     await transport.setNeighboursPage(
       .init(items: [makeImage(id: 2, revision: "r0")], limit: 5, nextCursor: nil))
