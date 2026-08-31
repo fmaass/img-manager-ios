@@ -458,15 +458,19 @@ actor GridStubTransport: ClientTransport {
   }
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
   func setNeighboursPage(_ page: Components.Schemas.ImagePage) { neighboursPage = page }
-  /// IMGMGR-174: one tier's `GET /api/folders` answer, and its reachability.
-  func setFolderTree(_ items: [Components.Schemas.FolderNode], tier: GridSourceTier) {
-    folderTrees[tier.rawValue] = items
+  /// IMGMGR-174: one tier's `GET /api/folders` answer, and its reachability. The tier is the
+  /// WIRE string, not the app's `GridSourceTier` — this file deliberately imports only the
+  /// generated API and the transport types (never `ImgManager`), the same way it keys every other
+  /// operation off the generated `operationID` rather than off an app-level vocabulary. Callers
+  /// pass `GridSourceTier.<case>.rawValue`, which is that wire string.
+  func setFolderTree(_ items: [Components.Schemas.FolderNode], tier: String) {
+    folderTrees[tier] = items
   }
-  func setFoldersShouldFail(_ fail: Bool, tier: GridSourceTier) {
+  func setFoldersShouldFail(_ fail: Bool, tier: String) {
     if fail {
-      foldersFailingTiers.insert(tier.rawValue)
+      foldersFailingTiers.insert(tier)
     } else {
-      foldersFailingTiers.remove(tier.rawValue)
+      foldersFailingTiers.remove(tier)
     }
   }
   // WP13 P5b (IMGMGR-221 part 2): the group-header endpoint.
@@ -487,7 +491,7 @@ actor GridStubTransport: ClientTransport {
 
     switch operationID {
     case Operations.FolderTreeApiFoldersGet.id:
-      let tier = queryParameters(of: request)["source_tier"] ?? GridSourceTier.local.rawValue
+      let tier = queryParameters(of: request)["source_tier"] ?? "local"
       if foldersFailingTiers.contains(tier) {
         return (HTTPResponse(status: .internalServerError), nil)
       }

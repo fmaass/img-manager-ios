@@ -117,8 +117,8 @@ struct FolderTreeLoadTests {
   @Test("Both tiers unreachable is a FAILED disclosure, never a silent empty list")
   func bothTiersFailingIsAVisibleFailure() async {
     let transport = GridStubTransport()
-    await transport.setFoldersShouldFail(true, tier: .local)
-    await transport.setFoldersShouldFail(true, tier: .archive)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
 
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
@@ -142,8 +142,8 @@ struct FolderTreeLoadTests {
   @Test("One tier unreachable still shows the other's rows, flagged as partial")
   func oneTierFailingIsPartialNotTotal() async {
     let transport = GridStubTransport()
-    await transport.setFolderTree([node(1), node(2)], tier: .local)
-    await transport.setFoldersShouldFail(true, tier: .archive)
+    await transport.setFolderTree([node(1), node(2)], tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
 
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
@@ -155,16 +155,16 @@ struct FolderTreeLoadTests {
   @Test("Retry after a failure re-fetches and recovers")
   func retryAfterAFailureRecovers() async {
     let transport = GridStubTransport()
-    await transport.setFoldersShouldFail(true, tier: .local)
-    await transport.setFoldersShouldFail(true, tier: .archive)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
     let service = makeService(transport)
     let failed = await FolderTreeLoad.perform(using: service)
     #expect(failed.phase == .failed)
 
     // The server comes back; the reader taps Retry, which is this same call again.
-    await transport.setFoldersShouldFail(false, tier: .local)
-    await transport.setFoldersShouldFail(false, tier: .archive)
-    await transport.setFolderTree([node(9)], tier: .local)
+    await transport.setFoldersShouldFail(false, tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(false, tier: GridSourceTier.archive.rawValue)
+    await transport.setFolderTree([node(9)], tier: GridSourceTier.local.rawValue)
     let recovered = await FolderTreeLoad.perform(using: service)
 
     #expect(recovered.phase == .loaded)
