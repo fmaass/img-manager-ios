@@ -273,6 +273,16 @@ final class GridStore {
     focusedImageID = imageID
   }
 
+  /// The FOCUSED photograph's own mark, or `nil` when nothing is focused (or the focused id is
+  /// not in the actionable projection — a scope change can leave focus naming a row this store no
+  /// longer holds). Reads `actionableImages`, never `images`: that is the same projection the
+  /// loupe and the filmstrip walk, so in Scene mode an opened scene's members answer too, where
+  /// `images` is empty by design (IMGMGR-275).
+  var focusedMarkState: Components.Schemas.MarkView.StatePayload? {
+    guard let id = focusedImageID else { return nil }
+    return actionableImages.first(where: { $0.id == id })?.mark.state
+  }
+
   var canLoupeGoPrevious: Bool {
     let pool = actionableImages
     guard let current = focusedImageID, let idx = pool.firstIndex(where: { $0.id == current })

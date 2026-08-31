@@ -47,6 +47,60 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     XCTAssertEqual(toggle.value as? String, "On")
   }
 
+  // MARK: - IMGMGR-275: the mark bar shows the FOCUSED photograph's own verdict
+
+  /// Owner report 2026-08-31 (iPad, native app): "marks cannot be seen". The unit suite proves
+  /// the presentation rule; this reads the SHIPPED control out of the running app's accessibility
+  /// tree — a bar whose buttons are decorative again turns this leg RED — and attaches the
+  /// screenshot the ticket's acceptance names, on BOTH gate destinations.
+  ///
+  /// Advance-on-mark is turned OFF for the duration on purpose: with the cadence on, the mark
+  /// moves the loupe to the NEXT frame, and a plain-reading bar there is the correct answer to a
+  /// different question. Restored to whatever it was found at, like every test in this file.
+  func testLoupeMarkBarReflectsTheFocusedPhotographsVerdict() throws {
+    let app = launchAndOpenLoupe()
+
+    let toggle = app.buttons["loupeAutoAdvanceToggle"]
+    XCTAssertTrue(toggle.waitForExistence(timeout: 10), "The loupe header toggle is missing.")
+    let wasOn = (toggle.value as? String) == "On"
+    if wasOn {
+      toggle.tap()
+      Thread.sleep(forTimeInterval: 0.8)
+    }
+    XCTAssertEqual(
+      toggle.value as? String, "Off", "Could not park the cadence for a same-frame reading.")
+
+    let pick = app.buttons["loupePickButton"]
+    XCTAssertTrue(
+      pick.waitForExistence(timeout: 10),
+      "The loupe mark bar has no identified Pick control (IMGMGR-275).")
+    XCTAssertEqual(
+      pick.value as? String, "Not picked",
+      "The Pick control does not report an unmarked frame as unmarked — its state reading is "
+        + "absent or inverted.")
+    attach(name: "loupe-mark-bar-unmarked")
+
+    pick.tap()
+    let becamePicked = expectation(
+      for: NSPredicate(format: "value == 'Picked'"), evaluatedWith: pick)
+    wait(for: [becamePicked], timeout: 10)
+    attach(name: "loupe-mark-bar-picked")
+
+    // Undo takes the verdict back, and the control's own reading with it.
+    let undo = app.buttons["loupeUndoButton"]
+    XCTAssertTrue(undo.waitForExistence(timeout: 10), "The loupe mark bar has no Undo control.")
+    undo.tap()
+    let backToPlain = expectation(
+      for: NSPredicate(format: "value == 'Not picked'"), evaluatedWith: pick)
+    wait(for: [backToPlain], timeout: 10)
+
+    if wasOn {
+      toggle.tap()
+      Thread.sleep(forTimeInterval: 0.8)
+      XCTAssertEqual(toggle.value as? String, "On", "The cadence preference was not restored.")
+    }
+  }
+
   // MARK: - Chrome twin 2: the account sheet's row
 
   /// Restored by IMGMGR-255. WP13 P8 DELETED this test (commit `c8c474e`) rather than leave it

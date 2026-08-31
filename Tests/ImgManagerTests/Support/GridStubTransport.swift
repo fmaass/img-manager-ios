@@ -45,6 +45,12 @@ actor GridStubTransport: ClientTransport {
     [Components.Schemas.MarkStateRequest.StatePayload: MarkMutationOutcome] = [:]
   var tagsOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
+  /// IMGMGR-174: `GET /api/folders` answers PER TIER — the sidebar asks for local and archive
+  /// separately, and "one tier is unreachable while the other answers" is a state the disclosure
+  /// has to render distinctly, so the stub has to be able to produce it.
+  private var folderTrees: [String: [Components.Schemas.FolderNode]] = [:]
+  private var foldersFailingTiers: Set<String> = []
+
   /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
   var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
 
@@ -452,6 +458,17 @@ actor GridStubTransport: ClientTransport {
   }
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
   func setNeighboursPage(_ page: Components.Schemas.ImagePage) { neighboursPage = page }
+  /// IMGMGR-174: one tier's `GET /api/folders` answer, and its reachability.
+  func setFolderTree(_ items: [Components.Schemas.FolderNode], tier: GridSourceTier) {
+    folderTrees[tier.rawValue] = items
+  }
+  func setFoldersShouldFail(_ fail: Bool, tier: GridSourceTier) {
+    if fail {
+      foldersFailingTiers.insert(tier.rawValue)
+    } else {
+      foldersFailingTiers.remove(tier.rawValue)
+    }
+  }
   // WP13 P5b (IMGMGR-221 part 2): the group-header endpoint.
   func setImageGroupsResult(_ result: Components.Schemas.ImageGroups) { imageGroupsResult = result }
   func setImageGroupsShouldFail(_ fail: Bool) { imageGroupsShouldFail = fail }
@@ -470,7 +487,12 @@ actor GridStubTransport: ClientTransport {
 
     switch operationID {
     case Operations.FolderTreeApiFoldersGet.id:
-      return try jsonResponse(.ok, Components.Schemas.FolderTree(items: []))
+      let tier = queryParameters(of: request)["source_tier"] ?? GridSourceTier.local.rawValue
+      if foldersFailingTiers.contains(tier) {
+        return (HTTPResponse(status: .internalServerError), nil)
+      }
+      return try jsonResponse(
+        .ok, Components.Schemas.FolderTree(items: folderTrees[tier] ?? []))
 
     case Operations.FolderSummariesApiFolderSummariesGet.id:
       // Resolved BEFORE any hold-suspend, same discipline as `listImages` above: a held call

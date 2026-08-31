@@ -323,24 +323,10 @@ struct LoupeMarkBar: View {
   @Bindable var store: GridStore
 
   var body: some View {
-    HStack(spacing: 24) {
-      Button {
-        Task { await store.applyLoupeMark(.pick) }
-      } label: {
-        Label("Pick", systemImage: "hand.thumbsup")
-      }
-      .buttonStyle(.bordered)
-      .disabled(store.focusedImageID == nil || store.isMutatingMark)
-      .frame(minWidth: 44, minHeight: 44)
-
-      Button {
-        Task { await store.applyLoupeMark(.dislike) }
-      } label: {
-        Label("Dislike", systemImage: "hand.thumbsdown")
-      }
-      .buttonStyle(.bordered)
-      .disabled(store.focusedImageID == nil || store.isMutatingMark)
-      .frame(minWidth: 44, minHeight: 44)
+    let markState = store.focusedMarkState
+    return HStack(spacing: 24) {
+      markButton(.pick, state: markState)
+      markButton(.dislike, state: markState)
 
       Button {
         Task { await store.applyLoupeMark(.none) }
@@ -360,12 +346,108 @@ struct LoupeMarkBar: View {
       .buttonStyle(.bordered)
       .disabled(!store.undo.canUndo || store.isMutatingMark)
       .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("loupeUndoButton")
     }
     .labelStyle(.iconOnly)
     .font(.title3)
     .padding()
     .background(.bar)
     .accessibilityIdentifier("loupeMarkBar")
+  }
+
+  /// IMGMGR-275: Pick and Dislike are the two controls whose meaning depends on the photograph in
+  /// front of the reader, so they are built from one function that takes the FOCUSED frame's mark
+  /// — never two hand-written buttons that could drift apart. Tap behaviour is unchanged: the
+  /// control still applies its own state through `applyLoupeMark` (never a toggle), the same
+  /// entry point and the same cadence it has had since WP13 P8.
+  @ViewBuilder
+  private func markButton(
+    _ control: LoupeMarkPresentation.Control,
+    state: Components.Schemas.MarkView.StatePayload?
+  ) -> some View {
+    let isActive = LoupeMarkPresentation.isActive(control, state: state)
+    Button {
+      Task { await store.applyLoupeMark(control.appliedState) }
+    } label: {
+      Label(control.title, systemImage: LoupeMarkPresentation.symbol(for: control, state: state))
+    }
+    .buttonStyle(.bordered)
+    .tint(isActive ? Color.accentColor : nil)
+    .disabled(store.focusedImageID == nil || store.isMutatingMark)
+    .frame(minWidth: 44, minHeight: 44)
+    .accessibilityIdentifier(control.accessibilityIdentifier)
+    .accessibilityValue(LoupeMarkPresentation.accessibilityValue(for: control, state: state))
+    .accessibilityAddTraits(isActive ? [.isSelected] : [])
+  }
+}
+
+/// How the loupe's two verdict controls READ for the photograph currently in front of the reader
+/// (IMGMGR-275, owner report 2026-08-31: "marks cannot be seen" while culling in the loupe). Pure
+/// and separate from the view so the state-reflection rule is something a test reads directly —
+/// the grid tile's badge has always had this, the loupe never did.
+enum LoupeMarkPresentation {
+  enum Control: Sendable, Equatable, CaseIterable {
+    case pick
+    case dislike
+
+    var title: String {
+      switch self {
+      case .pick: return "Pick"
+      case .dislike: return "Dislike"
+      }
+    }
+
+    /// What tapping the control WRITES — unchanged by this ticket, and deliberately not derived
+    /// from the current state: these buttons apply a verdict, they do not toggle one.
+    var appliedState: MarkStateValue {
+      switch self {
+      case .pick: return .pick
+      case .dislike: return .dislike
+      }
+    }
+
+    var accessibilityIdentifier: String {
+      switch self {
+      case .pick: return "loupePickButton"
+      case .dislike: return "loupeDislikeButton"
+      }
+    }
+
+    fileprivate var baseSymbol: String {
+      switch self {
+      case .pick: return "hand.thumbsup"
+      case .dislike: return "hand.thumbsdown"
+      }
+    }
+  }
+
+  /// CHARACTERIZATION of the shipped bar (IMGMGR-275, RED step): it reads no mark state at all —
+  /// both buttons carry the same plain glyph whatever the focused photograph is marked, which is
+  /// why the reader cannot see a verdict they have already given. Extracted verbatim so the tests
+  /// beside it can name that as the defect; the fix replaces these three bodies.
+  static func isActive(
+    _ control: Control, state: Components.Schemas.MarkView.StatePayload?
+  ) -> Bool {
+    _ = control
+    _ = state
+    return false
+  }
+
+  static func symbol(
+    for control: Control, state: Components.Schemas.MarkView.StatePayload?
+  ) -> String {
+    control.baseSymbol
+  }
+
+  /// The spoken half of the same signal: a filled glyph is invisible to VoiceOver, so the state
+  /// rides the control's accessibility VALUE beside its unchanged label.
+  static func accessibilityValue(
+    for control: Control, state: Components.Schemas.MarkView.StatePayload?
+  ) -> String {
+    switch control {
+    case .pick: return isActive(control, state: state) ? "Picked" : "Not picked"
+    case .dislike: return isActive(control, state: state) ? "Disliked" : "Not disliked"
+    }
   }
 }
 

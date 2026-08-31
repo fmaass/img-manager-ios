@@ -229,6 +229,166 @@ struct GridStoreTests {
     #expect(store.isLoupeOpen)
   }
 
+  // MARK: - IMGMGR-269: the LATE completion of an advance's own tail fetch
+
+  /// The half the two fences above do not cover. `applyLoupeMark` checks `isLoupeOpen` before it
+  /// calls `loupeNext()`, but at the loaded TAIL that call awaits a forward-neighbour page — and
+  /// the reader can close the loupe while that page is in flight. `closeLoupe()` neither clears
+  /// `focusedImageID` nor bumps `loadGeneration` (the bumps live only in the two scope reloads),
+  /// so the completion's own generation guard passes trivially and the focus advance lands on a
+  /// grid the loupe has already left.
+  ///
+  /// The MERGE must still happen (the grid legitimately gains the fetched row); only the focus
+  /// advance is loupe-scoped.
+  @Test(
+    "A tail advance whose neighbour page lands AFTER the loupe closed merges the row but never moves grid focus (IMGMGR-269)"
+  )
+  func aTailNeighbourPageLandingAfterCloseNeverMovesGridFocus() async {
+    let (store, transport, preferences) = makeStoreWithOwnPreferences()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+    preferences.autoAdvanceOnMark = true
+    // A NON-empty forward page: the race is only reachable when the server has something to
+    // advance to, so the exhausted-tail no-op is not what this test is measuring.
+    await transport.setNeighboursPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 5, nextCursor: nil))
+    await markCommits(transport, imageID: 1, revision: "r1")
+    await transport.holdNeighboursRequests(true)
+
+    async let marked: Bool = store.applyLoupeMark(.pick)
+    await transport.waitUntilNeighboursStarted()
+    // The mark has committed and the advance's fetch is in flight. Close is never disabled by a
+    // write (only the mark controls are), so this is a real sequence, not a contrived one.
+    store.closeLoupe()
+    await transport.releaseNeighbours()
+    let committed = await marked
+
+    #expect(committed)
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == .pick)
+    #expect(!store.isLoupeOpen)
+    // The row merged — the fetch's data is not thrown away...
+    #expect(store.images.map(\.id) == [1, 2])
+    // ...but the grid's focus is exactly where the reader left it when they closed the loupe.
+    #expect(store.focusedImageID == 1)
+  }
+
+  // MARK: - IMGMGR-270: undo AFTER an auto-advance acts on the frame that was marked
+
+  /// The P8 cadence suite proved the undo SLOT survives an advance (`canUndo`, `priorStates`,
+  /// `appliedState`) but never called `undo()`, so a regression that reverted the frame the
+  /// loupe advanced ONTO instead of the frame it marked would have passed unchanged. This drives
+  /// the real path: mark -> advance -> undo, and reads back both frames plus the write that
+  /// actually went out.
+  @Test(
+    "Undo after an auto-advance reverts the frame that was MARKED, never the one the advance landed on (IMGMGR-270)"
+  )
+  func undoAfterAnAutoAdvanceRevertsTheMarkedFrameNotTheFocusedOne() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: true)
+    await markCommits(transport, imageID: 1, revision: "r1")
+
+    #expect(await store.applyLoupeMark(.pick))
+    #expect(store.focusedImageID == 2)  // the advance happened, so the two frames differ
+
+    // Type-qualified `.none` — bare `.none` would match `Optional.none` (nil).
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.first(where: { $0.id == 2 })?.mark.state == none)
+
+    // The undo's own write restores frame 1's prior state; the stub answers with its new revision.
+    await markCommits(transport, imageID: 1, revision: "r2")
+    await store.undoLastMark()
+
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == none)  // reverted
+    #expect(store.images.first(where: { $0.id == 2 })?.mark.state == none)  // never touched
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.revision == "r2")
+    // THE assertion the old test could not make: the request named the marked frame, not the
+    // focused one. An undo that acted on `focusedImageID` would send [2] here.
+    let undone = await transport.lastMarkStateRequest
+    #expect(undone?.imageIds == [1])
+    // Type-qualified again: bare `.none` on an Optional comparison means nil, not the state.
+    #expect(undone?.state == Components.Schemas.MarkStateRequest.StatePayload.none)
+    #expect(store.focusedImageID == 2)  // undo is a mutation, never a navigation
+    #expect(!store.undo.canUndo)  // the one-slot stack is spent
+  }
+
+  // MARK: - IMGMGR-275: the loupe's mark bar REFLECTS the focused photograph's verdict
+
+  /// Owner report 2026-08-31 (iPad): "marks cannot be seen". The grid tile has carried a mark
+  /// badge since P4; the loupe — the app's actual culling surface since P8's advance-on-mark —
+  /// carried none, so the reader could not tell whether the photograph in front of them was
+  /// already picked. This drives the REAL paths the reader drives (mark → advance → step back →
+  /// undo) and reads the bar's own presentation, not a re-derivation of it.
+  @Test(
+    "The loupe mark bar reflects the FOCUSED frame's verdict through advance, navigation and undo (IMGMGR-275)"
+  )
+  func theLoupeMarkBarReflectsTheFocusedFramesVerdict() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: true)
+    // Nothing marked yet: both controls read plain, and say so to VoiceOver.
+    #expect(!LoupeMarkPresentation.isActive(.pick, state: store.focusedMarkState))
+    #expect(!LoupeMarkPresentation.isActive(.dislike, state: store.focusedMarkState))
+    #expect(
+      LoupeMarkPresentation.symbol(for: .pick, state: store.focusedMarkState) == "hand.thumbsup")
+    #expect(
+      LoupeMarkPresentation.accessibilityValue(for: .pick, state: store.focusedMarkState)
+        == "Not picked")
+
+    await markCommits(transport, imageID: 1, revision: "r1")
+    #expect(await store.applyLoupeMark(.pick))
+
+    // The advance landed on an UNMARKED frame, so the bar must read plain again — a bar that
+    // latched on the button press would still be showing the previous frame's verdict.
+    #expect(store.focusedImageID == 2)
+    #expect(!LoupeMarkPresentation.isActive(.pick, state: store.focusedMarkState))
+
+    // Stepping back to the frame just picked lights the Pick control, and only that one.
+    store.loupePrevious()
+    #expect(store.focusedImageID == 1)
+    #expect(LoupeMarkPresentation.isActive(.pick, state: store.focusedMarkState))
+    #expect(!LoupeMarkPresentation.isActive(.dislike, state: store.focusedMarkState))
+    #expect(
+      LoupeMarkPresentation.symbol(for: .pick, state: store.focusedMarkState)
+        == "hand.thumbsup.fill")
+    #expect(
+      LoupeMarkPresentation.accessibilityValue(for: .pick, state: store.focusedMarkState)
+        == "Picked")
+
+    // Undo takes the verdict back — and the control with it.
+    await markCommits(transport, imageID: 1, revision: "r2")
+    await store.undoLastMark()
+    #expect(!LoupeMarkPresentation.isActive(.pick, state: store.focusedMarkState))
+
+    // The other verdict lights its OWN control, never Pick's.
+    await markCommits(transport, imageID: 1, revision: "r3")
+    #expect(await store.applyLoupeMark(.dislike))
+    store.loupePrevious()
+    #expect(store.focusedImageID == 1)
+    #expect(LoupeMarkPresentation.isActive(.dislike, state: store.focusedMarkState))
+    #expect(!LoupeMarkPresentation.isActive(.pick, state: store.focusedMarkState))
+    #expect(
+      LoupeMarkPresentation.symbol(for: .dislike, state: store.focusedMarkState)
+        == "hand.thumbsdown.fill")
+    #expect(
+      LoupeMarkPresentation.accessibilityValue(for: .dislike, state: store.focusedMarkState)
+        == "Disliked")
+  }
+
+  /// The store-side half, pinned on its own: with nothing focused there is no verdict to show,
+  /// and the answer comes from the ACTIONABLE projection (what the loupe and filmstrip walk).
+  @Test("The focused verdict is nil with nothing focused, and follows the focused id otherwise")
+  func theFocusedVerdictFollowsFocus() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: false)
+    await markCommits(transport, imageID: 1, revision: "r1")
+    #expect(await store.applyLoupeMark(.pick))
+
+    #expect(store.focusedMarkState == .pick)
+    store.loupeFocus(on: 3)
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.focusedMarkState == none)
+    store.focusedImageID = nil
+    #expect(store.focusedMarkState == nil)
+  }
+
   // MARK: - Diff-gate r1, blocker 2: bare P/X/U in the loupe ride the same cadence seam
 
   @Test("A bare keyboard mark in the LOUPE advances on commit — the mark bar's own cadence")
