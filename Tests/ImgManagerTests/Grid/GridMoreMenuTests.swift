@@ -317,6 +317,56 @@ struct GridViewMoreMenuTests {
     #expect(GridMoreMenu.clearMark.isEnabled(store))
   }
 
+  /// WP13 P11 (IMGMGR-220): the enabled control is not a no-op, and it fires with the CURRENT
+  /// scope's own scene value rather than a rebuilt or defaulted one.
+  ///
+  /// What no unit test can prove is that the system then actually opens a window — that is the
+  /// two-shoots-side-by-side device evidence, a named acceptance leg at the TestFlight
+  /// checkpoint, and it is not claimed here.
+  @Test("The enabled Open in New Window control fires with the current scene value")
+  func theEnabledOpenInNewWindowControlFiresWithTheCurrentSceneValue() async {
+    let (store, transport, _, _) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 42, sourceTier: .archive)
+
+    let entry = GridMoreMenu.openInNewWindow
+    #expect(entry.isEnabled(store), "the control is disabled with a shoot in scope")
+    guard case .sceneWindow(let run) = entry.surface else {
+      Issue.record("more.openInNewWindow is not a scene-window entry")
+      return
+    }
+
+    let opened = OpenedShootWindows()
+    run(store, ShootWindowOpener { opened.values.append($0) })
+
+    #expect(opened.values.count == 1, "the control fired \(opened.values.count) times, not once")
+    #expect(opened.values.first == ShootSceneValue.from(query: store.query))
+    #expect(opened.values.first == ShootSceneValue(folderID: 42, sourceTier: .archive))
+  }
+
+  /// The control ships in every case — the probe decided only whether `project.yml` needed the
+  /// capability key, never whether the affordance exists — so with nothing in scope it is
+  /// PRESENT and DISABLED rather than absent.
+  @Test("Open in New Window is present and disabled with no shoot selected")
+  func openInNewWindowIsPresentAndDisabledWithNoShootSelected() async {
+    let (store, _, _, _) = makeStore()
+    #expect(store.query.folderID == nil)
+
+    let present = GridMoreMenu.entries.filter { $0.id == "more.openInNewWindow" }
+    #expect(present.count == 1, "the More menu does not carry Open in New Window")
+    #expect(GridMoreMenu.openInNewWindow.isEnabled(store) == false)
+
+    // A disabled control that still fired would be worse than an absent one.
+    guard case .sceneWindow(let run) = GridMoreMenu.openInNewWindow.surface else {
+      Issue.record("more.openInNewWindow is not a scene-window entry")
+      return
+    }
+    let opened = OpenedShootWindows()
+    run(store, ShootWindowOpener { opened.values.append($0) })
+    #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
+  }
+
   private func waitFor(_ condition: () -> Bool) async {
     for _ in 0..<200 {
       if condition() { return }
@@ -370,55 +420,6 @@ struct GridPreferencesTests {
     #expect(GridPreferences.autoAdvanceOnMarkKey == "loupe.autoAdvanceOnMark")
   }
 
-  /// WP13 P11 (IMGMGR-220): the enabled control is not a no-op, and it fires with the CURRENT
-  /// scope's own scene value rather than a rebuilt or defaulted one.
-  ///
-  /// What no unit test can prove is that the system then actually opens a window — that is the
-  /// two-shoots-side-by-side device evidence, a named acceptance leg at the TestFlight
-  /// checkpoint, and it is not claimed here.
-  @Test("The enabled Open in New Window control fires with the current scene value")
-  func theEnabledOpenInNewWindowControlFiresWithTheCurrentSceneValue() async {
-    let (store, transport, _, _) = makeStore()
-    await transport.setListImagesPage(
-      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
-    await store.selectShoot(folderID: 42, sourceTier: .archive)
-
-    let entry = GridMoreMenu.openInNewWindow
-    #expect(entry.isEnabled(store), "the control is disabled with a shoot in scope")
-    guard case .sceneWindow(let run) = entry.surface else {
-      Issue.record("more.openInNewWindow is not a scene-window entry")
-      return
-    }
-
-    let opened = OpenedShootWindows()
-    run(store, ShootWindowOpener { opened.values.append($0) })
-
-    #expect(opened.values.count == 1, "the control fired \(opened.values.count) times, not once")
-    #expect(opened.values.first == ShootSceneValue.from(query: store.query))
-    #expect(opened.values.first == ShootSceneValue(folderID: 42, sourceTier: .archive))
-  }
-
-  /// The control ships in every case — the probe decided only whether `project.yml` needed the
-  /// capability key, never whether the affordance exists — so with nothing in scope it is
-  /// PRESENT and DISABLED rather than absent.
-  @Test("Open in New Window is present and disabled with no shoot selected")
-  func openInNewWindowIsPresentAndDisabledWithNoShootSelected() async {
-    let (store, _, _, _) = makeStore()
-    #expect(store.query.folderID == nil)
-
-    let present = GridMoreMenu.entries.filter { $0.id == "more.openInNewWindow" }
-    #expect(present.count == 1, "the More menu does not carry Open in New Window")
-    #expect(GridMoreMenu.openInNewWindow.isEnabled(store) == false)
-
-    // A disabled control that still fired would be worse than an absent one.
-    guard case .sceneWindow(let run) = GridMoreMenu.openInNewWindow.surface else {
-      Issue.record("more.openInNewWindow is not a scene-window entry")
-      return
-    }
-    let opened = OpenedShootWindows()
-    run(store, ShootWindowOpener { opened.values.append($0) })
-    #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
-  }
 }
 
 /// A reference box for the spy: `ShootWindowOpener.open` is an escaping `@Sendable` closure, so it
@@ -427,4 +428,3 @@ struct GridPreferencesTests {
 final class OpenedShootWindows {
   var values: [ShootSceneValue] = []
 }
-
