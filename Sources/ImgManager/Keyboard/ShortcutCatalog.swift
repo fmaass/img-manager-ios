@@ -3,12 +3,19 @@ import Foundation
 /// The web keyboard set this app mirrors verbatim (P3 fold item 1; `frontend/src/lib/keys.ts`
 /// in the web repo is the source of truth for what each key means), PLUS the ⌘-modified
 /// discovery half of design decision 9 that WP13 P4 adds (`zoomStep`, `sceneToggle`,
-/// `groupMode`, and the `⌘/` form of `help`). Deliberately NOT the web's full set: `A`
-/// (auto-advance toggle), `Escape` (close), `Tab` (compare-flip) and `C` (compare) are all
-/// excluded from the target inventory — `C` because native compare is cancelled outright
-/// (Amendment 7; declared NOWHERE, never present-and-dead), `A` because its own surface is
-/// WP13 P8's and a present-and-dead key is exactly what this catalog exists to prevent, the
-/// other two because the P3 fold's own target inventory line does not name them.
+/// `groupMode`, and the `⌘/` form of `help`), plus `autoAdvance`, which WP13 P8 adds.
+/// Deliberately NOT the web's full set: `Escape` (close), `Tab` (compare-flip) and `C`
+/// (compare) stay excluded from the target inventory — `C` because native compare is cancelled
+/// outright (Amendment 7; declared NOWHERE, never present-and-dead), the other two because the
+/// P3 fold's own target inventory line does not name them.
+///
+/// `A` (auto-advance) used to be listed among those exclusions, on the ground that "its own
+/// surface is WP13 P8's and a present-and-dead key is exactly what this catalog exists to
+/// prevent". THAT EXCLUSION IS REVERSED, 2026-08-30: the owner decided advance-on-mark ships,
+/// and ships ON by default (epic IMGMGR-211 comment 2106, restated on IMGMGR-214 comment 2107),
+/// and WP13 P8 (IMGMGR-214) ships its chrome — the loupe header's own toggle and the account
+/// sheet's Culling row — in the very commit `autoAdvance` joins `entries` in. The rule did not
+/// bend for it; the surface arrived.
 ///
 /// This enum is the SINGLE inventory: every key equivalent the app declares names one of these
 /// cases (`AppCommands.declarations`), and `ShortcutCatalogTests` asserts that correspondence
@@ -67,6 +74,11 @@ enum ShortcutID: String, CaseIterable, Sendable {
   /// WP13 P5b: ascending ⟷ descending, the accelerator form of the Sort menu's direction rows.
   /// `R` for reverse; ⌥⌘R is unbound by iPadOS and by this app.
   case sortDirection = "⌥⌘R"
+  /// WP13 P8 (IMGMGR-214): advance-on-mark, on or off — the web's own `A`, plus a ⌘⇧A
+  /// discovery twin. Plain ⌘A is deliberately NOT used: it is the established "Select All",
+  /// and this app has a Select mode of its own, so the Shift-modified form carries it — the
+  /// same reasoning `sceneToggle` records for ⌘G.
+  case autoAdvance = "A"
 }
 
 extension ShortcutID {
@@ -92,6 +104,7 @@ extension ShortcutID {
     case .groupMode: return "⌃⌘1 · ⌃⌘2"
     case .sortKey: return "⌥⌘1 … ⌥⌘6"
     case .sortDirection: return "⌥⌘R"
+    case .autoAdvance: return "A or ⌘⇧A"
     }
   }
 
@@ -122,6 +135,7 @@ extension ShortcutID {
     case .groupMode: return "Choose the grid arrangement — ⌃⌘1 None, ⌃⌘2 Scene"
     case .sortKey: return "Sort the grid — Date, Filename, Rating, ISO, Camera, Lens"
     case .sortDirection: return "Reverse the sort direction"
+    case .autoAdvance: return "Advance to the next photograph after marking, on or off"
     }
   }
 }
@@ -164,6 +178,10 @@ enum OwningPhase: String, Sendable {
   /// Regular and a third menu on Compact's persistent options row — plus the View menu's own
   /// Sort group. The chrome ships in the same commit these entries flip active in.
   case wp13p5b = "WP13 P5b — Sort and group parity (Sort control, View menu Sort group)"
+  /// WP13 P8 (IMGMGR-214): the advance-on-mark cadence. Its chrome is the loupe header's own
+  /// toggle plus the account sheet's Culling row — both ship in the same commit this entry
+  /// flips active in, the type doc comment's own rule.
+  case wp13p8 = "WP13 P8 — Advance on mark (loupe header toggle, account sheet row)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every
@@ -195,6 +213,9 @@ enum ShortcutCatalog {
   /// view-option entries arrive already active because their chrome — the Compact grid options
   /// row, the Regular `.primaryAction` controls and the menu-bar View menu — ships in this same
   /// commit. Nothing here is present-and-dead.
+  ///
+  /// WP13 P8 (IMGMGR-214): `autoAdvance` arrives active for the same reason — the loupe header
+  /// toggle and the account sheet's Culling row ship in the same commit as this row.
   static let entries: [ShortcutCatalogEntry] = [
     ShortcutCatalogEntry(id: .arrowUp, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowDown, owningPhase: .p4, hasChromeSurface: true),
@@ -213,6 +234,7 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .groupMode, owningPhase: .wp13p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .sortKey, owningPhase: .wp13p5b, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .sortDirection, owningPhase: .wp13p5b, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .autoAdvance, owningPhase: .wp13p8, hasChromeSurface: true),
   ]
 
   static var activeEntries: [ShortcutCatalogEntry] { entries.filter(\.isActive) }

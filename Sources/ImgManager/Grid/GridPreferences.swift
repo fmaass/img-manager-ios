@@ -13,8 +13,9 @@ import Foundation
 ///
 /// Deliberately small: two scalars' worth of surface, one guard-typed read, an inventory of the
 /// keys it owns, and an injectable `UserDefaults` so every test runs in its own suite. P8
-/// (IMGMGR-214) adds `autoAdvanceOnMark` here; a persisted sort key arrives only if P5b's
-/// premise gate or the owner asks for one.
+/// (IMGMGR-214) added `autoAdvanceOnMark` here, exactly as this comment anticipated — never a
+/// second preference mechanism; a persisted sort key arrives only if P5b's premise gate or the
+/// owner asks for one.
 ///
 /// The STANDARD suite, and only from the app: the widget extension is a separate process with
 /// its own container and must not read this (no app group is declared for preferences, so it
@@ -26,10 +27,17 @@ final class GridPreferences {
   /// Density entry did NOT bring a second persisted density property with it — the grid's six
   /// row-height steps are the one density state (`GridRowHeight`), reached from two entry
   /// points (the Zoom control and the More menu), never two properties that can disagree.
-  static let persistedKeys: [String] = [filenamePlatesKey]
+  static let persistedKeys: [String] = [filenamePlatesKey, autoAdvanceOnMarkKey]
 
   static let filenamePlatesKey = "grid.filenamePlates"
   static let filenamePlatesDefault = false
+
+  static let autoAdvanceOnMarkKey = "loupe.autoAdvanceOnMark"
+  /// ON, and that is an OWNER decision of 2026-08-30 (epic IMGMGR-211 comment 2106, restated on
+  /// IMGMGR-214 comment 2107) which supersedes the ticket's own "off by default unless the owner
+  /// says otherwise" clause. Recorded here rather than only in a plan, because this constant is
+  /// the thing the decision actually is.
+  static let autoAdvanceOnMarkDefault = true
 
   private let defaults: UserDefaults
 
@@ -39,11 +47,24 @@ final class GridPreferences {
     didSet { defaults.set(filenamePlates, forKey: Self.filenamePlatesKey) }
   }
 
+  /// WP13 P8 (IMGMGR-214): after a committed mark in the LOUPE, move to the next frame — the
+  /// culling cadence "judge, advance, judge". ON by default, which is an owner decision of
+  /// 2026-08-30 (epic IMGMGR-211 comment 2106) that supersedes the ticket's own
+  /// "off by default unless the owner says otherwise" clause. Never read by any grid path:
+  /// Shift+P/X/U is the grid's own deliberate mark-and-advance and this preference does not
+  /// touch it.
+  var autoAdvanceOnMark: Bool {
+    didSet { defaults.set(autoAdvanceOnMark, forKey: Self.autoAdvanceOnMarkKey) }
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     self.filenamePlates = Self.boolPreference(
       from: defaults.object(forKey: Self.filenamePlatesKey),
       default: Self.filenamePlatesDefault)
+    self.autoAdvanceOnMark = Self.boolPreference(
+      from: defaults.object(forKey: Self.autoAdvanceOnMarkKey),
+      default: Self.autoAdvanceOnMarkDefault)
   }
 
   /// GUARD-TYPED, never `UserDefaults.bool(forKey:)`: that accessor COERCES — it reads a string

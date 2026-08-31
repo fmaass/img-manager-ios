@@ -39,6 +39,10 @@ struct GridKeyboardActions {
   /// WP13 P4: `?` and ⌘/ both open the shortcut help sheet, the surface that finally makes
   /// `ShortcutID.help` active (`ShortcutCatalog.swift`).
   var showShortcutHelp: () -> Void
+  /// WP13 P8 (IMGMGR-214): advance-on-mark on/off (`A` and ⌘⇧A). The SAME preference the loupe
+  /// header's toggle and the account sheet's row write, so the accelerator and its two chrome
+  /// twins cannot disagree.
+  var toggleAutoAdvanceOnMark: () -> Void
 }
 
 private struct GridKeyboardActionsKey: FocusedValueKey {
@@ -76,7 +80,11 @@ extension GridStore {
       toggleSceneMode: { [self] in
         Task { await setDisplayMode(displayMode == .scene ? .flat : .scene) }
       },
-      showShortcutHelp: { [self] in showShortcutHelp() }
+      showShortcutHelp: { [self] in showShortcutHelp() },
+      // Read off the store's OWN preference rather than a copy the menu holds, for the same
+      // reason `toggleSceneMode` above does: the focused value is a snapshot, and a stale copy
+      // would flip the wrong way after a change made from either chrome twin.
+      toggleAutoAdvanceOnMark: { [self] in preferences.autoAdvanceOnMark.toggle() }
     )
   }
 }

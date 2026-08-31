@@ -1430,24 +1430,49 @@ final class GridStore {
   // MARK: - Shortcuts (P4: arrows, P, X, Shift+advance, T, Z; P5 adds Space/Enter and U)
 
   func handlePickShortcut(shiftHeld: Bool) async {
-    guard !markTargetImageIDs.isEmpty else { return }
-    await applyMarkToTarget(.pick)
-    if shiftHeld { advanceToNext() }
+    await handleMarkShortcut(.pick, shiftHeld: shiftHeld)
   }
 
   func handleDislikeShortcut(shiftHeld: Bool) async {
-    guard !markTargetImageIDs.isEmpty else { return }
-    await applyMarkToTarget(.dislike)
-    if shiftHeld { advanceToNext() }
+    await handleMarkShortcut(.dislike, shiftHeld: shiftHeld)
   }
 
   /// U — active in the grid AND the loupe (same scene-level dispatch either way; `AppCommands`
   /// does not know or care which screen is currently on top). Shift+U also advances, mirroring
   /// P/X (`ShortcutCatalog`'s own doc comment: "Shift held on P/X/U means 'mark and advance'").
   func handleClearShortcut(shiftHeld: Bool) async {
+    await handleMarkShortcut(.none, shiftHeld: shiftHeld)
+  }
+
+  /// The one body `P`/`X`/`U` share. There are two lanes, and which one a press takes is decided
+  /// by the SURFACE, never by the key:
+  ///
+  /// - `Shift` held is the GRID's own deliberate mark-and-advance, byte-identical to what
+  ///   shipped: the same empty-target guard, the same `applyMarkToTarget`, the same
+  ///   `advanceToNext()`. It is never composed with the loupe cadence — a Shift press moves
+  ///   exactly one frame whatever the toggle says (the phase's Do-NOT list, pinned by
+  ///   `shiftAdvanceInTheLoupeIsUnchangedByTheCadence`).
+  /// - A BARE press while the loupe is open IS "marking in the loupe" — IMGMGR-214's own AC — so
+  ///   it rides the same seam the loupe mark bar's buttons ride, cadence and commit-fence and
+  ///   all, rather than being the one way to mark in the loupe that never advances (diff-gate r1,
+  ///   blocker 2). The write target is identical either way: entering the loupe resets selection
+  ///   to browse (`openLoupe` -> `selection.reset(.enteredLoupe)`), so `markTargetImageIDs` there
+  ///   IS `[focusedImageID]`, which is exactly what `applyLoupeMark` writes.
+  /// - A bare press in the GRID is unchanged and reads no loupe preference
+  ///   (`theGridMarkPathNeverAutoAdvances`).
+  private func handleMarkShortcut(_ state: MarkStateValue, shiftHeld: Bool) async {
+    if shiftHeld {
+      guard !markTargetImageIDs.isEmpty else { return }
+      await applyMarkToTarget(state)
+      advanceToNext()
+      return
+    }
+    if isLoupeOpen {
+      await applyLoupeMark(state)
+      return
+    }
     guard !markTargetImageIDs.isEmpty else { return }
-    await applyMarkToTarget(.none)
-    if shiftHeld { advanceToNext() }
+    await applyMarkToTarget(state)
   }
 
   /// Space/Enter — opens the loupe on the focused image. Deliberately unconditional on
@@ -1595,6 +1620,35 @@ final class GridStore {
   /// place rather than a guard each control has to remember.
   func applyMarkToTarget(_ state: MarkStateValue) async {
     await applyMark(state, to: markTargetImageIDs)
+  }
+
+  /// WP13 P8 (IMGMGR-214): the loupe mark bar's ONE entry point — its Pick, Dislike and Clear
+  /// all come through here, and the advance-on-mark cadence hangs off `applyMark`'s COMMITTED
+  /// answer rather than off the button press, so a refused, rolled-back or conflicted write
+  /// never moves the frame. It lives on the store, not in the view, because the cadence is a
+  /// rule about mutations rather than about a button — `GridStoreTests` drives it directly.
+  ///
+  /// The GRID's own mark path (`applyMarkToTarget`, `handlePickShortcut` and its siblings)
+  /// never calls this: `Shift`+P/X/U is the grid's own deliberate mark-and-advance, and this
+  /// phase leaves it exactly as it was.
+  ///
+  /// The advance is `loupeNext()`, the loupe's own flat-order step — at the true end of the
+  /// pool that fetches forward neighbours and, finding none, latches `loupeExhausted` and
+  /// leaves the frame where it is. The loupe is NEVER closed by an advance.
+  @discardableResult
+  func applyLoupeMark(_ state: MarkStateValue) async -> Bool {
+    guard let markedID = focusedImageID else { return false }
+    let committed = await applyMark(state, to: [markedID])
+    guard committed, preferences.autoAdvanceOnMark else { return committed }
+    // Diff-gate r1, blocker 1: the advance is fenced to the frame this call actually MARKED and
+    // to the loupe still being the surface. The mark bar's own controls disable while a write is
+    // in flight, but Close and the prev/next chrome do not — so between the await starting and
+    // returning, the reader can have closed the loupe (an advance would then move GRID focus) or
+    // stepped to another frame (an advance would skip past the one they deliberately chose).
+    // Neither is a cadence. The mutation itself always stands; only the advance is withheld.
+    guard isLoupeOpen, focusedImageID == markedID else { return committed }
+    await loupeNext()
+    return committed
   }
 
   /// Any effective tier change resets selection (pin: "any effective filter/tier/tree change").
@@ -1804,14 +1858,26 @@ final class GridStore {
   /// exactly one caller (`applyConflictAgain`, diff-gate round 2 B6): a conflict-recovery retry
   /// must resubmit for every originally-rejected id INCLUDING one the active filter no longer
   /// shows, using the FRESH markview the recovery's own re-read already captured for it.
+  ///
+  /// WP13 P8 (IMGMGR-214): it ANSWERS now, because `await mark; then advance` cannot otherwise
+  /// tell a commit from a rollback — every failure is handled internally here, so a caller that
+  /// hung an advance off the button press would advance past a refused write. `true` is returned
+  /// only from the branch that commits (the one that increments `mutationCommitCount`) AND is
+  /// still in the scope it started in; the refused-lane guard, the empty-priors guard, the
+  /// `catch`, and either stale-generation escape all answer `false`. A stale generation means a
+  /// shoot/filter reload landed while the network call was in flight: the write may well have
+  /// committed server-side (which is why `mutationCommitCount` still rises), but the frame the
+  /// person was judging is gone, so it is never an advance-eligible answer.
+  /// `@discardableResult` keeps every existing call site compiling unchanged.
+  @discardableResult
   func applyMark(
     _ state: MarkStateValue, to imageIDs: [Int], explicitPriors: [PriorMarkSnapshot]? = nil
-  ) async {
-    guard tryAcquireLane() else { return }
+  ) async -> Bool {
+    guard tryAcquireLane() else { return false }
     let priors = explicitPriors ?? capturePriorSnapshots(for: imageIDs)
     guard !priors.isEmpty else {
       releaseLane()
-      return
+      return false
     }
     defer { releaseLane() }
     // Diff-gate round 2, B2: the generation THIS mutation's priors were captured under. A
@@ -1833,7 +1899,7 @@ final class GridStore {
       // the fact that the write landed, so the queue's post-mutation re-read is never silently
       // skipped just because a scope change happened to race the network await.
       mutationCommitCount += 1
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration else { return false }
       reconcileRevisions(applied.revisions ?? [])
       undo.record(UndoEntry(appliedState: state, priorStates: priors))
       if priors.count > 1 { selection.bulkActionSucceeded() }
@@ -1841,8 +1907,9 @@ final class GridStore {
       // WP12: the cover follows the pick. Still inside this call's own lane hold, so it is
       // serialised against other mutations by construction rather than by a second lock.
       await refreshScenesFor(priors.map(\.imageID))
+      return true
     } catch {
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration else { return false }
       rollback(priors)
       let mutationError = (error as? GridServiceError) ?? .unreachable
       lastMutationError = mutationError
@@ -1856,6 +1923,7 @@ final class GridStore {
         }
         await handleConflict(intent: .setState(state), batch: batch)
       }
+      return false
     }
   }
 
