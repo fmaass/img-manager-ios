@@ -26,10 +26,14 @@ struct ShortcutCatalogTests {
       // the same commit these two activate in — the six offered keys as ⌥⌘1…⌥⌘6 and the
       // direction toggle as ⌥⌘R.
       .sortKey, .sortDirection,
+      // WP13 P8 (IMGMGR-214): `A` was EXCLUDED from the target inventory until its own surface
+      // existed — that surface (the loupe header toggle and the account-sheet row) ships in the
+      // same commit this entry does, which is the catalog's own rule, not an exception to it.
+      .autoAdvance,
     ]
     let actual = Set(ShortcutCatalog.entries.map(\.id))
     #expect(actual == expected)
-    #expect(ShortcutCatalog.entries.count == 17)
+    #expect(ShortcutCatalog.entries.count == 18)
   }
 
   @Test("No C anywhere in the catalog")
@@ -184,10 +188,13 @@ struct ShortcutCatalogTests {
     // This is what "verify no collision with iPadOS system defaults" looks like as a check
     // rather than a claim; ⌃⌘1/⌃⌘2 (the Group pair) appear in none of them.
     func isReserved(_ character: Character, _ modifiers: EventModifiers) -> Bool {
+      // WP13 P8 (IMGMGR-214) adds ⌘A on the same footing as ⌘G: not an iPadOS-reserved
+      // combination but an established system-wide convention (Select All, and this app has a
+      // Select mode), which is why auto-advance takes ⌘⇧A instead.
       let reserved: [(Character, EventModifiers)] = [
         (" ", .command), ("\t", .command), ("h", .command), ("d", [.command, .option]),
         ("3", [.command, .shift]), ("4", [.command, .shift]), (" ", [.command, .control]),
-        ("g", .command),
+        ("g", .command), ("a", .command),
       ]
       return reserved.contains { $0.0 == character && $0.1 == modifiers }
     }
@@ -249,19 +256,58 @@ struct ShortcutCatalogTests {
   }
 
   @MainActor
-  @Test(
-    "No declaration binds C, and none binds A yet — with a positive control proving P IS bound (LSN-0033)"
-  )
-  func noEntryDeclaresCAndNoEntryDeclaresAYet() {
+  @Test("No declaration binds C — with a positive control proving P IS bound (LSN-0033)")
+  func noEntryDeclaresC() {
     let bound = AppCommands.declarations.compactMap { $0.key.map { String($0.character) } }
-    // `C` (compare) is cancelled outright (Amendment 7); `A` (auto-advance) is WP13 P8's and
-    // must not exist present-and-dead before its own surface does.
+    // `C` (compare) is cancelled outright (Amendment 7) — declared NOWHERE, never
+    // present-and-dead. `A` used to be asserted absent HERE for the same reason; WP13 P8
+    // (IMGMGR-214) shipped its surface, so the assertion moved to
+    // `aIsActiveAndDeclaredExactlyOnceInAppCommands` below rather than being deleted.
     #expect(!bound.contains { $0.lowercased() == "c" })
-    #expect(!bound.contains { $0.lowercased() == "a" })
-    #expect(!ShortcutID.allCases.contains { $0.rawValue.uppercased() == "A" })
+    #expect(!ShortcutID.allCases.contains { $0.rawValue.uppercased() == "C" })
     // POSITIVE CONTROL, same invocation: a 0-hit above proves the scan ran only if a term
     // known to be present is found by the same scan.
     #expect(bound.contains { $0.lowercased() == "p" })
+  }
+
+  @MainActor
+  @Test(
+    "WP13 P8: A is ACTIVE, bound exactly once bare and once as its ⌘⇧ twin — never plain ⌘A"
+  )
+  func aIsActiveAndDeclaredExactlyOnceInAppCommands() {
+    let entry = ShortcutCatalog.entries.first { $0.id == .autoAdvance }
+    #expect(entry?.isActive == true)
+    #expect(entry?.owningPhase == .wp13p8)
+
+    let declared = AppCommands.declarations.filter { $0.shortcut == .autoAdvance }
+    // Exactly one BARE `A` (the web's own key, decision 9's fast path) and exactly one ⌘ form
+    // (its discovery twin) — never two bare declarations racing for the same press.
+    let bare = declared.filter { $0.modifiers.isEmpty }
+    #expect(bare.count == 1)
+    #expect(bare.compactMap { $0.key.map { String($0.character) } } == ["a"])
+    let discovery = declared.filter { !$0.modifiers.isEmpty }
+    #expect(discovery.count == 1)
+    #expect(discovery.map(\.modifiers) == [EventModifiers([.command, .shift])])
+    #expect(discovery.compactMap { $0.key.map { String($0.character) } } == ["a"])
+    #expect(declared.count == 2)
+
+    // Plain ⌘A stays unbound for the same reason plain ⌘G does (see `sceneToggleIsShiftCommandG`
+    // and the reserved-combination test): it is the established "Select All", and this app has a
+    // Select mode of its own.
+    let commandA = AppCommands.declarations.filter {
+      $0.modifiers == EventModifiers.command && $0.key.map { String($0.character) } == "a"
+    }
+    #expect(commandA.isEmpty)
+
+    // Both declarations must be in the View menu — the discovery surface p3220 §3.1 names.
+    let viewMenuIDs = Set(AppCommands.viewMenuGroups.flatMap(\.items).map(\.id))
+    #expect(declared.allSatisfy { viewMenuIDs.contains($0.id) })
+    #expect(AppCommands.viewMenuGroups.flatMap(\.items).map(\.title)
+      .contains("Advance After Marking"))
+
+    // POSITIVE CONTROL, same invocation (LSN-0033): the 0-hit `commandA` filter proves absence
+    // only if the same scan finds something known to be bound.
+    #expect(AppCommands.declarations.contains { $0.shortcut == .pick })
   }
 
   @MainActor

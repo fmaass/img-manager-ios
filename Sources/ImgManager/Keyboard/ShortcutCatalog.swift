@@ -67,6 +67,11 @@ enum ShortcutID: String, CaseIterable, Sendable {
   /// WP13 P5b: ascending ⟷ descending, the accelerator form of the Sort menu's direction rows.
   /// `R` for reverse; ⌥⌘R is unbound by iPadOS and by this app.
   case sortDirection = "⌥⌘R"
+  /// WP13 P8 (IMGMGR-214): advance-on-mark, on or off — the web's own `A`, plus a ⌘⇧A
+  /// discovery twin. Plain ⌘A is deliberately NOT used: it is the established "Select All",
+  /// and this app has a Select mode of its own, so the Shift-modified form carries it — the
+  /// same reasoning `sceneToggle` records for ⌘G.
+  case autoAdvance = "A"
 }
 
 extension ShortcutID {
@@ -92,6 +97,7 @@ extension ShortcutID {
     case .groupMode: return "⌃⌘1 · ⌃⌘2"
     case .sortKey: return "⌥⌘1 … ⌥⌘6"
     case .sortDirection: return "⌥⌘R"
+    case .autoAdvance: return "A or ⌘⇧A"
     }
   }
 
@@ -122,6 +128,7 @@ extension ShortcutID {
     case .groupMode: return "Choose the grid arrangement — ⌃⌘1 None, ⌃⌘2 Scene"
     case .sortKey: return "Sort the grid — Date, Filename, Rating, ISO, Camera, Lens"
     case .sortDirection: return "Reverse the sort direction"
+    case .autoAdvance: return "Advance to the next photograph after marking, on or off"
     }
   }
 }
@@ -164,6 +171,10 @@ enum OwningPhase: String, Sendable {
   /// Regular and a third menu on Compact's persistent options row — plus the View menu's own
   /// Sort group. The chrome ships in the same commit these entries flip active in.
   case wp13p5b = "WP13 P5b — Sort and group parity (Sort control, View menu Sort group)"
+  /// WP13 P8 (IMGMGR-214): the advance-on-mark cadence. Its chrome is the loupe header's own
+  /// toggle plus the account sheet's Culling row — both ship in the same commit this entry
+  /// flips active in, the type doc comment's own rule.
+  case wp13p8 = "WP13 P8 — Advance on mark (loupe header toggle, account sheet row)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every

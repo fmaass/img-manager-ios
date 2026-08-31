@@ -28,6 +28,160 @@ struct GridStoreTests {
     return (GridStore(service: service), transport)
   }
 
+  /// WP13 P8 (IMGMGR-214): the same stub store, but holding its OWN `UserDefaults` suite — the
+  /// cadence is preference-driven, and a preference test must neither read nor leave state in
+  /// the simulator's shared standard domain (`makeEphemeralDefaults`, P5a's own helper).
+  private func makeStoreWithOwnPreferences() -> (GridStore, GridStubTransport, GridPreferences) {
+    let transport = GridStubTransport()
+    let client = ImgManagerAPIClient.make(transport: transport)
+    let service = GridService(client: client)
+    let preferences = GridPreferences(defaults: makeEphemeralDefaults())
+    return (GridStore(service: service, preferences: preferences), transport, preferences)
+  }
+
+  /// Three loaded frames, the loupe open on the first, and the cadence explicitly `on`/`off` —
+  /// the shared setup for every advance-on-mark test below.
+  private func makeLoupeAtFirstOfThree(autoAdvance: Bool) async -> (
+    GridStore, GridStubTransport, GridPreferences
+  ) {
+    let (store, transport, preferences) = makeStoreWithOwnPreferences()
+    await transport.setListImagesPage(
+      .init(items: (1...3).map { makeImage(id: $0, revision: "r0") }, limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+    preferences.autoAdvanceOnMark = autoAdvance
+    return (store, transport, preferences)
+  }
+
+  private func markCommits(_ transport: GridStubTransport, imageID: Int, revision: String) async {
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(applied: 1, requested: 1, revisions: [.init(imageId: imageID, revision: revision)])))
+  }
+
+  // MARK: - WP13 P8 (IMGMGR-214): the advance-on-mark cadence
+
+  @Test("A COMMITTED loupe mark advances to the next frame when auto-advance is on")
+  func aCommittedLoupeMarkAdvancesWhenAutoAdvanceIsOn() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: true)
+    await markCommits(transport, imageID: 1, revision: "r1")
+
+    let committed = await store.applyLoupeMark(.pick)
+
+    #expect(committed)
+    // The mark landed on the frame that was focused when the control was pressed...
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == .pick)
+    // ...and the loupe then moved on to the next one, in the same flat order the grid uses.
+    #expect(store.focusedImageID == 2)
+    #expect(store.isLoupeOpen)
+    // Pre-decided cadence answer (the phase's known-unknown): the undo slot is not
+    // frame-scoped, so Undo stays enabled after the advance and reverts the mark just made on
+    // the frame the loupe has already left.
+    #expect(store.undo.canUndo)
+    #expect(store.undo.entry?.priorStates.map(\.imageID) == [1])
+    #expect(store.undo.entry?.appliedState == .pick)
+  }
+
+  @Test(
+    "A refused or rolled-back loupe mark NEVER advances -- the 409 branch, and the empty-target refusal"
+  )
+  func aRefusedOrRolledBackLoupeMarkNeverAdvances() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: true)
+    await transport.setMarkStateOutcome(.conflict)
+
+    let committed = await store.applyLoupeMark(.pick)
+
+    #expect(!committed)
+    #expect(store.lastMutationError == .conflict)
+    // Type-qualified `.none` -- bare `.none` would match `Optional.none` (nil), not
+    // `.some(StatePayload.none)`.
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == none)  // rolled back whole
+    #expect(store.focusedImageID == 1)  // still the frame the person is judging
+    #expect(store.isLoupeOpen)
+    #expect(!store.undo.canUndo)  // a refused mutation never enters the undo slot
+
+    // The other refusal shape: nothing focused writes nothing, so there is nothing to advance
+    // from either.
+    store.focusedImageID = nil
+    let refused = await store.applyLoupeMark(.pick)
+    #expect(!refused)
+    #expect(store.focusedImageID == nil)
+  }
+
+  @Test("Auto-advance OFF leaves the frame in place -- the mark itself still commits")
+  func autoAdvanceOffLeavesTheFrameInPlace() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: false)
+    await markCommits(transport, imageID: 1, revision: "r1")
+
+    let committed = await store.applyLoupeMark(.pick)
+
+    #expect(committed)
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == .pick)
+    #expect(store.focusedImageID == 1)
+    #expect(store.isLoupeOpen)
+  }
+
+  @Test("Advance at the exhausted tail is a NO-OP that leaves the frame in place, never a close")
+  func advanceAtTheExhaustedTailIsANoOpAndNeverCloses() async {
+    let (store, transport, preferences) = makeStoreWithOwnPreferences()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+    preferences.autoAdvanceOnMark = true
+    // Exhaustion is the SERVER's word: an empty forward-neighbour page is the only thing that
+    // latches `loupeExhausted`.
+    await transport.setNeighboursPage(.init(items: [], limit: 5, nextCursor: nil))
+    await markCommits(transport, imageID: 1, revision: "r1")
+
+    let committed = await store.applyLoupeMark(.dislike)
+
+    #expect(committed)
+    #expect(store.images.first?.mark.state == .dislike)
+    #expect(store.focusedImageID == 1)  // nothing to advance to: the frame stays put
+    #expect(store.loupeExhausted)
+    #expect(!store.canLoupeGoNext)
+    // The whole point of this test: the end of the pool is not a completion act (ADR-0004) and
+    // an advance never dismisses the loupe.
+    #expect(store.isLoupeOpen)
+  }
+
+  @Test("Auto-advance defaults to ON with nothing stored -- the owner decision of 2026-08-30")
+  func autoAdvanceDefaultsToOnWithNoStoredPreference() {
+    let defaults = makeEphemeralDefaults()
+    #expect((defaults.object(forKey: GridPreferences.autoAdvanceOnMarkKey) as? Bool) == nil)
+    #expect(GridPreferences.autoAdvanceOnMarkDefault)
+    #expect(GridPreferences(defaults: defaults).autoAdvanceOnMark)
+
+    // A real persisted preference, not a session flag: what the reader turns off stays off.
+    let preferences = GridPreferences(defaults: defaults)
+    preferences.autoAdvanceOnMark = false
+    #expect(GridPreferences(defaults: defaults).autoAdvanceOnMark == false)
+    #expect(GridPreferences.persistedKeys.contains(GridPreferences.autoAdvanceOnMarkKey))
+  }
+
+  @Test("The GRID's mark path never auto-advances -- Shift+advance stays its own deliberate act")
+  func theGridMarkPathNeverAutoAdvances() async {
+    let (store, transport, preferences) = makeStoreWithOwnPreferences()
+    await transport.setListImagesPage(
+      .init(items: (1...3).map { makeImage(id: $0, revision: "r0") }, limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 1  // focused in the GRID -- the loupe was never opened
+    preferences.autoAdvanceOnMark = true
+    await markCommits(transport, imageID: 1, revision: "r1")
+
+    await store.handlePickShortcut(shiftHeld: false)
+    #expect(store.images.first?.mark.state == .pick)
+    #expect(store.focusedImageID == 1)  // bare P in the grid marks and stays put
+    #expect(!store.isLoupeOpen)
+
+    // ...and Shift+P still advances, exactly as it did before this phase.
+    await markCommits(transport, imageID: 1, revision: "r2")
+    await store.handlePickShortcut(shiftHeld: true)
+    #expect(store.focusedImageID == 2)
+  }
+
   // MARK: - Precondition + 409 rollback + undo truth
 
   @Test("Every mutation attaches a precondition built from the CURRENTLY loaded revision")

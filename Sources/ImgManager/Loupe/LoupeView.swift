@@ -287,7 +287,9 @@ struct LoupeView: View {
 
 /// The loupe's own persistent bottom mark bar (spec: "Pick · Dislike · Clear · Undo", placed
 /// low — HIG reach favours the bottom). Every control here calls the SAME `GridStore` mutation
-/// path the grid's own `ActionBarView` uses (`applyMark`/`undoLastMark`) — `isMutatingMark`
+/// path the grid's own `ActionBarView` uses — through `applyLoupeMark`, which is `applyMark`
+/// plus WP13 P8's advance-on-mark cadence (the advance hangs off the mutation's own COMMITTED
+/// answer, never off the button press) — and `undoLastMark`. `isMutatingMark`
 /// (BINDING fold addendum) is the store-level guard against a rapid double-tap; disabling every
 /// button here while a mutation is in flight is the view-layer half of that same guard, same
 /// "disabled visually, guarded at the store independent of that" posture `ActionBarView`'s Pick
@@ -298,8 +300,7 @@ struct LoupeMarkBar: View {
   var body: some View {
     HStack(spacing: 24) {
       Button {
-        guard let id = store.focusedImageID else { return }
-        Task { await store.applyMark(.pick, to: [id]) }
+        Task { await store.applyLoupeMark(.pick) }
       } label: {
         Label("Pick", systemImage: "hand.thumbsup")
       }
@@ -308,8 +309,7 @@ struct LoupeMarkBar: View {
       .frame(minWidth: 44, minHeight: 44)
 
       Button {
-        guard let id = store.focusedImageID else { return }
-        Task { await store.applyMark(.dislike, to: [id]) }
+        Task { await store.applyLoupeMark(.dislike) }
       } label: {
         Label("Dislike", systemImage: "hand.thumbsdown")
       }
@@ -318,8 +318,7 @@ struct LoupeMarkBar: View {
       .frame(minWidth: 44, minHeight: 44)
 
       Button {
-        guard let id = store.focusedImageID else { return }
-        Task { await store.applyMark(.none, to: [id]) }
+        Task { await store.applyLoupeMark(.none) }
       } label: {
         Label("Clear", systemImage: "xmark.circle")
       }

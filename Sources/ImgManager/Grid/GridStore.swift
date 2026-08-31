@@ -1597,6 +1597,29 @@ final class GridStore {
     await applyMark(state, to: markTargetImageIDs)
   }
 
+  /// WP13 P8 (IMGMGR-214): the loupe mark bar's ONE entry point — its Pick, Dislike and Clear
+  /// all come through here, and the advance-on-mark cadence hangs off `applyMark`'s COMMITTED
+  /// answer rather than off the button press, so a refused, rolled-back or conflicted write
+  /// never moves the frame. It lives on the store, not in the view, because the cadence is a
+  /// rule about mutations rather than about a button — `GridStoreTests` drives it directly.
+  ///
+  /// The GRID's own mark path (`applyMarkToTarget`, `handlePickShortcut` and its siblings)
+  /// never calls this: `Shift`+P/X/U is the grid's own deliberate mark-and-advance, and this
+  /// phase leaves it exactly as it was.
+  ///
+  /// The advance is `loupeNext()`, the loupe's own flat-order step — at the true end of the
+  /// pool that fetches forward neighbours and, finding none, latches `loupeExhausted` and
+  /// leaves the frame where it is. The loupe is NEVER closed by an advance.
+  @discardableResult
+  func applyLoupeMark(_ state: MarkStateValue) async -> Bool {
+    guard let id = focusedImageID else { return false }
+    let committed = await applyMark(state, to: [id])
+    // RED-1 (WP13 P8): the cadence itself is deliberately absent here, so
+    // `aCommittedLoupeMarkAdvancesWhenAutoAdvanceIsOn` is observed failing against a tree that
+    // already compiles the test. The GREEN commit adds the advance.
+    return committed
+  }
+
   /// Any effective tier change resets selection (pin: "any effective filter/tier/tree change").
   func setRowHeight(_ newValue: GridRowHeight) {
     guard rowHeight != newValue else { return }
@@ -1804,14 +1827,26 @@ final class GridStore {
   /// exactly one caller (`applyConflictAgain`, diff-gate round 2 B6): a conflict-recovery retry
   /// must resubmit for every originally-rejected id INCLUDING one the active filter no longer
   /// shows, using the FRESH markview the recovery's own re-read already captured for it.
+  ///
+  /// WP13 P8 (IMGMGR-214): it ANSWERS now, because `await mark; then advance` cannot otherwise
+  /// tell a commit from a rollback — every failure is handled internally here, so a caller that
+  /// hung an advance off the button press would advance past a refused write. `true` is returned
+  /// only from the branch that commits (the one that increments `mutationCommitCount`) AND is
+  /// still in the scope it started in; the refused-lane guard, the empty-priors guard, the
+  /// `catch`, and either stale-generation escape all answer `false`. A stale generation means a
+  /// shoot/filter reload landed while the network call was in flight: the write may well have
+  /// committed server-side (which is why `mutationCommitCount` still rises), but the frame the
+  /// person was judging is gone, so it is never an advance-eligible answer.
+  /// `@discardableResult` keeps every existing call site compiling unchanged.
+  @discardableResult
   func applyMark(
     _ state: MarkStateValue, to imageIDs: [Int], explicitPriors: [PriorMarkSnapshot]? = nil
-  ) async {
-    guard tryAcquireLane() else { return }
+  ) async -> Bool {
+    guard tryAcquireLane() else { return false }
     let priors = explicitPriors ?? capturePriorSnapshots(for: imageIDs)
     guard !priors.isEmpty else {
       releaseLane()
-      return
+      return false
     }
     defer { releaseLane() }
     // Diff-gate round 2, B2: the generation THIS mutation's priors were captured under. A
@@ -1833,7 +1868,7 @@ final class GridStore {
       // the fact that the write landed, so the queue's post-mutation re-read is never silently
       // skipped just because a scope change happened to race the network await.
       mutationCommitCount += 1
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration else { return false }
       reconcileRevisions(applied.revisions ?? [])
       undo.record(UndoEntry(appliedState: state, priorStates: priors))
       if priors.count > 1 { selection.bulkActionSucceeded() }
@@ -1841,8 +1876,9 @@ final class GridStore {
       // WP12: the cover follows the pick. Still inside this call's own lane hold, so it is
       // serialised against other mutations by construction rather than by a second lock.
       await refreshScenesFor(priors.map(\.imageID))
+      return true
     } catch {
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration else { return false }
       rollback(priors)
       let mutationError = (error as? GridServiceError) ?? .unreachable
       lastMutationError = mutationError
@@ -1856,6 +1892,7 @@ final class GridStore {
         }
         await handleConflict(intent: .setState(state), batch: batch)
       }
+      return false
     }
   }
 
