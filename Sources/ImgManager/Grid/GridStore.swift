@@ -460,11 +460,12 @@ final class GridStore {
   /// The sort key currently in force — the server's own default until the reader picks another,
   /// so the menu can draw its checkmark before anything has been chosen.
   var activeSortKey: SortKey {
-    query.sort.flatMap(SortKey.init(rawValue:)) ?? SortGroupOptions.defaultSortKey
+    presentationInForce.sort.flatMap(SortKey.init(rawValue:)) ?? SortGroupOptions.defaultSortKey
   }
 
   var activeDirection: SortDirection {
-    query.direction.flatMap(SortDirection.init(rawValue:)) ?? SortGroupOptions.defaultDirection
+    presentationInForce.direction.flatMap(SortDirection.init(rawValue:))
+      ?? SortGroupOptions.defaultDirection
   }
 
   /// The ONE single-select value the Group menu renders: Scene, a `group_by` dimension, or
@@ -476,22 +477,60 @@ final class GridStore {
     return .none
   }
 
-  /// The Sort menu's key rows. Routed through `applyFilterChange`, which resets selection, clears
-  /// focus and RESTARTS paging under a fenced generation — the client therefore never replays a
-  /// cursor across a sort change, which the server refuses with `400 cursor_scope_mismatch`
-  /// (live-probed 2026-08-30 against the deployed v0.12.1: cross-sort, cross-direction and
-  /// cross-`group_by` replays are all refused, as is dropping `group_by`).
+  /// The presentation in force for the FLAT grid: the query's own while flat, and the SUSPENDED
+  /// one while Scene is on.
+  ///
+  /// Reading the suspension in Scene mode is what makes the Sort control tell the truth there. A
+  /// suspended presentation is not a forgotten one — it is exactly what comes back on the way out
+  /// and what a sort choice made from Scene mode is a change TO — so the menu's checkmark and the
+  /// control's label must name it, not the server defaults the cleared query falls back to.
+  private var presentationInForce: SortGroupPresentation {
+    if displayMode == .scene, let suspended = suspendedPresentation { return suspended }
+    return SortGroupPresentation(of: query)
+  }
+
+  /// The Sort menu's key rows. Routed through `applyFlatPresentation`, and from there through
+  /// `applyFilterChange`, which resets selection, clears focus and RESTARTS paging under a fenced
+  /// generation — the client therefore never replays a cursor across a sort change, which the
+  /// server refuses with `400 cursor_scope_mismatch` (live-probed 2026-08-30 against the deployed
+  /// v0.12.1: cross-sort, cross-direction and cross-`group_by` replays are all refused, as is
+  /// dropping `group_by`).
   func setSortKey(_ key: SortKey) async {
-    await applyFilterChange { $0.sort = key.rawValue }
+    await applyFlatPresentation { $0.sort = key.rawValue }
   }
 
   func setSortDirection(_ direction: SortDirection) async {
-    await applyFilterChange { $0.direction = direction.rawValue }
+    await applyFlatPresentation { $0.direction = direction.rawValue }
   }
 
-  /// The Sort menu's direction row in its accelerator form (the View menu's ⌥⌘R).
+  /// The Sort menu's direction row in its accelerator form (the View menu's ⌥⌘R). Reverses the
+  /// presentation IN FORCE — which, in Scene mode, is the suspended one, not the cleared query's
+  /// fallback.
   func toggleSortDirection() async {
     await setSortDirection(activeDirection.reversed)
+  }
+
+  /// Every FLAT-presentation choice — a sort key, a direction, a `group_by` dimension — leaves
+  /// Scene first and then applies, as ONE awaited sequence with no intermediate state published
+  /// to the caller.
+  ///
+  /// Diff-gate r1 BLOCKER 2: without this, a sort key chosen in Scene mode was enabled but inert.
+  /// It mutated the cleared query and moved the label, while Scene reloaded through
+  /// `browseStacks` — which ignores `sort`, `direction` and `group_by` by contract (ADR-0005
+  /// decision 1, and it stays that way) — and then leaving Scene RESTORED the suspended
+  /// presentation and discarded the choice outright. The rule the Group menu already followed is
+  /// simply the rule for the whole flat presentation: choosing any of it means asking for the
+  /// flat grid. No disabled controls, no dead choices.
+  ///
+  /// `setDisplayMode(.flat)` restores the suspension first, so the mutation below edits the
+  /// presentation the reader was last looking at rather than a cleared one — and when the
+  /// restored value already IS the chosen one, `applyFilterChange`'s own `next != query` guard
+  /// makes the second step a no-op and the whole thing is a single reload.
+  private func applyFlatPresentation(_ mutate: (inout GridImagesQuery) -> Void) async {
+    if displayMode == .scene {
+      await setDisplayMode(.flat)
+    }
+    await applyFilterChange(mutate)
   }
 
   /// Scene ⟷ `group_by` as ONE single-select state — the coordinator entry point the Group menu
@@ -502,12 +541,11 @@ final class GridStore {
   /// Scene was on would have left `displayMode == .scene` and the chosen menu row would visibly
   /// have done nothing. The three rules, in one place:
   /// - `.scene` → `setDisplayMode(.scene)`, which suspends the presentation on the way in;
-  /// - `.key(k)`/`.none` while Scene is on → `setDisplayMode(.flat)` FIRST (which restores the
-  ///   suspended presentation), THEN `applyFilterChange` to the chosen key — one awaited
-  ///   sequence, so the caller cannot observe a half-applied state. When the restored `group_by`
-  ///   already IS the chosen key, `applyFilterChange`'s own `next != query` guard makes the second
-  ///   step a no-op and the whole thing is a single reload;
-  /// - `.key(k)`/`.none` while already flat → `applyFilterChange` only.
+  /// - `.key(k)`/`.none` → `applyFlatPresentation`, which leaves Scene first (restoring the
+  ///   suspended presentation) and then applies the chosen key as one awaited sequence, and is a
+  ///   plain `applyFilterChange` when the reader is already flat. Since diff-gate r1 BLOCKER 2
+  ///   that helper is shared with the Sort menu: choosing ANY part of the flat presentation means
+  ///   asking for the flat grid, so a group dimension and a sort key behave identically here.
   ///
   /// Exclusivity holds BY CONSTRUCTION rather than by arithmetic: the menu is a single-select
   /// list over `GroupingChoice`, and `GroupingChoice` cannot express "Scene and Camera".
@@ -516,10 +554,7 @@ final class GridStore {
     case .scene:
       await setDisplayMode(.scene)
     case .none, .key:
-      if displayMode == .scene {
-        await setDisplayMode(.flat)
-      }
-      await applyFilterChange { $0.groupBy = choice.groupByKey?.rawValue }
+      await applyFlatPresentation { $0.groupBy = choice.groupByKey?.rawValue }
     }
   }
 
@@ -566,24 +601,52 @@ final class GridStore {
 
   // MARK: - Group headers (WP13 P5b: the ONLY truthful section source)
 
-  /// The sections, exactly as `GET /api/image-groups` stated them under the CURRENT filters,
-  /// keyed so a tile's own `group_key` (nullable — the Unknown bucket) looks one up directly.
+  /// The last VOUCHED answer and the query identity it describes, together and inseparable.
+  ///
+  /// Private, and a single value rather than three parallel properties, because the identity is
+  /// not metadata about the headers — it is the condition under which they mean anything at all.
+  /// Diff-gate r1 BLOCKER 1: while these were three independent stored properties, a failed
+  /// `/api/image-groups` fetch left the PREVIOUS scope's headers published (the failure path
+  /// simply returns), and the view consumed them unconditionally — so after a grouped folder or
+  /// filter switch the old scope's label, count and timezone could render over the new
+  /// photographs. Pairing them makes that unrepresentable rather than merely discouraged.
+  private var vouchedGroups:
+    (
+      identity: GridImagesQuery, headers: [GroupKey: Components.Schemas.GroupHeader],
+      timezone: String?
+    )?
+
+  /// The sections for the CURRENT query, exactly as `GET /api/image-groups` stated them, keyed so
+  /// a tile's own `group_key` (nullable — the Unknown bucket) looks one up directly. EMPTY unless
+  /// the server has vouched for THIS query: unvouched renders as an unsectioned stream, never as
+  /// the previous scope's sections.
   ///
   /// Never a client-side tally. A page holds PART of a group, so a count derived from the loaded
   /// rows would state the PAGE's number under a section's name; the same goes for the Unknown
   /// bucket's label and for the timezone a time-key label was rendered in. All three are the
   /// server's words (`app/api/images.py:1816-1826`: "the ONLY truthful way a client can place a
   /// section header").
-  private(set) var groupHeaders: [GroupKey: Components.Schemas.GroupHeader] = [:]
+  ///
+  /// Gated HERE rather than in the view, so the view stays dumb: there is no way to read a header
+  /// out of this store without the identity check having already run.
+  var groupHeaders: [GroupKey: Components.Schemas.GroupHeader] {
+    guard let vouched = vouchedGroups, vouched.identity == query else { return [:] }
+    return vouched.headers
+  }
 
   /// The zone the response named for its labels — non-nil for the five time keys only
   /// (live-probed 2026-08-30: `group_by=day` → `Europe/Zurich`; `camera`/`location` → null).
-  /// Estate ADR-0007 (/link/2553): a rendered local time names its zone.
-  private(set) var groupTimezone: String?
+  /// Estate ADR-0007 (/link/2553): a rendered local time names its zone. Identity-gated for the
+  /// same reason as `groupHeaders`: a zone from another scope is as wrong as a count from one.
+  var groupTimezone: String? {
+    guard let vouched = vouchedGroups, vouched.identity == query else { return nil }
+    return vouched.timezone
+  }
 
-  /// The query the published headers describe — the SAME identity discipline `facetsIdentity`
-  /// uses, so a header set never outlives the filters it was computed under.
-  private(set) var groupHeadersIdentity: GridImagesQuery?
+  /// The query the vouched headers describe — the SAME identity discipline `facetsIdentity`
+  /// uses. Exposed for the refresh guard and for tests; reading it is never a substitute for
+  /// the gate above, which has already applied it.
+  var groupHeadersIdentity: GridImagesQuery? { vouchedGroups?.identity }
 
   private var groupHeadersRefresh: (identity: GridImagesQuery, task: Task<Void, Never>)?
 
@@ -591,14 +654,16 @@ final class GridStore {
   ///
   /// Runs through the SAME single-flight `refreshFacets` does (`refreshDerived`), keyed by the
   /// same query identity — one mechanism, two slots, rather than a second concurrency pattern
-  /// beside it. A failed fetch leaves the last good headers standing exactly as a failed facets
-  /// fetch leaves the last good counts standing; absence renders as absence (an unsectioned
-  /// stream), never as an invented label.
+  /// beside it.
+  ///
+  /// A failed fetch publishes NOTHING — it leaves the last vouched answer where it is, and that
+  /// answer stops being published the moment the query moves past it (`groupHeaders`' own gate).
+  /// So a failure under the CURRENT query keeps the sections the server already vouched for, and
+  /// a failure after a scope change renders the new photographs unsectioned rather than under the
+  /// old scope's headings. Absence renders as absence, never as an invented or a stale label.
   func refreshGroupHeaders() async {
     guard let key = query.groupBy.flatMap(GroupByKey.init(rawValue:)) else {
-      groupHeaders = [:]
-      groupTimezone = nil
-      groupHeadersIdentity = nil
+      vouchedGroups = nil
       return
     }
     await refreshDerived(
@@ -608,11 +673,13 @@ final class GridStore {
       fetch: { requested in
         let fetched = try? await self.service.imageGroups(requested, groupBy: key)
         guard self.query == requested, let fetched else { return }
-        self.groupHeaders = Dictionary(
-          (fetched.headers ?? []).map { (GroupKey($0.key), $0) },
-          uniquingKeysWith: { first, _ in first })
-        self.groupTimezone = fetched.timezone
-        self.groupHeadersIdentity = requested
+        self.vouchedGroups = (
+          identity: requested,
+          headers: Dictionary(
+            (fetched.headers ?? []).map { (GroupKey($0.key), $0) },
+            uniquingKeysWith: { first, _ in first }),
+          timezone: fetched.timezone
+        )
       })
   }
 
