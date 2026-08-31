@@ -54,6 +54,17 @@ fetch() {
 }
 
 echo "syncing from $src at $sha"
+# The canonicalization below can REFUSE, and `fetch` has already overwritten the destination by
+# then — which would leave the package holding a raw, un-canonicalized document that still builds
+# and silently drops fields. Observed while testing the refusal path, so the previous artifact is
+# kept and put back on any refusal: a refused sync changes nothing at all.
+previous="$(mktemp)"
+if [ -f "$dest" ]; then cp "$dest" "$previous"; else rm -f "$previous"; previous=""; fi
+restore_previous() {
+  [ -n "$previous" ] && [ -f "$previous" ] && cp "$previous" "$dest"
+  [ -n "$previous" ] && rm -f "$previous"
+  return 0
+}
 fetch frontend/openapi.json "$dest"
 
 # --- Nullable model references (IMGMGR-249) -------------------------------------------------
@@ -89,16 +100,44 @@ path = sys.argv[1]
 with open(path) as handle:
     doc = json.load(handle)
 
+def is_null_member(member):
+    """EXACTLY {"type": "null"} and nothing else. A sibling key on the null member changes what
+    the union says — `{"type": "null", "not": {}}` describes a branch that matches nothing, so
+    collapsing it to a bare `$ref` would erase a constraint rather than restate it — and a shape
+    this rule has not been reasoned about must not be rewritten on the strength of one matching
+    key (codex gate round 1, blocker 2)."""
+    return isinstance(member, dict) and set(member) == {"type"} and member["type"] == "null"
+
 def nullable_ref(schema):
-    """The one shape this rule knows: exactly {$ref} + {type: null}, no sibling keys."""
+    """The one shape this rule knows: exactly {$ref} + {type: null}, no sibling keys anywhere."""
     if not isinstance(schema, dict) or set(schema) != {"anyOf"}:
         return None
     members = schema["anyOf"]
     if not isinstance(members, list) or len(members) != 2:
         return None
     refs = [m for m in members if isinstance(m, dict) and set(m) == {"$ref"}]
-    nulls = [m for m in members if isinstance(m, dict) and m.get("type") == "null"]
+    nulls = [m for m in members if is_null_member(m)]
     return refs[0]["$ref"] if len(refs) == 1 and len(nulls) == 1 else None
+
+# The predicate's own probes, run on EVERY sync before a single byte is rewritten, because this
+# script has no other test harness and a matcher that quietly widens is the whole risk. The first
+# probe is the positive control: a predicate that has stopped matching anything fails here too,
+# rather than silently rewriting nothing and reporting a clean run.
+_PROBES = [
+    ({"anyOf": [{"$ref": "#/c/S"}, {"type": "null"}]}, "#/c/S"),
+    ({"anyOf": [{"$ref": "#/c/S"}, {"type": "null", "not": {}}]}, None),
+    ({"anyOf": [{"$ref": "#/c/S"}, {"type": "null"}], "title": "T"}, None),
+    ({"anyOf": [{"$ref": "#/c/S", "description": "d"}, {"type": "null"}]}, None),
+    ({"anyOf": [{"type": "string"}, {"type": "null"}]}, None),
+    ({"anyOf": [{"$ref": "#/c/S"}, {"$ref": "#/c/T"}, {"type": "null"}]}, None),
+]
+for _probe, _expected in _PROBES:
+    _actual = nullable_ref(_probe)
+    if _actual != _expected:
+        sys.stderr.write(
+            "REFUSED: predicate self-test failed on %s — expected %r, got %r\n"
+            % (json.dumps(_probe), _expected, _actual))
+        sys.exit(3)
 
 rewritten = []
 refusals = []
@@ -131,8 +170,10 @@ for route, operations in (doc.get("paths") or {}).items():
             rewritten.append("%s %s ?%s -> %s" % (verb.upper(), route, parameter["name"], ref))
 
 def remaining(node, pointer=""):
-    """EVERY anyOf still carrying a null member — the broad scan, so what this rule did not
-    touch is enumerated rather than invisible."""
+    """EVERY anyOf still carrying a null member — deliberately the BROAD test (a null member with
+    siblings counts), because the generator drops the union whatever else is on it. So a shape the
+    narrow rewrite predicate declines, `{"type": "null", "not": {}}` included, is reported here as
+    still-dropped rather than passing through unmentioned."""
     if isinstance(node, dict):
         members = node.get("anyOf")
         if isinstance(members, list) and any(
@@ -161,7 +202,7 @@ for line in rewritten:
 for pointer in remaining(doc):
     print("still-dropped %s" % pointer)
 PY
-)" || die "nullable-ref canonicalization refused (see above)" 1
+)" || { restore_previous; die "nullable-ref canonicalization refused (the previous vendored document is untouched)" 1; }
 canonicalized_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote ')"
 dropped_count="$(printf '%s\n' "$canonicalized" | grep -c '^still-dropped ')"
 echo "canonicalized $canonicalized_count nullable model references; $dropped_count still dropped:"
@@ -179,5 +220,6 @@ printf '%s\n' "$canonicalized" | sed 's/^/  /'
   echo "still_dropped_nullable_unions=$dropped_count"
 } > "$provenance" || die "cannot write $provenance" 1
 
+[ -n "$previous" ] && rm -f "$previous"
 echo "recorded $provenance:"
 sed 's/^/  /' "$provenance"
