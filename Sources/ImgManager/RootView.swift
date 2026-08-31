@@ -265,7 +265,7 @@ struct RootView: View {
       }
     }
     .sheet(isPresented: $showAccountSheet) {
-      AccountSheetView(auth: auth, preferences: gridStore.preferences)
+      AccountSheetView(auth: auth)
     }
     // P5: full-screen loupe takeover — unconditionally on Compact (the loupe is ALWAYS
     // full-screen there), and on Regular-2/3 only once the explicit toggle is on. The docked

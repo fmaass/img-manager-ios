@@ -1614,8 +1614,9 @@ final class GridStore {
   func applyLoupeMark(_ state: MarkStateValue) async -> Bool {
     guard let id = focusedImageID else { return false }
     let committed = await applyMark(state, to: [id])
-    guard committed, preferences.autoAdvanceOnMark else { return committed }
-    await loupeNext()
+    // RED-1 (WP13 P8): the cadence itself is deliberately absent here, so
+    // `aCommittedLoupeMarkAdvancesWhenAutoAdvanceIsOn` is observed failing against a tree that
+    // already compiles the test. The GREEN commit adds the advance.
     return committed
   }
 

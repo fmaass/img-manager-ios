@@ -271,9 +271,7 @@ struct ShortcutCatalogTests {
   }
 
   @MainActor
-  @Test(
-    "WP13 P8: A is ACTIVE, bound exactly once bare and once as its ⌘⇧ twin — never plain ⌘A"
-  )
+  @Test("WP13 P8: A is ACTIVE, bound once bare and once as its ⌘⇧ twin — never plain ⌘A")
   func aIsActiveAndDeclaredExactlyOnceInAppCommands() {
     let entry = ShortcutCatalog.entries.first { $0.id == .autoAdvance }
     #expect(entry?.isActive == true)
@@ -300,10 +298,10 @@ struct ShortcutCatalogTests {
     #expect(commandA.isEmpty)
 
     // Both declarations must be in the View menu — the discovery surface p3220 §3.1 names.
-    let viewMenuIDs = Set(AppCommands.viewMenuGroups.flatMap(\.items).map(\.id))
+    let viewMenuItems = AppCommands.viewMenuGroups.flatMap(\.items)
+    let viewMenuIDs = Set(viewMenuItems.map(\.id))
     #expect(declared.allSatisfy { viewMenuIDs.contains($0.id) })
-    #expect(AppCommands.viewMenuGroups.flatMap(\.items).map(\.title)
-      .contains("Advance After Marking"))
+    #expect(viewMenuItems.map(\.title).contains("Advance After Marking"))
 
     // POSITIVE CONTROL, same invocation (LSN-0033): the 0-hit `commandA` filter proves absence
     // only if the same scan finds something known to be bound.

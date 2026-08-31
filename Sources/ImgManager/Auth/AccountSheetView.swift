@@ -4,15 +4,8 @@ import SwiftUI
 /// (p1-spec-rev2.md §3 item 2). "Sign Out…" is last and destructive, and every tap routes
 /// through `SignOutFlow` so a reflexive second tap can never revoke a live credential without
 /// the confirmation dialog actually being answered.
-///
-/// WP13 P8 (IMGMGR-214) makes it the app's settings surface as well as its account one: this is
-/// where a persisted preference is reachable WITHOUT being in the loupe, which is the second
-/// half of the persistent-chrome rule for advance-on-mark (the loupe header carries the first).
-/// It takes `GridPreferences` rather than reaching for a global, so the sheet a test builds owns
-/// its own suite exactly like every other consumer of that type.
 struct AccountSheetView: View {
   var auth: AuthSession
-  @Bindable var preferences: GridPreferences
   @Environment(\.dismiss) private var dismiss
   @State private var stage: SignOutFlow.Stage = .idle
 
@@ -26,13 +19,6 @@ struct AccountSheetView: View {
       List {
         Section {
           Text(subject.map { "Signed in as \($0)" } ?? "Signed in")
-        }
-        Section("Culling") {
-          Toggle("Advance After Marking", isOn: $preferences.autoAdvanceOnMark)
-            .accessibilityIdentifier("accountAutoAdvanceToggle")
-          Text("After a mark lands in the loupe, move to the next photograph.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         Section {
           Button("Sign Out…", role: .destructive) {

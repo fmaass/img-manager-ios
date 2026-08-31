@@ -33,11 +33,10 @@ final class GridPreferences {
   static let filenamePlatesDefault = false
 
   static let autoAdvanceOnMarkKey = "loupe.autoAdvanceOnMark"
-  /// ON, and that is an OWNER decision of 2026-08-30 (epic IMGMGR-211 comment 2106, restated on
-  /// IMGMGR-214 comment 2107) which supersedes the ticket's own "off by default unless the owner
-  /// says otherwise" clause. Recorded here rather than only in a plan, because this constant is
-  /// the thing the decision actually is.
-  static let autoAdvanceOnMarkDefault = true
+  /// RED-1 (WP13 P8): deliberately the WRONG default, so
+  /// `autoAdvanceDefaultsToOnWithNoStoredPreference` is observed failing before the owner's
+  /// decision is actually encoded. The GREEN commit flips it to `true`.
+  static let autoAdvanceOnMarkDefault = false
 
   private let defaults: UserDefaults
 

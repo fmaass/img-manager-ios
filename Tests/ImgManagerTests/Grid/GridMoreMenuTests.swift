@@ -353,9 +353,8 @@ struct GridPreferencesTests {
   func theStoreOwnsExactlyTheKeysItDeclares() {
     // WP13 P8 (IMGMGR-214) added the second key this type owns; the inventory is asserted
     // exactly, so a third arriving silently is a failure here rather than a surprise later.
-    #expect(
-      GridPreferences.persistedKeys
-        == [GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey])
+    let owned = [GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey]
+    #expect(GridPreferences.persistedKeys == owned)
     #expect(GridPreferences.filenamePlatesKey == "grid.filenamePlates")
     #expect(GridPreferences.autoAdvanceOnMarkKey == "loupe.autoAdvanceOnMark")
   }

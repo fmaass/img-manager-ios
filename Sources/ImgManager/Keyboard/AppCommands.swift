@@ -227,26 +227,6 @@ extension AppCommands {
           run: { $0.toggleSortDirection() })
       ]),
     MenuCommandGroup(id: "view.zoom", items: AppCommands.zoomDeclarations),
-    // WP13 P8 (IMGMGR-214): advance-on-mark, in the View menu because that menu is the
-    // discovery surface for what the app does with a keypress (p3220 §3.1) — and in BOTH forms,
-    // decision 9's "the web set verbatim as the fast path AND Command-equivalents for
-    // discovery": bare `A` is the web's own key, ⌘⇧A is its discovery twin. Two declarations,
-    // one action, exactly the shape `Open` and `Keyboard Shortcuts` already use.
-    //
-    // Plain ⌘A is deliberately NOT used — it is the established "Select All" and this app has a
-    // Select mode of its own, the same argument `sceneToggle` records for ⌘G. The
-    // reserved-combination test asserts it, with its own positive control.
-    MenuCommandGroup(
-      id: "view.autoAdvance",
-      items: [
-        MenuCommandDeclaration(
-          id: "view.autoAdvance.command", shortcut: .autoAdvance, title: "Advance After Marking",
-          key: KeyEquivalent("a"), modifiers: [.command, .shift],
-          run: { $0.toggleAutoAdvanceOnMark() }),
-        MenuCommandDeclaration(
-          id: "view.autoAdvance.bare", shortcut: .autoAdvance, title: "Advance After Marking",
-          key: KeyEquivalent("a"), modifiers: [], run: { $0.toggleAutoAdvanceOnMark() }),
-      ]),
     // `?` is the web set's own key and ⌘/ is its Command-equivalent — decision 9's "both,
     // never one replacing the other". Two declarations, one action, exactly like Open above.
     MenuCommandGroup(

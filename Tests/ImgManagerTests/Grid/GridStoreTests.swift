@@ -1326,7 +1326,11 @@ struct GridStoreTests {
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     await transport.holdMarkStateRequests(true)
 
-    async let firstCall: Void = store.applyMark(.pick, to: [1])
+    // WP13 P8 (IMGMGR-214): `Bool`, not `Void`. `applyMark` answers now, and
+    // `@discardableResult` covers a discarded call EXPRESSION — never an explicit `: Void` type
+    // annotation like this one. All eight sites of that shape (grep `: Void = ...applyMark` over
+    // Sources/ + Tests/) are converted together; the concurrency shape is unchanged.
+    async let firstCall: Bool = store.applyMark(.pick, to: [1])
     // Deterministic: only returns once the FIRST call's network request has genuinely started,
     // which can only happen after `isMutatingMark` was already set (that assignment strictly
     // precedes the awaited network call).
@@ -1375,7 +1379,7 @@ struct GridStoreTests {
     #expect(store.undo.canUndo)
 
     await transport.holdMarkStateRequests(true)
-    async let secondCall: Void = store.applyMark(.dislike, to: [1])
+    async let secondCall: Bool = store.applyMark(.dislike, to: [1])
     await transport.waitUntilMarkStateStarted()
 
     await store.undoLastMark()  // refused: a mark mutation is in flight
@@ -1532,7 +1536,7 @@ struct GridStoreTests {
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     await transport.holdMarkStateRequests(true)
 
-    async let markCall: Void = store.applyMark(.pick, to: [1])
+    async let markCall: Bool = store.applyMark(.pick, to: [1])
     await transport.waitUntilMarkStateStarted()
     #expect(store.isMutatingMark)
 
@@ -1799,7 +1803,7 @@ struct GridStoreTests {
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     await transport.holdMarkStateRequests(true)
-    async let markCall: Void = store.applyMark(.pick, to: [1])
+    async let markCall: Bool = store.applyMark(.pick, to: [1])
     await transport.waitUntilMarkStateStarted()
 
     await transport.setTagsOutcome(
@@ -1903,7 +1907,7 @@ struct GridStoreTests {
 
     await transport.holdMarkStateRequests(true)
     await transport.setMarkStateOutcome(.conflict)
-    async let markTask: Void = store.applyMark(.pick, to: [1])
+    async let markTask: Bool = store.applyMark(.pick, to: [1])
     await transport.waitUntilMarkStateStarted()
 
     // A filter reload runs to completion WHILE the mark write is still held -- it publishes a
@@ -1938,7 +1942,7 @@ struct GridStoreTests {
     await transport.holdMarkStateRequests(true)
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
-    async let markTask: Void = store.applyMark(.pick, to: [1])
+    async let markTask: Bool = store.applyMark(.pick, to: [1])
     await transport.waitUntilMarkStateStarted()
 
     // The scope changes to a DIFFERENT shoot entirely WHILE the write is still held.
@@ -2155,7 +2159,7 @@ struct GridStoreTests {
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
     await transport.holdMarkStateRequests(true)
-    async let markCall: Void = store.applyMark(.pick, to: [1])
+    async let markCall: Bool = store.applyMark(.pick, to: [1])
     await transport.waitUntilMarkStateStarted()
 
     // The scope change lands and completes WHILE the mark request is still suspended --
@@ -2165,7 +2169,7 @@ struct GridStoreTests {
 
     await transport.holdMarkStateRequests(false)
     await transport.releaseMarkState()
-    await markCall
+    _ = await markCall
 
     // The write landed server-side (success outcome) -- the commit signal must fire even
     // though the generation moved out from under it in the meantime.
@@ -2184,7 +2188,7 @@ struct GridStoreTests {
 
     await transport.setMarkStateOutcome(.conflict)
     await transport.holdMarkStateRequests(true)
-    async let markCall: Void = store.applyMark(.pick, to: [1])
+    async let markCall: Bool = store.applyMark(.pick, to: [1])
     await transport.waitUntilMarkStateStarted()
 
     await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
@@ -2192,7 +2196,7 @@ struct GridStoreTests {
 
     await transport.holdMarkStateRequests(false)
     await transport.releaseMarkState()
-    await markCall
+    _ = await markCall
 
     #expect(store.mutationCommitCount == 0)
   }
