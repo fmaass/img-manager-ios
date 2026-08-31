@@ -587,8 +587,8 @@ struct SceneRowBuilderTests {
 
   private func stack(_ id: Int, cover: Int) -> Components.Schemas.StackBrowseStackRow {
     .init(
-      hasPick: false, kind: .stack, matchedCount: 2, memberCount: 2, representative: image(cover),
-      stackId: id)
+      hasPick: false, kind: .stack, matchedCount: 2, memberCount: 2, pickedCount: 0,
+      representative: image(cover), stackId: id)
   }
 
   @Test("A COLLAPSED scene renders as the card alone and contributes nothing actionable")
