@@ -274,6 +274,42 @@ struct GridStoreTests {
     #expect(store.focusedImageID == 1)
   }
 
+  /// The hole the first fence left (codex gate round 1, blocker 1). Guarding on "is the loupe
+  /// open NOW" is not the same question as "is this the loupe session that ASKED": close the
+  /// loupe while the forward page is held, tap the still-focused tile to reopen it on the SAME
+  /// image, and both conditions read true again — so the stale completion advances a session that
+  /// never requested it, off a frame the reader has only just come back to.
+  @Test(
+    "A neighbour page from a CLOSED loupe never advances a reopened one, even on the same image (IMGMGR-269)"
+  )
+  func aNeighbourPageFromAClosedLoupeNeverAdvancesTheReopenedSession() async {
+    let (store, transport, preferences) = makeStoreWithOwnPreferences()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.openLoupe(on: 1)
+    preferences.autoAdvanceOnMark = true
+    await transport.setNeighboursPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 5, nextCursor: nil))
+    await markCommits(transport, imageID: 1, revision: "r1")
+    await transport.holdNeighboursRequests(true)
+
+    async let marked: Bool = store.applyLoupeMark(.pick)
+    await transport.waitUntilNeighboursStarted()
+    // Close, then reopen on the SAME image — a tile tap on the frame the grid still has focused,
+    // which is the ordinary way back in. Both of the first fence's conditions are true again.
+    store.closeLoupe()
+    store.openLoupe(on: 1)
+    await transport.releaseNeighbours()
+    let committed = await marked
+
+    #expect(committed)
+    #expect(store.images.map(\.id) == [1, 2])  // the rows still merge
+    #expect(store.isLoupeOpen)
+    // The reopened session asked for nothing, so it is left exactly where the reader put it.
+    #expect(store.focusedImageID == 1)
+  }
+
   // MARK: - IMGMGR-270: undo AFTER an auto-advance acts on the frame that was marked
 
   /// The P8 cadence suite proved the undo SLOT survives an advance (`canUndo`, `priorStates`,
