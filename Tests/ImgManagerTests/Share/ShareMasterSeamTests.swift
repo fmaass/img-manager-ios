@@ -7,10 +7,12 @@ import Testing
 /// flipping `ShareMasterSeam.isAvailable` without the re-vendored contract behind it turns this
 /// suite red, so the master lane cannot switch itself on as a side effect of an unrelated edit.
 ///
-/// When the contract does grow a body, this suite is the thing to update — alongside
-/// `DownloadContractProbeTests.masterBytesAreUnreachableAtThisContract`, which is the other half
-/// of the same fact and fails at the same moment.
-@Suite("Share master seam — OFF until the contract carries a body")
+/// The contract HAS since grown a body (IMGMGR-249 re-vendor at img-manager `74203992`), and
+/// `DownloadContractProbeTests.masterBytesAreReachableAtThisContract` records that. This suite
+/// deliberately did not move with it: the seam is off now because steps 3 and 4 of
+/// `ShareMasterSeam`'s activation list are unbuilt, which is a feature decision with its own
+/// lane — not something a re-vendor gets to make.
+@Suite("Share master seam — OFF until a downloader exists behind it")
 struct ShareMasterSeamTests {
 
   @Test("The seam ships OFF at the current vendored contract")

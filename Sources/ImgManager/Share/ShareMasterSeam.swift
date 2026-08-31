@@ -3,15 +3,17 @@ import OpenAPIRuntime
 
 /// THE MASTER SEAM — the one switch that turns on the edited-master half of the share lane.
 ///
-/// FIRST-ACTION CONTRACT PROBE (IMGMGR-196, 2026-08-29). The vendored contract
-/// (`Packages/ImgManagerAPI/Sources/ImgManagerAPI/openapi.json`, img-manager v0.9.2) declares
-/// `GET /api/images/{image_id}/download` with a `200` that has NO `content` block at all —
-/// literally `{"description": "Successful Response"}`. swift-openapi-generator therefore emits
-/// an `Output.Ok` carrying no body, so the master's BYTES are unreachable through the generated
-/// client. There is no hand-built request here and there never will be: "never hand-write a
-/// client method: if something will not generate, fix the contract"
-/// (`Packages/ImgManagerAPI/Package.swift`). `DownloadContractProbeTests` records that finding
-/// as a passing test rather than a comment.
+/// FIRST-ACTION CONTRACT PROBE (IMGMGR-196, 2026-08-29), NOW PARTLY OVERTAKEN. The contract as
+/// vendored at img-manager v0.9.2 declared `GET /api/images/{image_id}/download` with a `200`
+/// that had NO `content` block at all — literally `{"description": "Successful Response"}` — so
+/// swift-openapi-generator emitted an `Output.Ok` carrying no body and the master's BYTES were
+/// unreachable through the generated client. The IMGMGR-249 re-vendor (img-manager `74203992`,
+/// 2026-08-31) changed that: the operation declares binary content and `Ok` now carries a `Body`,
+/// which is steps 1 and 2 of the activation list below, already done. There is still no
+/// hand-built request here and there never will be: "never hand-write a client method: if
+/// something will not generate, fix the contract"
+/// (`Packages/ImgManagerAPI/Package.swift`). `DownloadContractProbeTests` records the position
+/// as a passing test rather than a comment, and moved with the contract.
 ///
 /// What IS built and tested today are the PIECES a real downloader will assemble, each on its
 /// own: streaming-with-a-cap (`ShareStreamWriter`), server-authored naming
@@ -26,11 +28,9 @@ import OpenAPIRuntime
 /// that operation at all. Treat this as assembled parts, not a finished lane behind a switch.
 ///
 /// TO ACTIVATE, in this order:
-///  1. img-manager declares `200: {content: {application/octet-stream: {schema: {type: string,
-///     format: binary}}}}` on that operation. The backend ALREADY sends a `FileResponse` with a
-///     `Content-Disposition`; only the declaration is missing.
-///  2. `scripts/sync-openapi.sh` re-vendors, and `DownloadContractProbeTests` flips from
-///     recording the body's absence to asserting the body.
+///  1. DONE (img-manager `74203992`): the operation declares binary `200` content.
+///  2. DONE (WP14 lane A re-vendor): `DownloadContractProbeTests` asserts the body's presence
+///     instead of recording its absence.
 ///  3. One `MasterDownloading` conformance lands on `GridService` — a single added method that
 ///     streams the generated `HTTPBody` through `ShareStreamWriter` with `masterByteCap`, names
 ///     the file from the response's `Content-Disposition`, and maps 403-with-`X-Img-Policy`,
@@ -41,10 +41,11 @@ import OpenAPIRuntime
 /// Step 4 is the ONLY behavioural switch: the loupe's master entry, the streaming, the naming
 /// and the refusal copy are already the paths the preview half runs through today.
 enum ShareMasterSeam {
-  /// OFF, deliberately, until the contract above carries a body. `ShareMasterSeamTests` is the
-  /// named test that turns RED the moment this is flipped, so activation cannot happen as a
-  /// side effect of an unrelated edit — it has to be a decision someone makes with the
-  /// re-vendored contract in front of them.
+  /// OFF, and since the re-vendor that is a DECISION rather than an impossibility: the contract
+  /// carries a body now, but steps 3 and 4 above are unbuilt, and flipping this without them
+  /// points the loupe's master entry at a downloader that does not exist. `ShareMasterSeamTests`
+  /// is the named test that turns RED the moment this is flipped, so activation cannot happen as
+  /// a side effect of an unrelated edit.
   static let isAvailable = false
 }
 
