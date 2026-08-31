@@ -278,20 +278,10 @@ struct RootView: View {
         #endif
       #endif
     }
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button {
-          showAccountSheet = true
-        } label: {
-          Label("Account", systemImage: "person.crop.circle")
-        }
-        // WP13 P8 (IMGMGR-214): addressable by IDENTIFIER, not by its label. The gate run at
-        // 09:02 showed XCTest matching `app.buttons["Account"]` as `"Account" IN identifiers`
-        // and finding nothing — a `Label`'s text is not an identifier. The account sheet is now
-        // a chrome surface a UI test has to reach, so it gets a handle.
-        .accessibilityIdentifier("accountToolbarButton")
-      }
-    }
+    // IMGMGR-255: the SHEET stays here, on the container — a sheet needs a host, not a bar, and
+    // this host outlives the grid being swapped out for the docked loupe (the same reasoning P4
+    // wrote down for the shortcut-help sheet below). Its BUTTON is what moved: see
+    // `accountToolbarItem`.
     .sheet(isPresented: $showAccountSheet) {
       AccountSheetView(auth: auth, preferences: gridStore.preferences)
     }
@@ -339,6 +329,29 @@ struct RootView: View {
     columnVisibility = LayoutResolver.columnVisibility(for: mode)
   }
 
+  /// IMGMGR-255: the account item, declared ONCE and attached to the split view's own COLUMNS.
+  /// WP8 P1 attached it to the `Group` that wraps the `NavigationSplitView` instead, and that
+  /// container owns no navigation bar — SwiftUI had nowhere to place the item and dropped it,
+  /// silently, on both idioms in both launch states. Three preserved accessibility trees show the
+  /// absence (P8 probe, 2026-08-31): the queue root, the pushed grid on Compact, and iPad
+  /// Regular-2. So the account sheet and Sign Out were unreachable from the moment the workspace
+  /// shipped, and this item is the only route to either.
+  @ToolbarContentBuilder
+  private var accountToolbarItem: some ToolbarContent {
+    ToolbarItem(placement: .primaryAction) {
+      Button {
+        showAccountSheet = true
+      } label: {
+        Label("Account", systemImage: "person.crop.circle")
+      }
+      // WP13 P8 (IMGMGR-214): addressable by IDENTIFIER, not by its label. The gate run at
+      // 09:02 showed XCTest matching `app.buttons["Account"]` as `"Account" IN identifiers`
+      // and finding nothing — a `Label`'s text is not an identifier. The account sheet is a
+      // chrome surface a UI test has to reach, so it gets a handle.
+      .accessibilityIdentifier("accountToolbarButton")
+    }
+  }
+
   /// WP8 P7 (advisory 1 / Q's launch-surface change): this IS the queue now — Compact's launch
   /// surface (a full-screen list) and Regular's persistent sidebar column, with the pre-P7
   /// shoot-tree List folded into `FolderTreeSection` as a secondary disclosure below it. P6
@@ -374,6 +387,11 @@ struct RootView: View {
         )
       }
     }
+    // The app-level control on the app-level column. This is the bar on screen at Compact's
+    // launch surface (the queue root) and the persistent one on Regular-2/3 — `LayoutResolver`
+    // never hides this column (`.doubleColumn`/`.all`), so of the two columns it is the one whose
+    // bar is present in every `layoutMode` branch.
+    .toolbar { accountToolbarItem }
   }
 
   private var contentColumn: some View {
@@ -397,6 +415,17 @@ struct RootView: View {
               ToolbarItem(placement: .primaryAction) {
                 inspectorChromeButton
               }
+            }
+            // IMGMGR-255, Compact ONLY: a collapsed `NavigationSplitView` is a stack, so the
+            // moment a shoot is selected the grid is PUSHED over the sidebar and the sidebar's
+            // bar — the one carrying the account item — leaves the screen entirely (the 10:15 P8
+            // gate tree at that moment: `BackButton 'img-manager'`, `Info`, and nothing else).
+            // The item therefore rides this bar as well, which is what `GridView.toolbarContent`
+            // has assumed in writing since WP13 P4: "Compact has no room for them beside Account
+            // and Info". Deliberately NOT declared on Regular — there both columns' bars are on
+            // screen at once, and a second copy would sit next to the first.
+            if layoutMode == .compact {
+              accountToolbarItem
             }
           }
           .overlay(alignment: .trailing) {
