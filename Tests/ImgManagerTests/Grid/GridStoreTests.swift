@@ -2098,6 +2098,193 @@ struct GridStoreTests {
 
     #expect(store.mutationCommitCount == 1)
   }
+
+  // MARK: - WP13 P5b (IMGMGR-221 part 2): sort, grouping and ADR-0005 decision 6
+
+  @Test("Changing the sort restarts paging from page one and resets selection")
+  func changingSortRestartsPagingAndResetsSelection() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: "page-2-token"))
+    await store.selectShoot(folderID: 1)
+    store.selection.enterSelectExplicitly()
+    store.selection.toggle(1)
+    store.focusedImageID = 1
+    #expect(store.nextCursor == "page-2-token")
+
+    await store.setSortKey(.rating)
+
+    // The server puts `sort`, `direction` and `group_by` INSIDE the cursor fingerprint
+    // (live-probed 2026-08-30: a cross-sort replay is refused `400 cursor_scope_mismatch`), so
+    // the only safe response to a sort change is to restart. The client therefore must never
+    // send the old cursor with the new sort.
+    let sent = await transport.lastListImagesQuery
+    #expect(sent?["sort"] == "rating")
+    #expect(sent?["cursor"] == nil, "the sort change replayed a cursor from the old scope")
+    #expect(store.selection.mode == .browse)
+    #expect(store.selection.members.isEmpty)
+    #expect(store.focusedImageID == nil)
+    #expect(store.activeSortKey == .rating)
+  }
+
+  @Test("Setting a group key fetches /api/image-groups under the IDENTICAL filters")
+  func settingAGroupKeyFetchesImageGroupsUnderTheIdenticalFilters() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 280, key: "FUJIFILM X-T2", label: "FUJIFILM X-T2")],
+        timezone: nil, total: 280))
+    await store.selectShoot(folderID: 1)
+    await store.applyFilterChange { $0.mark = "pick" }
+
+    await store.selectGrouping(.key(.camera))
+
+    let page = await transport.lastListImagesQuery
+    let groups = await transport.lastImageGroupsQuery
+    #expect(groups != nil, "no /api/image-groups request was made at all")
+    // A header that describes a DIFFERENT filter scope than the page it labels is a lie about
+    // the photographs on screen — so every filter field must match, field for field.
+    for field in [
+      "folder_id", "rating_min", "good", "label", "keyword", "q", "tag", "source_tier", "tree",
+      "ext", "has_master", "mark", "date_from", "date_to", "camera_preview_only", "missing",
+      "group_by",
+    ] {
+      let pageValue = String(describing: page?[field])
+      let groupsValue = String(describing: groups?[field])
+      #expect(
+        page?[field] == groups?[field],
+        "page and headers disagree on \(field): \(pageValue) vs \(groupsValue)")
+    }
+    // POSITIVE CONTROL: the two fields that MUST agree and are not defaults did travel.
+    #expect(groups?["group_by"] == "camera")
+    #expect(groups?["mark"] == "pick")
+    // The published lookup is the server's, keyed so a tile's own `group_key` finds it.
+    #expect(store.groupHeaders[.known("FUJIFILM X-T2")]?.count == 280)
+    #expect(store.groupHeaders.count == 1)
+  }
+
+  @Test("Clearing the grouping drops the headers rather than leaving stale sections standing")
+  func clearingTheGroupingDropsTheHeaders() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 280, key: "FUJIFILM X-T2", label: "FUJIFILM X-T2")],
+        timezone: nil, total: 280))
+    await store.selectShoot(folderID: 1)
+    await store.selectGrouping(.key(.camera))
+    #expect(!store.groupHeaders.isEmpty)
+
+    await store.selectGrouping(.none)
+
+    #expect(store.groupHeaders.isEmpty)
+    #expect(store.currentQuery.groupBy == nil)
+    #expect(store.activeGrouping == .none)
+  }
+
+  @Test("Entering Scene mode suspends and leaving restores the EXACT sort/group presentation")
+  func enteringSceneModeSuspendsAndLeavingRestoresTheExactSortGroupPresentation() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await store.setSortKey(.rating)
+    await store.setSortDirection(.desc)
+    await store.selectGrouping(.key(.camera))
+    let before = SortGroupPresentation(of: store.currentQuery)
+    #expect(before == SortGroupPresentation(sort: "rating", direction: "desc", groupBy: "camera"))
+
+    await store.setDisplayMode(.scene)
+
+    // SUSPENDED, not merely remembered: `/api/browse/stacks` accepts none of the three
+    // (ADR-0005 decision 1), so they must be off the query while Scene is on — and the stacks
+    // request the mode switch made must carry neither.
+    #expect(store.currentQuery.sort == nil)
+    #expect(store.currentQuery.direction == nil)
+    #expect(store.currentQuery.groupBy == nil)
+    let stacks = await transport.lastBrowseStacksQuery
+    #expect(stacks?["sort"] == nil)
+    #expect(stacks?["group_by"] == nil)
+    #expect(stacks?["folder_id"] == "1")  // positive control: the filters DID travel
+
+    await store.setDisplayMode(.flat)
+
+    #expect(SortGroupPresentation(of: store.currentQuery) == before)
+    let page = await transport.lastListImagesQuery
+    #expect(page?["sort"] == "rating")
+    #expect(page?["direction"] == "desc")
+    #expect(page?["group_by"] == "camera")
+  }
+
+  @Test("Choosing Scene suspends the sort/group presentation and leaving restores it")
+  func choosingSceneSuspendsTheSortGroupPresentationAndLeavingRestoresIt() async {
+    // The same rule as above, driven through the MENU's own single entry point rather than
+    // through `setDisplayMode` — the coordinator is what every Group row actually calls.
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await store.setSortKey(.filename)
+    await store.selectGrouping(.key(.lens))
+    #expect(store.activeGrouping == .key(.lens))
+
+    await store.selectGrouping(.scene)
+    #expect(store.displayMode == .scene)
+    #expect(store.activeGrouping == .scene)
+    #expect(store.currentQuery.groupBy == nil)
+    #expect(store.currentQuery.sort == nil)
+
+    // A filter edited WHILE Scene is on survives the way back — it says WHICH photographs, not
+    // how they are arranged, so it is not part of the suspended presentation.
+    await store.applyFilterChange { $0.mark = "pick" }
+
+    await store.selectGrouping(.key(.lens))
+    #expect(store.displayMode == .flat)
+    #expect(store.currentQuery.sort == "filename")
+    #expect(store.currentQuery.groupBy == "lens")
+    #expect(store.currentQuery.mark == "pick")
+  }
+
+  @Test("Choosing a group key while Scene is active LEAVES Scene and applies the key")
+  func choosingAGroupKeyWhileSceneIsActiveLeavesSceneAndAppliesTheKey() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await store.setDisplayMode(.scene)
+    #expect(store.displayMode == .scene)
+
+    await store.selectGrouping(.key(.camera))
+
+    // `applyFilterChange` alone would have left `displayMode == .scene` and the chosen row
+    // would visibly have done nothing — `browseStacks` carries no `group_by` at all. This is
+    // the gate's round-1 BLOCKING finding, asserted.
+    #expect(store.displayMode == .flat)
+    #expect(store.currentQuery.groupBy == "camera")
+    #expect(store.activeGrouping == .key(.camera))
+    let page = await transport.lastListImagesQuery
+    #expect(page?["group_by"] == "camera")
+
+    // And the other direction: choosing Scene while a key is active leaves the key behind.
+    await store.selectGrouping(.scene)
+    #expect(store.displayMode == .scene)
+    #expect(store.currentQuery.groupBy == nil)
+    #expect(store.activeGrouping == .scene)
+  }
+
+  @Test("Grouping is single-select: activeGrouping is never Scene AND a key at once")
+  func groupingIsNeverSceneAndAKeyAtOnce() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    for choice in SortGroupOptions.groupingChoices {
+      await store.selectGrouping(choice)
+      #expect(store.activeGrouping == choice, "selectGrouping(\(choice)) did not take effect")
+      // The invariant, stated as the two facts that cannot both hold: Scene mode with a
+      // `group_by` on the query, or a key chosen while the stacks endpoint is being paged.
+      #expect(!(store.displayMode == .scene && store.currentQuery.groupBy != nil))
+    }
+  }
 }
 
 /// WP13 P1 (IMGMGR-212, and the shipped defect IMGMGR-223 it closes): Select mode stops being a

@@ -230,4 +230,106 @@ struct GridServiceContractProbeTests {
       Issue.record("expected .conflict, got \(error)")
     }
   }
+
+  // MARK: - WP13 P5b (IMGMGR-221 part 2): sort / direction / group_by on the wire
+
+  /// The presentation this phase adds, as the wire sees it.
+  private func presentationQuery() -> GridImagesQuery {
+    var query = GridImagesQuery(folderID: 1)
+    query.sort = SortKey.rating.rawValue
+    query.direction = SortDirection.desc.rawValue
+    query.groupBy = GroupByKey.camera.rawValue
+    return query
+  }
+
+  @Test("GET /api/images carries sort, direction and group_by")
+  func listImagesCarriesSortDirectionAndGroupBy() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    _ = try await service.images(presentationQuery(), cursor: nil, limit: 10)
+
+    let sent = await transport.lastListImagesQuery
+    // The WIRE's own names, read off the URL the REAL generated client built — never the Swift
+    // property names, which is what makes this a contract check.
+    #expect(sent?["sort"] == "rating")
+    #expect(sent?["direction"] == "desc")
+    #expect(sent?["group_by"] == "camera")
+    // POSITIVE CONTROL, same recording: a parameter that has always been sent is still there,
+    // so three hits above prove the fields were added rather than that the URL was rebuilt.
+    #expect(sent?["folder_id"] == "1")
+  }
+
+  @Test("Neighbours carries the SAME sort, direction and group_by as the grid")
+  func neighboursCarriesTheSameSortDirectionAndGroupByAsTheGrid() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    let query = presentationQuery()
+
+    _ = try await service.images(query, cursor: nil, limit: 10)
+    _ = try await service.neighbours(after: 7, query: query, limit: 5)
+
+    let grid = await transport.lastListImagesQuery
+    let loupe = await transport.lastNeighboursQuery
+    // The loupe-divergence guard: if the loupe omitted these, "next" would advance in capture
+    // order while the grid showed rating order — the same photographs in two different orders,
+    // which is exactly the bug this asserts against.
+    for field in ["sort", "direction", "group_by"] {
+      let gridValue = String(describing: grid?[field])
+      let loupeValue = String(describing: loupe?[field])
+      #expect(
+        grid?[field] == loupe?[field],
+        "grid and loupe disagree on \(field): \(gridValue) vs \(loupeValue)")
+      #expect(loupe?[field] != nil, "the loupe sent no \(field) at all")
+    }
+    #expect(loupe?["sort"] == "rating")
+    #expect(loupe?["group_by"] == "camera")
+  }
+
+  @Test("Browse stacks carries NEITHER sort NOR group_by — stack mode is chronological only")
+  func browseStacksCarriesNeitherSortNorGroupBy() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    // The query DOES carry all three; the mapping must drop them for this endpoint (ADR-0005
+    // decision 1: "a stack carries ONE stored capture-order anchor").
+    _ = try? await service.browseStacks(
+      presentationQuery(), direction: .asc, cursor: nil, limit: 10)
+
+    let sent = await transport.lastBrowseStacksQuery
+    #expect(sent?["sort"] == nil)
+    #expect(sent?["group_by"] == nil)
+    // Its OWN direction, from the scene-browse enum — not the flat query's `desc`, which would
+    // be the same leak wearing a name this endpoint happens to accept.
+    #expect(sent?["direction"] == "asc")
+    // POSITIVE CONTROL: the filters DID reach it, so the two nils are dropped parameters rather
+    // than an unrecorded request.
+    #expect(sent?["folder_id"] == "1")
+  }
+
+  @Test("GET /api/image-groups decodes headers, timezone and total through the generated type")
+  func imageGroupsDecodesThroughTheGeneratedType() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [
+          .init(count: 36568, key: "SONY ILCE-7RM5", label: "SONY ILCE-7RM5"),
+          .init(count: 213, key: nil, label: "Unknown"),
+        ], timezone: nil, total: 36781))
+
+    let groups = try await service.imageGroups(GridImagesQuery(folderID: 1), groupBy: .camera)
+    #expect(groups.total == 36781)
+    #expect(groups.headers?.count == 2)
+    // The Unknown bucket is `key: null` with the SERVER's own label — the shape the live probe
+    // returned for `group_by=location` on 2026-08-30.
+    #expect(groups.headers?.last?.key == nil)
+    #expect(groups.headers?.last?.label == "Unknown")
+    #expect(groups.headers?.map(\.count).reduce(0, +) == groups.total)
+
+    let sent = await transport.lastImageGroupsQuery
+    #expect(sent?["group_by"] == "camera")
+    // The endpoint takes no order at all — a header list is neither paged nor sorted.
+    #expect(sent?["sort"] == nil)
+    #expect(sent?["cursor"] == nil)
+  }
 }

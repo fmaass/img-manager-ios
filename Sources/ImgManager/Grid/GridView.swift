@@ -27,29 +27,55 @@ struct GridView: View {
   /// test RED instead of leaving every existing test green.
   var pointerGestureInstaller: PointerGestureInstaller = .live
 
+  /// WP13 P5b: `body` is the composition plus its modifiers; the stack itself and the chrome
+  /// rows above it are their own declarations. Not a style choice — adding one more `.onChange`
+  /// to the single flat expression this used to be tipped the type checker over its budget
+  /// ("unable to type-check this expression in reasonable time", GridView.swift:50, gate run
+  /// 02:38). Each piece now checks on its own.
   var body: some View {
+    stack
+      .onChange(of: store.images) { _, _ in publishRows() }
+      .onChange(of: store.sceneRows) { _, _ in publishRows() }
+      .onChange(of: store.sceneExpanded) { _, _ in publishRows() }
+      .onChange(of: store.sceneMembers) { _, _ in publishRows() }
+      .onChange(of: store.rowHeight) { _, _ in publishRows() }
+      // WP13 P5b: the header set arrives from its own fetch AFTER the page, and it is what
+      // turns one packing pass into per-section passes — so the row table has to be rebuilt
+      // when it lands, or arrow navigation would keep describing the unsectioned layout.
+      .onChange(of: store.groupHeaders) { _, _ in publishRows() }
+      .toolbar { toolbarContent }
+  }
+
+  /// Compact's persistent options row and the transient mode rows, in their pinned order.
+  ///
+  /// WP13 P4 (IMGMGR-215): the options row sits immediately below the navigation bar — above
+  /// the transient mode rows, because it is the one row that is always there. On Regular the
+  /// same controls are `.primaryAction` toolbar items (see `toolbarContent`); they are never
+  /// rendered in both places at once.
+  ///
+  /// Pinned order: the Scene row above the mode row, the mode row above the recovery banner,
+  /// the banner above the action bar. At most ONE mode row can ever render — a lock and Select
+  /// are mutually exclusive in `GridStore` (`enterSelectExplicitly` and `longPressTile` both
+  /// unlatch first), and the `else if` makes that a structural fact of this view rather than a
+  /// coincidence two independent `if`s would let drift apart. Pick Lock and Dislike Lock cannot
+  /// both render because `latchedVerb` is one value, not two flags.
+  @ViewBuilder private var chromeRows: some View {
+    if layoutMode == .compact {
+      GridOptionsRow(store: store)
+    }
+    if store.displayMode == .scene {
+      SceneModeRow(store: store)
+    }
+    if let latchedVerb = store.pickLock.latchedVerb {
+      PickLockModeRow(store: store, verb: latchedVerb)
+    } else if store.selection.mode == .select {
+      SelectModeRow(store: store)
+    }
+  }
+
+  private var stack: some View {
     VStack(spacing: 0) {
-      // WP13 P4 (IMGMGR-215): Compact's persistent options row sits immediately below the
-      // navigation bar — above the transient mode rows, because it is the one row that is
-      // always there. On Regular the same two controls are `.primaryAction` toolbar items
-      // (see `.toolbar` below); they are never rendered in both places at once.
-      if layoutMode == .compact {
-        GridOptionsRow(store: store)
-      }
-      // Pinned order: the Scene row above the mode row, the mode row above the recovery banner,
-      // the banner above the action bar. At most ONE mode row can ever render — a lock and
-      // Select are mutually exclusive in `GridStore` (`enterSelectExplicitly` and `longPressTile`
-      // both unlatch first), and the `else if` makes that a structural fact of this view rather
-      // than a coincidence two independent `if`s would let drift apart. Pick Lock and Dislike
-      // Lock cannot both render because `latchedVerb` is one value, not two flags.
-      if store.displayMode == .scene {
-        SceneModeRow(store: store)
-      }
-      if let latchedVerb = store.pickLock.latchedVerb {
-        PickLockModeRow(store: store, verb: latchedVerb)
-      } else if store.selection.mode == .select {
-        SelectModeRow(store: store)
-      }
+      chromeRows
       scrollArea
         .onGeometryChange(for: CGFloat.self) {
           $0.size.width
@@ -66,32 +92,35 @@ struct GridView: View {
       MarksCopyBanner(store: store)
       ActionBarView(store: store)
     }
-    .onChange(of: store.images) { _, _ in publishRows() }
-    .onChange(of: store.sceneRows) { _, _ in publishRows() }
-    .onChange(of: store.sceneExpanded) { _, _ in publishRows() }
-    .onChange(of: store.sceneMembers) { _, _ in publishRows() }
-    .onChange(of: store.rowHeight) { _, _ in publishRows() }
-    .toolbar {
-      // WP13 P4 (IMGMGR-215): on Regular the two view-option controls are PRIMARY toolbar
-      // items. They used to be `ToolbarItem(placement: .secondaryAction)`, which collapses
-      // into the nav bar's overflow chevron — the gap the owner reported and the audit
-      // confirmed in code (/link/3282, owner feedback (c)). Compact has no room for them
-      // beside Account and Info, so there they are the options row above instead.
-      if layoutMode != .compact {
-        ToolbarItem(placement: .primaryAction) {
-          GridGroupControl(store: store)
-        }
-        ToolbarItem(placement: .primaryAction) {
-          GridZoomControl(store: store)
-        }
-        // Regular's route into the shortcut help sheet. The gate's UI leg proved the other two
-        // routes are not drivable there — ⌘/ never reached the app on the iPad simulator
-        // (no attached hardware keyboard) and the system menu bar is not a surface a UI test
-        // can open — so without this the sheet had no chrome path and no rendered evidence on
-        // Regular at all. Compact carries the same control in its options row.
-        ToolbarItem(placement: .primaryAction) {
-          GridShortcutHelpControl(store: store)
-        }
+  }
+
+  /// WP13 P4 (IMGMGR-215): on Regular the view-option controls are PRIMARY toolbar items. They
+  /// used to be `ToolbarItem(placement: .secondaryAction)`, which collapses into the nav bar's
+  /// overflow chevron — the gap the owner reported and the audit confirmed in code (/link/3282,
+  /// owner feedback (c)). Compact has no room for them beside Account and Info, so there they
+  /// are the options row above instead.
+  ///
+  /// WP13 P5b adds Sort, leading: it is the control a reader reaches for first when asking "how
+  /// is this stream arranged", and `SortGroupScreenshotUITests` asserts on both idioms that no
+  /// overflow chevron came back as a result.
+  @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+    if layoutMode != .compact {
+      ToolbarItem(placement: .primaryAction) {
+        GridSortControl(store: store)
+      }
+      ToolbarItem(placement: .primaryAction) {
+        GridGroupControl(store: store)
+      }
+      ToolbarItem(placement: .primaryAction) {
+        GridZoomControl(store: store)
+      }
+      // Regular's route into the shortcut help sheet. The gate's UI leg proved the other two
+      // routes are not drivable there — ⌘/ never reached the app on the iPad simulator
+      // (no attached hardware keyboard) and the system menu bar is not a surface a UI test
+      // can open — so without this the sheet had no chrome path and no rendered evidence on
+      // Regular at all. Compact carries the same control in its options row.
+      ToolbarItem(placement: .primaryAction) {
+        GridShortcutHelpControl(store: store)
       }
     }
   }
@@ -110,23 +139,31 @@ struct GridView: View {
           // crash (EXC_BREAKPOINT in ForEachChild.updateValue, GridView.swift:115). A
           // leading-cell id is unique per layout (each cell packs into exactly one row)
           // and moves with its row across repacks, so diffing stays coherent.
-          ForEach(packedRowModels) { rowModel in
-            HStack(spacing: 2) {
-              ForEach(rowModel.cells, id: \.id) { packed in
-                if let row = rowsByID[packed.id] {
-                  cell(for: row, plan: packed.plan)
-                    .background(
-                      GeometryReader { proxy in
-                        Color.clear.preference(
-                          key: TileFramePreferenceKey.self,
-                          value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+          // WP13 P5b: the sequence is `GridRenderRow`, so a section header and a packed tile
+          // row are the SAME `ForEach`'s elements with their own stable, non-index identities
+          // (a header's is its group key; a tile row's stays its leading cell's display id).
+          ForEach(renderRows) { renderRow in
+            switch renderRow {
+            case .header(let header):
+              GroupSectionHeaderView(header: header)
+            case .tiles(let rowModel):
+              HStack(spacing: 2) {
+                ForEach(rowModel.cells, id: \.id) { packed in
+                  if let row = rowsByID[packed.id] {
+                    cell(for: row, plan: packed.plan)
+                      .background(
+                        GeometryReader { proxy in
+                          Color.clear.preference(
+                            key: TileFramePreferenceKey.self,
+                            value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+                        }
+                      )
+                      .onTapGesture { Task { await store.tapCell(packed.id) } }
+                      .onLongPressGesture(minimumDuration: 0.5) {
+                        store.longPressCell(packed.id)
                       }
-                    )
-                    .onTapGesture { Task { await store.tapCell(packed.id) } }
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                      store.longPressCell(packed.id)
-                    }
-                    .task(id: packed.id) { await page(from: packed.id) }
+                      .task(id: packed.id) { await page(from: packed.id) }
+                  }
                 }
               }
             }
@@ -196,24 +233,18 @@ struct GridView: View {
     Dictionary(displayRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
 
-  /// One rendered grid row with a STABLE identity: its leading cell's display id. See the
-  /// ForEach comment in `scrollArea` — index identity is what crashed 0.7.0 (9). An empty
-  /// packed row cannot exist (a row exists because tiles were packed into it), and
-  /// `packedRowModels` drops one defensively rather than inventing an identity for it.
-  private struct PackedRow: Identifiable, Equatable {
-    let id: GridDisplayID
-    let cells: [PackedTilePlan]
-  }
-
-  private var packedRowModels: [PackedRow] {
-    packedRows.compactMap { row in row.first.map { PackedRow(id: $0.id, cells: row) } }
-  }
-
-  private var packedRows: [[PackedTilePlan]] {
+  /// The rendered sequence: section headers (when the server has vouched for them) interleaved
+  /// with packed tile rows. Ungrouped, this is ONE packing pass over the whole stream and no
+  /// headers at all — byte-for-byte the shipped behaviour. Grouped, `GridSectionLayout` packs
+  /// each section on its own, so no justified row straddles a boundary.
+  private var renderRows: [GridRenderRow] {
     let rows = displayRows
     let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    return JustifiedRowLayout.packWithTierPlan(
-      tiles: rows.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) },
+    return GridSectionLayout.renderRows(
+      rows: rows,
+      groupBy: store.activeGrouping.groupByKey,
+      headers: store.groupHeaders,
+      timezone: store.groupTimezone,
       paneWidth: paneWidth, targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale
     ) { displayID, tier in
       guard let row = byID[displayID] else { return .missing }
@@ -226,8 +257,52 @@ struct GridView: View {
     }
   }
 
+  /// Arrow navigation's row table — TILE rows only. A header is not a photograph, so it never
+  /// enters `GridStore.rows` (nor `actionableImages`, which this view does not feed at all);
+  /// `GridRenderRow.packedRow` is the one way tiles come back out, which keeps that true by
+  /// construction rather than by remembering to filter here.
   private func publishRows() {
-    store.rows = packedRows.map { $0.map(\.id) }
+    store.rows = GridSectionLayout.navigationRows(renderRows)
+  }
+}
+
+/// WP13 P5b (IMGMGR-221 part 2): one section header, rendered from `GET /api/image-groups`'s own
+/// `label`, `count` and (for a time key) `timezone`. Nothing here is computed from the loaded
+/// page — a page holds part of a group, so a client-side tally would print the page's number
+/// under the section's name.
+///
+/// DISPLAY-ONLY, the same boundary a collapsed scene card holds: not selectable, not focusable,
+/// not arrow-navigable, and carrying no mark affordance. `allowsHitTesting(false)` makes that a
+/// property of the view rather than of every gesture remembering to skip it.
+struct GroupSectionHeaderView: View {
+  let header: GroupHeaderRow
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(header.label)
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(1)
+      Text("\(header.count)")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .monospacedDigit()
+      if let timezone = header.timezone {
+        // Estate ADR-0007 (/link/2553): a rendered local time names its zone. Only the time
+        // keys carry one; the server sends `timezone: null` for camera/lens/iso/location.
+        Text(timezone)
+          .font(.caption2)
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 4)
+    .padding(.top, 10)
+    .padding(.bottom, 2)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(header.label), \(header.count) photographs")
+    .accessibilityIdentifier("gridSectionHeader")
+    .allowsHitTesting(false)
   }
 }
 
@@ -245,26 +320,24 @@ struct GridGroupControl: View {
 
   var body: some View {
     Menu {
-      Button {
-        Task { await store.setDisplayMode(.flat) }
-      } label: {
-        if store.displayMode == .flat {
-          Label("None", systemImage: "checkmark")
-        } else {
-          Text("None")
-        }
-      }
-      Button {
-        Task { await store.setDisplayMode(.scene) }
-      } label: {
-        if store.displayMode == .scene {
-          Label("Scene", systemImage: "checkmark")
-        } else {
-          Text("Scene")
+      // WP13 P5b: ONE single-select list over `GroupingChoice` — None, Scene, then the six
+      // offered `group_by` dimensions. Exclusivity is structural: `GroupingChoice` cannot
+      // express "Scene and Camera", and every row calls the same coordinator, which is what
+      // makes choosing a dimension while Scene is on actually LEAVE Scene (ADR-0005 decision 6)
+      // instead of setting a wire parameter the stacks endpoint never reads.
+      ForEach(SortGroupOptions.groupingChoices, id: \.self) { choice in
+        Button {
+          Task { await store.selectGrouping(choice) }
+        } label: {
+          if store.activeGrouping == choice {
+            Label(Self.rowTitle(for: choice), systemImage: "checkmark")
+          } else {
+            Text(Self.rowTitle(for: choice))
+          }
         }
       }
     } label: {
-      Label(Self.title(for: store.displayMode), systemImage: "square.stack")
+      Label(Self.title(for: store.activeGrouping), systemImage: "square.stack")
     }
     // The value has to stay VISIBLE, not just present in the accessibility label: a nav-bar
     // `Label` renders icon-only by default, and an icon-only menu is precisely what the owner
@@ -277,11 +350,71 @@ struct GridGroupControl: View {
   }
 
   /// A pure function so the value-in-label contract is testable without a render host.
-  static func title(for mode: GridDisplayMode) -> String {
-    switch mode {
-    case .flat: return "Group: None"
-    case .scene: return "Group: Scene"
+  static func title(for choice: GroupingChoice) -> String {
+    "Group: \(rowTitle(for: choice))"
+  }
+
+  /// One menu row's own words — the same string the label above wraps, so the row a reader
+  /// picked and the value they then read back cannot be spelled differently.
+  static func rowTitle(for choice: GroupingChoice) -> String {
+    switch choice {
+    case .none: return "None"
+    case .scene: return "Scene"
+    case .key(let key): return key.title
     }
+  }
+}
+
+/// WP13 P5b (IMGMGR-221 part 2): the Sort control — the same shape as `GridGroupControl`, and
+/// rendered in the same two places (a Regular `.primaryAction` toolbar item, Compact's persistent
+/// options row). Its label carries the CURRENT key AND direction ("Sort: Rating ↓"), because the
+/// ticket's own words are "nothing gesture-only" and an icon-only control behind an overflow
+/// chevron is what the owner could not find (gap audit /link/3282, owner feedback (c)).
+///
+/// Six of the server's fifteen keys and both directions (`SortGroupOptions`) — the offered subset
+/// is data, so a different six is a one-line change here and in its subset test, never a rework.
+struct GridSortControl: View {
+  let store: GridStore
+
+  var body: some View {
+    Menu {
+      Section("Sort by") {
+        ForEach(SortGroupOptions.sortKeys, id: \.self) { key in
+          Button {
+            Task { await store.setSortKey(key) }
+          } label: {
+            if store.activeSortKey == key {
+              Label(key.title, systemImage: "checkmark")
+            } else {
+              Text(key.title)
+            }
+          }
+        }
+      }
+      Section("Direction") {
+        ForEach(SortGroupOptions.directions, id: \.self) { direction in
+          Button {
+            Task { await store.setSortDirection(direction) }
+          } label: {
+            if store.activeDirection == direction {
+              Label(direction.title, systemImage: "checkmark")
+            } else {
+              Text(direction.title)
+            }
+          }
+        }
+      }
+    } label: {
+      Label(
+        Self.title(for: store.activeSortKey, direction: store.activeDirection),
+        systemImage: "arrow.up.arrow.down")
+    }
+    .labelStyle(.titleAndIcon)
+    .accessibilityIdentifier("gridSortControl")
+  }
+
+  static func title(for key: SortKey, direction: SortDirection) -> String {
+    "Sort: \(key.title) \(direction.arrow)"
   }
 }
 
@@ -330,16 +463,24 @@ struct GridOptionsRow: View {
     HStack(spacing: 12) {
       // Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
       // already follows — never a single frame on the containing `HStack`.
+      GridSortControl(store: store)
+        .frame(minHeight: 44)
       GridGroupControl(store: store)
         .frame(minHeight: 44)
       GridZoomControl(store: store)
         .frame(minHeight: 44)
-      Spacer()
+      Spacer(minLength: 0)
       GridShortcutHelpControl(store: store)
         .frame(minHeight: 44)
     }
     .buttonStyle(.bordered)
     .font(.subheadline)
+    // WP13 P5b: Sort joined Group and Zoom on this one row, so three value-carrying labels now
+    // share a phone's width. One line each, truncating at the tail, keeps every control's
+    // 44 pt hit region and its checkmarked menu reachable — the alternative (a label wrapping
+    // to two lines) grows the row and pushes the help button off it.
+    .lineLimit(1)
+    .truncationMode(.tail)
     .padding(.horizontal)
     .padding(.vertical, 6)
     .background(.thinMaterial)

@@ -181,6 +181,24 @@ extension AppCommands {
   /// one modifier up, no iPadOS system default binds ⌃⌘digit, and `ShortcutCatalogTests`
   /// asserts both — no reserved combination is bound, and every (key, modifiers) pair in the
   /// app is unique.
+  /// WP13 P5b (IMGMGR-221 part 2): the six offered sort keys, keyed ⌥⌘1…⌥⌘6 in
+  /// `SortGroupOptions.sortKeys` order. Built by zipping the declared subset with the digits —
+  /// the same shape `zoomDeclarations` uses, and for the same reason: a seventh offered key
+  /// cannot silently lose its equivalent, because `ShortcutCatalogTests` asserts the two counts
+  /// are equal rather than trusting the zip.
+  ///
+  /// ⌥⌘digit sits one modifier across from the zoom steps' ⌘digit and the arrangement pair's
+  /// ⌃⌘digit; it collides with no iPadOS system default (the reserved set is ⌘Space, ⌘Tab, ⌘H,
+  /// ⌘⌥D, ⌘⇧3/⌘⇧4, ⌃⌘Space, plus the ⌘G "Find Next" convention) and with nothing else in this
+  /// app — both asserted, not claimed.
+  @MainActor static let sortDeclarations: [MenuCommandDeclaration] =
+    zip(SortGroupOptions.sortKeys, "123456").map { key, digit in
+      MenuCommandDeclaration(
+        id: "view.sort.\(key.rawValue)", shortcut: .sortKey,
+        title: "Sort: \(key.title)", key: KeyEquivalent(digit), modifiers: [.command, .option],
+        run: { $0.setSortKey(key) })
+    }
+
   @MainActor static let viewMenuGroups: [MenuCommandGroup] = [
     MenuCommandGroup(
       id: "view.group",
@@ -188,14 +206,25 @@ extension AppCommands {
         MenuCommandDeclaration(
           id: "view.group.none", shortcut: .groupMode, title: "Group: None",
           key: KeyEquivalent("1"), modifiers: [.command, .control],
-          run: { $0.setDisplayMode(.flat) }),
+          run: { $0.selectGrouping(.none) }),
         MenuCommandDeclaration(
           id: "view.group.scene", shortcut: .groupMode, title: "Group: Scene",
           key: KeyEquivalent("2"), modifiers: [.command, .control],
-          run: { $0.setDisplayMode(.scene) }),
+          run: { $0.selectGrouping(.scene) }),
         MenuCommandDeclaration(
           id: "view.group.toggleScene", shortcut: .sceneToggle, title: "Toggle Scene View",
           key: KeyEquivalent("g"), modifiers: [.command, .shift], run: { $0.toggleSceneMode() }),
+      ]),
+    // WP13 P5b: Sort — the six offered keys plus the direction toggle. It sits directly after
+    // Group because the two together are "how is this stream arranged", the question the View
+    // menu is the discovery surface for (p3220 §3.1).
+    MenuCommandGroup(
+      id: "view.sort",
+      items: AppCommands.sortDeclarations + [
+        MenuCommandDeclaration(
+          id: "view.sort.reverse", shortcut: .sortDirection, title: "Reverse Sort Direction",
+          key: KeyEquivalent("r"), modifiers: [.command, .option],
+          run: { $0.toggleSortDirection() })
       ]),
     MenuCommandGroup(id: "view.zoom", items: AppCommands.zoomDeclarations),
     // `?` is the web set's own key and ⌘/ is its Command-equivalent — decision 9's "both,

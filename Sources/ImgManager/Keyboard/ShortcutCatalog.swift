@@ -58,6 +58,15 @@ enum ShortcutID: String, CaseIterable, Sendable {
   /// - No OTHER declaration in this app binds ⌃⌘1/⌃⌘2: the same test file asserts that every
   ///   (key, modifiers) pair across all menus is unique.
   case groupMode = "⌃⌘1 · ⌃⌘2"
+  /// WP13 P5b (IMGMGR-221 part 2): the six offered sort keys, published as ⌥⌘1…⌥⌘6 — ONE
+  /// catalog entry with six declarations, the shape `zoomStep` and `groupMode` already use.
+  /// ⌥⌘digit is the third distinct modifier over the same digits (⌘ zoom, ⌃⌘ arrangement,
+  /// ⌥⌘ sort); no iPadOS system default binds it and nothing else in this app does, both
+  /// asserted in `ShortcutCatalogTests`.
+  case sortKey = "⌥⌘1…⌥⌘6"
+  /// WP13 P5b: ascending ⟷ descending, the accelerator form of the Sort menu's direction rows.
+  /// `R` for reverse; ⌥⌘R is unbound by iPadOS and by this app.
+  case sortDirection = "⌥⌘R"
 }
 
 extension ShortcutID {
@@ -81,6 +90,8 @@ extension ShortcutID {
     case .zoomStep: return "⌘1 … ⌘6"
     case .sceneToggle: return "⌘⇧G"
     case .groupMode: return "⌃⌘1 · ⌃⌘2"
+    case .sortKey: return "⌥⌘1 … ⌥⌘6"
+    case .sortDirection: return "⌥⌘R"
     }
   }
 
@@ -109,6 +120,8 @@ extension ShortcutID {
     case .zoomStep: return "Set the grid zoom step (120 pt … 400 pt)"
     case .sceneToggle: return "Turn Scene view on or off"
     case .groupMode: return "Choose the grid arrangement — ⌃⌘1 None, ⌃⌘2 Scene"
+    case .sortKey: return "Sort the grid — Date, Filename, Rating, ISO, Camera, Lens"
+    case .sortDirection: return "Reverse the sort direction"
     }
   }
 }
@@ -147,6 +160,10 @@ enum OwningPhase: String, Sendable {
   /// controls on Regular, and the menu-bar View menu — the chrome surface the ⌘ view-option
   /// equivalents attach to.
   case wp13p4 = "WP13 P4 — View options (options row, View menu, shortcut help)"
+  /// WP13 P5b (IMGMGR-221 part 2): the Sort control — a `.primaryAction` toolbar item on
+  /// Regular and a third menu on Compact's persistent options row — plus the View menu's own
+  /// Sort group. The chrome ships in the same commit these entries flip active in.
+  case wp13p5b = "WP13 P5b — Sort and group parity (Sort control, View menu Sort group)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every
@@ -194,6 +211,8 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .zoomStep, owningPhase: .wp13p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .sceneToggle, owningPhase: .wp13p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .groupMode, owningPhase: .wp13p4, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .sortKey, owningPhase: .wp13p5b, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .sortDirection, owningPhase: .wp13p5b, hasChromeSurface: true),
   ]
 
   static var activeEntries: [ShortcutCatalogEntry] { entries.filter(\.isActive) }

@@ -23,7 +23,17 @@ struct GridKeyboardActions {
   var setRowHeight: (GridRowHeight) -> Void
   /// WP13 P4: the View menu's Group single-select pair. Scene is a MODE, not a `group_by` wire
   /// value (ADR-0005 decision 6).
-  var setDisplayMode: (GridDisplayMode) -> Void
+  ///
+  /// WP13 P5b: it dispatches through `GridStore.selectGrouping` now rather than
+  /// `setDisplayMode` directly — Scene and `group_by` became ONE single-select state in that
+  /// phase, and a menu entry that set the mode behind the coordinator's back would leave the
+  /// two halves able to disagree.
+  var selectGrouping: (GroupingChoice) -> Void
+  /// WP13 P5b: the View menu's six sort keys (⌥⌘1…⌥⌘6) and its direction toggle (⌥⌘R). Same
+  /// `GridStore` entry points the on-screen Sort menu calls, so the menu-bar entry and the
+  /// chrome control cannot diverge.
+  var setSortKey: (SortKey) -> Void
+  var toggleSortDirection: () -> Void
   /// WP13 P4: Scene view on/off (⌘⇧G) — the accelerator form of the pair above.
   var toggleSceneMode: () -> Void
   /// WP13 P4: `?` and ⌘/ both open the shortcut help sheet, the surface that finally makes
@@ -57,7 +67,9 @@ extension GridStore {
       tag: { [self] in handleTagShortcut() },
       undo: { [self] in Task { await handleUndoShortcut() } },
       setRowHeight: { [self] step in setRowHeight(step) },
-      setDisplayMode: { [self] mode in Task { await setDisplayMode(mode) } },
+      selectGrouping: { [self] choice in Task { await selectGrouping(choice) } },
+      setSortKey: { [self] key in Task { await setSortKey(key) } },
+      toggleSortDirection: { [self] in Task { await toggleSortDirection() } },
       // On/off, read off the store's OWN current mode rather than a copy the menu holds — the
       // focused value is a snapshot, and a stale copy would flip the wrong way after a change
       // made from the Group control.

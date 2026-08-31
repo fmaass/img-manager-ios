@@ -48,6 +48,14 @@ actor GridStubTransport: ClientTransport {
   /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
   var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
 
+  /// WP13 P5b: `GET /api/image-groups`'s answer — the ONLY truthful section source. The default
+  /// mirrors the live probe's SHAPE (2026-08-30, `group_by=camera`): headers whose counts sum to
+  /// `total`, a `timezone` that is nil for a non-time key.
+  var imageGroupsResult = Components.Schemas.ImageGroups(
+    costHint: .standard, groupBy: .camera, headers: [], timezone: nil, total: 0)
+  /// Self-disarming one-shot, same discipline as `facetsShouldFail`.
+  var imageGroupsShouldFail = false
+
   // MARK: - P7 folder-summaries (QueueService/QueueStore tests)
 
   var folderSummariesResult: [Components.Schemas.FolderSummary] = []
@@ -394,12 +402,22 @@ actor GridStubTransport: ClientTransport {
   }
 
   private(set) var recordedFacetsQueries: [[String: String]] = []
+  /// WP13 P5b: the three query surfaces the sort/group contract has to agree across. The
+  /// loupe-divergence guard is exactly "are the recorded `/api/images` and neighbours queries
+  /// equal on sort/direction/group_by", and the stack Do-NOT is "does the recorded stacks query
+  /// carry either" — neither is answerable without the wire query itself.
+  private(set) var recordedNeighboursQueries: [[String: String]] = []
+  private(set) var recordedBrowseStacksQueries: [[String: String]] = []
+  private(set) var recordedImageGroupsQueries: [[String: String]] = []
   /// WP13 P5a: every `GET /api/marks/export` query, so a test can prove `format=txt` was never
   /// requested (the vendored document declares only `application/json` for its 200).
   private(set) var recordedMarksExportQueries: [[String: String]] = []
 
   var lastListImagesQuery: [String: String]? { recordedListImagesQueries.last }
   var lastFacetsQuery: [String: String]? { recordedFacetsQueries.last }
+  var lastNeighboursQuery: [String: String]? { recordedNeighboursQueries.last }
+  var lastBrowseStacksQuery: [String: String]? { recordedBrowseStacksQueries.last }
+  var lastImageGroupsQuery: [String: String]? { recordedImageGroupsQueries.last }
 
   private func queryParameters(of request: HTTPRequest) -> [String: String] {
     guard let path = request.path, let items = URLComponents(string: path)?.queryItems else {
@@ -434,6 +452,9 @@ actor GridStubTransport: ClientTransport {
   }
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
   func setNeighboursPage(_ page: Components.Schemas.ImagePage) { neighboursPage = page }
+  // WP13 P5b (IMGMGR-221 part 2): the group-header endpoint.
+  func setImageGroupsResult(_ result: Components.Schemas.ImageGroups) { imageGroupsResult = result }
+  func setImageGroupsShouldFail(_ fail: Bool) { imageGroupsShouldFail = fail }
   func callCount(_ operationID: String) -> Int { callCounts[operationID] ?? 0 }
 
   // WP13 P5a (IMGMGR-221): the More menu's two read-only endpoints.
@@ -512,6 +533,7 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, resolvedPage)
 
     case Operations.BrowseStacksApiBrowseStacksGet.id:
+      recordedBrowseStacksQueries.append(queryParameters(of: request))
       let cursorValue = request.path.flatMap(URLComponents.init(string:))?
         .queryItems?.first(where: { $0.name == "cursor" })?.value
       if browseStacksRejectNonNilCursor, let cursorValue, !cursorValue.isEmpty {
@@ -557,6 +579,15 @@ actor GridStubTransport: ClientTransport {
       }
       return try jsonResponse(.ok, row)
 
+    case Operations.ImageGroupsApiImageGroupsGet.id:
+      recordedImageGroupsQueries.append(queryParameters(of: request))
+      let resolvedGroups = imageGroupsResult
+      if imageGroupsShouldFail {
+        imageGroupsShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced imageGroups failure")
+      }
+      return try jsonResponse(.ok, resolvedGroups)
+
     case Operations.ImageFacetsApiFacetsGet.id:
       recordedFacetsQueries.append(queryParameters(of: request))
       // Resolved BEFORE any hold-suspend, same discipline as `listImages`: a held call returns
@@ -577,6 +608,7 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, resolvedFacets)
 
     case Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id:
+      recordedNeighboursQueries.append(queryParameters(of: request))
       if neighboursHoldEnabled {
         neighboursHasStarted = true
         neighboursStartedContinuation?.resume()
