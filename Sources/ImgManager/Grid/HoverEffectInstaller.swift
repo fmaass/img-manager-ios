@@ -27,8 +27,9 @@ struct HoverEffectInstaller: Sendable {
   @MainActor
   func apply<Content: View>(_ content: Content) -> some View {
     onApply?()
-    // RED (gate r1): the identity `.live` — the exact regression leg (a) exists to catch. The
-    // GREEN commit returns `content.hoverEffect(.highlight)`.
-    return content
+    // `HoverEffect.highlight` is named explicitly rather than left to `.highlight`: the SDK now
+    // carries a second `hoverEffect(_:)` overload over `some CustomHoverEffect`, and spelling the
+    // type keeps the system content effect this resolves to a fact rather than an inference.
+    return content.hoverEffect(HoverEffect.highlight)
   }
 }

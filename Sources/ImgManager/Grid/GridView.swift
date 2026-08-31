@@ -69,8 +69,10 @@ struct GridView: View {
   /// same controls are `.primaryAction` toolbar items (see `toolbarContent`); they are never
   /// rendered in both places at once.
   ///
-  /// Pinned order: the Scene row above the mode row, the mode row above the recovery banner,
-  /// the banner above the action bar. At most ONE mode row can ever render — a lock and Select
+  /// Pinned order: the mode row above the recovery banner, the banner above the action bar.
+  /// IMGMGR-256 removed the Scene caption row that used to sit above the mode row — Scene now
+  /// shows itself through the Group control's highlighted state instead. At most ONE mode row
+  /// can ever render — a lock and Select
   /// are mutually exclusive in `GridStore` (`enterSelectExplicitly` and `longPressTile` both
   /// unlatch first), and the `else if` makes that a structural fact of this view rather than a
   /// coincidence two independent `if`s would let drift apart. Pick Lock and Dislike Lock cannot
@@ -84,8 +86,6 @@ struct GridView: View {
       switch row {
       case .options:
         GridOptionsRow(store: store)
-      case .sceneBanner:
-        SceneModeRow(store: store)
       case .pickLock(let verb):
         PickLockModeRow(store: store, verb: verb)
       case .select:
@@ -332,12 +332,12 @@ struct GroupSectionHeaderView: View {
 /// Declared so the pinned order and — more to the point — what Scene mode does and does not add
 /// are assertable without a render host. `GridView.chromeRows` renders exactly this list and holds
 /// no second copy of it.
+/// IMGMGR-256: there is NO Scene case here. Scene mode adds no chrome row of its own — the Group
+/// control's highlighted state is what says "you are in an arrangement", and the behaviour the
+/// removed caption described (a collapsed scene is not selectable, ADR-0005) is unchanged and
+/// still proved by `GridStoreSceneTests`' boundary suite.
 enum GridChromeRow: Hashable, Sendable {
   case options
-  /// RED (gate r1): Scene's own caption banner, the row IMGMGR-256 removes. The GREEN commit
-  /// deletes this case and `SceneModeRow` with it; the Group control's highlighted state is what
-  /// says "you are in an arrangement" from then on.
-  case sceneBanner
   case pickLock(LatchVerb)
   case select
 }
@@ -352,9 +352,6 @@ enum GridChromeRows {
     var rows: [GridChromeRow] = []
     if layoutMode == .compact {
       rows.append(.options)
-    }
-    if store.displayMode == .scene {
-      rows.append(.sceneBanner)
     }
     if let latchedVerb = store.pickLock.latchedVerb {
       rows.append(.pickLock(latchedVerb))
@@ -426,9 +423,7 @@ struct GridGroupControl: View {
   /// one of the six dimensions — and plain under None. A pure function, so the state is a value
   /// test rather than a screenshot reading.
   static func isHighlighted(for choice: GroupingChoice) -> Bool {
-    // RED (gate r1): never highlighted. The GREEN commit returns `choice != .none`.
-    _ = choice
-    return false
+    choice != .none
   }
 
   /// A pure function so the value-in-label contract is testable without a render host.
@@ -620,27 +615,6 @@ struct GridShortcutHelpControl: View {
     .labelStyle(.iconOnly)
     .accessibilityLabel("Keyboard shortcuts")
     .accessibilityIdentifier("gridShortcutHelpControl")
-  }
-}
-
-/// Scene mode's own persistent caption row, directly above the grid — the same shape and
-/// placement `PickLockModeRow` uses for the other mode this screen can be in, so "you are in a
-/// mode, and here is the way out" reads identically either way. Never an overlay on a tile.
-struct SceneModeRow: View {
-  let store: GridStore
-
-  var body: some View {
-    HStack {
-      Label("Scene view — collapsed scenes are not selectable", systemImage: "square.stack")
-        .font(.subheadline)
-        .accessibilityIdentifier("sceneModeCaption")
-      Spacer()
-      Button("Exit") { Task { await store.setDisplayMode(.flat) } }
-        .frame(minWidth: 44, minHeight: 44)
-    }
-    .padding(.horizontal)
-    .padding(.vertical, 8)
-    .background(.thinMaterial)
   }
 }
 

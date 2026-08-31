@@ -25,9 +25,7 @@ struct ShootSceneValue: Codable, Hashable, Sendable {
   /// no force-unwrap.
   static func from(query: GridImagesQuery) -> ShootSceneValue? {
     guard let folderID = query.folderID else { return nil }
-    // RED (gate r1): the failure mode the plan names — a defaulted tier. `sourceTier` is copied
-    // verbatim in the GREEN commit.
-    return ShootSceneValue(folderID: folderID, sourceTier: query.sourceTier ?? .local)
+    return ShootSceneValue(folderID: folderID, sourceTier: query.sourceTier)
   }
 }
 
@@ -64,9 +62,7 @@ enum InitialShootApplication {
   @discardableResult
   static func apply(_ shoot: ShootSceneValue?, to store: GridStore) async -> Int? {
     guard let shoot else { return nil }
-    // RED (gate r1): the second failure mode — the tier is dropped on the way in, so a restored
-    // archive window silently lands on the local tier. The GREEN commit forwards `shoot.sourceTier`.
-    await store.selectShoot(folderID: shoot.folderID)
+    await store.selectShoot(folderID: shoot.folderID, sourceTier: shoot.sourceTier)
     return shoot.folderID
   }
 }

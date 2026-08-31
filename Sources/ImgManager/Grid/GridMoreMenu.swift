@@ -187,10 +187,14 @@ enum GridMoreMenu {
     foldedAccessibilityIdentifier: nil,
     systemImage: "macwindow.badge.plus",
     title: { _ in ShootWindowCopy.title },
-    // RED (gate r1): a control that offers itself with nothing in scope, and a no-op action —
-    // the two failures `GridViewMoreMenuTests`' new pair exists to catch.
-    isEnabled: { _ in true },
-    surface: .sceneWindow { _, _ in })
+    isEnabled: { ShootSceneValue.from(query: $0.query) != nil },
+    surface: .sceneWindow { store, opener in
+      // The SAME function the enabled state is derived from, called again — never a second
+      // check, never a force-unwrap. A disabled row cannot be activated; if one ever were, this
+      // guard makes it a no-op rather than a trap.
+      guard let value = ShootSceneValue.from(query: store.query) else { return }
+      opener.open(value)
+    })
 }
 
 /// The menu's rendered body: EXACTLY `GridMoreMenu.entries`, in order, with no second list.
