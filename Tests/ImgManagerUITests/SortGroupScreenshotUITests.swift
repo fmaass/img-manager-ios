@@ -142,4 +142,64 @@ final class SortGroupScreenshotUITests: XCTestCase {
         + "\(screenshot.image.size)"
     ) { _ in }
   }
+
+  /// IMGMGR-256 (folded into WP13 P11): the Scene-view caption row is gone, and the Group control
+  /// itself carries the "you are in an arrangement" state. Runs on both idioms the gate gates —
+  /// Compact's options row and Regular's `.primaryAction` toolbar — because the control is one
+  /// definition rendered in two places and the state must read the same in both.
+  ///
+  /// The load-bearing proof that Scene adds no banner row is `GridChromeRowsTests`, which drives
+  /// a real Scene page; the fixture transport here serves no `/api/browse/stacks`, so this test
+  /// takes the reachable arrangement (a dimension) and asserts the caption identifier is absent
+  /// with a positive control beside it.
+  func testGroupControlHighlightsWhileAnArrangementIsInForceAndNoSceneBannerExists() throws {
+    let app = launchedApp()
+
+    let group = app.descendants(matching: .any)["gridGroupControl"]
+    XCTAssertTrue(
+      group.waitForExistence(timeout: 10),
+      "Nothing named 'gridGroupControl' is on a primary surface.")
+
+    XCTAssertEqual(
+      group.value as? String, "Off",
+      "The Group control reports itself active under Group: None (label '\(group.label)').")
+
+    let before = XCUIScreen.main.screenshot()
+    let beforeAttachment = XCTAttachment(screenshot: before)
+    beforeAttachment.name = "group-control-plain-under-none"
+    beforeAttachment.lifetime = .keepAlways
+    add(beforeAttachment)
+
+    group.tap()
+    let camera = app.buttons["Camera"]
+    XCTAssertTrue(camera.waitForExistence(timeout: 5), "The Group menu offers no 'Camera' row.")
+    camera.tap()
+
+    let grouped = app.descendants(matching: .any)["gridGroupControl"]
+    XCTAssertTrue(grouped.waitForExistence(timeout: 10))
+    XCTAssertEqual(
+      grouped.value as? String, "Active",
+      "The Group control does not report itself active while grouping by Camera "
+        + "(label '\(grouped.label)').")
+
+    // Positive control for the 0-hit assertion below (LSN-0033): the grid really is on screen,
+    // so "no caption row" cannot pass vacuously on a blank or crashed screen.
+    XCTAssertTrue(
+      app.buttons["Dislike"].exists,
+      "Positive control failed: the action bar is gone, so the caption check below would pass "
+        + "vacuously.")
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "sceneModeCaption").count, 0,
+      "A Scene-view caption row is still in the hierarchy — IMGMGR-256 removed it.")
+
+    let after = XCUIScreen.main.screenshot()
+    let afterAttachment = XCTAttachment(screenshot: after)
+    afterAttachment.name = "group-control-highlighted-under-camera"
+    afterAttachment.lifetime = .keepAlways
+    add(afterAttachment)
+    XCTContext.runActivity(
+      named: "Group control: '\(grouped.label)' value='\(grouped.value as? String ?? "")' · "
+        + "captured \(after.image.size)"
+    ) { _ in }
+  }
 }

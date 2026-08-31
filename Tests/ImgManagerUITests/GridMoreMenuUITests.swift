@@ -72,6 +72,10 @@ final class GridMoreMenuUITests: XCTestCase {
       "gridSelectCommand", "gridMoreMenu.more.copyForLightroom",
       "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.density",
       "gridMoreMenu.more.status",
+      // WP13 P11 (IMGMGR-220): the multi-window entry point, rendered on BOTH idioms and in
+      // every case — the built-product probe decided only whether project.yml needed the
+      // capability key, never whether the affordance exists.
+      "gridMoreMenu.more.openInNewWindow",
     ]
     for identifier in expected {
       let entry = app.descendants(matching: .any)[identifier]

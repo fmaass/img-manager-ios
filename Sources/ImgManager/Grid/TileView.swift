@@ -16,8 +16,18 @@ struct TileView: View {
   let showsFilenamePlate: Bool
   @State private var proxyImage: PlatformImage?
   let store: GridStore
+  /// WP13 P11 (IMGMGR-220): the pointer-hover seam, injectable in the shape of
+  /// `GridView.pointerGestureInstaller` so a spy can prove this cell really installs the effect.
+  /// Pointer presence is a RUNTIME fact — nothing here branches on the device idiom.
+  var hoverEffectInstaller: HoverEffectInstaller = .live
 
   var body: some View {
+    // RED (gate r1): the installer is not called. The GREEN commit wraps `cell` in
+    // `hoverEffectInstaller.apply(_:)`.
+    cell
+  }
+
+  private var cell: some View {
     ZStack(alignment: .topTrailing) {
       Group {
         // The tombstone question is asked BEFORE the proxy question — see `TilePresentation`.

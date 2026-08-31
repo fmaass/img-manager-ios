@@ -41,14 +41,14 @@ struct GridViewMoreMenuTests {
     #expect(
       GridMoreMenu.entries.map(\.id) == [
         "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-        "more.density", "more.status",
+        "more.density", "more.status", "more.openInNewWindow",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
         "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Density: 200 pt",
-        "Status",
+        "Status", "Open in New Window",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
@@ -187,6 +187,17 @@ struct GridViewMoreMenuTests {
         #expect(store.isStatusPresented == false)
         run(store)
         #expect(store.isStatusPresented, "the Status entry did not raise the sheet")
+
+      case "more.openInNewWindow":
+        guard case .sceneWindow(let run) = entry.surface else {
+          Issue.record("more.openInNewWindow is not a scene-window entry")
+          continue
+        }
+        // WP13 P11: observable through the injected opener, which is the whole point of
+        // injecting it — a no-op row leaves this empty.
+        let opened = OpenedShootWindows()
+        run(store, ShootWindowOpener { opened.values.append($0) })
+        #expect(!opened.values.isEmpty, "the Open in New Window entry opened nothing")
 
       default:
         // ONE literal, not two concatenated: `Issue.record` takes a `Comment`, and `+` on a
@@ -358,4 +369,62 @@ struct GridPreferencesTests {
     #expect(GridPreferences.filenamePlatesKey == "grid.filenamePlates")
     #expect(GridPreferences.autoAdvanceOnMarkKey == "loupe.autoAdvanceOnMark")
   }
+
+  /// WP13 P11 (IMGMGR-220): the enabled control is not a no-op, and it fires with the CURRENT
+  /// scope's own scene value rather than a rebuilt or defaulted one.
+  ///
+  /// What no unit test can prove is that the system then actually opens a window — that is the
+  /// two-shoots-side-by-side device evidence, a named acceptance leg at the TestFlight
+  /// checkpoint, and it is not claimed here.
+  @Test("The enabled Open in New Window control fires with the current scene value")
+  func theEnabledOpenInNewWindowControlFiresWithTheCurrentSceneValue() async {
+    let (store, transport, _, _) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 42, sourceTier: .archive)
+
+    let entry = GridMoreMenu.openInNewWindow
+    #expect(entry.isEnabled(store), "the control is disabled with a shoot in scope")
+    guard case .sceneWindow(let run) = entry.surface else {
+      Issue.record("more.openInNewWindow is not a scene-window entry")
+      return
+    }
+
+    let opened = OpenedShootWindows()
+    run(store, ShootWindowOpener { opened.values.append($0) })
+
+    #expect(opened.values.count == 1, "the control fired \(opened.values.count) times, not once")
+    #expect(opened.values.first == ShootSceneValue.from(query: store.query))
+    #expect(opened.values.first == ShootSceneValue(folderID: 42, sourceTier: .archive))
+  }
+
+  /// The control ships in every case — the probe decided only whether `project.yml` needed the
+  /// capability key, never whether the affordance exists — so with nothing in scope it is
+  /// PRESENT and DISABLED rather than absent.
+  @Test("Open in New Window is present and disabled with no shoot selected")
+  func openInNewWindowIsPresentAndDisabledWithNoShootSelected() async {
+    let (store, _, _, _) = makeStore()
+    #expect(store.query.folderID == nil)
+
+    let present = GridMoreMenu.entries.filter { $0.id == "more.openInNewWindow" }
+    #expect(present.count == 1, "the More menu does not carry Open in New Window")
+    #expect(GridMoreMenu.openInNewWindow.isEnabled(store) == false)
+
+    // A disabled control that still fired would be worse than an absent one.
+    guard case .sceneWindow(let run) = GridMoreMenu.openInNewWindow.surface else {
+      Issue.record("more.openInNewWindow is not a scene-window entry")
+      return
+    }
+    let opened = OpenedShootWindows()
+    run(store, ShootWindowOpener { opened.values.append($0) })
+    #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
+  }
 }
+
+/// A reference box for the spy: `ShootWindowOpener.open` is an escaping `@Sendable` closure, so it
+/// cannot capture a local `var` array.
+@MainActor
+final class OpenedShootWindows {
+  var values: [ShootSceneValue] = []
+}
+

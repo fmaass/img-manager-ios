@@ -27,6 +27,22 @@ struct GridView: View {
   /// test RED instead of leaving every existing test green.
   var pointerGestureInstaller: PointerGestureInstaller = .live
 
+  /// WP13 P11 (IMGMGR-220): the scene-level window action, read at the deepest view that can see
+  /// it and handed down to the More menu. Production always uses it; `openShootWindowOverride` is
+  /// the test-only seam (a unit test has no scene, so `openWindow` cannot be constructed there),
+  /// exactly the shape `pointerGestureInstaller` already uses.
+  @Environment(\.openWindow) private var openWindow
+  var openShootWindowOverride: ShootWindowOpener?
+
+  private var openShootWindow: ShootWindowOpener {
+    if let openShootWindowOverride { return openShootWindowOverride }
+    // The action is copied into a LOCAL before the closure is formed: `OpenWindowAction` is
+    // `Sendable` (SDK 26.5 swiftinterface, probed), but `self` is a view struct and capturing it
+    // in a `@Sendable` closure is not what this needs to keep alive.
+    let open = openWindow
+    return ShootWindowOpener { value in open(value: value) }
+  }
+
   /// WP13 P5b: `body` is the composition plus its modifiers; the stack itself and the chrome
   /// rows above it are their own declarations. Not a style choice — adding one more `.onChange`
   /// to the single flat expression this used to be tipped the type checker over its budget
@@ -60,16 +76,21 @@ struct GridView: View {
   /// coincidence two independent `if`s would let drift apart. Pick Lock and Dislike Lock cannot
   /// both render because `latchedVerb` is one value, not two flags.
   @ViewBuilder private var chromeRows: some View {
-    if layoutMode == .compact {
-      GridOptionsRow(store: store)
-    }
-    if store.displayMode == .scene {
-      SceneModeRow(store: store)
-    }
-    if let latchedVerb = store.pickLock.latchedVerb {
-      PickLockModeRow(store: store, verb: latchedVerb)
-    } else if store.selection.mode == .select {
-      SelectModeRow(store: store)
+    // Renders EXACTLY `GridChromeRows.rows(...)`, in its order, and holds no second list — the
+    // same "declare it, then render the declaration" discipline `GridMoreMenu.entries` and
+    // `AppCommands.declarations` already follow. It is what makes "Scene mode adds no banner row
+    // of its own" (IMGMGR-256) a value test rather than a reading of a `@ViewBuilder`.
+    ForEach(GridChromeRows.rows(layoutMode: layoutMode, store: store), id: \.self) { row in
+      switch row {
+      case .options:
+        GridOptionsRow(store: store)
+      case .sceneBanner:
+        SceneModeRow(store: store)
+      case .pickLock(let verb):
+        PickLockModeRow(store: store, verb: verb)
+      case .select:
+        SelectModeRow(store: store)
+      }
     }
   }
 
@@ -90,7 +111,7 @@ struct GridView: View {
         }
       ConflictRecoveryBanner(store: store)
       MarksCopyBanner(store: store)
-      ActionBarView(store: store)
+      ActionBarView(store: store, openShootWindow: openShootWindow)
     }
   }
 
@@ -306,6 +327,44 @@ struct GroupSectionHeaderView: View {
   }
 }
 
+/// One row of the grid's chrome stack, as a VALUE. WP13 P11 / IMGMGR-256.
+///
+/// Declared so the pinned order and — more to the point — what Scene mode does and does not add
+/// are assertable without a render host. `GridView.chromeRows` renders exactly this list and holds
+/// no second copy of it.
+enum GridChromeRow: Hashable, Sendable {
+  case options
+  /// RED (gate r1): Scene's own caption banner, the row IMGMGR-256 removes. The GREEN commit
+  /// deletes this case and `SceneModeRow` with it; the Group control's highlighted state is what
+  /// says "you are in an arrangement" from then on.
+  case sceneBanner
+  case pickLock(LatchVerb)
+  case select
+}
+
+enum GridChromeRows {
+  /// At most ONE mode row can render: a lock and Select are mutually exclusive in `GridStore`
+  /// (`enterSelectExplicitly` and `longPressTile` both unlatch first), and `latchedVerb` is one
+  /// value rather than two flags — the `else` below makes that a structural fact of the
+  /// declaration rather than a coincidence two independent `if`s would let drift apart.
+  @MainActor
+  static func rows(layoutMode: LayoutMode, store: GridStore) -> [GridChromeRow] {
+    var rows: [GridChromeRow] = []
+    if layoutMode == .compact {
+      rows.append(.options)
+    }
+    if store.displayMode == .scene {
+      rows.append(.sceneBanner)
+    }
+    if let latchedVerb = store.pickLock.latchedVerb {
+      rows.append(.pickLock(latchedVerb))
+    } else if store.selection.mode == .select {
+      rows.append(.select)
+    }
+    return rows
+  }
+}
+
 /// WP13 P4 (IMGMGR-215): the Group control — ONE definition, rendered either as a Regular
 /// `.primaryAction` toolbar item or inside Compact's persistent options row. Its label carries
 /// the CURRENT VALUE ("Group: Scene"), which is the discoverability half of this ticket: an
@@ -337,8 +396,18 @@ struct GridGroupControl: View {
         }
       }
     } label: {
-      Label(Self.title(for: store.activeGrouping), systemImage: "square.stack")
+      Label(
+        Self.title(for: store.activeGrouping),
+        systemImage: Self.isHighlighted(for: store.activeGrouping)
+          ? "square.stack.fill" : "square.stack")
     }
+    // IMGMGR-256: the control itself is now the "you are in an arrangement" signal — the Scene
+    // caption row it replaces is gone. The treatment is VALUE-driven inside one view type (a
+    // filled symbol variant, a semibold label, an accent ring drawn as an overlay), never an
+    // `if/else` over two different view types: SwiftUI would tear the `Menu` down and rebuild it
+    // on every grouping change, closing it mid-interaction. Nothing here changes the control's
+    // size, at rest or highlighted.
+    .modifier(GroupControlHighlight(isHighlighted: Self.isHighlighted(for: store.activeGrouping)))
     // The value has to stay VISIBLE, not just present in the accessibility label: a nav-bar
     // `Label` renders icon-only by default, and an icon-only menu is precisely what the owner
     // could not find (gap audit /link/3282, owner feedback (c)). Observed on the iPad Pro 13"
@@ -347,6 +416,19 @@ struct GridGroupControl: View {
     // already draws both.
     .labelStyle(.titleAndIcon)
     .accessibilityIdentifier("gridGroupControl")
+    // Machine-readable highlight state, and a genuine VoiceOver improvement rather than a probe:
+    // "Group: Camera, Active" states in words what the tint states in pixels.
+    .accessibilityValue(
+      Self.isHighlighted(for: store.activeGrouping) ? "Active" : "Off")
+  }
+
+  /// IMGMGR-256: the control renders highlighted whenever ANY arrangement is in force — Scene or
+  /// one of the six dimensions — and plain under None. A pure function, so the state is a value
+  /// test rather than a screenshot reading.
+  static func isHighlighted(for choice: GroupingChoice) -> Bool {
+    // RED (gate r1): never highlighted. The GREEN commit returns `choice != .none`.
+    _ = choice
+    return false
   }
 
   /// A pure function so the value-in-label contract is testable without a render host.
@@ -362,6 +444,28 @@ struct GridGroupControl: View {
     case .scene: return "Scene"
     case .key(let key): return key.title
     }
+  }
+}
+
+/// Applies the prominent (tinted) button style only while an arrangement is in force. A
+/// `ViewModifier` rather than a `@ViewBuilder if/else` on the whole `Menu`, because the two
+/// branches of such an `if` are DIFFERENT view types to SwiftUI: the menu would be torn down and
+/// rebuilt on every grouping change, closing itself mid-interaction.
+struct GroupControlHighlight: ViewModifier {
+  let isHighlighted: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .fontWeight(isHighlighted ? .semibold : nil)
+      .overlay(
+        Capsule(style: .continuous)
+          .strokeBorder(Color.accentColor.opacity(isHighlighted ? 0.9 : 0), lineWidth: 2)
+          // Negative padding on an OVERLAY's own content: an overlay is laid out inside the
+          // parent's frame and never propagates a size back, so the ring can sit just outside
+          // the label without the control changing width — which is what keeps
+          // `SortGroupScreenshotUITests`' no-overflow assertion answering the same question.
+          .padding(-3)
+      )
   }
 }
 
@@ -774,6 +878,9 @@ enum ActionBarMarkControl: CaseIterable {
 /// frame is never applied to the containing `HStack` alone.
 struct ActionBarView: View {
   @Bindable var store: GridStore
+  /// WP13 P11: forwarded straight through to `GridMoreMenuContent` — the bar itself never opens
+  /// a window, it only carries the menu that does.
+  let openShootWindow: ShootWindowOpener
 
   /// Widest tier first — straight out of `ActionBarMetrics.tiers` — and the LAYOUT SYSTEM
   /// picks, not a measurement this view took. Every per-tier difference (its gap, its padding,
@@ -850,7 +957,9 @@ struct ActionBarView: View {
         // WP13 P5a (IMGMGR-221) + P1 (IMGMGR-212), resolved as ONE composition: the decided
         // More set renders from `GridMoreMenu.entries`, and the fold is what the Clear ROW's
         // identity keys off — never a second Clear row beside it.
-        GridMoreMenuContent(store: store, foldsClearIntoMore: layout.foldsClearIntoMore)
+        GridMoreMenuContent(
+          store: store, foldsClearIntoMore: layout.foldsClearIntoMore,
+          openShootWindow: openShootWindow)
       } label: {
         Label("More", systemImage: "ellipsis.circle")
       }
