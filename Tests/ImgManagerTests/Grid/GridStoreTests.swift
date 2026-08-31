@@ -2272,6 +2272,149 @@ struct GridStoreTests {
     #expect(store.activeGrouping == .scene)
   }
 
+  // MARK: - Diff-gate r1 blockers
+
+  @Test("A failed header fetch after a filter change renders NO sections, never the old scope's")
+  func aFailedHeaderFetchAfterAFilterChangeRendersNoStaleSections() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1), makeImage(id: 2)], limit: 100, nextCursor: nil))
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 36568, key: "SONY ILCE-7RM5", label: "SONY ILCE-7RM5")],
+        timezone: "Europe/Zurich", total: 36568))
+    await store.selectShoot(folderID: 1)
+    await store.selectGrouping(.key(.camera))
+    // POSITIVE CONTROL: the server DID vouch for this scope, so the emptiness below is the
+    // identity gate doing its job rather than a header fetch that never happened.
+    #expect(store.groupHeaders.count == 1)
+    #expect(store.groupTimezone == "Europe/Zurich")
+
+    // The scope moves AND the header fetch for the new scope fails.
+    await transport.setImageGroupsShouldFail(true)
+    await store.applyFilterChange { $0.mark = "pick" }
+
+    // A header describes a filter scope. Rendering the previous scope's label, count and
+    // timezone over the new photographs states something false about what is on screen — worse
+    // than stating nothing, which is what an unvouched scope gets.
+    #expect(store.groupHeaders.isEmpty, "the previous scope's headers survived a failed fetch")
+    #expect(store.groupTimezone == nil, "the previous scope's timezone survived a failed fetch")
+
+    // ...and the photographs themselves still render, unsectioned. Absence of a header is never
+    // absence of a photograph.
+    let rendered = GridSectionLayout.renderRows(
+      rows: store.images.map(SceneDisplayRow.image),
+      groupBy: store.activeGrouping.groupByKey,
+      headers: store.groupHeaders, timezone: store.groupTimezone,
+      paneWidth: 800, targetRowHeight: 200, displayScale: 2,
+      availability: { _, _ in .ok(width: 4000, height: 4000) })
+    #expect(rendered.allSatisfy { $0.packedRow != nil }, "a section header rendered unvouched")
+    #expect(GridSectionLayout.navigationRows(rendered).flatMap { $0 }.count == 2)
+  }
+
+  @Test("Returning to a vouched scope shows its sections again, and does not refetch them")
+  func returningToAVouchedScopeShowsItsSectionsAgain() async {
+    // The other half of the rule, so the fix reads as a GATE on identity rather than as
+    // "destroy everything the moment anything fails": headers the server vouched for a query
+    // are still that query's answer when the reader comes back to it.
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 280, key: "FUJIFILM X-T2", label: "FUJIFILM X-T2")],
+        timezone: nil, total: 280))
+    await store.selectShoot(folderID: 1)
+    await store.selectGrouping(.key(.camera))
+    #expect(store.groupHeaders.count == 1)
+    let afterVouching = await transport.callCount(Operations.ImageGroupsApiImageGroupsGet.id)
+
+    // Away, where the header fetch fails: nothing is published for the new scope.
+    await transport.setImageGroupsShouldFail(true)
+    await store.applyFilterChange { $0.mark = "pick" }
+    #expect(store.groupHeaders.isEmpty)
+
+    // ...and back.
+    await store.applyFilterChange { $0.mark = nil }
+
+    #expect(store.groupHeaders[.known("FUJIFILM X-T2")]?.count == 280)
+    // Idempotent per identity: coming back to an already-vouched query costs no request.
+    let afterReturning = await transport.callCount(Operations.ImageGroupsApiImageGroupsGet.id)
+    #expect(
+      afterReturning == afterVouching + 1,
+      "the return trip refetched a scope the server had already vouched for")
+  }
+
+  @Test("Choosing a sort key while Scene is active LEAVES Scene and applies the key")
+  func choosingASortKeyWhileSceneIsActiveLeavesSceneAndAppliesTheKey() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await store.setSortKey(.filename)
+    await store.setDisplayMode(.scene)
+    #expect(store.displayMode == .scene)
+    // The control tells the truth in Scene mode: the presentation is suspended, not forgotten.
+    #expect(store.activeSortKey == .filename)
+
+    await store.setSortKey(.rating)
+
+    // Scene reloads through `browseStacks`, which ignores sort/direction/group_by by contract
+    // (ADR-0005 decision 1) — so a sort chosen here and left in Scene would be enabled and
+    // inert, and leaving Scene would then restore the suspension over it.
+    #expect(store.displayMode == .flat, "a sort choice left the reader in Scene, where it is inert")
+    #expect(store.currentQuery.sort == "rating")
+    #expect(store.activeSortKey == .rating)
+    #expect(store.suspendedPresentation == nil, "the suspension outlived the choice it would undo")
+    let page = await transport.lastListImagesQuery
+    #expect(page?["sort"] == "rating")
+  }
+
+  @Test("Choosing a sort DIRECTION while Scene is active LEAVES Scene and applies it")
+  func choosingASortDirectionWhileSceneIsActiveLeavesSceneAndAppliesIt() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await store.setSortKey(.rating)
+    await store.setDisplayMode(.scene)
+    #expect(store.displayMode == .scene)
+
+    await store.setSortDirection(.desc)
+
+    #expect(store.displayMode == .flat)
+    #expect(store.currentQuery.direction == "desc")
+    // The suspended sort key came back with it — leaving Scene restores the presentation, and
+    // the direction is applied ON TOP of it rather than onto a cleared query.
+    #expect(store.currentQuery.sort == "rating")
+    #expect(store.activeDirection == .desc)
+    let page = await transport.lastListImagesQuery
+    #expect(page?["direction"] == "desc")
+    #expect(page?["sort"] == "rating")
+  }
+
+  @Test("⌥⌘R in Scene mode reverses the SUSPENDED direction, not the cleared query's default")
+  func togglingDirectionInSceneModeReversesTheSuspendedDirection() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await store.setSortDirection(.desc)
+    await store.setDisplayMode(.scene)
+    // While Scene is on the query carries no direction at all, so a toggle that read the QUERY
+    // would see the `asc` default and "reverse" it to `desc` — the value already in force.
+    #expect(store.currentQuery.direction == nil)
+    #expect(store.activeDirection == .desc)
+
+    await store.toggleSortDirection()
+
+    #expect(store.displayMode == .flat)
+    #expect(store.currentQuery.direction == "asc")
+    #expect(store.activeDirection == .asc)
+  }
+
   @Test("Grouping is single-select: activeGrouping is never Scene AND a key at once")
   func groupingIsNeverSceneAndAKeyAtOnce() async {
     let (store, transport) = makeStore()
