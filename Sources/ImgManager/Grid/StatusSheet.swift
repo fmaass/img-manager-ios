@@ -76,12 +76,18 @@ enum StatusSheetModel {
           id: "maintenance.lastIndexed", label: "Last indexed",
           value: timestamp(indexed)))
     }
-    // NO "running now" row: the vendored document declares `active_run` as
-    // `anyOf: [MaintenanceRunView, null]`, and swift-openapi-generator DROPS that property
-    // entirely — the generated `StatusResponse` has coverage/lastIndexedAt/maintenance/runs/
-    // stores and no `activeRun` at all (verified in the gate's own generated Types.swift,
-    // run p5a-red 22:38). Rendering it would need a re-vendor, which this phase does not do.
-    // The most recent entry of `runs` is what the sheet shows instead.
+    // IMGMGR-249: the running job, from `active_run` ITSELF. This row could not exist until the
+    // re-vendor: the property is declared `anyOf: [MaintenanceRunView, null]` and
+    // swift-openapi-generator dropped it whole, so the sheet had only `runs[0]` to fall back on —
+    // which names a FINISHED run as though it were the current one whenever the newest entry has
+    // already ended. Absent means nothing is running, so there is no row at all rather than a row
+    // reading "idle"; `runs` below still lists the recent history either way.
+    if let active = status.activeRun {
+      rows.append(
+        StatusSheetRow(
+          id: "maintenance.activeRun", label: "Running now",
+          value: "\(active.trigger) · \(active.state) · started \(timestamp(active.startedAt))"))
+    }
     return StatusSheetSection(id: "maintenance", title: "Maintenance", rows: rows)
   }
 

@@ -133,5 +133,29 @@ struct StatusSheetTests {
     #expect(rows.contains { $0.id == "maintenance.enabled" && $0.value == "Disabled" })
     #expect(!rows.contains { $0.id == "maintenance.lastIndexed" })
     #expect(rows.contains { $0.id == "coverage.images" })
+    // IMGMGR-249: nothing running is no row — never a placeholder, and never the newest entry of
+    // `runs` standing in for a run that has already finished.
+    #expect(!rows.contains { $0.id == "maintenance.activeRun" })
+  }
+
+  /// IMGMGR-249. The sheet could not express this at all until the re-vendor: `active_run` is a
+  /// nullable model reference, which swift-openapi-generator dropped from the generated
+  /// `StatusResponse` entirely. The row names the run that is ACTUALLY in flight, which is a
+  /// different question from "the most recent run" — this fixture makes them differ on purpose.
+  @Test("A running maintenance job is named from active_run, not from the newest finished run")
+  func anActiveRunIsRenderedFromItsOwnField() {
+    var running = status()
+    running.activeRun = .init(
+      finishedAt: nil, id: 1_986, startedAt: Self.indexedAt, state: "running", trigger: "manual")
+    let rows = StatusSheetModel.sections(running).flatMap(\.rows)
+
+    let active = rows.first { $0.id == "maintenance.activeRun" }
+    #expect(active?.label == "Running now")
+    #expect(active?.value.contains("manual") == true)
+    #expect(active?.value.contains("running") == true)
+    #expect(active?.value.contains(StatusSheetModel.timestamp(Self.indexedAt)) == true)
+    // The finished run in `runs` is still listed as history, and is NOT what the row above says.
+    #expect(rows.contains { $0.id == "run.1985" })
+    #expect(active?.value.contains("succeeded") == false)
   }
 }

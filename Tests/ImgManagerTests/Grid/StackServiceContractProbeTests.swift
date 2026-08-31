@@ -37,7 +37,8 @@ struct StackServiceContractProbeTests {
   ) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
       anchorTakenAt: anchor, hasPick: hasPick, kind: .stack, matchedCount: matchedCount,
-      memberCount: memberCount, representative: representative, stackId: id)
+      memberCount: memberCount, pickedCount: hasPick ? 1 : 0, representative: representative,
+      stackId: id)
   }
 
   @Test(

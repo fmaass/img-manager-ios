@@ -74,7 +74,7 @@ struct HoverEffectWiringTests {
   private func makeStackRow(id: Int) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
       anchorTakenAt: nil, hasPick: false, kind: .stack, matchedCount: 3, memberCount: 3,
-      representative: makeImage(id: id), stackId: id)
+      pickedCount: 0, representative: makeImage(id: id), stackId: id)
   }
 
   @Test("A tile, a scene card and a filmstrip thumbnail each install the hover effect")

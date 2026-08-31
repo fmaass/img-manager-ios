@@ -112,7 +112,8 @@ struct LoupeFilmstripTests {
           stackRowItem(
             Components.Schemas.StackBrowseStackRow(
               anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false,
-              kind: .stack, matchedCount: 2, memberCount: 2, representative: cover, stackId: 5)),
+              kind: .stack, matchedCount: 2, memberCount: 2, pickedCount: 0,
+              representative: cover, stackId: 5)),
         ], limit: 100, nextCursor: nil))
     await store.setDisplayMode(.scene)
     return (store, transport)

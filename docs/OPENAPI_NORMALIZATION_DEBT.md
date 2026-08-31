@@ -1,5 +1,27 @@
 # OpenAPI normalization bridge — pinned debt (RESOLVED)
 
+**Addendum 2026-08-31 (WP14 lane A, IMGMGR-249) — one narrow rewrite is back, and the
+"byte-identical" claim below is no longer the whole truth.** The retirement was right about
+SCALAR nullables: img-manager emits `type: [X, "null"]` natively and 188 sites arrive that way.
+It was wrong to generalise. A nullable MODEL reference has no type-array spelling — JSON Schema
+can only write `anyOf: [{"$ref": X}, {"type": "null"}]` — so 17 such sites survive at every sha
+since (measured at 5615fd9, at img-manager main 106fbd1 and at the vendored
+`74203992ac1d41d6a2eea097bbe3b7101753e41a`), and swift-openapi-generator 1.13.0 drops each one
+whole. Measured on the gate's own generated `Types.swift` at ios 0466798: `activeRun` 0 hits,
+positive control `lastIndexedAt` 5 hits — which is exactly why the Status sheet could not name
+the maintenance job that was running.
+
+`scripts/sync-openapi.sh` therefore canonicalises that ONE shape to the bare `$ref` it means, at
+the 7 optional component-schema sites that carry no sibling keys, refusing outright on a required
+site. The 10 `?sidecar` query parameters carry a `title` sibling, are left exactly as the server
+wrote them, are still dropped by the generator, and are ENUMERATED by the script on every sync
+(`still_dropped_nullable_unions` in `OPENAPI_SOURCE`) rather than passed over in silence. Nothing
+in this client consumes `?sidecar` today. The vendored file is byte-identical to the source
+except for those 7 rewrites — a plain `diff` against
+`git show <sha>:frontend/openapi.json` shows 77 lines and nothing else. `NullableSurvivalTests`
+pins all seven individually. The cleaner fix lives in the SERVER (emit a bare `$ref` for a
+non-required `Optional[Model]`), which would let this rewrite retire a second time.
+
 **Status:** CLOSED, WP8 P1-ios, re-vendor at img-manager commit
 `eff6a12ddf3c7e2a6f748625747345ca57c86349` (v0.9.2 tag). P1-backend fixed the schema to emit
 OAS 3.1 `type: [X, "null"]` natively; re-vendoring measured `bridge_nullable_rewritten=0`

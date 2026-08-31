@@ -1,7 +1,9 @@
 # Provenance of the img-manager artefact vendored into this package.
 # Written by scripts/sync-openapi.sh — do not edit by hand.
 repo=img-manager
-commit=5615fd917d12baed7f9185283e6cbfb44e3e1dcf
-subject=Merge fix/imgmgr193-grid-focus: keep keyboard ownership on a mounted tile (IMGMGR-193)
-committed=2026-08-29T19:53:01+02:00
-files=Sources/ImgManagerAPI/openapi.json (byte-identical to source)
+commit=74203992ac1d41d6a2eea097bbe3b7101753e41a
+subject=Merge feature/wp14-p1-web: server-ordered queue rollup, declared stack-edit refusals, touch plates, filmstrip scene clamp (IMGMGR-264/-278/-274/-273)
+committed=2026-08-31T23:18:23+02:00
+files=Sources/ImgManagerAPI/openapi.json (source, with the nullable-$ref canonicalization below)
+canonicalized_nullable_refs=7
+still_dropped_nullable_unions=10

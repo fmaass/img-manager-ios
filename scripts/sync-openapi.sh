@@ -56,6 +56,117 @@ fetch() {
 echo "syncing from $src at $sha"
 fetch frontend/openapi.json "$dest"
 
+# --- Nullable model references (IMGMGR-249) -------------------------------------------------
+# img-manager canonicalises SCALAR nullables to the OAS 3.1 `type: [X, "null"]` idiom natively —
+# that is what retired the old rewrite bridge, and 188 sites arrive in that form. A nullable
+# MODEL reference has no such spelling: JSON Schema can only say
+# `anyOf: [{"$ref": X}, {"type": "null"}]`, and swift-openapi-generator 1.13.0 DROPS a property
+# declared that way rather than generating an Optional. Measured, not assumed: at the previously
+# vendored 5615fd9 the generated `StatusResponse` carried no `activeRun` at all (0 hits in the
+# gate's own Types.swift; positive control `lastIndexedAt`, 5 hits), which is why the Status
+# sheet could not name the job that is running.
+#
+# So exactly that one shape is rewritten to the bare `$ref` it means, and ONLY where the site is
+# already optional — a property absent from its schema's `required`, or a parameter with
+# `required: false` — because there the generator's own "not required -> Optional" rule produces
+# precisely the type the union described. A REQUIRED site would change meaning, so that refuses
+# outright rather than guessing.
+#
+# The rewrite is deliberately confined to a union with NO sibling keys. Sites that carry one (the
+# ten `?sidecar` query parameters carry a `title`) are left exactly as the server wrote them and
+# are still dropped by the generator — so they are ENUMERATED on every sync and counted into
+# OPENAPI_SOURCE rather than passed over in silence. Nothing in this client consumes `?sidecar`
+# today; when something does, this is the rule that extends.
+#
+# `json.dumps(indent=2)` plus a trailing newline round-trips img-manager's own writer byte for
+# byte (verified), so diffing the result against
+# `git -C <img-manager> show <sha>:frontend/openapi.json` shows the rewritten sites and nothing
+# else.
+canonicalized="$(python3 - "$dest" <<'PY'
+import json, sys
+
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+
+def nullable_ref(schema):
+    """The one shape this rule knows: exactly {$ref} + {type: null}, no sibling keys."""
+    if not isinstance(schema, dict) or set(schema) != {"anyOf"}:
+        return None
+    members = schema["anyOf"]
+    if not isinstance(members, list) or len(members) != 2:
+        return None
+    refs = [m for m in members if isinstance(m, dict) and set(m) == {"$ref"}]
+    nulls = [m for m in members if isinstance(m, dict) and m.get("type") == "null"]
+    return refs[0]["$ref"] if len(refs) == 1 and len(nulls) == 1 else None
+
+rewritten = []
+refusals = []
+
+for name, schema in (doc.get("components", {}).get("schemas") or {}).items():
+    required = set(schema.get("required") or [])
+    for prop, value in (schema.get("properties") or {}).items():
+        ref = nullable_ref(value)
+        if ref is None:
+            continue
+        if prop in required:
+            refusals.append("components.schemas.%s.%s is REQUIRED" % (name, prop))
+            continue
+        schema["properties"][prop] = {"$ref": ref}
+        rewritten.append("components.schemas.%s.%s -> %s" % (name, prop, ref))
+
+for route, operations in (doc.get("paths") or {}).items():
+    for verb, operation in operations.items():
+        if not isinstance(operation, dict):
+            continue
+        for parameter in operation.get("parameters") or []:
+            ref = nullable_ref(parameter.get("schema"))
+            if ref is None:
+                continue
+            if parameter.get("required"):
+                refusals.append(
+                    "%s %s parameter %s is REQUIRED" % (verb.upper(), route, parameter["name"]))
+                continue
+            parameter["schema"] = {"$ref": ref}
+            rewritten.append("%s %s ?%s -> %s" % (verb.upper(), route, parameter["name"], ref))
+
+def remaining(node, pointer=""):
+    """EVERY anyOf still carrying a null member — the broad scan, so what this rule did not
+    touch is enumerated rather than invisible."""
+    if isinstance(node, dict):
+        members = node.get("anyOf")
+        if isinstance(members, list) and any(
+            isinstance(m, dict) and m.get("type") == "null" for m in members
+        ):
+            yield pointer
+        for key, value in node.items():
+            for found in remaining(value, "%s/%s" % (pointer, key)):
+                yield found
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            for found in remaining(value, "%s/%d" % (pointer, index)):
+                yield found
+
+if refusals:
+    for line in refusals:
+        sys.stderr.write("REFUSED: %s\n" % line)
+    sys.exit(3)
+
+with open(path, "w") as handle:
+    json.dump(doc, handle, indent=2)
+    handle.write("\n")
+
+for line in rewritten:
+    print("rewrote %s" % line)
+for pointer in remaining(doc):
+    print("still-dropped %s" % pointer)
+PY
+)" || die "nullable-ref canonicalization refused (see above)" 1
+canonicalized_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote ')"
+dropped_count="$(printf '%s\n' "$canonicalized" | grep -c '^still-dropped ')"
+echo "canonicalized $canonicalized_count nullable model references; $dropped_count still dropped:"
+printf '%s\n' "$canonicalized" | sed 's/^/  /'
+
 {
   echo "# Provenance of the img-manager artefact vendored into this package."
   echo "# Written by scripts/sync-openapi.sh — do not edit by hand."
@@ -63,7 +174,9 @@ fetch frontend/openapi.json "$dest"
   echo "commit=$sha"
   echo "subject=$(git -C "$src" log -1 --pretty=%s "$sha")"
   echo "committed=$(git -C "$src" log -1 --pretty=%cI "$sha")"
-  echo "files=Sources/ImgManagerAPI/openapi.json (byte-identical to source)"
+  echo "files=Sources/ImgManagerAPI/openapi.json (source, with the nullable-\$ref canonicalization below)"
+  echo "canonicalized_nullable_refs=$canonicalized_count"
+  echo "still_dropped_nullable_unions=$dropped_count"
 } > "$provenance" || die "cannot write $provenance" 1
 
 echo "recorded $provenance:"
