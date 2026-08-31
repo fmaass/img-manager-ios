@@ -158,6 +158,25 @@ struct LoupeView: View {
       // not conditional on there being room.
       zoomControls.makeToggleControl(LoupeZoomControlModel(resolvedZoom), zoomToggle)
 
+      // WP13 P8 (IMGMGR-214): the advance-on-mark cadence, on or off, HERE — where the culling
+      // happens — and not only in the account sheet. The persistent-chrome rule is that no
+      // behaviour is reachable solely as a hidden preference or a bare key equivalent; `A`/⌘⇧A
+      // are the accelerator forms of this control, never its only surface. Same accessibility
+      // shape as the zoom twin beside it (identifier + label + value), so a UI test can read the
+      // state back rather than infer it from a glyph.
+      Button {
+        store.preferences.autoAdvanceOnMark.toggle()
+      } label: {
+        Image(
+          systemName: store.preferences.autoAdvanceOnMark
+            ? "forward.end.circle.fill" : "forward.end.circle")
+      }
+      .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("loupeAutoAdvanceToggle")
+      .accessibilityLabel("Advance After Marking")
+      .accessibilityValue(store.preferences.autoAdvanceOnMark ? "On" : "Off")
+      .accessibilityHint("Move to the next photograph after each mark")
+
       // Both idioms — on Compact this is the only trailing control, which is exactly the point:
       // sharing is reachable from persistent chrome on the phone too, not just where there is
       // room for a toolbar full of things.
