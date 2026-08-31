@@ -27,13 +27,11 @@ struct AccountSheetView: View {
         Section {
           Text(subject.map { "Signed in as \($0)" } ?? "Signed in")
         }
-        Section("Culling") {
-          Toggle("Advance After Marking", isOn: $preferences.autoAdvanceOnMark)
-            .accessibilityIdentifier("accountAutoAdvanceToggle")
-          Text("After a mark lands in the loupe, move to the next photograph.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
+        // RED-3 MUTATION (WP13 P8): the Culling section is removed on purpose. Round 2 could not
+        // prove `testAccountSheetCarriesTheAutoAdvanceRow` real — it failed before ever reaching
+        // the sheet, on the toolbar query. With that query fixed, this build is the one where
+        // the row is genuinely absent, so the row assertion itself is observed failing. The
+        // GREEN commit puts the section back.
         Section {
           Button("Sign Out…", role: .destructive) {
             stage = SignOutFlow.next(stage, on: .requested)

@@ -262,6 +262,11 @@ struct RootView: View {
         } label: {
           Label("Account", systemImage: "person.crop.circle")
         }
+        // WP13 P8 (IMGMGR-214): addressable by IDENTIFIER, not by its label. The gate run at
+        // 09:02 showed XCTest matching `app.buttons["Account"]` as `"Account" IN identifiers`
+        // and finding nothing — a `Label`'s text is not an identifier. The account sheet is now
+        // a chrome surface a UI test has to reach, so it gets a handle.
+        .accessibilityIdentifier("accountToolbarButton")
       }
     }
     .sheet(isPresented: $showAccountSheet) {

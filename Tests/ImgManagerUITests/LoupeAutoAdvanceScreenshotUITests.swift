@@ -52,15 +52,23 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
   func testAccountSheetCarriesTheAutoAdvanceRow() throws {
     let app = launchStubbedApp()
 
-    let account = app.buttons["Account"]
+    // By IDENTIFIER: the 09:02 gate run proved `app.buttons["Account"]` resolves as
+    // `"Account" IN identifiers` and a `Label`'s text is not one, so the toolbar item carries an
+    // explicit identifier now (`RootView.swift`).
+    let account = app.descendants(matching: .any)["accountToolbarButton"]
     XCTAssertTrue(
       account.waitForExistence(timeout: 30),
       "The Account toolbar item never appeared — expected the DEBUG fixture composition's "
         + "workspace, got something else (sign-in screen, blank screen, failed stub).")
     account.tap()
 
-    let row = app.switches["accountAutoAdvanceToggle"]
+    // A `Toggle` in a `List` is a switch; the permissive query is the fallback, not the first
+    // guess, because only the switch itself carries the on/off value this test reads.
+    var row = app.switches["accountAutoAdvanceToggle"].firstMatch
     if !row.waitForExistence(timeout: 10) {
+      row = app.descendants(matching: .any)["accountAutoAdvanceToggle"].firstMatch
+    }
+    if !row.exists {
       XCTContext.runActivity(named: "element tree with no advance-on-mark row") { activity in
         activity.add(XCTAttachment(string: app.debugDescription))
       }
@@ -78,6 +86,8 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     row.tap()
     Thread.sleep(forTimeInterval: 0.8)
     let after = row.value as? String
+    let flip = "account row value \(before ?? "nil") -> \(after ?? "nil")"
+    XCTContext.runActivity(named: flip) { _ in }
     XCTAssertNotEqual(
       before, after, "Tapping the account row did not change the preference (\(before ?? "nil")).")
     attach(name: "account-auto-advance-row-flipped")
