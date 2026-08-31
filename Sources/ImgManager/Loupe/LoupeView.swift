@@ -482,8 +482,7 @@ struct FilmstripThumbnail: View {
   var hoverEffectInstaller: HoverEffectInstaller = .live
 
   var body: some View {
-    // RED (gate r1): the installer is not called. The GREEN commit wraps `cell`.
-    cell
+    hoverEffectInstaller.apply(cell)
   }
 
   private var cell: some View {
