@@ -5,9 +5,12 @@ import SwiftUI
 /// cull"). One view, branched only on `layoutMode` — never on the device-idiom API, whose very
 /// NAME is banned from this tree by a mac-gate absence grep (plan invariant (i)):
 ///
-/// - `.compact`: no filmstrip, no full-screen toggle control (the presenting view —
-///   `RootView` — always shows this full-screen here already).
-/// - `.regular2`/`.regular3`: a filmstrip below the main image (same `GridStore.images`/
+/// - `.compact`: the filmstrip below the main image, and no full-screen toggle control (the
+///   presenting view — `RootView` — always shows this full-screen here already). WP13 P9
+///   (IMGMGR-218) removed the filmstrip exclusion this bullet used to record: the phone gets the
+///   spec's thumb bar, and it is the SAME `FilmstripView` over the SAME projection the iPad's
+///   is, so Scene-mode frame walking is inherited rather than re-implemented.
+/// - `.regular2`/`.regular3`: the same filmstrip (same `GridStore.actionableImages`/
 ///   `loadMoreIfNeeded`, never a filmstrip-local page — fold's "one paging path" pivot) and a
 ///   full-screen toggle button in the header.
 ///
@@ -115,12 +118,7 @@ struct LoupeView: View {
       header(zoomToggle: zoomToggle)
       ShareStatusBar(share: share)
       mainImageArea(zoomToggle: zoomToggle)
-      // RED COMMIT (WP13 P9): the SHIPPED exclusion, kept deliberately so
-      // `compactRendersTheStripOverTheSameActionableProjection` is observed failing against the
-      // code that really excludes it. The GREEN commit drops the condition.
-      if layoutMode != .compact {
-        filmstrip.make(store)
-      }
+      filmstrip.make(store)
       ConflictRecoveryBanner(store: store)
       LoupeMarkBar(store: store)
     }
@@ -371,14 +369,20 @@ struct LoupeMarkBar: View {
   }
 }
 
-/// Regular-2/3 only: the grid retained as a filmstrip "so context is never lost" (spec) — the
-/// SAME `GridStore.actionableImages`/`focusedImageID`, and the SAME serialized `loadMoreIfNeeded`
-/// the grid's own `GridView` uses (fold's "one paging path" pivot), never a filmstrip-local
-/// cursor.
+/// EVERY layout mode since WP13 P9 (IMGMGR-218), the phone included: the grid retained as a
+/// filmstrip "so context is never lost" (spec) — the SAME `GridStore.actionableImages`/
+/// `focusedImageID`, and the SAME serialized `loadMoreIfNeeded` the grid's own `GridView` uses
+/// (fold's "one paging path" pivot), never a filmstrip-local cursor.
 ///
 /// WP12: walking the shared actionable projection is what makes the filmstrip agree with the grid
 /// in BOTH modes rather than only in flat browse — in Scene mode it shows the loose photographs
 /// and the members of opened scenes, in display order, and no collapsed card's cover.
+///
+/// WP13 P9: the strip FOLLOWS the focused frame. P8's advance-on-mark moves `focusedImageID` on
+/// every committed loupe mark, so a strip that only moved when the reader dragged it would
+/// silently stop tracking after the first advance — which on a phone, where the strip is the
+/// only context there is, would be worse than no strip. `revealTarget(in:)` names the frame to
+/// bring into view and `reveal(_:through:)` is the one seam that brings it.
 struct FilmstripView: View {
   @Bindable var store: GridStore
   /// The scroll seam. Production drives the live `ScrollViewProxy`; a test substitutes a
@@ -386,11 +390,9 @@ struct FilmstripView: View {
   /// rendered `ScrollViewReader`.
   var scroller: FilmstripFocusScroller = .live
 
-  /// THE projection the strip walks. RED COMMIT (WP13 P9): deliberately the WRONG one — the
-  /// mutation loop for `compactRendersTheStripOverTheSameActionableProjection`, so that
-  /// assertion is observed failing against code that really walks `images`. GREEN restores
-  /// `store.actionableImages`.
-  var frames: [Components.Schemas.ImageSummary] { store.images }
+  /// THE projection the strip walks: the shared actionable one, never `store.images` — which is
+  /// empty in Scene mode — and so never a collapsed card's cover (ADR-0005 decision 4).
+  var frames: [Components.Schemas.ImageSummary] { store.actionableImages }
 
   /// The frame the strip must bring into view, or `nil` when there is nothing to reveal.
   ///
@@ -400,10 +402,10 @@ struct FilmstripView: View {
   /// name a photograph this strip has not rendered, and `scrollTo` on an absent id reveals
   /// nothing while reading as if it had.
   func revealTarget(in frames: [Components.Schemas.ImageSummary]) -> Int? {
-    // RED COMMIT (WP13 P9): the shipped strip has no scroll-follow at all, so nothing is ever
-    // revealed. This is the behaviour `theStripFollowsTheFocusedFrameAfterAnAutoAdvance` is
-    // written against; the GREEN commit replaces this body.
-    nil
+    guard let id = store.focusedImageID, frames.contains(where: { $0.id == id }) else {
+      return nil
+    }
+    return id
   }
 
   /// The parameterless form the suites read.
