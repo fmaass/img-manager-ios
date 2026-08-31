@@ -492,24 +492,35 @@ struct RootView: View {
   @ViewBuilder
   private var inspectorChromeButton: some View {
     let activeFilters = InspectorFacetFilters.activeCount(gridStore.currentQuery)
+    let spokenLabel = InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: activeFilters)
     Button {
       // A TOGGLE, not a one-way open: the slide-over has no sheet grabber to dismiss it, so the
       // persistent chrome control is also how it closes (zero gesture-only actions). At Compact
       // the sheet covers this control while it is up, so toggling reads exactly as before.
       withAnimation(.snappy(duration: 0.25)) { showInspector.toggle() }
     } label: {
-      if activeFilters > 0 {
-        Label(
-          InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters),
-          systemImage: "line.3.horizontal.decrease.circle.fill"
-        )
-        .labelStyle(.titleAndIcon)
-      } else {
-        Label("Info", systemImage: "info.circle")
+      Group {
+        if activeFilters > 0 {
+          Label(
+            InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters),
+            systemImage: "line.3.horizontal.decrease.circle.fill"
+          )
+          .labelStyle(.titleAndIcon)
+        } else {
+          Label("Info", systemImage: "info.circle")
+        }
       }
+      // IMGMGR-224: the spoken phrasing has to be attached to the button's own LABEL CONTENT, not
+      // only to the button. Inside a `ToolbarItem` the bar item is built from that content, and a
+      // modifier applied outside the button is dropped on the way — the WP13 P10 gate log has
+      // VoiceOver reading the visual "Info · 1" while this sentence sat there as dead code. The
+      // content is collapsed into one element first, so the derived label is this string rather
+      // than the title text it wraps. The outer copy below stays for every surface that does
+      // honour it, and both are the same function's output, so they cannot disagree.
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(spokenLabel)
     }
-    .accessibilityLabel(
-      InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: activeFilters))
+    .accessibilityLabel(spokenLabel)
   }
 
   private var detailColumn: some View {
