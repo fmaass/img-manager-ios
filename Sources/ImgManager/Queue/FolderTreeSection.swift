@@ -50,6 +50,10 @@ struct FolderTreeSection: View {
   var body: some View {
     DisclosureGroup(isExpanded: expansionBinding) {
       if load.phase != .loading {
+        // IMGMGR-174: a load that failed says so, above whatever rows did arrive. It sits FIRST
+        // because a partial failure still renders a tree underneath it, and a note below rows the
+        // reader has already started scanning is a note they will not read.
+        failureNotice
         searchField
         tierBranch("Local", folders: localFolders, tier: .local)
         tierBranch("Archive", folders: archiveFolders, tier: .archive)
@@ -73,6 +77,31 @@ struct FolderTreeSection: View {
     .task {
       guard load.phase == .loading else { return }
       load = await FolderTreeLoad.perform(using: gridService)
+    }
+  }
+
+  /// The visible half of IMGMGR-174: what a failed (or half-failed) load says, and the one way
+  /// back from it. Retry re-runs the SAME `FolderTreeLoad.perform` the `.task` ran — there is no
+  /// second fetch path that could behave differently — and returns to `.loading` first so the
+  /// spinner replaces the notice while it is in flight, rather than leaving a stale failure on
+  /// screen. Chrome, not a gesture: the whole recovery is a labelled button.
+  @ViewBuilder
+  private var failureNotice: some View {
+    if let message = FolderTreeLoadPresentation.message(for: load.phase) {
+      VStack(alignment: .leading, spacing: 4) {
+        Label(message, systemImage: "exclamationmark.triangle")
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("folderTreeLoadError")
+        Button("Retry") {
+          Task {
+            load = .loading
+            load = await FolderTreeLoad.perform(using: gridService)
+          }
+        }
+        .buttonStyle(.borderless)
+        .accessibilityIdentifier("folderTreeRetry")
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -205,15 +234,31 @@ struct FolderTreeLoad: Equatable, Sendable {
   /// The pre-fetch value the view starts from, and the one a retry returns to.
   static let loading = FolderTreeLoad()
 
+  /// Both tier fetches, and the one place their outcomes become a rendered state. A throw is
+  /// RECORDED rather than swallowed (IMGMGR-174): `GridService.folders` throws only
+  /// `.unreachable` — it collapses a non-ok status and a decode failure into that one case — so
+  /// what a failure means cannot be reported, but THAT there was one always can, and that is the
+  /// difference between an empty tree and a broken one.
   static func perform(using service: GridService) async -> FolderTreeLoad {
     var result = FolderTreeLoad()
-    if let tree = try? await service.folders(sourceTier: .local) {
-      result.localFolders = tree.items
+    var localFailed = false
+    var archiveFailed = false
+    do {
+      result.localFolders = try await service.folders(sourceTier: .local).items
+    } catch {
+      localFailed = true
     }
-    if let tree = try? await service.folders(sourceTier: .archive) {
-      result.archiveFolders = tree.items
+    do {
+      result.archiveFolders = try await service.folders(sourceTier: .archive).items
+    } catch {
+      archiveFailed = true
     }
-    result.phase = .loaded
+    switch (localFailed, archiveFailed) {
+    case (false, false): result.phase = .loaded
+    case (true, false): result.phase = .partiallyFailed(.local)
+    case (false, true): result.phase = .partiallyFailed(.archive)
+    case (true, true): result.phase = .failed
+    }
     return result
   }
 }
