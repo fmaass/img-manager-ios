@@ -1432,10 +1432,7 @@ final class GridStore {
   func handlePickShortcut(shiftHeld: Bool) async {
     guard !markTargetImageIDs.isEmpty else { return }
     await applyMarkToTarget(.pick)
-    // RED-2 MUTATION (WP13 P8): the grid's own mark path is made to honour the loupe cadence,
-    // which the phase's Do-NOT list forbids ("no advance in the grid"). Observed failing:
-    // theGridMarkPathNeverAutoAdvances. The GREEN commit restores the bare `if shiftHeld`.
-    if shiftHeld || preferences.autoAdvanceOnMark { advanceToNext() }
+    if shiftHeld { advanceToNext() }
   }
 
   func handleDislikeShortcut(shiftHeld: Bool) async {
@@ -1617,13 +1614,8 @@ final class GridStore {
   func applyLoupeMark(_ state: MarkStateValue) async -> Bool {
     guard let id = focusedImageID else { return false }
     let committed = await applyMark(state, to: [id])
-    // RED-2 MUTATION (WP13 P8): the three guards this phase's Do-NOT list names are removed on
-    // purpose — the advance ignores the committed answer AND the preference, and the tail
-    // closes the loupe. The GREEN commit restores `guard committed, preferences...` and drops
-    // the close. Observed failing: aRefusedOrRolledBackLoupeMarkNeverAdvances,
-    // autoAdvanceOffLeavesTheFrameInPlace, advanceAtTheExhaustedTailIsANoOpAndNeverCloses.
+    guard committed, preferences.autoAdvanceOnMark else { return committed }
     await loupeNext()
-    if loupeExhausted { closeLoupe() }
     return committed
   }
 
