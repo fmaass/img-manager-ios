@@ -47,35 +47,131 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     XCTAssertEqual(toggle.value as? String, "On")
   }
 
-  // MARK: - Chrome twin 2: the account sheet's row — NOT asserted here, and why
-  //
-  // `testAccountSheetCarriesTheAutoAdvanceRow` lived here and is removed, not disabled:
-  // the account sheet cannot be OPENED at all. `RootView.swift` attaches its
-  // `ToolbarItem(placement: .primaryAction)` to the container that WRAPS the
-  // `NavigationSplitView` rather than to a column inside it, so SwiftUI drops the item and
-  // nothing on screen presents the sheet. Pre-existing, not this phase's doing — the same
-  // placement is in the base tree at `13cf3a1`, where this phase only added an accessibility
-  // identifier to a button that never renders. Four observations, two destinations, two launch
-  // states (with and without the fixture's auto-select) dumped accessibility trees carrying no
-  // account item anywhere; the evidence is in the phase ledger and in
-  // `.gate-artifacts/probe-2026-08-31/`.
-  //
-  // Filed as **IMGMGR-255** (milestone 72), whose AC includes restoring this test — the working
-  // draft, which fails for the right reason once the item renders, is kept as
-  // `uitest-skipautoselect.patch` alongside that ticket. A test that can only ever fail for a
-  // reason outside its own subject is not evidence, so it is gone rather than left red or
-  // silently skipped.
-  //
-  // What still holds the row honest in the meantime:
-  // `AccountSheetPreferenceWiringTests` pins the binding target — the sheet is handed the app's
-  // LIVE `GridPreferences` and a write through it reaches the persisted preference. That is the
-  // half a unit test can reach; the rendered row itself is IMGMGR-255's to re-assert.
+  // MARK: - Chrome twin 2: the account sheet's row
+
+  /// Restored by IMGMGR-255. WP13 P8 DELETED this test (commit `c8c474e`) rather than leave it
+  /// red, because the sheet could not be opened at all: `RootView` attached its account
+  /// `ToolbarItem` to the container WRAPPING the `NavigationSplitView`, which owns no bar, so
+  /// SwiftUI dropped the item on both idioms in both launch states. The item rides the split
+  /// view's own columns now, so this assertion is finally about the row again.
+  ///
+  /// LAUNCH STATE 1 of 2 — the queue root: the fixture's auto-select is skipped
+  /// (`-UITestStubSkipAutoSelect`, the flag WP8 P7 added), so Compact stays on the sidebar column
+  /// it launches into instead of pushing the shoot grid over it, and the sidebar's own bar is the
+  /// one on screen. `testAccountToolbarItemRendersWithTheShootAlreadyOpen` takes the other state.
+  /// Deliberately NO fallback navigation here (the draft patch carried a Back-and-look-again
+  /// rescue): a rescue would hide exactly the placement regression this test exists to catch.
+  func testAccountSheetCarriesTheAutoAdvanceRow() throws {
+    let app = launchStubbedApp(skipAutoSelect: true)
+
+    // By IDENTIFIER: the 09:02 gate run proved `app.buttons["Account"]` resolves as
+    // `"Account" IN identifiers` and a `Label`'s text is not one, so the toolbar item carries an
+    // explicit identifier (`RootView.swift`).
+    let account = app.descendants(matching: .any)["accountToolbarButton"]
+    if !account.waitForExistence(timeout: 30) {
+      XCTContext.runActivity(named: "element tree with no account toolbar item") { activity in
+        activity.add(XCTAttachment(string: app.debugDescription))
+      }
+      attach(name: "account-item-missing-at-queue-root")
+    }
+    XCTAssertTrue(
+      account.exists,
+      "The Account toolbar item never appeared at the queue root — the account sheet and Sign "
+        + "Out are unreachable again (IMGMGR-255).")
+    account.tap()
+
+    // A `Toggle` in a `List` is a switch; the permissive query is the fallback, not the first
+    // guess, because only the switch itself carries the on/off value this test reads.
+    var row = app.switches["accountAutoAdvanceToggle"].firstMatch
+    if !row.waitForExistence(timeout: 10) {
+      row = app.descendants(matching: .any)["accountAutoAdvanceToggle"].firstMatch
+    }
+    if !row.exists {
+      XCTContext.runActivity(named: "element tree with no advance-on-mark row") { activity in
+        activity.add(XCTAttachment(string: app.debugDescription))
+      }
+      attach(name: "account-row-missing")
+    }
+    XCTAssertTrue(
+      row.exists,
+      "The account sheet has no advance-on-mark row — the preference's second chrome surface, "
+        + "the one that exists so the cadence is reachable without opening the loupe.")
+    attach(name: "account-auto-advance-row")
+
+    // Sign Out is the sheet's OTHER reason to exist, and IMGMGR-255's AC names it. Existence and
+    // hittability only, never a tap: the next stage is a real confirmation dialog over a real
+    // credential, and this suite must leave the simulator signed in for whatever runs next.
+    let signOut = app.buttons["Sign Out…"].firstMatch
+    XCTAssertTrue(
+      signOut.waitForExistence(timeout: 10),
+      "The account sheet's Sign Out control is not reachable.")
+    XCTAssertTrue(signOut.isHittable, "The account sheet's Sign Out control is not hittable.")
+
+    // A real write, read back through the same control: a row that renders but changes nothing
+    // is exactly the "hidden preference with a decoration" this rule exists to prevent.
+    let before = row.value as? String
+    row.tap()
+    Thread.sleep(forTimeInterval: 0.8)
+    let after = row.value as? String
+    let flip = "account row value \(before ?? "nil") -> \(after ?? "nil")"
+    XCTContext.runActivity(named: flip) { _ in }
+    XCTAssertNotEqual(
+      before, after, "Tapping the account row did not change the preference (\(before ?? "nil")).")
+    attach(name: "account-auto-advance-row-flipped")
+
+    row.tap()
+    Thread.sleep(forTimeInterval: 0.8)
+    XCTAssertEqual(row.value as? String, before, "The account row did not restore its state.")
+  }
+
+  // MARK: - Chrome twin 2, the other launch state
+
+  /// LAUNCH STATE 2 of 2 — a shoot already open. IMGMGR-255's AC is that the item renders on
+  /// BOTH idioms in BOTH launch states, and the two states are not the same surface: with the
+  /// fixture's auto-select left on, Compact pushes the shoot grid over the sidebar, so the only
+  /// bar on screen is the grid's, not the queue's — the 10:15 P8 gate run dumped exactly that
+  /// bar (`BackButton 'img-manager'` and `Info`, no account item anywhere). Regular keeps both
+  /// columns and both bars. So this is the half the queue-root test above cannot see, and the
+  /// gate running the pair on the iPhone AND the iPad destination is the both-idioms half.
+  func testAccountToolbarItemRendersWithTheShootAlreadyOpen() throws {
+    let app = launchStubbedApp()
+
+    // The fixture's auto-select is asynchronous, so wait on chrome that only exists once a shoot
+    // has actually loaded before concluding anything about what the bar carries.
+    let dislike = app.buttons["Dislike"]
+    XCTAssertTrue(
+      dislike.waitForExistence(timeout: 30),
+      "Action bar (Dislike button) never appeared — expected the DEBUG fixture composition's "
+        + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
+
+    let account = app.descendants(matching: .any)["accountToolbarButton"]
+    if !account.waitForExistence(timeout: 15) {
+      XCTContext.runActivity(named: "element tree with no account toolbar item") { activity in
+        activity.add(XCTAttachment(string: app.debugDescription))
+      }
+      attach(name: "account-item-missing-over-open-shoot")
+    }
+    XCTAssertTrue(
+      account.exists,
+      "The Account toolbar item is missing while a shoot is open — on Compact the pushed "
+        + "grid's bar is the only one on screen, so the item has to ride that bar too "
+        + "(IMGMGR-255).")
+    account.tap()
+
+    let sheet = app.navigationBars["Account"]
+    XCTAssertTrue(
+      sheet.waitForExistence(timeout: 10),
+      "Tapping the Account toolbar item over an open shoot did not present the account sheet.")
+    attach(name: "account-sheet-over-open-shoot")
+    app.buttons["Done"].firstMatch.tap()
+  }
 
   // MARK: - Shared
 
-  private func launchStubbedApp() -> XCUIApplication {
+  private func launchStubbedApp(skipAutoSelect: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
-    app.launchArguments = ["-UITestStubGrid"]
+    app.launchArguments =
+      skipAutoSelect ? ["-UITestStubGrid", "-UITestStubSkipAutoSelect"] : ["-UITestStubGrid"]
     app.launch()
     return app
   }
