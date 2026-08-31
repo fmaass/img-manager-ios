@@ -66,4 +66,14 @@ enum GridSourceTier: String, Sendable, Equatable {
     }
   }
 
+  /// WP13 P5b (IMGMGR-221): `GET /api/image-groups`'s own distinct generated payload type — the
+  /// header fetch runs under the SAME filters as the page it places headers on, and the tier is
+  /// one of them.
+  var imageGroupsPayload: Operations.ImageGroupsApiImageGroupsGet.Input.Query.SourceTierPayload {
+    switch self {
+    case .local: return .local
+    case .archive: return .archive
+    }
+  }
+
 }

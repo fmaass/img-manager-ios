@@ -413,15 +413,34 @@ final class GridStore {
   /// photographs the new window cannot show. Zero-leak over zero-loss, the same adjudication the
   /// web made for the identical switch.
   ///
-  /// What this does NOT do is stash a sort/group presentation to put back on the way out. The
-  /// brief's reset semantics assume the web's three suspended fields (sort, direction, group_by),
-  /// and this client has none of them: `GridImagesQuery` declares no sort key, no group key and
-  /// no direction, and no view sets one (verified across `Sources/` — the only `sort`/`direction`
-  /// identifiers in the tree are `GridArrowDirection` and the queue's local sorting). There is
-  /// therefore nothing to suspend; inventing a sort control here to have something to stash would
-  /// be a second feature riding along on this lane. Recorded as a deviation in the phase ledger.
+  /// It ALSO suspends and restores the sort/group presentation — ADR-0005 decision 6, reachable
+  /// for the first time in WP13 P5b (IMGMGR-221 part 2). This doc comment used to say the
+  /// opposite ("this client has none of them … there is therefore nothing to suspend"), which was
+  /// true only while `GridImagesQuery` declared no `sort`, `direction` or `groupBy`. It declares
+  /// all three now, so the excuse is replaced by the implementation rather than updated:
+  /// - entering Scene SUSPENDS the current `(sort, direction, group_by)` and clears it from the
+  ///   query, because `/api/browse/stacks` accepts none of the three (chronological only,
+  ///   ADR-0005 decision 1) — a suspension that left them in the query would be a claim, not a
+  ///   fact;
+  /// - leaving Scene RESTORES exactly that presentation, and nothing else: a facet edit made
+  ///   while Scene was on survives, because it describes WHICH photographs, not how they are
+  ///   arranged.
+  ///
+  /// Every route out of Scene lands here — the Group menu, the View menu's pair, ⌘⇧G, and the
+  /// Scene mode row's Exit button — so the restore is a property of the mode switch rather than
+  /// of one control remembering to do it.
   func setDisplayMode(_ next: GridDisplayMode) async {
     guard next != displayMode else { return }
+    switch next {
+    case .scene:
+      suspendedPresentation = SortGroupPresentation(of: query)
+      query = SortGroupPresentation.cleared.applied(to: query)
+    case .flat:
+      if let suspended = suspendedPresentation {
+        query = suspended.applied(to: query)
+      }
+      suspendedPresentation = nil
+    }
     displayMode = next
     pickLock.exit()
     selection.reset(.shootChange)
@@ -429,6 +448,114 @@ final class GridStore {
     undo.clear()
     conflictRecovery = nil
     await reloadFirstPage()
+  }
+
+  // MARK: - Sort and grouping (WP13 P5b, IMGMGR-221 part 2)
+
+  /// What entering Scene mode put away, and what leaving it puts back. Nil whenever Scene is off,
+  /// which is what makes "leaving restores EXACTLY that presentation" checkable rather than
+  /// merely intended.
+  private(set) var suspendedPresentation: SortGroupPresentation?
+
+  /// The sort key currently in force — the server's own default until the reader picks another,
+  /// so the menu can draw its checkmark before anything has been chosen.
+  var activeSortKey: SortKey {
+    presentationInForce.sort.flatMap(SortKey.init(rawValue:)) ?? SortGroupOptions.defaultSortKey
+  }
+
+  var activeDirection: SortDirection {
+    presentationInForce.direction.flatMap(SortDirection.init(rawValue:))
+      ?? SortGroupOptions.defaultDirection
+  }
+
+  /// The ONE single-select value the Group menu renders: Scene, a `group_by` dimension, or
+  /// neither. Derived, never stored — two stored flags is exactly how the two halves would drift
+  /// apart into a state where both look active.
+  var activeGrouping: GroupingChoice {
+    if displayMode == .scene { return .scene }
+    if let key = query.groupBy.flatMap(GroupByKey.init(rawValue:)) { return .key(key) }
+    return .none
+  }
+
+  /// The presentation in force for the FLAT grid: the query's own while flat, and the SUSPENDED
+  /// one while Scene is on.
+  ///
+  /// Reading the suspension in Scene mode is what makes the Sort control tell the truth there. A
+  /// suspended presentation is not a forgotten one — it is exactly what comes back on the way out
+  /// and what a sort choice made from Scene mode is a change TO — so the menu's checkmark and the
+  /// control's label must name it, not the server defaults the cleared query falls back to.
+  private var presentationInForce: SortGroupPresentation {
+    if displayMode == .scene, let suspended = suspendedPresentation { return suspended }
+    return SortGroupPresentation(of: query)
+  }
+
+  /// The Sort menu's key rows. Routed through `applyFlatPresentation`, and from there through
+  /// `applyFilterChange`, which resets selection, clears focus and RESTARTS paging under a fenced
+  /// generation — the client therefore never replays a cursor across a sort change, which the
+  /// server refuses with `400 cursor_scope_mismatch` (live-probed 2026-08-30 against the deployed
+  /// v0.12.1: cross-sort, cross-direction and cross-`group_by` replays are all refused, as is
+  /// dropping `group_by`).
+  func setSortKey(_ key: SortKey) async {
+    await applyFlatPresentation { $0.sort = key.rawValue }
+  }
+
+  func setSortDirection(_ direction: SortDirection) async {
+    await applyFlatPresentation { $0.direction = direction.rawValue }
+  }
+
+  /// The Sort menu's direction row in its accelerator form (the View menu's ⌥⌘R). Reverses the
+  /// presentation IN FORCE — which, in Scene mode, is the suspended one, not the cleared query's
+  /// fallback.
+  func toggleSortDirection() async {
+    await setSortDirection(activeDirection.reversed)
+  }
+
+  /// Every FLAT-presentation choice — a sort key, a direction, a `group_by` dimension — leaves
+  /// Scene first and then applies, as ONE awaited sequence with no intermediate state published
+  /// to the caller.
+  ///
+  /// Diff-gate r1 BLOCKER 2: without this, a sort key chosen in Scene mode was enabled but inert.
+  /// It mutated the cleared query and moved the label, while Scene reloaded through
+  /// `browseStacks` — which ignores `sort`, `direction` and `group_by` by contract (ADR-0005
+  /// decision 1, and it stays that way) — and then leaving Scene RESTORED the suspended
+  /// presentation and discarded the choice outright. The rule the Group menu already followed is
+  /// simply the rule for the whole flat presentation: choosing any of it means asking for the
+  /// flat grid. No disabled controls, no dead choices.
+  ///
+  /// `setDisplayMode(.flat)` restores the suspension first, so the mutation below edits the
+  /// presentation the reader was last looking at rather than a cleared one — and when the
+  /// restored value already IS the chosen one, `applyFilterChange`'s own `next != query` guard
+  /// makes the second step a no-op and the whole thing is a single reload.
+  private func applyFlatPresentation(_ mutate: (inout GridImagesQuery) -> Void) async {
+    if displayMode == .scene {
+      await setDisplayMode(.flat)
+    }
+    await applyFilterChange(mutate)
+  }
+
+  /// Scene ⟷ `group_by` as ONE single-select state — the coordinator entry point the Group menu
+  /// calls, for every one of its rows (ADR-0005 decision 6; gate round 1 BLOCKING finding).
+  ///
+  /// `applyFilterChange` alone is not enough and never was: it mutates the flat query and never
+  /// touches `displayMode`, and `browseStacks` carries no `group_by` — so choosing "Camera" while
+  /// Scene was on would have left `displayMode == .scene` and the chosen menu row would visibly
+  /// have done nothing. The three rules, in one place:
+  /// - `.scene` → `setDisplayMode(.scene)`, which suspends the presentation on the way in;
+  /// - `.key(k)`/`.none` → `applyFlatPresentation`, which leaves Scene first (restoring the
+  ///   suspended presentation) and then applies the chosen key as one awaited sequence, and is a
+  ///   plain `applyFilterChange` when the reader is already flat. Since diff-gate r1 BLOCKER 2
+  ///   that helper is shared with the Sort menu: choosing ANY part of the flat presentation means
+  ///   asking for the flat grid, so a group dimension and a sort key behave identically here.
+  ///
+  /// Exclusivity holds BY CONSTRUCTION rather than by arithmetic: the menu is a single-select
+  /// list over `GroupingChoice`, and `GroupingChoice` cannot express "Scene and Camera".
+  func selectGrouping(_ choice: GroupingChoice) async {
+    switch choice {
+    case .scene:
+      await setDisplayMode(.scene)
+    case .none, .key:
+      await applyFlatPresentation { $0.groupBy = choice.groupByKey?.rawValue }
+    }
   }
 
   // MARK: - Stats facets (WP12: the Compact filter surface)
@@ -460,27 +587,132 @@ final class GridStore {
   /// paging generation fence), and a failed fetch leaves the last good counts standing rather
   /// than blanking the tab — absence renders as absence, never as zeros.
   func refreshFacets() async {
-    let requested = query
-    if facetsIdentity == requested, facets != nil { return }
-    if let inFlight = facetsRefresh, inFlight.identity == requested {
-      await inFlight.task.value
+    await refreshDerived(
+      isSatisfied: facetsIdentity == query && facets != nil,
+      inFlight: { self.facetsRefresh },
+      setInFlight: { self.facetsRefresh = $0 },
+      fetch: { requested in
+        let fetched = try? await self.service.facets(requested)
+        guard self.query == requested, let fetched else { return }
+        self.facets = fetched
+        self.facetsIdentity = requested
+      })
+  }
+
+  // MARK: - Group headers (WP13 P5b: the ONLY truthful section source)
+
+  /// The last VOUCHED answer and the query identity it describes, together and inseparable.
+  ///
+  /// Private, and a single value rather than three parallel properties, because the identity is
+  /// not metadata about the headers — it is the condition under which they mean anything at all.
+  /// Diff-gate r1 BLOCKER 1: while these were three independent stored properties, a failed
+  /// `/api/image-groups` fetch left the PREVIOUS scope's headers published (the failure path
+  /// simply returns), and the view consumed them unconditionally — so after a grouped folder or
+  /// filter switch the old scope's label, count and timezone could render over the new
+  /// photographs. Pairing them makes that unrepresentable rather than merely discouraged.
+  private var vouchedGroups:
+    (
+      identity: GridImagesQuery, headers: [GroupKey: Components.Schemas.GroupHeader],
+      timezone: String?
+    )?
+
+  /// The sections for the CURRENT query, exactly as `GET /api/image-groups` stated them, keyed so
+  /// a tile's own `group_key` (nullable — the Unknown bucket) looks one up directly. EMPTY unless
+  /// the server has vouched for THIS query: unvouched renders as an unsectioned stream, never as
+  /// the previous scope's sections.
+  ///
+  /// Never a client-side tally. A page holds PART of a group, so a count derived from the loaded
+  /// rows would state the PAGE's number under a section's name; the same goes for the Unknown
+  /// bucket's label and for the timezone a time-key label was rendered in. All three are the
+  /// server's words (`app/api/images.py:1816-1826`: "the ONLY truthful way a client can place a
+  /// section header").
+  ///
+  /// Gated HERE rather than in the view, so the view stays dumb: there is no way to read a header
+  /// out of this store without the identity check having already run.
+  var groupHeaders: [GroupKey: Components.Schemas.GroupHeader] {
+    guard let vouched = vouchedGroups, vouched.identity == query else { return [:] }
+    return vouched.headers
+  }
+
+  /// The zone the response named for its labels — non-nil for the five time keys only
+  /// (live-probed 2026-08-30: `group_by=day` → `Europe/Zurich`; `camera`/`location` → null).
+  /// Estate ADR-0007 (/link/2553): a rendered local time names its zone. Identity-gated for the
+  /// same reason as `groupHeaders`: a zone from another scope is as wrong as a count from one.
+  var groupTimezone: String? {
+    guard let vouched = vouchedGroups, vouched.identity == query else { return nil }
+    return vouched.timezone
+  }
+
+  /// The query the vouched headers describe — the SAME identity discipline `facetsIdentity`
+  /// uses. Exposed for the refresh guard and for tests; reading it is never a substitute for
+  /// the gate above, which has already applied it.
+  var groupHeadersIdentity: GridImagesQuery? { vouchedGroups?.identity }
+
+  private var groupHeadersRefresh: (identity: GridImagesQuery, task: Task<Void, Never>)?
+
+  /// Fetch the sections for the current query, or drop them when nothing is grouped.
+  ///
+  /// Runs through the SAME single-flight `refreshFacets` does (`refreshDerived`), keyed by the
+  /// same query identity — one mechanism, two slots, rather than a second concurrency pattern
+  /// beside it.
+  ///
+  /// A failed fetch publishes NOTHING — it leaves the last vouched answer where it is, and that
+  /// answer stops being published the moment the query moves past it (`groupHeaders`' own gate).
+  /// So a failure under the CURRENT query keeps the sections the server already vouched for, and
+  /// a failure after a scope change renders the new photographs unsectioned rather than under the
+  /// old scope's headings. Absence renders as absence, never as an invented or a stale label.
+  func refreshGroupHeaders() async {
+    guard let key = query.groupBy.flatMap(GroupByKey.init(rawValue:)) else {
+      vouchedGroups = nil
       return
     }
-    // A refresh for a DIFFERENT identity is never joined — it supersedes. The superseded task is
-    // left to finish and discard itself on its own guard rather than being cancelled, so a
-    // response racing home first can still never publish counts for a query already moved past.
-    let task = Task { @MainActor in
-      let fetched = try? await self.service.facets(requested)
-      guard self.query == requested, let fetched else { return }
-      self.facets = fetched
-      self.facetsIdentity = requested
+    await refreshDerived(
+      isSatisfied: groupHeadersIdentity == query,
+      inFlight: { self.groupHeadersRefresh },
+      setInFlight: { self.groupHeadersRefresh = $0 },
+      fetch: { requested in
+        let fetched = try? await self.service.imageGroups(requested, groupBy: key)
+        guard self.query == requested, let fetched else { return }
+        self.vouchedGroups = (
+          identity: requested,
+          headers: Dictionary(
+            (fetched.headers ?? []).map { (GroupKey($0.key), $0) },
+            uniquingKeysWith: { first, _ in first }),
+          timezone: fetched.timezone
+        )
+      })
+  }
+
+  /// The ONE idempotent-per-query single-flight both derived reads use.
+  ///
+  /// The reentrancy it defends against is identical for both, and the MainActor does not prevent
+  /// it: a mutation sets `query` and then suspends inside `reloadFirstPage`, and a view's
+  /// `.task(id: queryIdentity)` fires for the NEW identity inside that window. Recording the
+  /// in-flight identity SYNCHRONOUSLY — before the first suspension — is what makes the second
+  /// caller join instead of issuing a duplicate request.
+  ///
+  /// A refresh for a DIFFERENT identity is never joined — it supersedes. The superseded task is
+  /// left to finish and discard itself on its own guard rather than being cancelled, so a
+  /// response racing home first can still never publish for a query already moved past. The slot
+  /// is cleared by TASK, not by identity: a newer refresh for the same identity may already have
+  /// claimed it while this one was in flight, and clearing it blindly would let a duplicate
+  /// through the join.
+  private func refreshDerived(
+    isSatisfied: Bool,
+    inFlight: () -> (identity: GridImagesQuery, task: Task<Void, Never>)?,
+    setInFlight: ((identity: GridImagesQuery, task: Task<Void, Never>)?) -> Void,
+    fetch: @escaping @MainActor (GridImagesQuery) async -> Void
+  ) async {
+    let requested = query
+    if isSatisfied { return }
+    if let current = inFlight(), current.identity == requested {
+      await current.task.value
+      return
     }
-    facetsRefresh = (requested, task)
+    let task = Task { @MainActor in await fetch(requested) }
+    setInFlight((requested, task))
     await task.value
-    // Compared by TASK, not by identity: a newer refresh for the same identity may already have
-    // claimed the slot while this one was in flight, and clearing it would let a duplicate
-    // through the join above.
-    if facetsRefresh?.task == task { facetsRefresh = nil }
+    if inFlight()?.task == task { setInFlight(nil) }
   }
 
   /// A Stats facet row's tap, as ONE call: mutate that dimension (one value per dimension — a
@@ -557,6 +789,13 @@ final class GridStore {
       guard generation == loadGeneration else { return }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
     }
+    // WP13 P5b: sections come from the server or not at all, so the header fetch is part of
+    // loading a grouped scope rather than something the view asks for afterwards — and it runs
+    // INSIDE this generation fence, so a header set for an abandoned scope is never published.
+    // A no-op whenever `group_by` is nil (Scene mode included, which clears the presentation on
+    // the way in) and idempotent per query identity, so the common re-entry costs no request.
+    guard generation == loadGeneration else { return }
+    await refreshGroupHeaders()
   }
 
   /// `GET /api/browse/stacks` counts DISPLAY ROWS, not photographs ("a page of 100 may stand for

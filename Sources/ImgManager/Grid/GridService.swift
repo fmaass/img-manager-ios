@@ -110,6 +110,35 @@ struct GridService: Sendable {
     return GridImagesPage(items: page.items, nextCursor: page.nextCursor)
   }
 
+  // MARK: - Group headers (WP13 P5b: the only truthful section source)
+
+  /// `GET /api/image-groups` — the section headers for `query` under `groupBy`.
+  ///
+  /// This exists because a page holds PART of a group: `/api/images` can tell a client where a
+  /// boundary falls (`ImageSummary.group_key`), but it cannot tell it how big the group is, what
+  /// the Unknown bucket is called, or which timezone a time-key label was rendered in. The route
+  /// says so itself — "the ONLY truthful way a client can place a section header"
+  /// (`app/api/images.py:1816-1826`) — and `sum(headers[].count) == total` including Unknown
+  /// (live-probed 2026-08-30: `group_by=camera` → 3 headers summing to 37,061 == `total`).
+  ///
+  /// No paging and no order: a header list is neither paged nor sorted, which is also why this
+  /// endpoint takes no `sort`/`direction`/`cursor` at all.
+  func imageGroups(_ query: GridImagesQuery, groupBy: GroupByKey) async throws
+    -> Components.Schemas.ImageGroups
+  {
+    let output: Operations.ImageGroupsApiImageGroupsGet.Output
+    do {
+      output = try await client.imageGroupsApiImageGroupsGet(
+        .init(query: query.asImageGroupsQuery(groupBy: groupBy)))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    guard case .ok(let ok) = output, let body = try? ok.body.json else {
+      throw GridServiceError.unreachable
+    }
+    return body
+  }
+
   // MARK: - Scene browse (WP12: stacks as display rows)
 
   /// One page of `GET /api/browse/stacks` — DISPLAY ROWS, not photographs: a loose photo is one
@@ -449,6 +478,23 @@ struct GridImagesQuery: Sendable, Equatable {
   var cameraPreviewOnly: Bool?
   var missing: Bool?
 
+  /// WP13 P5b (IMGMGR-221, part 2): the browse contract's THREE presentation fields, which this
+  /// client has been able to send since v0.10 and never did. Raw wire strings, deliberately: the
+  /// only writers are `GridStore`'s typed entry points (`setSortKey`, `setSortDirection`,
+  /// `selectGrouping`) over `SortKey`/`SortDirection`/`GroupByKey`, and the mappings below round
+  /// each value through the GENERATED payload enum — so a value the server does not know cannot
+  /// reach the wire, and `SortGroupOptionsTests` proves every offered value survives that trip.
+  ///
+  /// They live in `GridImagesQuery` (not beside it) because every one of them is inside the
+  /// server's cursor fingerprint: live-probed 2026-08-30 against the deployed v0.12.1, replaying
+  /// a cursor under a different `sort`, a different `direction`, a different `group_by`, or with
+  /// `group_by` dropped, is refused `400 cursor_scope_mismatch` every time. Being query fields is
+  /// what routes every change through `applyFilterChange`, which restarts paging from page one —
+  /// so the client never replays a cursor across a presentation change and never sees that 400.
+  var sort: String?
+  var direction: String?
+  var groupBy: String?
+
   init(folderID: Int? = nil) {
     self.folderID = folderID
   }
@@ -458,10 +504,14 @@ struct GridImagesQuery: Sendable, Equatable {
     .ListImagesApiImagesGet.Input.Query
   {
     .init(
+      groupBy: groupBy.flatMap(Operations.ListImagesApiImagesGet.Input.Query.GroupByPayload.init),
       cursor: cursor, limit: limit, folderId: folderID, ratingMin: ratingMin, good: good,
       label: label, keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.listImagesPayload,
       tree: tree, ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      sort: sort.flatMap(Operations.ListImagesApiImagesGet.Input.Query.SortPayload.init),
+      direction: direction.flatMap(
+        Operations.ListImagesApiImagesGet.Input.Query.DirectionPayload.init))
   }
 
   func asFacetsQuery() -> Operations.ImageFacetsApiFacetsGet.Input.Query {
@@ -506,9 +556,32 @@ struct GridImagesQuery: Sendable, Equatable {
     -> Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query
   {
     .init(
+      groupBy: groupBy.flatMap(
+        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.GroupByPayload.init),
       limit: limit, folderId: folderID, ratingMin: ratingMin, good: good, label: label,
       keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.neighboursPayload, tree: tree,
       ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      sort: sort.flatMap(
+        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.SortPayload.init),
+      direction: direction.flatMap(
+        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.DirectionPayload.init))
+  }
+
+  /// WP13 P5b: the header source, under the SAME filters the page is asking for.
+  ///
+  /// `sort` and `direction` are absent because the endpoint does not take them — a bucket's
+  /// membership and count do not depend on the order rows come back in — and `group_by` is
+  /// REQUIRED here rather than optional, which is why it is a parameter of this method instead
+  /// of read off `self`: there is no such thing as an ungrouped header fetch.
+  func asImageGroupsQuery(groupBy key: GroupByKey)
+    -> Operations.ImageGroupsApiImageGroupsGet.Input.Query
+  {
+    .init(
+      groupBy: key.imageGroupsPayload,
+      folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
+      tag: tag, sourceTier: sourceTier?.imageGroupsPayload, tree: tree, ext: ext,
+      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
       cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 }

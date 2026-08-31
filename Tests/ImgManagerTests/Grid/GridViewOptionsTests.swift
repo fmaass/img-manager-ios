@@ -19,8 +19,16 @@ struct GridViewOptionsTests {
 
   @Test("Each control's label carries its CURRENT value, never a bare icon word")
   func controlsCarryTheirCurrentValueInTheLabel() {
-    #expect(GridGroupControl.title(for: .flat) == "Group: None")
+    // WP13 P5b: the Group control's value space widened from the two display MODES to the one
+    // single-select `GroupingChoice` — None, Scene, and the six offered `group_by` dimensions.
+    #expect(GridGroupControl.title(for: .none) == "Group: None")
     #expect(GridGroupControl.title(for: .scene) == "Group: Scene")
+    #expect(GridGroupControl.title(for: .key(.camera)) == "Group: Camera")
+    for key in SortGroupOptions.groupKeys {
+      #expect(GridGroupControl.title(for: .key(key)) == "Group: \(key.title)")
+    }
+    #expect(GridSortControl.title(for: .rating, direction: .desc) == "Sort: Rating ↓")
+    #expect(GridSortControl.title(for: .dateTaken, direction: .asc) == "Sort: Date ↑")
     for step in GridRowHeight.allCases {
       #expect(GridZoomControl.title(for: step) == "Zoom: \(Int(step.rawValue)) pt")
     }
@@ -62,13 +70,47 @@ struct GridViewOptionsTests {
     let store = makeStore()
     let actions = store.keyboardActions
 
-    actions.setDisplayMode(.scene)
+    // WP13 P5b: the menu dispatches through the coordinator, never `setDisplayMode` directly —
+    // Scene and `group_by` are ONE single-select state and a menu entry that set the mode behind
+    // the coordinator's back would let the two halves disagree.
+    actions.selectGrouping(.scene)
     await waitFor { store.displayMode == .scene }
     #expect(store.displayMode == .scene)
 
-    actions.setDisplayMode(.flat)
+    actions.selectGrouping(.none)
     await waitFor { store.displayMode == .flat }
     #expect(store.displayMode == .flat)
+    #expect(store.activeGrouping == .none)
+  }
+
+  @Test("Each ⌥⌘1…⌥⌘6 declaration sets its OWN sort key through its own run closure")
+  func sortDeclarationsDispatchThroughTheirOwnRunClosures() async {
+    let store = makeStore()
+    let actions = store.keyboardActions
+    let sort = AppCommands.declarations.filter { $0.shortcut == .sortKey }
+    #expect(sort.count == SortGroupOptions.sortKeys.count)
+    for (key, declaration) in zip(SortGroupOptions.sortKeys, sort) {
+      declaration.run(actions)
+      await waitFor { store.activeSortKey == key }
+      #expect(store.activeSortKey == key, "\(declaration.id) did not set \(key)")
+    }
+  }
+
+  @Test("⌥⌘R reverses the direction through its own run closure, and never latches one way")
+  func reverseDeclarationFlipsBothWays() async {
+    let store = makeStore()
+    let actions = store.keyboardActions
+    let reverse = AppCommands.declarations.first { $0.id == "view.sort.reverse" }
+    #expect(reverse != nil)
+    #expect(store.activeDirection == .asc)
+
+    reverse?.run(actions)
+    await waitFor { store.activeDirection == .desc }
+    #expect(store.activeDirection == .desc)
+
+    reverse?.run(actions)
+    await waitFor { store.activeDirection == .asc }
+    #expect(store.activeDirection == .asc)
   }
 
   @Test("`?` / ⌘/ raises the help sheet, and it starts down")

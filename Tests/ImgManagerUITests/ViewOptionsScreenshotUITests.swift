@@ -193,10 +193,18 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
         }
       }
     }
+    // WP13 P5b: anchor on the MIDDLE hittable row and drag a modest distance, so BOTH ends of
+    // the gesture stay inside the list on either destination. The two edge anchors were each
+    // tried and each failed on one device only, which is what identifies this as gesture
+    // geometry rather than list content: anchoring on the FIRST row and dragging 220 pt up put
+    // the endpoint behind the navigation bar and stalled both legs at 15 of 17 rows (run
+    // 03:19); anchoring on the LAST row instead fixed the phone (17/17) and froze the iPad
+    // completely at its initial 11 (run 04:00). A middle anchor is ~300 pt from either edge of
+    // a form sheet's list, so ±150 pt cannot leave the scroll view on either.
     func dragInsideARow(by dy: CGFloat) -> Bool {
-      guard let anchor = rowQuery.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
-        return false
-      }
+      let hittable = rowQuery.allElementsBoundByIndex.filter { $0.isHittable }
+      guard !hittable.isEmpty else { return false }
+      let anchor = hittable[hittable.count / 2]
       let start = anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
       start.press(
         forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: dy)),
@@ -204,15 +212,15 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
       return true
     }
 
-    // The traverse ends when the sheet's own count has been accounted for, or when two
+    // The traverse ends when the sheet's own count has been accounted for, or when three
     // consecutive steps turn up nothing new — the end of the list. Either way the equality
     // below is what decides the test; stopping early simply fails it with the shortfall named.
     harvestVisibleRows()
     var forwardSteps = 0
     var barrenSteps = 0
-    while forwardSteps < 20 && rendered.count < expectedCount && barrenSteps < 2 {
+    while forwardSteps < 30 && rendered.count < expectedCount && barrenSteps < 3 {
       let before = rendered.count
-      guard dragInsideARow(by: -220) else { break }
+      guard dragInsideARow(by: -150) else { break }
       forwardSteps += 1
       guard helpBar.exists else {
         return XCTFail(
@@ -227,9 +235,9 @@ final class ViewOptionsScreenshotUITests: XCTestCase {
     // whole sheet at once neither loop runs at all.
     var reverseSteps = 0
     barrenSteps = 0
-    while reverseSteps < 20 && rendered.count < expectedCount && barrenSteps < 2 {
+    while reverseSteps < 30 && rendered.count < expectedCount && barrenSteps < 3 {
       let before = rendered.count
-      guard dragInsideARow(by: 220) else { break }
+      guard dragInsideARow(by: 150) else { break }
       reverseSteps += 1
       guard helpBar.exists else {
         return XCTFail(

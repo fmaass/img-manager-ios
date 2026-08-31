@@ -38,6 +38,12 @@
         return try jsonResponse(
           .ok,
           Components.Schemas.ImagePage(items: Self.fixtureImages(), limit: 100, nextCursor: nil))
+      case Operations.ImageGroupsApiImageGroupsGet.id:
+        // WP13 P5b: the fixture's `group_key` values are CAMERA names, so this is the dimension
+        // it models; the counts are the live probe's own (2026-08-30), deliberately far larger
+        // than the twelve rows on the page — a section header that showed 4 would be a
+        // client-side tally, and the screenshot evidence is where that shows up.
+        return try jsonResponse(.ok, Self.fixtureImageGroups())
       case Operations.ImageFacetsApiFacetsGet.id:
         return try jsonResponse(
           .ok,
@@ -144,12 +150,38 @@
         truncated: false)
     }
 
+    /// WP13 P5b: the three camera buckets the fixture's `group_key` values fall into, with the
+    /// live endpoint's own counts (`group_by=camera` on 2026-08-30) and its explicit Unknown
+    /// bucket (`key: nil`, the server's own label). `sum(count) == total`, as the schema
+    /// guarantees.
+    private static func fixtureImageGroups() -> Components.Schemas.ImageGroups {
+      Components.Schemas.ImageGroups(
+        costHint: .standard, groupBy: .camera,
+        headers: [
+          .init(count: 36568, key: "SONY ILCE-7RM5", label: "SONY ILCE-7RM5"),
+          .init(count: 280, key: "FUJIFILM X-T2", label: "FUJIFILM X-T2"),
+          .init(count: 213, key: nil, label: "Unknown"),
+        ], timezone: nil, total: 37061)
+    }
+
+    /// The three buckets a fixture image belongs to, in the order a grouped page serves them
+    /// (known keys ascending, Unknown last) — so the twelve rows really do arrive already
+    /// grouped, the way `/api/images?group_by=camera` serves them.
+    private static func fixtureGroupKey(index: Int) -> String? {
+      switch index {
+      case 0...3: return "SONY ILCE-7RM5"
+      case 4...7: return "FUJIFILM X-T2"
+      default: return nil
+      }
+    }
+
     private static func fixtureImages() -> [Components.Schemas.ImageSummary] {
       let aspects: [Double] = [1.5, 1.0, 0.75, 3.5, 1.5, 1.5, 1.0, 1.5, 2.0, 1.0, 1.5, 0.75]
       return aspects.enumerated().map { index, aspect in
         Components.Schemas.ImageSummary(
           aspectRatio: aspect, capturedAt: Date(), ext: "jpg",
           filename: "STUB_\(String(format: "%04d", index + 1)).jpg", folderId: 1,
+          groupKey: fixtureGroupKey(index: index),
           hasEdit: index % 3 == 0, id: index + 1,
           lightroom: .init(
             good: index % 4 == 0, rating: index % 5, sidecarPresent: index % 2 == 0),

@@ -22,10 +22,14 @@ struct ShortcutCatalogTests {
       // no key equivalent and no catalog entry at all, which is the parity violation this file
       // exists to catch.
       .zoomStep, .sceneToggle, .groupMode,
+      // WP13 P5b (IMGMGR-221 part 2): the Sort control and the View menu's Sort group ship in
+      // the same commit these two activate in — the six offered keys as ⌥⌘1…⌥⌘6 and the
+      // direction toggle as ⌥⌘R.
+      .sortKey, .sortDirection,
     ]
     let actual = Set(ShortcutCatalog.entries.map(\.id))
     #expect(actual == expected)
-    #expect(ShortcutCatalog.entries.count == 15)
+    #expect(ShortcutCatalog.entries.count == 17)
   }
 
   @Test("No C anywhere in the catalog")
@@ -197,6 +201,40 @@ struct ShortcutCatalogTests {
     }
     let offenderIDs = offenders.map(\.id)
     #expect(offenders.isEmpty, "declarations on system-reserved combinations: \(offenderIDs)")
+  }
+
+  @MainActor
+  @Test("WP13 P5b's OWN entries (sort keys, sort direction) are active — their chrome ships here")
+  func wp13P5bOwnEntriesAreActive() {
+    let owned = ShortcutCatalog.entries.filter { $0.owningPhase == .wp13p5b }
+    #expect(Set(owned.map(\.id)) == [.sortKey, .sortDirection])
+    #expect(owned.allSatisfy { $0.isActive })
+  }
+
+  @MainActor
+  @Test("Every offered sort key gets its OWN ⌥⌘ equivalent — the zip cannot silently drop one")
+  func everyOfferedSortKeyHasItsOwnCommandEquivalent() {
+    let sort = AppCommands.declarations.filter { $0.shortcut == .sortKey }
+    #expect(sort.count == SortGroupOptions.sortKeys.count)
+    #expect(sort.allSatisfy { $0.modifiers == EventModifiers([.command, .option]) })
+    #expect(
+      sort.compactMap { $0.key.map { String($0.character) } } == ["1", "2", "3", "4", "5", "6"])
+    #expect(sort.map(\.title) == SortGroupOptions.sortKeys.map { "Sort: \($0.title)" })
+    // The direction toggle is its own entry, one declaration, ⌥⌘R.
+    let direction = AppCommands.declarations.filter { $0.shortcut == .sortDirection }
+    #expect(direction.count == 1)
+    #expect(direction.compactMap { $0.key.map { String($0.character) } } == ["r"])
+    #expect(direction.map(\.modifiers) == [EventModifiers([.command, .option])])
+  }
+
+  @MainActor
+  @Test("The View menu NAMES the sort keys and the direction toggle")
+  func viewMenuNamesTheSortOptions() {
+    let titles = AppCommands.viewMenuGroups.flatMap(\.items).map(\.title)
+    for key in SortGroupOptions.sortKeys {
+      #expect(titles.contains("Sort: \(key.title)"), "the View menu does not name \(key.title)")
+    }
+    #expect(titles.contains("Reverse Sort Direction"))
   }
 
   @MainActor
