@@ -53,11 +53,21 @@ struct RootView: View {
   @State private var showInspector = false
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
+  /// WP13 P11 (IMGMGR-220): the scene value this window was opened (or restored) with, or nil for
+  /// an ordinary launch. Applied ONCE, through `selectShoot` — the identical entry point a queue
+  /// tap uses — so a restored window lands in the same grid contract rather than a parallel one.
+  private let initialShoot: ShootSceneValue?
+  @State private var hasAppliedInitialShoot = false
+  /// The scene-level window action, read here because `RootView` is the app's composition root
+  /// and the only view that spans both the menu bar's focused values and the workspace.
+  @Environment(\.openWindow) private var openWindow
 
   init(
+    shoot: ShootSceneValue? = nil,
     transport: (any ClientTransport)? = nil,
     credentialStore: CredentialStore = CredentialStore()
   ) {
+    self.initialShoot = shoot
     // Breaks an otherwise-circular wire: the transport needs to CALL into `AuthSession` on a
     // terminal 401 (diff-gate round 1, blocker 3), but `AuthSession` needs the CLIENT, which
     // needs the transport, to be constructed first. The box's `handler` is written exactly
@@ -222,6 +232,19 @@ struct RootView: View {
     }
     .task {
       await connectivity.check()
+      // WP13 P11: the restored/opened window's own shoot, applied through the ONE entry point —
+      // `InitialShootApplication` calls `GridStore.selectShoot(folderID:sourceTier:)`, exactly
+      // what `QueueCardDestination.route(for:)`'s tap does, so the two paths cannot produce
+      // different scopes. Guarded by `hasAppliedInitialShoot` because `.task` re-runs on an
+      // identity change and re-selecting would discard a selection the reader has since made.
+      if !hasAppliedInitialShoot {
+        hasAppliedInitialShoot = true
+        if let folderID = await InitialShootApplication.apply(initialShoot, to: gridStore) {
+          // Mirrored into the List's own selection state so the split view actually navigates,
+          // exactly as a real tap would (the same reason the DEBUG fixture below sets it).
+          selectedFolderID = folderID
+        }
+      }
       #if DEBUG
         if DebugStubLaunch.isActive && !DebugStubLaunch.skipAutoSelect {
           // Auto-select the fixture shoot so the grid is already populated for screenshots —
@@ -293,6 +316,20 @@ struct RootView: View {
       ShortcutHelpSheet()
     }
     .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
+    // WP13 P11: the menu-bar twin of the More menu's "Open in New Window". Published from here
+    // because `openWindow` is a SCENE capability the store cannot hold, and carried as the
+    // ALREADY-CONSTRUCTED value so the menu item's enabled state and the value it would open are
+    // the same `ShootSceneValue.from(query:)` answer rather than two independent checks.
+    .focusedSceneValue(\.shootWindowCommand, shootWindowCommand)
+  }
+
+  /// The value's own construction, off the modifier chain: the action is copied into a LOCAL
+  /// before the closure is formed, so nothing captures the view struct itself.
+  private var shootWindowCommand: ShootWindowCommand {
+    let open = openWindow
+    return ShootWindowCommand(
+      value: ShootSceneValue.from(query: gridStore.query),
+      opener: ShootWindowOpener { open(value: $0) })
   }
 
   private func applyWidth(_ width: CGFloat) {

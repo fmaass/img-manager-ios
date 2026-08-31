@@ -15,6 +15,16 @@ import UIKit
 /// forbidden to add. The iPad pointer-only secondary-click entry therefore stays unbuilt until
 /// SwiftUI offers a pointer-only affordance; the chrome control here is the complete, reachable
 /// surface in the meantime, which is what the chrome rule actually requires.
+///
+/// RE-PROBED 2026-08-31 (WP13 P11, IMGMGR-220) against the iOS 26.5 simulator SDK's own SwiftUI
+/// swiftinterface, because the rationale above was dated and inheriting it unchecked would have
+/// been a guess. `secondaryClick`, `pointerOnly` and `rightClick` return no hits; the only
+/// near-matches are `ToolbarItemPlacement.secondaryAction` (unrelated) and
+/// `contextMenu(forSelectionType:menu:primaryAction:)`, which is a List/Table SELECTION menu still
+/// bound to the standard context-menu interaction — long press on touch. Positive control in the
+/// same invocation: all seven `func contextMenu` overloads were listed, so the interface really
+/// was read. The constraint STANDS and the entry stays unbuilt, now on evidence rather than on
+/// inheritance.
 struct ShareControl: View {
   @Bindable var share: ShareExportStore
   let image: Components.Schemas.ImageSummary?

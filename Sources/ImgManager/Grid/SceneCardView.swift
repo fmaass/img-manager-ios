@@ -26,6 +26,9 @@ struct SceneCardView: View {
   let isExpanded: Bool
   let store: GridStore
   @State private var coverImage: PlatformImage?
+  /// WP13 P11 (IMGMGR-220): the same pointer-hover seam every other cell takes. A card is not a
+  /// write target (ADR-0005) — hovering it says "this is a thing you can open", nothing more.
+  var hoverEffectInstaller: HoverEffectInstaller = .live
 
   private var cover: Components.Schemas.ImageSummary { row.representative }
 
@@ -40,6 +43,10 @@ struct SceneCardView: View {
   }
 
   var body: some View {
+    hoverEffectInstaller.apply(cell)
+  }
+
+  private var cell: some View {
     ZStack(alignment: .topLeading) {
       Group {
         // The same rule every other cell follows (`TilePresentation`): a tombstoned cover is

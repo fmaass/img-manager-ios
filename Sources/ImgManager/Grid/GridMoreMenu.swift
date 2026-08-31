@@ -18,6 +18,11 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
     case rowHeightSteps(
       set: @MainActor @Sendable (GridStore, GridRowHeight) -> Void,
       isCurrent: @MainActor @Sendable (GridStore, GridRowHeight) -> Bool)
+    /// WP13 P11 (IMGMGR-220): the one entry whose action needs a capability the STORE cannot
+    /// hold — SwiftUI's scene-level `openWindow`. It therefore takes the injected
+    /// `ShootWindowOpener` alongside the store, which is also what lets a test substitute a spy
+    /// and prove the enabled control actually fires rather than being a no-op.
+    case sceneWindow(@MainActor @Sendable (GridStore, ShootWindowOpener) -> Void)
   }
 
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
@@ -48,8 +53,10 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
 /// requires an observable effect — so a deleted entry and a no-oped entry both turn it RED.
 enum GridMoreMenu {
 
+  /// WP13 P11 (IMGMGR-220) APPENDS "Open in New Window"; it does not reorder the owner's decided
+  /// set. The six rows above it, and their order, are still decision 2 verbatim.
   static let entries: [GridMoreMenuEntry] = [
-    select, clearMark, copyForLightroom, filenamePlates, density, status,
+    select, clearMark, copyForLightroom, filenamePlates, density, status, openInNewWindow,
   ]
 
   /// Already shipped as the menu's one item; unchanged, and now declared beside its five
@@ -163,6 +170,31 @@ enum GridMoreMenu {
     title: { _ in "Status" },
     isEnabled: { _ in true },
     surface: .action { store in store.presentStatus() })
+
+  /// WP13 P11 (IMGMGR-220): "the second shoot beside the first" — the OS window arrangement, as
+  /// a chrome menu item and never a gesture. It ships UNCONDITIONALLY: the capability
+  /// (`UIApplicationSupportsMultipleScenes` in the built product) and the entry point are
+  /// independent facts, and the audit's D6 row records BOTH as missing, so the affordance lands
+  /// whatever the manifest already said.
+  ///
+  /// Enablement and constructibility are ONE predicate by construction —
+  /// `ShootSceneValue.from(query:)` decides both, so "the control is enabled" and "the scene
+  /// value exists" cannot drift apart. There is no second `folderID != nil` check anywhere in
+  /// this lane, and no defaulted or force-unwrapped tier.
+  static let openInNewWindow = GridMoreMenuEntry(
+    id: "more.openInNewWindow",
+    accessibilityIdentifier: "gridMoreMenu.more.openInNewWindow",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "macwindow.badge.plus",
+    title: { _ in ShootWindowCopy.title },
+    isEnabled: { ShootSceneValue.from(query: $0.query) != nil },
+    surface: .sceneWindow { store, opener in
+      // The SAME function the enabled state is derived from, called again — never a second
+      // check, never a force-unwrap. A disabled row cannot be activated; if one ever were, this
+      // guard makes it a no-op rather than a trap.
+      guard let value = ShootSceneValue.from(query: store.query) else { return }
+      opener.open(value)
+    })
 }
 
 /// The menu's rendered body: EXACTLY `GridMoreMenu.entries`, in order, with no second list.
@@ -171,10 +203,16 @@ struct GridMoreMenuContent: View {
   /// From `ActionBarLayout.foldsClearIntoMore` (WP13 P1) — the ONE thing about the menu that
   /// varies with the bar's width, and it changes an identifier, never the set of rows.
   let foldsClearIntoMore: Bool
+  /// WP13 P11: handed down from `GridView`, which is the deepest view that can see the scene's
+  /// own `openWindow` environment action. Injected rather than reached for so a test can prove
+  /// the enabled control fires with the current scene value.
+  let openShootWindow: ShootWindowOpener
 
   var body: some View {
     ForEach(GridMoreMenu.entries) { entry in
-      GridMoreMenuItem(entry: entry, store: store, foldsClearIntoMore: foldsClearIntoMore)
+      GridMoreMenuItem(
+        entry: entry, store: store, foldsClearIntoMore: foldsClearIntoMore,
+        openShootWindow: openShootWindow)
     }
   }
 }
@@ -183,6 +221,7 @@ struct GridMoreMenuItem: View {
   let entry: GridMoreMenuEntry
   let store: GridStore
   let foldsClearIntoMore: Bool
+  let openShootWindow: ShootWindowOpener
 
   private var identifier: String {
     GridMoreMenu.accessibilityIdentifier(for: entry, foldsClearIntoMore: foldsClearIntoMore)
@@ -206,6 +245,16 @@ struct GridMoreMenuItem: View {
       ) {
         Label(entry.title(store), systemImage: entry.systemImage)
       }
+      .labelStyle(.titleAndIcon)
+      .accessibilityIdentifier(identifier)
+
+    case .sceneWindow(let run):
+      Button {
+        run(store, openShootWindow)
+      } label: {
+        Label(entry.title(store), systemImage: entry.systemImage)
+      }
+      .disabled(!entry.isEnabled(store))
       .labelStyle(.titleAndIcon)
       .accessibilityIdentifier(identifier)
 

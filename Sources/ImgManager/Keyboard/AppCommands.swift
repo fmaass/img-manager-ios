@@ -45,6 +45,10 @@ struct MenuCommandGroup: Identifiable {
 /// platforms and HIG Keyboards warns against re-binding established system shortcuts.
 struct AppCommands: Commands {
   @FocusedValue(\.gridKeyboardActions) private var actions
+  /// WP13 P11 (IMGMGR-220): the window command, published by `RootView` (see its own
+  /// `.focusedSceneValue` call) because `openWindow` is a SCENE capability no `GridStore` can
+  /// hold. Absent — like `actions` — whenever no workspace scene is focused.
+  @FocusedValue(\.shootWindowCommand) private var shootWindow
 
   var body: some Commands {
     CommandMenu("Grid") {
@@ -58,7 +62,25 @@ struct AppCommands: Commands {
     // View beside the system's. `CommandGroup(after: .sidebar)` inserts into the real one.
     CommandGroup(after: .sidebar) {
       menuContent(Self.viewMenuGroups)
+      Divider()
+      openInNewWindowEntry
     }
+  }
+
+  /// NOT a `MenuCommandDeclaration`: every row of that table is a KEY EQUIVALENT dispatched into
+  /// `GridKeyboardActions` (`ShortcutCatalogTests.everyMenuDeclarationIsKeyedAndCatalogued`
+  /// enforces that every declaration is keyed and catalogued), and this entry deliberately claims
+  /// no key — it opens an OS window, which is not a culling accelerator and has no place in the
+  /// shortcut inventory. It also dispatches into the window command rather than the grid actions,
+  /// for the reason recorded on `ShootWindowCommand`.
+  ///
+  /// Its title comes from `ShootWindowCopy`, the same constant the grid's More menu row renders,
+  /// so the two entry points cannot be spelled differently.
+  @ViewBuilder private var openInNewWindowEntry: some View {
+    Button(ShootWindowCopy.title) {
+      shootWindow?.run()
+    }
+    .disabled(shootWindow?.isEnabled != true)
   }
 
   @ViewBuilder

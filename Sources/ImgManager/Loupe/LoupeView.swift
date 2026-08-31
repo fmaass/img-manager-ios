@@ -476,8 +476,16 @@ struct FilmstripThumbnail: View {
   let isFocused: Bool
   @State private var proxyImage: PlatformImage?
   let store: GridStore
+  /// WP13 P11 (IMGMGR-220): the pointer-hover seam, the same one `TileView` and `SceneCardView`
+  /// take — the filmstrip is the loupe's own contact sheet and a pointer over it is asking the
+  /// same question.
+  var hoverEffectInstaller: HoverEffectInstaller = .live
 
   var body: some View {
+    hoverEffectInstaller.apply(cell)
+  }
+
+  private var cell: some View {
     ZStack(alignment: .topTrailing) {
       Group {
         if let proxyImage {
