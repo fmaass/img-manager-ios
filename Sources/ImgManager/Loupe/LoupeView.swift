@@ -448,7 +448,10 @@ struct FilmstripView: View {
   }
 }
 
-/// The filmstrip surface `LoupeView.body` builds — see `LoupeView.filmstrip`.
+/// The filmstrip surface `LoupeView.body` builds — see `LoupeView.filmstrip`. `@MainActor` for
+/// the same reason `LoupeZoomControls` is: `.live` closes over SwiftUI view construction, so a
+/// nonisolated `static let` of it is not concurrency-safe under `SWIFT_STRICT_CONCURRENCY`.
+@MainActor
 struct LoupeFilmstripSurface {
   var make: (GridStore) -> AnyView
 
@@ -456,6 +459,8 @@ struct LoupeFilmstripSurface {
 }
 
 /// The strip's scroll seam: given the live proxy and an id, bring that thumbnail into view.
+/// `@MainActor` for the same reason as `LoupeFilmstripSurface` above.
+@MainActor
 struct FilmstripFocusScroller {
   var reveal: (ScrollViewProxy?, Int) -> Void
 
