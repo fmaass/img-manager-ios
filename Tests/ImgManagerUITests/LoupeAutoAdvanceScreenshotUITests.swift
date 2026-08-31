@@ -110,8 +110,7 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     // A real write, read back through the same control: a row that renders but changes nothing
     // is exactly the "hidden preference with a decoration" this rule exists to prevent.
     let before = row.value as? String
-    row.tap()
-    Thread.sleep(forTimeInterval: 0.8)
+    flipInListRow(row)
     let after = row.value as? String
     let flip = "account row value \(before ?? "nil") -> \(after ?? "nil")"
     XCTContext.runActivity(named: flip) { _ in }
@@ -119,8 +118,7 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
       before, after, "Tapping the account row did not change the preference (\(before ?? "nil")).")
     attach(name: "account-auto-advance-row-flipped")
 
-    row.tap()
-    Thread.sleep(forTimeInterval: 0.8)
+    flipInListRow(row)
     XCTAssertEqual(row.value as? String, before, "The account row did not restore its state.")
   }
 
@@ -208,6 +206,28 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
       close.exists,
       "The loupe never opened from a tile tap — no cell was hit by any probe point.")
     return app
+  }
+
+  /// Flips a SwiftUI `Toggle` that lives in a `List` row, which a bare `element.tap()` does not.
+  ///
+  /// The 14:02 gate run is the evidence and it is unambiguous. The query already resolves a
+  /// `Switch` (the log reads `Checking existence of "accountAutoAdvanceToggle" Switch`), the tap
+  /// synthesised cleanly against a hittable element, and the value read back "1" on both sides of
+  /// it — while `testLoupeHeaderCarriesTheAutoAdvanceToggle` flipped the SAME preference three
+  /// times in that same run. So the preference's write-through is fine and the tap simply never
+  /// reached the control: the row's accessibility element spans the whole row, `tap()` aims at its
+  /// centre, that centre is the label, and a SwiftUI toggle's label is not a hit target.
+  ///
+  /// The remedy is a fixed distance INSIDE the element's trailing edge rather than a normalised
+  /// fraction of it: the switch is trailing-anchored and about 51 pt wide, so an offset lands on
+  /// it at any row width — a fraction would drift off the control as the sheet gets wider, which
+  /// is exactly the "guessed pane width" this suite is not allowed to encode.
+  private func flipInListRow(_ toggle: XCUIElement) {
+    XCTContext.runActivity(named: "toggle element frame \(toggle.frame)") { _ in }
+    toggle.coordinate(withNormalizedOffset: CGVector(dx: 1.0, dy: 0.5))
+      .withOffset(CGVector(dx: -30, dy: 0))
+      .tap()
+    Thread.sleep(forTimeInterval: 0.8)
   }
 
   private func attach(name: String) {
