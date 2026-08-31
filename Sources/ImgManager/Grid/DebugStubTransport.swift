@@ -26,11 +26,9 @@
         return try jsonResponse(
           .ok, Components.Schemas.ApiHealthResponse(db: "ok", status: "ok", version: "stub"))
       case Operations.StatusApiStatusGet.id:
-        return try jsonResponse(
-          .ok,
-          Components.Schemas.StatusResponse(
-            coverage: .init(imagesActive: 0, imagesMissing: 0, tiers: []),
-            maintenance: .init(enabled: false), runs: []))
+        return try jsonResponse(.ok, Self.fixtureStatus())
+      case Operations.ExportMarksApiMarksExportGet.id:
+        return try jsonResponse(.ok, Self.fixtureMarksExport())
       case Operations.FolderTreeApiFoldersGet.id:
         return try jsonResponse(.ok, Components.Schemas.FolderTree(items: Self.fixtureFolders()))
       case Operations.FolderSummariesApiFolderSummariesGet.id:
@@ -105,6 +103,47 @@
     /// A dozen fixture images spanning several aspect ratios — including a panorama (index 3)
     /// — so the three retained screenshots actually exercise justified reflow, not just a
     /// uniform grid of squares.
+    /// WP13 P5a (IMGMGR-221): the Status sheet's screenshot fixture. Shaped from the live
+    /// 2026-08-30 probe of the deployed backend (two mounted stores, two proxy tiers, an idle
+    /// loop, a finished run) with FIXED timestamps so a screenshot is reproducible.
+    private static func fixtureStatus() -> Components.Schemas.StatusResponse {
+      Components.Schemas.StatusResponse(
+        coverage: .init(
+          imagesActive: 202_572, imagesMissing: 7_154,
+          tiers: [
+            .init(coveragePercent: 97.825, failed: 4_406, ok: 198_166, pending: 0, tier: "grid"),
+            .init(
+              coveragePercent: 97.544, failed: 4_976, ok: 197_596, pending: 0, tier: "preview"),
+          ]),
+        lastIndexedAt: Date(timeIntervalSince1970: 1_788_119_492),
+        maintenance: .init(
+          enabled: true, executorLock: .free,
+          nextRunAt: Date(timeIntervalSince1970: 1_788_120_392), note: "idle",
+          tierDetail: "the photo library is mounted and verified", tierMounted: true),
+        runs: [
+          .init(
+            finishedAt: Date(timeIntervalSince1970: 1_788_119_492), id: 1_985,
+            startedAt: Date(timeIntervalSince1970: 1_788_119_480), state: "succeeded",
+            trigger: "interval")
+        ],
+        stores: [
+          .init(
+            detail: "the photo library is mounted and verified", health: .mounted, indexed: true,
+            mounted: true, store: "local"),
+          .init(
+            detail: "the archive is mounted and verified", health: .mounted, indexed: true,
+            mounted: true, store: "archive"),
+        ])
+    }
+
+    /// WP13 P5a: bare STEMS, exactly the shape the live endpoint returned on 2026-08-30 — no
+    /// extension, no directory component.
+    private static func fixtureMarksExport() -> Components.Schemas.MarksExport {
+      Components.Schemas.MarksExport(
+        count: 3, state: ["pick"], stems: ["STUB_0001", "STUB_0006", "STUB_0011"],
+        truncated: false)
+    }
+
     private static func fixtureImages() -> [Components.Schemas.ImageSummary] {
       let aspects: [Double] = [1.5, 1.0, 0.75, 3.5, 1.5, 1.5, 1.0, 1.5, 2.0, 1.0, 1.5, 0.75]
       return aspects.enumerated().map { index, aspect in

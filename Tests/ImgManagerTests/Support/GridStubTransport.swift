@@ -23,6 +23,16 @@ actor GridStubTransport: ClientTransport {
   var listImagesRejectNonNilCursor = false
   var facetsResult = Components.Schemas.ImageFacets(total: 0)
   var facetsShouldFail = false
+  /// WP13 P5a: `GET /api/marks/export`'s answer. Default mirrors the live probe's SHAPE
+  /// (bare stems, `state: ["pick"]`, untruncated), not its 211-row size.
+  var marksExport = Components.Schemas.MarksExport(
+    count: 0, state: ["pick"], stems: [], truncated: false)
+  var marksExportShouldFail = false
+  /// WP13 P5a: `GET /api/status`'s answer.
+  var statusResponse = Components.Schemas.StatusResponse(
+    coverage: .init(imagesActive: 0, imagesMissing: 0, tiers: []),
+    maintenance: .init(enabled: false), runs: [])
+  var statusShouldFail = false
   var detailResult: Components.Schemas.ImageDetail?
   /// Diff-gate round 3, B6: a `GET /api/images/{id}` failure for the NEXT call (self-disarming
   /// one-shot, same discipline as `listImagesShouldFail`) — models the per-id detail() fallback
@@ -384,6 +394,9 @@ actor GridStubTransport: ClientTransport {
   }
 
   private(set) var recordedFacetsQueries: [[String: String]] = []
+  /// WP13 P5a: every `GET /api/marks/export` query, so a test can prove `format=txt` was never
+  /// requested (the vendored document declares only `application/json` for its 200).
+  private(set) var recordedMarksExportQueries: [[String: String]] = []
 
   var lastListImagesQuery: [String: String]? { recordedListImagesQueries.last }
   var lastFacetsQuery: [String: String]? { recordedFacetsQueries.last }
@@ -422,6 +435,12 @@ actor GridStubTransport: ClientTransport {
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
   func setNeighboursPage(_ page: Components.Schemas.ImagePage) { neighboursPage = page }
   func callCount(_ operationID: String) -> Int { callCounts[operationID] ?? 0 }
+
+  // WP13 P5a (IMGMGR-221): the More menu's two read-only endpoints.
+  func setMarksExport(_ export: Components.Schemas.MarksExport) { marksExport = export }
+  func setMarksExportShouldFail(_ fail: Bool) { marksExportShouldFail = fail }
+  func setStatusResponse(_ status: Components.Schemas.StatusResponse) { statusResponse = status }
+  func setStatusShouldFail(_ fail: Bool) { statusShouldFail = fail }
 
   func send(
     _ request: HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String
@@ -654,6 +673,21 @@ actor GridStubTransport: ClientTransport {
       case .success(let applied): return try jsonResponse(.ok, applied)
       case .conflict: return (HTTPResponse(status: .conflict), nil)
       }
+
+    case Operations.ExportMarksApiMarksExportGet.id:
+      recordedMarksExportQueries.append(queryParameters(of: request))
+      if marksExportShouldFail {
+        marksExportShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced marksExport failure")
+      }
+      return try jsonResponse(.ok, marksExport)
+
+    case Operations.StatusApiStatusGet.id:
+      if statusShouldFail {
+        statusShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced status failure")
+      }
+      return try jsonResponse(.ok, statusResponse)
 
     case Operations.EditMarkTagsApiMarksTagsPost.id:
       if let body {

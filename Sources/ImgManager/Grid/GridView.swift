@@ -63,6 +63,7 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
+      MarksCopyBanner(store: store)
       ActionBarView(store: store)
     }
     .onChange(of: store.images) { _, _ in publishRows() }
@@ -159,6 +160,9 @@ struct GridView: View {
         isFocused: store.focusedImageID == image.id,
         isSelected: store.selection.members.contains(image.id),
         isSelectMode: store.selection.mode == .select,
+        // WP13 P5a (IMGMGR-221): read here, in the one place that builds a tile, so the More
+        // menu's toggle and what every tile draws are the same fact.
+        showsFilenamePlate: store.preferences.filenamePlates,
         store: store
       )
     case .stack(let stackRow, let isExpanded):
@@ -656,6 +660,11 @@ struct ActionBarView: View {
     .sheet(isPresented: $store.isTagEntryPresented) {
       TagEntrySheet(store: store)
     }
+    // WP13 P5a: hosted on the OUTER body beside tag entry, never on a `ViewThatFits` child —
+    // a sheet declared per tier would be declared three times over.
+    .sheet(isPresented: $store.isStatusPresented) {
+      StatusSheet(store: store)
+    }
   }
 
   /// One tier's rendering. Deliberately NOT `.frame(maxWidth: .infinity)`: a child that claims
@@ -691,29 +700,16 @@ struct ActionBarView: View {
       .accessibilityIdentifier("gridTagButton")
       .actionBarControlSize()
 
+      // WP13 P5a (IMGMGR-221): the decided set, rendered from `GridMoreMenu.entries` and from
+      // nothing else — this view holds no second list of what the menu contains. It stays the
+      // OVERFLOW: the action bar is at its 6-control limit (`ActionBarMetrics`) and Regular's
+      // toolbar already carries three `.primaryAction` items, so no entry here becomes a bar
+      // control.
       Menu {
-        // The folded Clear: still a chrome control, with the same identifier, the same disabled
-        // rule and the same state from the same table — a narrower column moves it, never
-        // removes it, and never leaves the action reachable by gesture alone.
-        if layout.foldsClearIntoMore {
-          let clear = ActionBarMarkControl.clear
-          Button(clear.title, systemImage: clear.systemImage) {
-            Task { await store.applyMarkToTarget(clear.state) }
-          }
-          .disabled(store.isMarkActionUnavailable)
-          .accessibilityIdentifier(clear.accessibilityIdentifier)
-        }
-        Button(store.selection.mode == .select ? "Exit Select" : "Select") {
-          if store.selection.mode == .select {
-            store.done()
-          } else {
-            store.enterSelectExplicitly()
-          }
-        }
-        // Identified because its LABEL changes with the mode, and because a menu item inside a
-        // popover is not addressable by label on every idiom (Regular-3 — see
-        // SelectModeScreenshotUITests).
-        .accessibilityIdentifier("gridSelectCommand")
+        // WP13 P5a (IMGMGR-221) + P1 (IMGMGR-212), resolved as ONE composition: the decided
+        // More set renders from `GridMoreMenu.entries`, and the fold is what the Clear ROW's
+        // identity keys off — never a second Clear row beside it.
+        GridMoreMenuContent(store: store, foldsClearIntoMore: layout.foldsClearIntoMore)
       } label: {
         Label("More", systemImage: "ellipsis.circle")
       }
@@ -810,6 +806,30 @@ struct ActionBarView: View {
       // exclusion made visible rather than merely enforced.
       Button(control.lockMenuTitle) { store.lockFromMenu(verb) }
         .disabled(store.pickLock.latchedVerb != nil || store.selection.mode == .select)
+    }
+  }
+}
+
+/// WP13 P5a (IMGMGR-221): what "Copy for Lightroom" just did, stated where the reader is —
+/// non-modal, same shape as `ConflictRecoveryBanner` beside it, never an alert. The text is
+/// built by `MarksExportCopy.confirmation`, which is where the endpoint's real scope ("the
+/// whole marked set, not the browse scope") and its truncation flag are turned into words.
+struct MarksCopyBanner: View {
+  @Bindable var store: GridStore
+
+  var body: some View {
+    if let message = store.marksCopyMessage {
+      HStack(spacing: 12) {
+        Label(message, systemImage: "doc.on.clipboard")
+          .font(.footnote)
+          .accessibilityIdentifier("marksCopyMessage")
+        Spacer()
+        Button("Dismiss") { store.dismissMarksCopyMessage() }
+          .font(.footnote)
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .background(.thinMaterial)
     }
   }
 }

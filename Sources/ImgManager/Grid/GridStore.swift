@@ -169,6 +169,30 @@ final class GridStore {
   /// the sheet itself.
   var isShortcutHelpPresented = false
 
+  // MARK: - More menu surfaces (WP13 P5a, IMGMGR-221)
+
+  /// The read-only Status sheet (`StatusSheet`). Beside `isTagEntryPresented` and
+  /// `isShortcutHelpPresented`, the same shape, for the same reason: the menu entry that raises
+  /// it is declared as data (`GridMoreMenu`) and reaches this screen only through the store.
+  var isStatusPresented = false
+  private(set) var statusSnapshot: Components.Schemas.StatusResponse?
+  /// The status READ failed — distinct from "not loaded yet", which is `statusSnapshot == nil`
+  /// with this false. Nothing on the sheet retries anything but the read itself.
+  private(set) var statusReadFailed = false
+
+  /// What the last "Copy for Lightroom" did, in the reader's words — including the scope the
+  /// endpoint can actually back ("whole library") and any truncation. Nil = nothing to say.
+  private(set) var marksCopyMessage: String?
+  /// Single-flight: a second tap while the export is on the wire is refused rather than racing
+  /// two writes onto the pasteboard.
+  private(set) var isCopyingMarksForLightroom = false
+
+  /// This app's first persisted scalar preferences (`GridPreferences`) — today the filename
+  /// plates, P8's auto-advance next. Injected so every test runs in its OWN `UserDefaults`
+  /// suite instead of the simulator's shared standard one.
+  let preferences: GridPreferences
+  private let pasteboard: any MarksPasteboard
+
   let selection = SelectionState()
   let pickLock = PickLockState()
   let undo = UndoStack()
@@ -325,8 +349,14 @@ final class GridStore {
   /// result with stale data.
   private var loadGeneration = 0
 
-  init(service: GridService) {
+  init(
+    service: GridService,
+    preferences: GridPreferences = GridPreferences(),
+    pasteboard: any MarksPasteboard = SystemMarksPasteboard()
+  ) {
     self.service = service
+    self.preferences = preferences
+    self.pasteboard = pasteboard
   }
 
   // MARK: - Loading
@@ -1206,6 +1236,56 @@ final class GridStore {
   /// the view options themselves.
   func showShortcutHelp() {
     isShortcutHelpPresented = true
+  }
+
+  // MARK: - More menu actions (WP13 P5a, IMGMGR-221)
+
+  /// Raise the read-only Status sheet and start its read. The flag flips SYNCHRONOUSLY so the
+  /// menu entry is never a no-op even when the network is gone — the sheet comes up and says
+  /// what it knows.
+  func presentStatus() {
+    isStatusPresented = true
+    statusReadFailed = false
+    Task { await loadStatus() }
+  }
+
+  /// `GET /api/status`, through the SAME generated client every other call uses. Read-only by
+  /// construction: this store exposes no maintenance mutation at all, and `POST /api/reindex`
+  /// is wired nowhere in this app.
+  func loadStatus() async {
+    do {
+      statusSnapshot = try await service.statusService.status()
+      statusReadFailed = false
+    } catch {
+      statusSnapshot = nil
+      statusReadFailed = true
+    }
+  }
+
+  /// Copy for Lightroom: the marked set's filename STEMS onto the local pasteboard, plus a
+  /// confirmation that states the scope. `GET /api/marks/export` answers for the WHOLE marked
+  /// set, never the browse scope, and can be truncated — `MarksExportCopy` is where that
+  /// fidelity is expressed, and it is the only place the message text is built.
+  ///
+  /// Nothing is written when the export is empty: an empty pasteboard would silently destroy
+  /// whatever the reader had copied before, in exchange for nothing.
+  func copyMarkedFilenamesForLightroom() async {
+    guard !isCopyingMarksForLightroom else { return }
+    isCopyingMarksForLightroom = true
+    defer { isCopyingMarksForLightroom = false }
+    do {
+      let export = try await service.marksExport()
+      if export.count > 0 {
+        pasteboard.write(MarksExportCopy.pasteboardPayload(export))
+      }
+      marksCopyMessage = MarksExportCopy.confirmation(export)
+    } catch {
+      marksCopyMessage = "Couldn't reach the library to copy the marked filenames."
+    }
+  }
+
+  func dismissMarksCopyMessage() {
+    marksCopyMessage = nil
   }
 
   /// A tag targets exactly what a mark targets: ONE rule, expressed once. The shipped defect
