@@ -29,15 +29,14 @@ struct GridChromeRowsTests {
     let transport = GridStubTransport()
     await transport.setListImagesPage(
       .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    // Cover id 900 appears nowhere else, the same convention `GridStoreSceneTests` uses.
+    let stackRow = Components.Schemas.StackBrowseStackRow(
+      anchorTakenAt: nil, hasPick: false, kind: .stack, matchedCount: 3, memberCount: 3,
+      representative: makeImage(id: 900), stackId: 5)
+    let item = Components.Schemas.StackBrowsePage.ItemsPayloadPayload(
+      value1: nil, value2: stackRow)
     await transport.setBrowseStacksPage(
-      .init(
-        items: [
-          .init(
-            value1: nil,
-            value2: .init(
-              anchorTakenAt: nil, hasPick: false, kind: .stack, matchedCount: 3, memberCount: 3,
-              representative: makeImage(id: 900), stackId: 5))
-        ], limit: 100))
+      Components.Schemas.StackBrowsePage(items: [item], limit: 100, nextCursor: nil))
     let client = ImgManagerAPIClient.make(transport: transport)
     let store = GridStore(service: GridService(client: client))
     await store.selectShoot(folderID: 1)
@@ -71,9 +70,13 @@ struct GridChromeRowsTests {
     #expect(GridChromeRows.rows(layoutMode: .regular2, store: store) == [.select])
     #expect(GridChromeRows.rows(layoutMode: .compact, store: store) == [.options, .select])
 
+    // `lockFromMenu` REFUSES while Select is active (GridStore.swift:1414), so the way from one
+    // mode row to the other is through the way out — which is also the rule this row set exists
+    // to render: at most one of them, ever.
+    store.done()
     store.lockFromMenu(.dislike)
     #expect(GridChromeRows.rows(layoutMode: .regular2, store: store) == [.pickLock(.dislike)])
-    // At most ONE mode row: latching left Select, so the list never carries both.
+    // At most ONE mode row, whichever way the screen got here: one latched verb, one list.
     #expect(GridChromeRows.rows(layoutMode: .regular2, store: store).count == 1)
   }
 }

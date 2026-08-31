@@ -1,3 +1,4 @@
+import Foundation
 import ImgManagerAPI
 import Testing
 
