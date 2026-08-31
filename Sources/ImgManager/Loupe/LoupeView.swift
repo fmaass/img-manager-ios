@@ -421,22 +421,25 @@ enum LoupeMarkPresentation {
     }
   }
 
-  /// CHARACTERIZATION of the shipped bar (IMGMGR-275, RED step): it reads no mark state at all —
-  /// both buttons carry the same plain glyph whatever the focused photograph is marked, which is
-  /// why the reader cannot see a verdict they have already given. Extracted verbatim so the tests
-  /// beside it can name that as the defect; the fix replaces these three bodies.
+  /// Whether this control is the verdict currently ON the focused photograph. Reads the state and
+  /// nothing else — never the last button pressed, which would keep showing a verdict after an
+  /// advance moved to a different frame.
   static func isActive(
     _ control: Control, state: Components.Schemas.MarkView.StatePayload?
   ) -> Bool {
-    _ = control
-    _ = state
-    return false
+    switch control {
+    case .pick: return state == .pick
+    case .dislike: return state == .dislike
+    }
   }
 
+  /// The SF Symbol the control draws: the filled variant of its own glyph while it is the current
+  /// verdict, the outline otherwise. Same pair the grid tile's badge already uses, so the two
+  /// surfaces say the same thing in the same vocabulary.
   static func symbol(
     for control: Control, state: Components.Schemas.MarkView.StatePayload?
   ) -> String {
-    control.baseSymbol
+    isActive(control, state: state) ? "\(control.baseSymbol).fill" : control.baseSymbol
   }
 
   /// The spoken half of the same signal: a filled glyph is invisible to VoiceOver, so the state
@@ -512,10 +515,23 @@ struct FilmstripView: View {
       ScrollView(.horizontal) {
         LazyHStack(spacing: 4) {
           ForEach(frames, id: \.id) { image in
-            FilmstripThumbnail(
-              image: image, isFocused: store.focusedImageID == image.id, store: store
-            )
-            .onTapGesture { store.loupeFocus(on: image.id) }
+            let isFocused = store.focusedImageID == image.id
+            // IMGMGR-268: a real Button, never `.onTapGesture` on a plain view. The strip's focus
+            // action used to exist only as a gesture, so the accessibility tree carried no
+            // control for it at all — on Compact, where the strip is the only context there is,
+            // that left VoiceOver with an image and nothing to activate. The hit region is
+            // unchanged (the thumbnail's own `contentShape`), `.plain` keeps the visual identical,
+            // and the focused frame carries the selected trait so the announcement says which one
+            // it is.
+            Button {
+              store.loupeFocus(on: image.id)
+            } label: {
+              FilmstripThumbnail(image: image, isFocused: isFocused, store: store)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("filmstripThumbnail-\(image.id)")
+            .accessibilityLabel(FilmstripThumbnailAccessibility.label(for: image))
+            .accessibilityAddTraits(isFocused ? [.isSelected] : [])
             .task(id: image.id) { await pageIfNeeded(around: image) }
           }
         }
@@ -550,6 +566,20 @@ struct FilmstripFocusScroller {
 
   static let live = FilmstripFocusScroller { proxy, id in
     withAnimation(.easeOut(duration: 0.2)) { proxy?.scrollTo(id, anchor: .center) }
+  }
+}
+
+/// What one strip thumbnail ANNOUNCES (IMGMGR-268). Pure, so the wording is a value a test reads
+/// rather than a string literal inside a `ForEach`. It names the photograph and, when there is
+/// one, the verdict already on it — the same information the thumbnail's own visual state carries
+/// for a reader who can see it.
+enum FilmstripThumbnailAccessibility {
+  static func label(for image: Components.Schemas.ImageSummary) -> String {
+    switch image.mark.state {
+    case .pick: return "\(image.filename), picked"
+    case .dislike: return "\(image.filename), disliked"
+    default: return image.filename
+    }
   }
 }
 

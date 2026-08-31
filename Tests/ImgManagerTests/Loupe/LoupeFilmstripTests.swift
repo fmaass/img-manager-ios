@@ -255,3 +255,32 @@ struct LoupeFilmstripTests {
     #expect(neighbourCalls == 0)
   }
 }
+
+/// IMGMGR-268: the strip's thumbnails became real controls, so what they ANNOUNCE is now a
+/// contract rather than an accident of whatever SwiftUI derived from an image.
+@Suite("Filmstrip thumbnail accessibility — a control has to name what it activates")
+struct FilmstripThumbnailAccessibilityTests {
+
+  private func image(
+    id: Int, state: Components.Schemas.MarkView.StatePayload
+  ) -> Components.Schemas.ImageSummary {
+    Components.Schemas.ImageSummary(
+      aspectRatio: 1.5, ext: "raf", filename: "DSCF\(id).raf", folderId: 1, hasEdit: false, id: id,
+      lightroom: .init(sidecarPresent: false),
+      mark: .init(revision: "r0", state: state, tags: []), missing: false,
+      proxies: .init(additionalProperties: [:]), sourceTier: "local")
+  }
+
+  @Test("An unmarked thumbnail announces the photograph; a marked one announces its verdict too")
+  func theLabelNamesThePhotographAndItsVerdict() {
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(
+      FilmstripThumbnailAccessibility.label(for: image(id: 1, state: none)) == "DSCF1.raf")
+    #expect(
+      FilmstripThumbnailAccessibility.label(for: image(id: 2, state: .pick))
+        == "DSCF2.raf, picked")
+    #expect(
+      FilmstripThumbnailAccessibility.label(for: image(id: 3, state: .dislike))
+        == "DSCF3.raf, disliked")
+  }
+}
