@@ -30,10 +30,12 @@ struct HoverEffectInstallerTests {
     // Positive control for the inequality below: the input's own type name really was read, so
     // the comparison cannot pass on two empty strings.
     #expect(inputType == "Color", "the probe input is not the view it claims to be: \(inputType)")
+    // ONE literal, never two concatenated: `#expect` takes a `Comment`, and `+` on a Comment is
+    // not a string append (the trap `GridMoreMenuTests` already records; gate p11-red2).
     #expect(
       outputType != inputType,
-      "HoverEffectInstaller.live returned its content unchanged (\(outputType)) — no hover "
-        + "effect is installed anywhere in the app.")
+      "HoverEffectInstaller.live returned its content unchanged (\(outputType)) — no hover effect is installed anywhere in the app."
+    )
   }
 }
 
