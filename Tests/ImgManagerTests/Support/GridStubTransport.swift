@@ -729,7 +729,7 @@ actor GridStubTransport: ClientTransport {
         lastMarkStateRequest.flatMap { markStateOutcomeByState[$0.state] } ?? markStateOutcome
       switch effectiveOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
-      case .conflict: return (HTTPResponse(status: .conflict), nil)
+      case .conflict: return try staleRevisionConflict(for: lastMarkStateRequest?.imageIds ?? [])
       }
 
     case Operations.ExportMarksApiMarksExportGet.id:
@@ -763,12 +763,25 @@ actor GridStubTransport: ClientTransport {
       }
       switch tagsOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
-      case .conflict: return (HTTPResponse(status: .conflict), nil)
+      case .conflict: return try staleRevisionConflict(for: lastTagsRequest?.imageIds ?? [])
       }
 
     default:
       throw SentinelTransportError(raw: "GridStubTransport: unexpected operationID: \(operationID)")
     }
+  }
+
+  /// The 409 the server actually sends since the WP14 re-vendor (IMGMGR-177's
+  /// `StaleMarkRevisionError`, now DECLARED on both mark writes). A bodyless 409 no longer
+  /// decodes through the generated client at all, so it surfaces as `.unreachable` and every
+  /// conflict test would be measuring a decode failure instead of a refusal. The submitted ids
+  /// are echoed as the stale set, which is the shape `_refuse_if_stale` produces: the whole
+  /// request is refused, so every id named in it is one the caller has to re-read.
+  private func staleRevisionConflict(for imageIDs: [Int]) throws -> (HTTPResponse, HTTPBody?) {
+    try jsonResponse(
+      .conflict,
+      Components.Schemas.StaleMarkRevisionError(
+        detail: .init(code: .staleMarkRevision, staleImageIds: imageIDs)))
   }
 
   private func jsonResponse<T: Encodable>(
