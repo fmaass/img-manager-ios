@@ -310,6 +310,32 @@ struct GridStoreTests {
     #expect(store.focusedImageID == 1)
   }
 
+  /// The SECOND site of the same class, one level up: `applyLoupeMark`'s own cadence guard spans
+  /// the mutation's await, so the identical close-then-reopen satisfies it too — and there the
+  /// advance is a purely local step that needs no network at all. Enumerated with its sibling
+  /// rather than left for the next round.
+  @Test(
+    "A mark committing into a REOPENED loupe never advances it either — the local step, no fetch (IMGMGR-269)"
+  )
+  func aMarkCommittingIntoAReopenedLoupeNeverAdvancesIt() async {
+    let (store, transport, _) = await makeLoupeAtFirstOfThree(autoAdvance: true)
+    await markCommits(transport, imageID: 1, revision: "r1")
+    await transport.holdMarkStateRequests(true)
+
+    async let marked: Bool = store.applyLoupeMark(.pick)
+    await transport.waitUntilMarkStateStarted()
+    store.closeLoupe()
+    store.openLoupe(on: 1)
+    await transport.releaseMarkState()
+    let committed = await marked
+
+    // The mutation always stands — only the cadence is withheld.
+    #expect(committed)
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == .pick)
+    #expect(store.isLoupeOpen)
+    #expect(store.focusedImageID == 1)
+  }
+
   // MARK: - IMGMGR-270: undo AFTER an auto-advance acts on the frame that was marked
 
   /// The P8 cadence suite proved the undo SLOT survives an advance (`canUndo`, `priorStates`,
