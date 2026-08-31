@@ -115,8 +115,12 @@ final class SortGroupScreenshotUITests: XCTestCase {
       labels.count, 2,
       "Only \(labels.count) section header(s) rendered: \(labels). The fixture serves three "
         + "camera buckets, so at least two boundaries must be visible.")
+    // Digits only: the rendered count carries the simulator locale's grouping separator
+    // (observed "36'568" on the Swiss locale the gate legs run under), so a literal comparison
+    // asserts the separator rather than the number.
+    let digitsPerLabel = labels.map { $0.filter(\.isNumber) }
     XCTAssertTrue(
-      labels.contains { $0.contains("36568") || $0.contains("36,568") },
+      digitsPerLabel.contains { $0.contains("36568") },
       "No header carries the server's own count. Headers read: \(labels). A page-derived tally "
         + "would say 4.")
     XCTAssertTrue(

@@ -89,8 +89,11 @@ struct SortGroupOptionsTests {
   @Test("Grouping is ONE single-select list — Scene and a group_by key cannot both be chosen")
   func groupingIsOneSingleSelectList() {
     let choices = SortGroupOptions.groupingChoices
-    #expect(choices.first == .none)
-    #expect(choices.dropFirst().first == .scene)
+    // Fully qualified on purpose: bare `.none` against an `Optional<GroupingChoice>` resolves
+    // to `Optional.none` — i.e. "is nil" — which is a different assertion that happens to
+    // compile (gate run 03:47, `Expectation failed: (choices.first → .none) == (.none → nil)`).
+    #expect(choices.first == GroupingChoice.none)
+    #expect(choices.dropFirst().first == GroupingChoice.scene)
     #expect(choices.count == 2 + SortGroupOptions.groupKeys.count)
     // Structural exclusivity: `.scene` carries no `group_by` value at all, so choosing it can
     // never also set one, and a `.key` choice is not `.scene`.
