@@ -4,15 +4,17 @@ import XCTest
 /// A funnel in the grid's chrome, carrying the active-filter dot, opening a popover whose every
 /// row states the count that row would deliver before it is applied.
 ///
-/// **RED at `9a370a1`, three times over**, and this file COMPILES against that tree (it names no
-/// app symbol — only XCUITest and identifier strings), so it can be run as a genuine RED gate:
-///   1. nothing named `gridFilterControl` is in the hierarchy at all, so every test fails at its
-///      first `waitForExistence`;
-///   2. no `filterPopoverRow-*` element exists, so the row assertions have nothing to read; and
-///   3. even once the control exists, `DebugStubTransport` at `9a370a1` answers `/api/facets`
-///      with ONE mark row (`pick`, 3) and no `rating`, `ext` or `has_master` — so the `>= 4`
-///      row's count would be 0 and `ratingRowCountIsPositive` fails. That third RED is the
-///      fixture-expansion work item's own (B9); it closes only when the fixture is expanded.
+/// **RED at `9a370a1`**, and this file COMPILES against that tree (it names no app symbol — only
+/// XCUITest and identifier strings), so it can be run as a genuine RED gate: nothing named
+/// `gridFilterControl` is in the hierarchy, so every test fails at its first `waitForExistence`,
+/// and no `filterPopoverRow-*` element exists, so the row assertions have nothing to read.
+///
+/// **What this RED does NOT witness (diff-gate round 1, B2).** An earlier version of this comment
+/// claimed a third, independent RED for the fixture expansion — that the `>= 4` row's count would
+/// read 0 against the old one-row stub. That is false. With no funnel and no rows in the tree,
+/// the count assertion fails on a MISSING ELEMENT whatever the fixture holds, so it cannot
+/// discriminate a thin fixture from an absent surface. The fixture expansion has no isolated RED;
+/// `DebugStubFacetsFixtureTests` pins its shape post hoc and says so in its own doc comment.
 ///
 /// Makes NO device-idiom decision (plan invariant (i)): every step keys off an OBSERVED element,
 /// so the same assertions run against Regular's `.primaryAction` toolbar and against Compact's
@@ -133,8 +135,9 @@ final class FilterPopoverUITests: XCTestCase {
       rating4Count,
       "The '>= 4' row states no numeric count (value: \(String(describing: rating4.value))). "
         + "Decision 1 asks for the LIVE result count on each row before applying.")
-    // The fixture-expansion RED (B9): at `9a370a1` the stub sends no `rating` dimension at all,
-    // so this is 0 and this assertion is what the expanded fixture closes.
+    // Guards the expanded fixture going forward: a stub that stopped sending `rating` would make
+    // this row read 0. NOT an isolated RED for the fixture (see this class's doc comment, B2) —
+    // against `9a370a1` it fails on the missing element, not on the count.
     XCTAssertGreaterThan(
       rating4Count ?? 0, 0,
       "The '>= 4' row states 0 against the DEBUG fixture. Either the fixture still answers "
