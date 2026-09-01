@@ -110,6 +110,7 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
+      GridNoticeBanner(store: store)
       MarksCopyBanner(store: store)
       ActionBarView(store: store, openShootWindow: openShootWindow)
     }
@@ -408,6 +409,38 @@ enum GridNotices {
       notices.append(.droppedWrites(count: store.droppedWriteIDs.count))
     }
     return notices
+  }
+}
+
+/// Renders EXACTLY `GridNotices.notices(store:)`, in its order, and holds no second list —
+/// non-modal and beside the mark bar, the posture `ConflictRecoveryBanner` established (plan item
+/// 3.7: "no alerts, no auto-opening popovers, no modality anywhere in this flow").
+struct GridNoticeBanner: View {
+  @Bindable var store: GridStore
+
+  var body: some View {
+    ForEach(GridNotices.notices(store: store), id: \.self) { notice in
+      HStack(spacing: 12) {
+        Label(notice.message, systemImage: "exclamationmark.triangle")
+          .font(.footnote)
+        Spacer()
+        switch notice {
+        case .pageLoadFailed:
+          // The retry a reader had no way to ask for: `fullReload` is the same "same scope,
+          // fresh data" entry point the foreground hook uses.
+          Button("Retry") { Task { await store.fullReload() } }
+            .font(.footnote)
+            .disabled(store.isLoadingPage)
+        case .droppedWrites:
+          Button("Dismiss") { store.dismissDroppedWriteNotice() }
+            .font(.footnote)
+        }
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .background(.red.opacity(0.12))
+      .accessibilityIdentifier(notice.accessibilityIdentifier)
+    }
   }
 }
 
