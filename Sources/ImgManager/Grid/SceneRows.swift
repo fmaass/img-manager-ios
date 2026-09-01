@@ -108,16 +108,28 @@ enum SceneDisplayRow: Sendable, Equatable, Identifiable {
   }
 }
 
-/// The two derivations Scene mode's whole safety argument rests on, kept pure and free-standing so
+/// The derivations Scene mode's whole safety argument rests on, kept pure and free-standing so
 /// they are testable without a store, a view or a network — the same shape the web keeps them in
-/// (`frontend/src/lib/stacks.ts`).
+/// (`frontend/src/lib/stacks.ts`). Two of them are the boundary itself (`displayRows`,
+/// `actionableImages`); the other three are what WP14 lane B needed on top of it — where an open
+/// band hangs its control, and the arithmetic behind the ✓N badge.
 enum SceneRowBuilder {
 
-  /// The display sequence: the served rows in the SERVER's order, each EXPANDED scene followed by
-  /// the members loaded for it so far.
+  /// The display sequence: the served rows in the SERVER's order, with each OPEN scene REPLACED
+  /// IN PLACE by its members.
   ///
-  /// An expanded scene whose members have not arrived yet renders as the card alone — the honest
-  /// intermediate state, never a guess at what it contains.
+  /// **The swap is the point (IMGMGR-240).** Until this story an open scene rendered its card AND
+  /// every member behind it, so an N-member scene occupied N+1 cells and the cover appeared twice
+  /// — once as the card's thumbnail and again as the member it actually is. The card is not a
+  /// summary of an open scene; it is the CLOSED representation OF one. So opening swaps: the
+  /// members take the scene's own position in the stream and no image id is emitted twice. Same
+  /// semantics the web shipped in `frontend/src/lib/stacks.ts`, so the two surfaces agree.
+  ///
+  /// The card survives in exactly ONE open state, deliberately: while the membership is still on
+  /// the wire (or came back empty). Expansion is committed the instant the reader asks for it —
+  /// before the member request settles — so without this the scene would vanish from the stream
+  /// entirely while it loaded, taking with it the only control left to close or retry it. That is
+  /// why this never yields zero rows for a scene at any point of the lifecycle.
   static func displayRows(
     rows: [SceneBrowseRow],
     expanded: Set<Int>,
@@ -130,15 +142,68 @@ enum SceneRowBuilder {
         out.append(.image(image))
       case .stack(let stack):
         let isExpanded = expanded.contains(stack.stackId)
-        out.append(.stack(row: stack, isExpanded: isExpanded))
-        guard isExpanded else { continue }
-        for member in members[stack.stackId] ?? [] {
-          out.append(.image(member))
+        let band = isExpanded ? (members[stack.stackId] ?? []) : []
+        guard !band.isEmpty else {
+          out.append(.stack(row: stack, isExpanded: isExpanded))
+          continue
         }
+        out.append(contentsOf: band.map(SceneDisplayRow.image))
       }
     }
     return out
   }
+
+  /// Which member each open band hangs its own control on: the FIRST member of every scene whose
+  /// band is actually rendered, keyed by that member's image id.
+  ///
+  /// The band has no card to put a close control on any more — that is what the swap above costs
+  /// — so the control is drawn over the band's leading cell instead, which is the position the
+  /// card's own handle occupied a moment earlier. Derived rather than carried on the row so that
+  /// `SceneDisplayRow` keeps its two shapes and every existing `case .image(let image)` in the
+  /// tree still means exactly what it did.
+  static func bandLeadMembers(
+    expanded: Set<Int>,
+    members: [Int: [Components.Schemas.ImageSummary]]
+  ) -> [Int: Int] {
+    var leads: [Int: Int] = [:]
+    for stackID in expanded {
+      guard let lead = members[stackID]?.first else { continue }
+      leads[lead.id] = stackID
+    }
+    return leads
+  }
+
+  /// One member's pick transition, as the ✓N badge sees it (IMGMGR-241).
+  struct PickTransition: Sendable, Equatable {
+    let imageID: Int
+    let wasPicked: Bool
+    let isPicked: Bool
+  }
+
+  /// What a batch of transitions does to each OPEN scene's `picked_count`, per scene.
+  ///
+  /// Only members the client actually holds can contribute: a photograph inside a scene nobody
+  /// opened is not in `members`, and its scene's badge is left to the server's own re-read. A
+  /// state that did not cross the pick boundary contributes nothing — picking an already-picked
+  /// photograph must not count it twice.
+  static func pickCountDeltas(
+    _ transitions: [PickTransition],
+    members: [Int: [Components.Schemas.ImageSummary]]
+  ) -> [Int: Int] {
+    var deltas: [Int: Int] = [:]
+    for transition in transitions where transition.wasPicked != transition.isPicked {
+      let step = transition.isPicked ? 1 : -1
+      for (stackID, loaded) in members {
+        guard loaded.contains(where: { $0.id == transition.imageID }) else { continue }
+        deltas[stackID, default: 0] += step
+      }
+    }
+    return deltas
+  }
+
+  /// A badge count can never go negative, whatever arithmetic a racing write produces — the same
+  /// clamp the web's optimistic sibling applies (`library.ts`, `Math.max(0, …)`).
+  static func clampedCount(_ count: Int, delta: Int) -> Int { max(0, count + delta) }
 
   /// The photographs on screen, in display order — "what a gesture may act on at all".
   ///

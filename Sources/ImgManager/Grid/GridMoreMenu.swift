@@ -56,7 +56,8 @@ enum GridMoreMenu {
   /// WP13 P11 (IMGMGR-220) APPENDS "Open in New Window"; it does not reorder the owner's decided
   /// set. The six rows above it, and their order, are still decision 2 verbatim.
   static let entries: [GridMoreMenuEntry] = [
-    select, clearMark, copyForLightroom, filenamePlates, density, status, openInNewWindow,
+    select, clearMark, copyForLightroom, filenamePlates, picksInGroups, density, status,
+    openInNewWindow,
   ]
 
   /// Already shipped as the menu's one item; unchanged, and now declared beside its five
@@ -125,6 +126,21 @@ enum GridMoreMenu {
     surface: .toggle(
       isOn: { $0.preferences.filenamePlates },
       set: { store, isOn in store.preferences.filenamePlates = isOn }))
+
+  /// IMGMGR-261: the picks inside a COLLAPSED scene, shown in the card. Beside Filename plates
+  /// because it is the same kind of switch — "draw one more fact on every cell" — and in THIS
+  /// menu because the native app already has a view-options surface; the web sibling's settings
+  /// panel exists only because the web does not (covered-differently, not divergence).
+  static let picksInGroups = GridMoreMenuEntry(
+    id: "more.picksInGroups",
+    accessibilityIdentifier: "gridMoreMenu.more.picksInGroups",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "checkmark.square",
+    title: { _ in "Picks in groups" },
+    isEnabled: { _ in true },
+    surface: .toggle(
+      isOn: { $0.preferences.picksInGroups },
+      set: { store, isOn in store.preferences.picksInGroups = isOn }))
 
   /// DENSITY, mapped onto the grid's EXISTING six row-height steps (`GridRowHeight`) rather
   /// than a second persisted property. The native grid already has six measured zoom steps

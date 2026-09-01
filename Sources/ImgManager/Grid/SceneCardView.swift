@@ -15,11 +15,21 @@ import SwiftUI
 /// same `GridStore.proxyData` cache at the same tier as any other cell, so a card takes its turn
 /// with every other tile rather than opening a second lane.
 ///
-/// Three badges, because they are three different questions and merging them would answer none of
-/// them: `member_count` is how big the scene is, `has_pick` is whether the reader has already
-/// judged something in it, and `matched_count` is how many members the ACTIVE filters match. The
-/// matched badge is omitted when it equals the member count — a number that always agrees with
-/// the one beside it states nothing.
+/// **The badges follow the web (IMGMGR-241, owner directive 2026-08-31).** LEFT: `member_count`,
+/// how big the scene is — where a photo tile's own state row sits, so the eye finds the same kind
+/// of fact in the same place on either kind of cell. TOP-RIGHT: what has been SAID about the
+/// scene — `✓n` from `picked_count` first, then the cover's own `has_edit` pencil, glyph-only.
+/// Pick before edited is the order the reader judges in.
+///
+/// Three badges became two questions, deliberately. `has_pick` was a FLAG, and a flag makes a
+/// scene with one pick and a scene with nine look identical — exactly the question a reader
+/// culling a burst asks of a closed scene, and one the client cannot answer itself because a
+/// collapsed scene's members are never loaded. The match badge is GONE (same directive): it
+/// answered a third question in a corner where the owner wants two.
+///
+/// The expand chevron is gone from here too, and that is IMGMGR-240: it was a decoration inside
+/// a combined accessibility element, looking like the control it was not. The real control is
+/// `SceneExpandHandle`, drawn beside this card by `GridView`.
 struct SceneCardView: View {
   let row: Components.Schemas.StackBrowseStackRow
   let plan: TileRenderPlan
@@ -32,14 +42,9 @@ struct SceneCardView: View {
 
   private var cover: Components.Schemas.ImageSummary { row.representative }
 
-  /// True while the filters match FEWER members than the scene holds — the only case where saying
-  /// both numbers tells the reader anything.
-  private var isPartiallyMatched: Bool { row.matchedCount < row.memberCount }
-
   private var accessibilityName: String {
-    let photos = "\(row.memberCount) \(row.memberCount == 1 ? "photo" : "photos")"
-    let state = isExpanded ? "open" : "closed"
-    return "Scene of \(photos), \(state)\(row.hasPick ? ", has a pick" : "")"
+    SceneCardAccessibility.label(
+      memberCount: row.memberCount, pickedCount: row.pickedCount, isExpanded: isExpanded)
   }
 
   var body: some View {
@@ -60,8 +65,10 @@ struct SceneCardView: View {
           coverPlaceholder(systemImage: placeholderSymbol(reason))
         }
       }
-      badges
+      countBadge
     }
+    .overlay(alignment: .topTrailing) { verdictBadges }
+    .overlay(alignment: .bottomLeading) { openingIndicator }
     .overlay(
       RoundedRectangle(cornerRadius: 2)
         .stroke(isExpanded ? Color.accentColor : Color.secondary.opacity(0.6), lineWidth: 2)
@@ -72,7 +79,8 @@ struct SceneCardView: View {
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityName)
     // The no-gesture-only rule, stated in the UI and not only in the code: a long press does
-    // nothing on a card, so the card says out loud what its ONE gesture is.
+    // nothing on a card, so the card says out loud what its ONE gesture is — and since
+    // IMGMGR-240 there is a named control beside it that does the same thing without a gesture.
     .accessibilityHint(
       isExpanded ? "Double tap to close this scene" : "Double tap to open this scene"
     )
@@ -117,27 +125,63 @@ struct SceneCardView: View {
     .frame(minWidth: 44, minHeight: 44)
   }
 
+  /// How big the scene is, and nothing else.
+  private var countBadge: some View {
+    Label("\(row.memberCount)", systemImage: "square.stack")
+      .font(.caption2)
+      .labelStyle(.titleAndIcon)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 3)
+      .background(.black.opacity(0.55), in: Capsule())
+      .foregroundStyle(.white)
+      .padding(3)
+      .accessibilityIdentifier("sceneMemberCount")
+  }
+
+  /// What has been said about the scene: the pick COUNT, then the cover's edited state.
+  ///
+  /// Nothing at zero on either — a badge that is always there states nothing. The pencil carries
+  /// no digit, and that is the SAME deviation the web shipped: `has_edit` is the cover's own
+  /// field, and there is no server-side `edited_count` to count with until IMGMGR-263 adds one.
   @ViewBuilder
-  private var badges: some View {
-    HStack(spacing: 3) {
-      Label("\(row.memberCount)", systemImage: "square.stack")
-        .accessibilityIdentifier("sceneMemberCount")
-      if row.hasPick {
-        Image(systemName: "hand.thumbsup.fill")
-          .accessibilityIdentifier("sceneHasPick")
+  private var verdictBadges: some View {
+    // Nothing said, nothing drawn: an empty capsule in the corner of every unjudged scene would
+    // be the "badge that is always there" this cluster exists to avoid.
+    if row.pickedCount >= 1 || cover.hasEdit == true {
+      HStack(spacing: 3) {
+        if row.pickedCount >= 1 {
+          Label("\(row.pickedCount)", systemImage: "checkmark")
+            .accessibilityIdentifier("scenePickCount")
+        }
+        if cover.hasEdit == true {
+          Image(systemName: "pencil")
+            .accessibilityIdentifier("sceneEdited")
+            .accessibilityLabel("Edited")
+        }
       }
-      if isPartiallyMatched {
-        Text("\(row.matchedCount) match")
-          .accessibilityIdentifier("sceneMatchedCount")
-      }
-      Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+      .font(.caption2)
+      .labelStyle(.titleAndIcon)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 3)
+      .background(.black.opacity(0.55), in: Capsule())
+      .foregroundStyle(.white)
+      .padding(3)
     }
-    .font(.caption2)
-    .labelStyle(.titleAndIcon)
-    .padding(.horizontal, 5)
-    .padding(.vertical, 3)
-    .background(.black.opacity(0.55), in: Capsule())
-    .foregroundStyle(.white)
-    .padding(3)
+  }
+
+  /// The one thing the card alone can say once IMGMGR-240 swapped it out of an OPEN scene: the
+  /// reader's own "open" is in flight, and this is why the band has not replaced it yet. A card
+  /// rendered `isExpanded` can only BE that state — an open scene whose members have arrived is
+  /// drawn as its members.
+  @ViewBuilder
+  private var openingIndicator: some View {
+    if isExpanded {
+      ProgressView()
+        .controlSize(.mini)
+        .padding(4)
+        .background(.black.opacity(0.55), in: Capsule())
+        .padding(3)
+        .accessibilityHidden(true)
+    }
   }
 }

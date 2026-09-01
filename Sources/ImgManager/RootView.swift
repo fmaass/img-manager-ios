@@ -268,6 +268,14 @@ struct RootView: View {
           if DebugStubLaunch.latchDislikeLock {
             gridStore.lockFromMenu(.dislike)
           }
+          // WP14 lane B: likewise after the shoot loads — entering Scene mode reloads the window
+          // for the CURRENT scope, so doing it first would only be undone. The preference is set
+          // BEFORE the mode change so the first card that appears already knows whether to read
+          // its inline picks, rather than reading them one body pass late.
+          if DebugStubLaunch.enterSceneMode {
+            gridStore.preferences.picksInGroups = true
+            await gridStore.setDisplayMode(.scene)
+          }
         }
         #if canImport(UIKit)
           if DebugStubLaunch.forceLandscape,

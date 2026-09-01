@@ -124,7 +124,8 @@ struct SceneBandTests {
     // The served rows are untouched: the swap is a DISPLAY derivation, so the scene keeps its
     // place in capture order (the stored anchor) and its cursor.
     #expect(store.sceneRows.count == 2)
-    #expect(currentStackRow(store, at: 1)?.anchorTakenAt == Date(timeIntervalSince1970: 1_700_000_000))
+    #expect(
+      currentStackRow(store, at: 1)?.anchorTakenAt == Date(timeIntervalSince1970: 1_700_000_000))
     #expect(currentStackRow(store, at: 1)?.representative.id == 900)
     #expect(store.sceneNextCursor == "scene-cursor")
     // Write-safety, both directions: expanded members ARE actionable, and the cover never is.
@@ -227,7 +228,9 @@ struct SceneBandTests {
     await transport.setMarkStateOutcome(
       .success(
         .init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-rev-10")])))
-    #expect(await store.applyMark(.none, to: [501]))
+    // Spelled out: a bare `.none` in this position reads as `Optional.none` to a human even
+    // where the compiler resolves it, and this file is about a tri-state mark.
+    #expect(await store.applyMark(MarkStateValue.none, to: [501]))
     #expect(currentStackRow(store, at: 1)?.pickedCount == 1)
 
     await transport.setMarkStateOutcome(
@@ -235,5 +238,110 @@ struct SceneBandTests {
         .init(applied: 1, requested: 1, revisions: [.init(imageId: 502, revision: "m-rev-11")])))
     #expect(await store.applyMark(.pick, to: [502]))  // already a pick
     #expect(currentStackRow(store, at: 1)?.pickedCount == 1)
+  }
+}
+
+/// The pure halves of both stories, without a store, a view or a network — the same place
+/// `SceneRowBuilder`'s other derivations are tested, and for the same reason.
+@Suite("Scene band derivations — the band's control anchor and the ✓N arithmetic")
+struct SceneBandDerivationTests {
+
+  private func image(_ id: Int) -> Components.Schemas.ImageSummary {
+    Components.Schemas.ImageSummary(
+      ext: "raf", filename: "DSCF\(id).raf", folderId: 1, id: id,
+      lightroom: .init(sidecarPresent: false), mark: .init(revision: "r0"),
+      proxies: .init(additionalProperties: [:]), sourceTier: "local")
+  }
+
+  @Test("Each open band anchors its control on its FIRST member, and nothing else does")
+  func bandLeadsAreTheFirstMemberOfEachOpenBand() {
+    let leads = SceneRowBuilder.bandLeadMembers(
+      expanded: [5, 7, 9],
+      members: [5: [image(501), image(502)], 7: [image(701)], 9: []])
+
+    // 5 and 7 have bands; 9 is open but empty (its card is still on screen and carries its own
+    // handle), so it anchors nothing.
+    #expect(leads == [501: 5, 701: 7])
+    // A member that is not the lead gets no handle — one open scene, one control, however many
+    // justified rows its members reflow across.
+    #expect(leads[502] == nil)
+  }
+
+  @Test("A closed scene anchors nothing even when its members are still cached")
+  func aClosedSceneAnchorsNothing() {
+    // Closing does not discard the loaded membership (reopening is a display change, not a
+    // reason to ask again), so "has members" cannot be the test — being OPEN is.
+    let leads = SceneRowBuilder.bandLeadMembers(expanded: [], members: [5: [image(501)]])
+    #expect(leads.isEmpty)
+    // Positive control: the same membership DOES anchor once the scene is open.
+    #expect(SceneRowBuilder.bandLeadMembers(expanded: [5], members: [5: [image(501)]]) == [501: 5])
+  }
+
+  @Test("✓N counts only members it holds, only real crossings, and never below zero")
+  func pickCountDeltasCountEveryCaseOnce() {
+    let members = [5: [image(501), image(502)], 7: [image(701)]]
+
+    // Two members of the same scene becoming picks — one delta of +2, not two rows.
+    #expect(
+      SceneRowBuilder.pickCountDeltas(
+        [
+          .init(imageID: 501, wasPicked: false, isPicked: true),
+          .init(imageID: 502, wasPicked: false, isPicked: true),
+        ], members: members) == [5: 2])
+
+    // A member that was ALREADY a pick contributes nothing; an un-pick takes one back out.
+    #expect(
+      SceneRowBuilder.pickCountDeltas(
+        [
+          .init(imageID: 501, wasPicked: true, isPicked: true),
+          .init(imageID: 502, wasPicked: true, isPicked: false),
+        ], members: members) == [5: -1])
+
+    // A photograph in a scene nobody opened is not in `members`, so its badge is left to the
+    // server's own re-read rather than guessed at.
+    #expect(
+      SceneRowBuilder.pickCountDeltas(
+        [.init(imageID: 999, wasPicked: false, isPicked: true)], members: members).isEmpty)
+
+    // Two scenes touched at once are two independent deltas.
+    #expect(
+      SceneRowBuilder.pickCountDeltas(
+        [
+          .init(imageID: 501, wasPicked: false, isPicked: true),
+          .init(imageID: 701, wasPicked: true, isPicked: false),
+        ], members: members) == [5: 1, 7: -1])
+
+    // The clamp: a racing write can only ever leave the badge at zero, never below it.
+    #expect(SceneRowBuilder.clampedCount(1, delta: -1) == 0)
+    #expect(SceneRowBuilder.clampedCount(0, delta: -3) == 0)
+    #expect(SceneRowBuilder.clampedCount(2, delta: 1) == 3)
+  }
+}
+
+/// What the two new surfaces SAY. Pure, so "the control names what it does and states which way
+/// it goes" is a test that reads strings rather than a screenshot somebody has to look at.
+@Suite("Scene chrome accessibility — the handle's name and state, the card's own summary")
+struct SceneChromeAccessibilityTests {
+
+  @Test("The expand handle names the action and carries the open/closed state")
+  func theHandleNamesItsActionAndItsState() {
+    #expect(SceneHandleAccessibility.label(isExpanded: false) == "Open scene")
+    #expect(SceneHandleAccessibility.label(isExpanded: true) == "Close scene")
+    // The state half — SwiftUI has no `aria-expanded`, so it travels as the element's VALUE.
+    #expect(SceneHandleAccessibility.value(isExpanded: false) == "Closed")
+    #expect(SceneHandleAccessibility.value(isExpanded: true) == "Open")
+  }
+
+  @Test("The card announces its size, its state and its pick COUNT — nothing at zero")
+  func theCardAnnouncesTheCountNotAFlag() {
+    #expect(
+      SceneCardAccessibility.label(memberCount: 3, pickedCount: 0, isExpanded: false)
+        == "Scene of 3 photos, closed")
+    #expect(
+      SceneCardAccessibility.label(memberCount: 3, pickedCount: 2, isExpanded: false)
+        == "Scene of 3 photos, closed, 2 picked")
+    #expect(
+      SceneCardAccessibility.label(memberCount: 1, pickedCount: 1, isExpanded: true)
+        == "Scene of 1 photo, open, 1 picked")
   }
 }

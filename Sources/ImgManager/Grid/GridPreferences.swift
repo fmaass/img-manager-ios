@@ -27,7 +27,9 @@ final class GridPreferences {
   /// Density entry did NOT bring a second persisted density property with it — the grid's six
   /// row-height steps are the one density state (`GridRowHeight`), reached from two entry
   /// points (the Zoom control and the More menu), never two properties that can disagree.
-  static let persistedKeys: [String] = [filenamePlatesKey, autoAdvanceOnMarkKey]
+  static let persistedKeys: [String] = [
+    filenamePlatesKey, autoAdvanceOnMarkKey, picksInGroupsKey,
+  ]
 
   static let filenamePlatesKey = "grid.filenamePlates"
   static let filenamePlatesDefault = false
@@ -38,6 +40,11 @@ final class GridPreferences {
   /// says otherwise" clause. Recorded here rather than only in a plan, because this constant is
   /// the thing the decision actually is.
   static let autoAdvanceOnMarkDefault = true
+
+  static let picksInGroupsKey = "grid.picksInGroups"
+  /// OFF, and here the ticket's own default stands (IMGMGR-261 AC 1): this one ADDS ink to every
+  /// collapsed card and costs a membership request per visible scene, so the reader asks for it.
+  static let picksInGroupsDefault = false
 
   private let defaults: UserDefaults
 
@@ -57,6 +64,16 @@ final class GridPreferences {
     didSet { defaults.set(autoAdvanceOnMark, forKey: Self.autoAdvanceOnMarkKey) }
   }
 
+  /// IMGMGR-261: show the picks a COLLAPSED scene holds, inside the card's own region.
+  ///
+  /// A view option, so it lives where the app's other view options already live — the More menu's
+  /// view cluster — and not in a settings panel. (The web sibling needs a panel because the web
+  /// has no such menu; that difference is the disposition, not a divergence.) DISPLAY-only: what
+  /// this switches on is drawn, never made actionable, and it never enters `sceneMembers`.
+  var picksInGroups: Bool {
+    didSet { defaults.set(picksInGroups, forKey: Self.picksInGroupsKey) }
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     self.filenamePlates = Self.boolPreference(
@@ -65,6 +82,9 @@ final class GridPreferences {
     self.autoAdvanceOnMark = Self.boolPreference(
       from: defaults.object(forKey: Self.autoAdvanceOnMarkKey),
       default: Self.autoAdvanceOnMarkDefault)
+    self.picksInGroups = Self.boolPreference(
+      from: defaults.object(forKey: Self.picksInGroupsKey),
+      default: Self.picksInGroupsDefault)
   }
 
   /// GUARD-TYPED, never `UserDefaults.bool(forKey:)`: that accessor COERCES — it reads a string

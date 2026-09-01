@@ -290,7 +290,11 @@ struct GridStoreSceneTests {
 
   // MARK: - Expansion, paging, single-flight, tombstones
 
-  @Test("Expanding splices the members after their card in capture order, tombstones included")
+  /// IMGMGR-240 changed the shape of this: expanding SWAPS the card out for its members rather
+  /// than splicing them behind it, so the sequence is N members where the card stood. What the
+  /// test is really about — capture order, tombstones surviving, and members becoming ordinary
+  /// photographs — is unchanged, and `SceneBandTests` owns the swap itself.
+  @Test("Expanding renders the members in capture order in the card's place, tombstones included")
   func expandingSplicesMembersInCaptureOrder() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
@@ -306,7 +310,7 @@ struct GridStoreSceneTests {
 
     #expect(
       store.sceneDisplayRows.map(\.id)
-        == [.image(10), .stack(5), .image(501), .image(502), .image(503)])
+        == [.image(10), .image(501), .image(502), .image(503)])
     // Members of an EXPANDED scene are ordinary photographs again — including the tombstone,
     // which is part of the authoritative membership and must be visible rather than dropped.
     #expect(store.actionableImages.map(\.id) == [10, 501, 502, 503])
@@ -348,9 +352,10 @@ struct GridStoreSceneTests {
 
     await store.loadMoreSceneMembersIfNeeded(afterMemberID: 501)
 
-    #expect(store.sceneDisplayRows.map(\.id) == [.image(10), .stack(5), .image(501), .image(502)])
+    #expect(store.sceneDisplayRows.map(\.id) == [.image(10), .image(501), .image(502)])
     #expect(store.sceneMemberCursors[5] == .exhausted)
-    // The scene row itself is untouched: still one card, still in the same position.
+    // The SERVED row itself is untouched: still one scene, still in the same position in the
+    // stream (IMGMGR-240 replaced its CARD in the display sequence, not the row behind it).
     #expect(store.sceneRows.count == 2)
   }
 
@@ -599,12 +604,14 @@ struct SceneRowBuilderTests {
     #expect(SceneRowBuilder.actionableImages(rows).map(\.id) == [1])
   }
 
-  @Test("An EXPANDED scene is followed by its loaded members, which ARE actionable")
+  @Test("An EXPANDED scene IS its loaded members, which ARE actionable")
   func expandedSceneContributesItsMembers() {
     let rows = SceneRowBuilder.displayRows(
       rows: [.stack(stack(5, cover: 900)), .image(image(1))],
       expanded: [5], members: [5: [image(501), image(502)]])
-    #expect(rows.map(\.id) == [.stack(5), .image(501), .image(502), .image(1)])
+    // IMGMGR-240: the members take the scene's own place — no card, and the cover is not drawn
+    // twice.
+    #expect(rows.map(\.id) == [.image(501), .image(502), .image(1)])
     #expect(SceneRowBuilder.actionableImages(rows).map(\.id) == [501, 502, 1])
     #expect(!SceneRowBuilder.actionableImages(rows).contains { $0.id == 900 })
   }

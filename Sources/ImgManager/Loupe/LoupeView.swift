@@ -492,11 +492,20 @@ struct FilmstripView: View {
   /// The parameterless form the suites read.
   var revealTarget: Int? { revealTarget(in: frames) }
 
-  /// The strip's paging hook: `GridStore.loadMoreIfNeeded` and nothing else. Named so the Do-NOT
+  /// The strip's paging hook: the store's own pagers, and nothing else. Named so the Do-NOT
   /// ("no second paging path, no filmstrip-local cursor" — WP8 P5's pivot) is one function a
   /// diff can read, rather than a closure buried in a row modifier.
+  ///
+  /// IMGMGR-267: this is EXACTLY `GridView.page(from:)`, asked of a photograph. It used to be the
+  /// flat pager alone, which returns early unless `displayMode == .flat` — so in Scene mode the
+  /// strip walked the loaded pool and, at the tail, simply stopped, while the grid behind it went
+  /// on paging. The three questions ("page the flat grid", "page the scene stream", "page THIS
+  /// scene's membership") are each a no-op in the wrong mode by the store's own guards, so asking
+  /// all three here adds no second path — it makes the strip ask the same ones the grid does.
   func pageIfNeeded(around image: Components.Schemas.ImageSummary) async {
     await store.loadMoreIfNeeded(currentItemID: image.id)
+    await store.loadMoreSceneMembersIfNeeded(afterMemberID: image.id)
+    await store.loadMoreScenesIfNeeded(currentRowID: .image(image.id))
   }
 
   /// The one place a scroll is asked for; `body`'s `onChange` carries no logic of its own.

@@ -41,14 +41,14 @@ struct GridViewMoreMenuTests {
     #expect(
       GridMoreMenu.entries.map(\.id) == [
         "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-        "more.density", "more.status", "more.openInNewWindow",
+        "more.picksInGroups", "more.density", "more.status", "more.openInNewWindow",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Density: 200 pt",
-        "Status", "Open in New Window",
+        "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
+        "Density: 200 pt", "Status", "Open in New Window",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
@@ -169,6 +169,16 @@ struct GridViewMoreMenuTests {
         set(store, true)
         #expect(isOn(store), "the plates toggle did not turn on")
         #expect(store.preferences.filenamePlates, "the toggle did not reach the preference")
+
+      case "more.picksInGroups":
+        guard case .toggle(let isOn, let set) = entry.surface else {
+          Issue.record("more.picksInGroups is not a toggle entry")
+          continue
+        }
+        #expect(isOn(store) == false)
+        set(store, true)
+        #expect(isOn(store), "the picks-in-groups toggle did not turn on")
+        #expect(store.preferences.picksInGroups, "the toggle did not reach the preference")
 
       case "more.density":
         guard case .rowHeightSteps(let set, let isCurrent) = entry.surface else {
@@ -412,12 +422,17 @@ struct GridPreferencesTests {
 
   @Test("The store owns exactly the keys it declares")
   func theStoreOwnsExactlyTheKeysItDeclares() {
-    // WP13 P8 (IMGMGR-214) added the second key this type owns; the inventory is asserted
-    // exactly, so a third arriving silently is a failure here rather than a surprise later.
-    let owned = [GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey]
+    // WP13 P8 (IMGMGR-214) added the second key this type owns and IMGMGR-261 the third; the
+    // inventory is asserted exactly, so a fourth arriving silently is a failure here rather than
+    // a surprise later.
+    let owned = [
+      GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey,
+      GridPreferences.picksInGroupsKey,
+    ]
     #expect(GridPreferences.persistedKeys == owned)
     #expect(GridPreferences.filenamePlatesKey == "grid.filenamePlates")
     #expect(GridPreferences.autoAdvanceOnMarkKey == "loupe.autoAdvanceOnMark")
+    #expect(GridPreferences.picksInGroupsKey == "grid.picksInGroups")
   }
 
 }

@@ -36,4 +36,141 @@ struct ScenePicksInGroupsTests {
     // Positive control: the decided set really was enumerated.
     #expect(ids.contains("more.filenamePlates"))
   }
+
+  // MARK: - Fixtures for the data-policy half
+
+  private func makeImage(
+    id: Int, mark: Components.Schemas.MarkView.StatePayload = .none
+  ) -> Components.Schemas.ImageSummary {
+    Components.Schemas.ImageSummary(
+      aspectRatio: 1.0, ext: "raf", filename: "DSCF\(id).raf", folderId: 1, hasEdit: false, id: id,
+      lightroom: .init(sidecarPresent: false),
+      mark: .init(revision: "r0", state: mark, tags: []), missing: false,
+      proxies: .init(additionalProperties: [:]), sourceTier: "local")
+  }
+
+  private func stackRowItem(_ row: Components.Schemas.StackBrowseStackRow)
+    -> Components.Schemas.StackBrowsePage.ItemsPayloadPayload
+  {
+    .init(value1: nil, value2: row)
+  }
+
+  private func imageRow(_ image: Components.Schemas.ImageSummary)
+    -> Components.Schemas.StackBrowsePage.ItemsPayloadPayload
+  {
+    .init(value1: .init(image: image, kind: .image), value2: nil)
+  }
+
+  /// A Scene page with one loose photograph and one COLLAPSED scene holding three members, two of
+  /// them picked. The store carries its OWN preferences suite — this test is about a persisted
+  /// switch and must neither read nor leave state in the shared domain.
+  private func loadedSceneStore() async -> (GridStore, GridStubTransport, GridPreferences) {
+    let transport = GridStubTransport()
+    let client = ImgManagerAPIClient.make(transport: transport)
+    let preferences = GridPreferences(defaults: makeEphemeralDefaults())
+    let store = GridStore(service: GridService(client: client), preferences: preferences)
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    await transport.setBrowseStacksPage(
+      .init(
+        items: [
+          imageRow(makeImage(id: 10)),
+          stackRowItem(
+            Components.Schemas.StackBrowseStackRow(
+              anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: true,
+              kind: .stack, matchedCount: 3, memberCount: 3, pickedCount: 2,
+              representative: makeImage(id: 900, mark: .pick), stackId: 5)),
+        ], limit: 100, nextCursor: nil))
+    await transport.setStackMemberPage(
+      .init(
+        items: [
+          makeImage(id: 501, mark: .pick), makeImage(id: 502), makeImage(id: 503, mark: .pick),
+        ], limit: 100, nextCursor: "members-2", stackId: 5),
+      forStack: 5)
+    await store.setDisplayMode(.scene)
+    return (store, transport, preferences)
+  }
+
+  // MARK: - The data policy: display-only, capped, and silent while the switch is off
+
+  @Test("OFF reads nothing at all — the switch gates the request, not just the drawing")
+  func offIssuesNoMembershipRequest() async {
+    let (store, transport, preferences) = await loadedSceneStore()
+    #expect(preferences.picksInGroups == false)
+
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+
+    #expect(store.sceneInlinePicks.isEmpty)
+    #expect(
+      await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id) == 0)
+    // Positive control for that zero: with the switch ON the very same call DOES read, so the
+    // line above is about the preference and not about a fixture that never answers.
+    preferences.picksInGroups = true
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+    #expect(
+      await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id) == 1)
+  }
+
+  @Test("ON reads ONE capped page, keeps only the picks, and makes none of them actionable")
+  func onReadsOneCappedPageAndKeepsItOutOfTheActionableSet() async {
+    let (store, transport, preferences) = await loadedSceneStore()
+    preferences.picksInGroups = true
+    let actionableBefore = store.actionableImages.map(\.id)
+
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+
+    // Only the picks, in capture order, from the FIRST page — the read never follows the cursor
+    // the fixture offers ("members-2"), because a card is a summary and a summary does not page.
+    #expect(store.sceneInlinePicks[5]?.map(\.id) == [501, 503])
+    #expect(
+      await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id) == 1)
+
+    // ADR-0005, and the reason these live in their own array: nothing about this read makes a
+    // member of a collapsed scene reachable by a gesture.
+    #expect(store.sceneMembers.isEmpty)
+    #expect(store.actionableImages.map(\.id) == actionableBefore)
+    #expect(store.actionableImages.map(\.id) == [10])
+    #expect(store.sceneDisplayRows.map(\.id) == [.image(10), .stack(5)])
+    #expect(store.tagTargetImageIDs.contains(501) == false)
+
+    // Cached and single-flighted: a second card appearance reads nothing again.
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+    #expect(
+      await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id) == 1)
+  }
+
+  @Test("An OPEN scene draws its members for real, so the card summary is never read for it")
+  func anOpenSceneReadsNoSummary() async {
+    let (store, transport, preferences) = await loadedSceneStore()
+    preferences.picksInGroups = true
+    await store.toggleSceneExpanded(5)
+    let afterExpansion = await transport.callCount(
+      Operations.ListStackMembersApiStacksStackIdMembersGet.id)
+    // Positive control: expanding really did read the membership.
+    #expect(afterExpansion == 1)
+    #expect(store.sceneMembers[5]?.map(\.id) == [501, 502, 503])
+
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+
+    #expect(store.sceneInlinePicks[5] == nil)
+    #expect(
+      await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id)
+        == afterExpansion)
+  }
+
+  @Test("A scope change drops the summaries with the window they described")
+  func aScopeChangeDropsTheSummaries() async {
+    let (store, transport, preferences) = await loadedSceneStore()
+    preferences.picksInGroups = true
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+    #expect(store.sceneInlinePicks[5]?.isEmpty == false)
+
+    await store.selectShoot(folderID: 2)
+
+    #expect(store.sceneInlinePicks.isEmpty)
+    // Positive control: the transport is still the one that served the summary a moment ago.
+    #expect(
+      await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id) == 1)
+  }
 }

@@ -223,9 +223,84 @@ struct GridView: View {
         showsFilenamePlate: store.preferences.filenamePlates,
         store: store
       )
+      .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
     case .stack(let stackRow, let isExpanded):
       SceneCardView(row: stackRow, plan: plan, isExpanded: isExpanded, store: store)
+        // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
+        // control and for the same reason: the inline picks ship on Regular only (a measured
+        // product decision — see `showsInlinePicks`), so the screenshot test has to STATE which
+        // layout this destination resolved to and assert the branch the app actually took,
+        // rather than infer a device — which the mac-gate's own idiom grep forbids outright.
+        .accessibilityValue(sceneCardProbeValue)
+        // IMGMGR-240: a SIBLING of the card, never a child — see `SceneExpandHandle`.
+        .overlay(alignment: .bottomTrailing) {
+          SceneExpandHandle(stackID: stackRow.stackId, isExpanded: isExpanded, store: store)
+        }
+        .overlay(alignment: .bottomLeading) { inlinePicks(for: stackRow) }
+        .task(id: inlinePicksTaskID(for: stackRow)) {
+          guard showsInlinePicks, stackRow.pickedCount >= 1 else { return }
+          await store.loadInlinePicksIfNeeded(stackID: stackRow.stackId)
+        }
     }
+  }
+
+  /// The close control for an OPEN band (IMGMGR-240).
+  ///
+  /// A band has no card to hang a control on — that is what replacing the card costs — so the
+  /// handle is drawn over the band's LEADING member, the position the card's own handle occupied
+  /// a moment before. Rendered for that one member and nothing else, so an open scene has exactly
+  /// one handle however many rows its members reflow across.
+  @ViewBuilder
+  private func bandHandle(forMember imageID: Int) -> some View {
+    if let stackID = bandLeads[imageID] {
+      SceneExpandHandle(stackID: stackID, isExpanded: true, store: store)
+    }
+  }
+
+  private var bandLeads: [Int: Int] {
+    SceneRowBuilder.bandLeadMembers(expanded: store.sceneExpanded, members: store.sceneMembers)
+  }
+
+  /// IMGMGR-261, iPad-first (AC 3): the inline picks ship on REGULAR only.
+  ///
+  /// The measurement is the card's own width. Compact's portrait pane is 402 pt wide, the grid
+  /// packs justified rows inside a 2 pt gutter at the default 200 pt row height, so a 3:2 card
+  /// there is ~300 pt at most and often two to a row (~150 pt). Three 26 pt thumbnails plus their
+  /// chrome need ~96 pt inside a card that also carries a count badge on the left and a ✓N/edited
+  /// cluster on the right — on the narrow case they would overlap the badges outright, and the
+  /// thumbnails themselves would be smaller than the 44 pt floor this app applies to anything a
+  /// finger goes near. So Compact keeps the badge-only card, and the limitation is recorded here
+  /// (the P5b/P9 measured-pivot precedent) rather than shipped illegibly.
+  private var showsInlinePicks: Bool {
+    store.preferences.picksInGroups && layoutMode != .compact
+  }
+
+  @ViewBuilder
+  private func inlinePicks(for row: Components.Schemas.StackBrowseStackRow) -> some View {
+    if showsInlinePicks, let picks = store.sceneInlinePicks[row.stackId], !picks.isEmpty {
+      SceneInlinePicksStrip(stackID: row.stackId, picks: picks, store: store)
+    }
+  }
+
+  /// Re-runs the read when the SWITCH moves or the scene's own pick count changes — never on
+  /// every body pass, and never at all while the preference is off.
+  private func inlinePicksTaskID(for row: Components.Schemas.StackBrowseStackRow) -> String {
+    "inlinePicks|\(row.stackId)|\(showsInlinePicks)|\(row.pickedCount)"
+  }
+
+  private var sceneCardProbeValue: String {
+    #if DEBUG
+      guard DebugStubLaunch.isActive else { return "" }
+      let layout: String
+      switch layoutMode {
+      case .compact: layout = "compact"
+      case .regular2: layout = "regular2"
+      case .regular3: layout = "regular3"
+      }
+      return "layout=\(layout) inlinePicks=\(showsInlinePicks)"
+    #else
+      return ""
+    #endif
   }
 
   /// Appear-driven paging, routed by the cell's own kind. Each call is a no-op in the wrong mode
