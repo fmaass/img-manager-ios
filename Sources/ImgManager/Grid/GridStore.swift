@@ -90,6 +90,24 @@ final class GridStore {
   private(set) var lastMutationError: GridMutationError?
   private(set) var lastPageLoadError: GridMutationError?
 
+  /// WP14 (IMGMGR-204, IMGMGR-250): photographs a write was SUBMITTED for while they were
+  /// genuinely writable, and which had stopped being writable by the time that write — queued
+  /// behind something else on the mutation lane — actually ran.
+  ///
+  /// The mutation lane serialises writes, so a write can wait; `capturePriorTagSnapshots` /
+  /// `capturePriorSnapshots` then filter against the LIVE actionable pool, so an authoritative
+  /// refresh that lands in that window can prune an id out from under a write already submitted
+  /// for it. Nothing downstream could tell: the write simply went out for fewer ids.
+  ///
+  /// This is NOT the pre-existing "an id that was never loaded is silently skipped" rule (the
+  /// loaded-only membership boundary `applyMark`'s own doc comment states). Only ids this store
+  /// could have written when the person asked for the write, and then lost before it ran, ever
+  /// land here — which is exactly the race, and nothing else.
+  private(set) var droppedWriteIDs: Set<Int> = []
+
+  /// The notice's own dismissal — the reader has seen which photographs were not written.
+  func dismissDroppedWriteNotice() { droppedWriteIDs = [] }
+
   /// WP8 P7 (coexistence adjudication 7c): increments on every COMMITTED mark/undo/tag mutation
   /// — never on a rollback/conflict/refusal (each success branch below sets this alongside its
   /// own `lastMutationError = nil`). The ONE signal `RootView` watches (`.onChange`) to invalidate
@@ -806,6 +824,7 @@ final class GridStore {
       images = []
       nextCursor = nil
     }
+    var rowsLoaded = false
     do {
       switch displayMode {
       case .flat:
@@ -821,7 +840,11 @@ final class GridStore {
         sceneRows = page.rows
         sceneNextCursor = page.nextCursor
       }
+      rowsLoaded = true
       lastPageLoadError = nil
+      // A fresh window makes any earlier "these ids were pruned out from under your write"
+      // notice meaningless — it names photographs from a set that no longer stands.
+      droppedWriteIDs = []
     } catch {
       guard generation == loadGeneration else { return }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
@@ -832,6 +855,15 @@ final class GridStore {
     // A no-op whenever `group_by` is nil (Scene mode included, which clears the presentation on
     // the way in) and idempotent per query identity, so the common re-entry costs no request.
     guard generation == loadGeneration else { return }
+    // WP14 (IMGMGR-251): and it runs only when the ROWS for this query actually arrived. The
+    // catch above deliberately keeps the previous query's photographs on screen; fetching
+    // headers anyway would vouch the NEW query's labels, counts and timezone, and the
+    // `groupHeaders` identity gate would then publish them — headers and rows each agreeing with
+    // the store and disagreeing with each other. Suppressing the publish leaves the last vouched
+    // answer where it is, so the stale rows render UNSECTIONED (the gate rejects an identity the
+    // query has moved past) rather than under section headers describing a different set of
+    // photographs. The next successful reload of this query fetches them for real.
+    guard rowsLoaded else { return }
     await refreshGroupHeaders()
   }
 
@@ -1025,6 +1057,12 @@ final class GridStore {
   private func publishRefreshedFocusAndUndo(actionable: [Components.Schemas.ImageSummary]) {
     let previousFocus = focusedImageID
     lastPageLoadError = nil
+    // WP14 (diff-gate round 1, blocker 4): the dropped-write notice names photographs from the
+    // window this publish is REPLACING, so it dies with that window — exactly like the undo slot
+    // below, and for the same reason. `reloadFirstPage` clears it on a scope change; this is the
+    // other way a window is replaced (a same-shoot refresh), and without it a stale notice could
+    // outlive the state it describes indefinitely. Both modes' refreshes publish through here.
+    droppedWriteIDs = []
     undo.clear()
     let survived = previousFocus.map { id in actionable.contains { $0.id == id } } ?? false
     guard !survived else { return }
@@ -1412,9 +1450,88 @@ final class GridStore {
     guard dragSession.crossedTile(id) else { return }
     guard let imageID = id.imageID else { return }
     if let verb = pickLock.latchedVerb {
-      await applyMark(verb.markState, to: [imageID])
+      await enqueueLatchedCrossing(imageID, verb: verb)
     } else if selection.mode == .select {
       selection.addFromDrag(imageID)
+    }
+  }
+
+  /// WP14 (IMGMGR-250): a crossing the person's pointer actually made, waiting for the mutation
+  /// lane. `verb` and `scope` travel WITH the id — the verb because one write carries one mark,
+  /// the scope because a crossing describes a photograph in the query it was made in, and a
+  /// query the reader has since left is not one to write into. The fence is the QUERY, not
+  /// `loadGeneration`: an authoritative refresh advances the generation while staying in the
+  /// same scope, and a lifecycle re-read is no reason to throw away a gesture.
+  private struct PendingCrossing {
+    var imageID: Int
+    var verb: LatchVerb
+    var scope: GridImagesQuery
+  }
+
+  private var pendingLatchedCrossings: [PendingCrossing] = []
+  private var isDrainingLatchedCrossings = false
+
+  /// The latched drag's own write path.
+  ///
+  /// It used to be a bare `applyMark`, whose `tryAcquireLane()` REFUSES while the lane is busy —
+  /// so every tile crossed while the previous crossing's network write was in flight produced
+  /// nothing at all: no optimistic apply, no error, no retry. A drag is not a re-tappable button
+  /// (the whole point of a lock is that the pointer keeps moving), and over the VPN the crossing
+  /// cadence beats the round trip as a matter of course, so "refuse" meant "drop most of the
+  /// gesture".
+  ///
+  /// Crossings are QUEUED and COALESCED instead: while one write is in flight the crossings
+  /// behind it accumulate, and the drain sends the whole leading run of same-verb ids as ONE
+  /// `setMarkState` — fewer round trips than the per-tile writes it replaces, and not one
+  /// crossing lost. The drain holds the lane across its own `capturePriorSnapshots`, so it can
+  /// see which of the ids it queued survived the wait and report the rest
+  /// (`recordDroppedWrites`): the queueing path's own pruning hazard (IMGMGR-204) is closed here
+  /// rather than inherited.
+  private func enqueueLatchedCrossing(_ imageID: Int, verb: LatchVerb) async {
+    // Never loaded, never writable: the documented loaded-only membership boundary, unchanged
+    // and deliberately NOT reported — a scene card's cover id reaching this far must stay the
+    // silent no-op `aCoverIdCannotBeMarkedEvenIfNamed` asserts it is.
+    guard !writableIDs(among: [imageID]).isEmpty else { return }
+    pendingLatchedCrossings.append(PendingCrossing(imageID: imageID, verb: verb, scope: query))
+    await drainLatchedCrossings()
+  }
+
+  /// One drain at a time: a crossing that arrives while the drain is mid-write simply lands in
+  /// the queue the running drain picks up on its next turn. Reentrancy here would be the very
+  /// concurrent-mutation race the lane exists to prevent.
+  ///
+  /// EVERY decision is made AFTER the lane is acquired, and that ordering is the whole design
+  /// (diff-gate round 1, blockers 1 and 2). The lane WAIT is precisely the window in which the
+  /// drag keeps producing crossings, and it is also a window in which the query can change:
+  ///
+  /// - Forming the batch before the wait made the crossing that started the drain wait ALONE
+  ///   while the rest of the drag piled up behind it, so the release produced two writes rather
+  ///   than one — and the second overwrote the single undo slot, leaving the first tile the
+  ///   reader painted marked but un-undoable. Read the queue after the wait and the whole run
+  ///   coalesces into the one write it should always have been.
+  /// - Filtering by scope before the wait let a query change land inside it, so priors were
+  ///   captured in the NEW scope for ids latched in the OLD one — a write into a scope the reader
+  ///   never painted, or an id legitimately absent from it mislabelled as a dropped write.
+  private func drainLatchedCrossings() async {
+    guard !isDrainingLatchedCrossings else { return }
+    isDrainingLatchedCrossings = true
+    defer { isDrainingLatchedCrossings = false }
+    while !pendingLatchedCrossings.isEmpty {
+      await acquireLaneQueueing()
+      // A crossing made in a scope the reader has since left is discarded — not written, and not
+      // reported either, the same posture `performMark`'s own stale-generation escape takes.
+      pendingLatchedCrossings.removeAll { $0.scope != query }
+      guard let verb = pendingLatchedCrossings.first?.verb else {
+        // The wait outlived every crossing it was holding the lane for.
+        releaseLane()
+        continue
+      }
+      let batch = pendingLatchedCrossings.prefix(while: { $0.verb == verb }).map(\.imageID)
+      pendingLatchedCrossings.removeFirst(batch.count)
+      let priors = capturePriorSnapshots(for: batch)
+      recordDroppedWrites(submitted: Set(batch), written: Set(priors.map(\.imageID)))
+      _ = await performMark(verb.markState, priors: priors)
+      releaseLane()
     }
   }
 
@@ -1726,6 +1843,17 @@ final class GridStore {
   /// FIFO of calls waiting for a busy lane -- see `acquireLaneQueueing()`/`releaseLane()`.
   private var laneWaiters: [CheckedContinuation<Void, Never>] = []
 
+  /// How many calls are queued BEHIND the lane's current holder.
+  ///
+  /// Exposed for the same reason `isMutatingMark` and `groupHeadersIdentity` are — a test has to
+  /// be able to see it. "This call has genuinely reached the lane and suspended" is the milestone
+  /// every queueing-interleaving test needs to gate on: without it a test can only guess with
+  /// `Task.yield()`, and for the latched-drag queue a guess that lands wrong does not merely
+  /// weaken the assertion, it HANGS — an unscheduled first crossing makes the next awaited
+  /// crossing the drain owner, which then blocks on the very lane the test has not released yet.
+  /// A pure read of the FIFO above; nothing acts on it.
+  var laneWaiterCount: Int { laneWaiters.count }
+
   /// The REFUSING acquisition `applyMark`/`undoLastMark` use: `false` (no-op for the caller) if
   /// the lane is already held by anything (another mutation OR a refresh/tag-write in progress).
   private func tryAcquireLane() -> Bool {
@@ -1918,12 +2046,17 @@ final class GridStore {
     _ state: MarkStateValue, to imageIDs: [Int], explicitPriors: [PriorMarkSnapshot]? = nil
   ) async -> Bool {
     guard tryAcquireLane() else { return false }
-    let priors = explicitPriors ?? capturePriorSnapshots(for: imageIDs)
-    guard !priors.isEmpty else {
-      releaseLane()
-      return false
-    }
     defer { releaseLane() }
+    return await performMark(state, priors: explicitPriors ?? capturePriorSnapshots(for: imageIDs))
+  }
+
+  /// The mutation itself, WITHOUT its own lane acquisition — the same wrapper/core split
+  /// `authoritativeRefresh()`/`performAuthoritativeRefresh()` already uses, and for the same
+  /// reason: the latched-drag drain (IMGMGR-250) has to hold the lane across its OWN capture of
+  /// the priors, so that "which ids did this write actually cover" is answerable before the
+  /// write goes out. Every caller holds the lane for the whole call.
+  private func performMark(_ state: MarkStateValue, priors: [PriorMarkSnapshot]) async -> Bool {
+    guard !priors.isEmpty else { return false }
     // Diff-gate round 2, B2: the generation THIS mutation's priors were captured under. A
     // shoot/filter reload racing the network await already replaced `images` with fresh server
     // truth by the time this returns — completing (either branch) against a moved generation
@@ -1957,10 +2090,10 @@ final class GridStore {
       rollback(priors)
       let mutationError = (error as? GridServiceError) ?? .unreachable
       lastMutationError = mutationError
-      // P6 item 3: the whole recovery sequence (re-read + diff) runs HERE, still inside this
-      // call's own lane hold (`defer { releaseLane() }` above has not fired yet) — see
-      // `handleConflict`'s own doc comment for why it must never go through
-      // `authoritativeRefresh()`'s own lane acquisition.
+      // P6 item 3: the whole recovery sequence (re-read + diff) runs HERE, still inside the
+      // CALLER's lane hold (its `defer { releaseLane() }` has not fired yet — this core never
+      // acquires or releases the lane itself) — see `handleConflict`'s own doc comment for why
+      // it must never go through `authoritativeRefresh()`'s own lane acquisition.
       if mutationError == .conflict {
         let batch = priors.map {
           ConflictBatchEntry(imageID: $0.imageID, revisionSubmitted: $0.revisionBefore)
@@ -2122,8 +2255,17 @@ final class GridStore {
   func addTag(
     _ tag: String, to imageIDs: [Int], explicitPriors: [PriorTagSnapshot]? = nil
   ) async {
+    // WP14 (IMGMGR-204): the submission-time answer to "which of these can this store write",
+    // taken SYNCHRONOUSLY — before the first suspension point, so nothing can prune between the
+    // person pressing Add and this line. `explicitPriors` (conflict recovery's resubmission)
+    // names its own id set outright and is never filtered against the pool, so its
+    // submission-time set is simply that set.
+    let submitted = explicitPriors.map { Set($0.map(\.imageID)) } ?? writableIDs(among: imageIDs)
     await acquireLaneQueueing()
     let priors = explicitPriors ?? capturePriorTagSnapshots(for: imageIDs)
+    // Whatever the wait cost the reader is stated, never swallowed — including the all-dropped
+    // case the `isEmpty` guard below used to return from in complete silence.
+    recordDroppedWrites(submitted: submitted, written: Set(priors.map(\.imageID)))
     guard !priors.isEmpty else {
       releaseLane()
       return
@@ -2209,6 +2351,25 @@ final class GridStore {
       return PriorMarkSnapshot(
         imageID: id, state: MarkStateValue(img.mark.state), revisionBefore: img.mark.revision)
     }
+  }
+
+  /// Which of `imageIDs` this store could write RIGHT NOW — the same actionable pool
+  /// `capturePriorSnapshots`/`capturePriorTagSnapshots` filter against, asked as a question
+  /// instead of applied as a side effect. Called at SUBMISSION time so a queued write can
+  /// afterwards tell "was never writable" (the documented loaded-only rule) apart from "was
+  /// writable when you asked, and was pruned while your write waited" (the race).
+  private func writableIDs(among imageIDs: [Int]) -> Set<Int> {
+    let pool = Set(actionableImages.map(\.id))
+    return Set(imageIDs).intersection(pool)
+  }
+
+  /// Records the difference between what a write was submitted for and what it actually wrote.
+  /// Additive: a second dropped batch does not erase the first, and only the reader
+  /// (`dismissDroppedWriteNotice`) or a fresh window (`reloadFirstPage`) clears the notice.
+  private func recordDroppedWrites(submitted: Set<Int>, written: Set<Int>) {
+    let dropped = submitted.subtracting(written)
+    guard !dropped.isEmpty else { return }
+    droppedWriteIDs.formUnion(dropped)
   }
 
   private func optimisticallyApply(_ state: MarkStateValue, to imageIDs: [Int]) {

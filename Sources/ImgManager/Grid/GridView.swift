@@ -110,6 +110,7 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
+      GridNoticeBanner(store: store)
       MarksCopyBanner(store: store)
       ActionBarView(store: store, openShootWindow: openShootWindow)
     }
@@ -359,6 +360,87 @@ enum GridChromeRows {
       rows.append(.select)
     }
     return rows
+  }
+}
+
+/// WP14 (IMGMGR-251, IMGMGR-204/-250): the two states that used to happen in complete silence.
+///
+/// `lastPageLoadError` had no rendering consumer anywhere in the app sources — a failed reload
+/// left the previous query's photographs standing with nothing to say so, and the reader had no
+/// way to ask for another attempt. A write that lost ids to a racing refresh said even less.
+/// Both are declared here as VALUES, in the same "declare it, then render the declaration"
+/// shape `GridChromeRows` uses, so what the reader is actually told is a value test rather than
+/// a reading of a `@ViewBuilder`.
+enum GridNotice: Hashable, Sendable {
+  /// The rows for the current query did not arrive; what is on screen is the previous query's.
+  case pageLoadFailed
+  /// Photographs a submitted write was no longer able to cover by the time it ran.
+  case droppedWrites(count: Int)
+
+  var message: String {
+    switch self {
+    case .pageLoadFailed:
+      return "Couldn't load these photographs. Showing the last ones that loaded."
+    case .droppedWrites(let count):
+      return count == 1
+        ? "1 photograph left this view before its mark was written — it was not written."
+        : "\(count) photographs left this view before their marks were written — they were not written."
+    }
+  }
+
+  var accessibilityIdentifier: String {
+    switch self {
+    case .pageLoadFailed: return "pageLoadErrorNotice"
+    case .droppedWrites: return "droppedWritesNotice"
+    }
+  }
+}
+
+enum GridNotices {
+  /// Ordered most-blocking first: a stream that is not the one the reader asked for outranks a
+  /// write that covered fewer photographs than it was asked to.
+  @MainActor
+  static func notices(store: GridStore) -> [GridNotice] {
+    var notices: [GridNotice] = []
+    if store.lastPageLoadError != nil {
+      notices.append(.pageLoadFailed)
+    }
+    if !store.droppedWriteIDs.isEmpty {
+      notices.append(.droppedWrites(count: store.droppedWriteIDs.count))
+    }
+    return notices
+  }
+}
+
+/// Renders EXACTLY `GridNotices.notices(store:)`, in its order, and holds no second list —
+/// non-modal and beside the mark bar, the posture `ConflictRecoveryBanner` established (plan item
+/// 3.7: "no alerts, no auto-opening popovers, no modality anywhere in this flow").
+struct GridNoticeBanner: View {
+  @Bindable var store: GridStore
+
+  var body: some View {
+    ForEach(GridNotices.notices(store: store), id: \.self) { notice in
+      HStack(spacing: 12) {
+        Label(notice.message, systemImage: "exclamationmark.triangle")
+          .font(.footnote)
+        Spacer()
+        switch notice {
+        case .pageLoadFailed:
+          // The retry a reader had no way to ask for: `fullReload` is the same "same scope,
+          // fresh data" entry point the foreground hook uses.
+          Button("Retry") { Task { await store.fullReload() } }
+            .font(.footnote)
+            .disabled(store.isLoadingPage)
+        case .droppedWrites:
+          Button("Dismiss") { store.dismissDroppedWriteNotice() }
+            .font(.footnote)
+        }
+      }
+      .padding(.horizontal)
+      .padding(.vertical, 6)
+      .background(.red.opacity(0.12))
+      .accessibilityIdentifier(notice.accessibilityIdentifier)
+    }
   }
 }
 

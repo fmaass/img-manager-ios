@@ -182,6 +182,49 @@ struct GridStoreSceneTests {
   }
 
   @Test(
+    "IMGMGR-250/-204: a QUEUED crossing whose photograph stopped being writable while it waited is REPORTED, not silently skipped — the queueing path's own hazard, not inherited"
+  )
+  func aQueuedCrossingPrunedWhileItWaitedIsReported() async {
+    let (store, transport) = await loadedSceneStore()
+    let markOp = Operations.SetMarkStateApiMarksStatePost.id
+    await transport.setStackMemberPage(
+      .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
+    await store.toggleSceneExpanded(5)
+    // POSITIVE CONTROL: the member really is a write target before the collapse below — a
+    // dropped write here is the RACE, not the "was never loaded" skip.
+    #expect(Set(store.actionableImages.map(\.id)) == [10, 501])
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 10, revision: "r1")])))
+    await transport.holdMarkStateRequests(true)
+    store.pickLock.forceLatch(.pick)
+    store.beginPointerDrag()
+    async let crossingA: Void = store.pointerDragCrossed(.image(10))
+    await transport.waitUntilMarkStateStarted()
+
+    // The pointer crosses the member while the loose photograph's write is in flight...
+    await store.pointerDragCrossed(.image(501))
+    // ...and the scene closes under it. `query` never moves, so this is not a scope change the
+    // crossing can be discarded for — the photograph simply stopped being on screen, which is
+    // exactly how `capturePriorSnapshots` used to lose a queued write in silence.
+    await store.toggleSceneExpanded(5)
+    #expect(store.actionableImages.map(\.id) == [10])
+
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    _ = await crossingA
+
+    // Nothing was written for the collapsed member — the actionable-only boundary still holds...
+    #expect(await transport.callCount(markOp) == 1)
+    #expect(await transport.lastMarkStateRequest?.imageIds == [10])
+    // ...and the crossing the reader made is accounted for rather than vanishing.
+    #expect(
+      store.droppedWriteIDs == [501],
+      "a queued crossing was dropped by the prune with no signal to the reader")
+    #expect(GridNotices.notices(store: store).contains(.droppedWrites(count: 1)))
+  }
+
+  @Test(
     "A card whose stack id equals a LOADED photograph's id still writes nothing — the typed identity, not luck"
   )
   func aCardIdCollidingWithALoadedPhotographWritesNothing() async {
