@@ -387,7 +387,9 @@ struct RootView: View {
             Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
           },
           treeSection: FolderTreeSection(
-            gridService: gridService, layoutMode: layoutMode,
+            // The SAME loader instance the queue cards above take (WP16 P5): one cache, one
+            // concurrency gate for every cover in this column.
+            gridService: gridService, heroLoader: heroLoader, layoutMode: layoutMode,
             selectedFolderID: $selectedFolderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }

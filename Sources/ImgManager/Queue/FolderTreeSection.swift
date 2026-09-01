@@ -34,6 +34,16 @@ import SwiftUI
 ///   gesture-only: every row, every chevron and the search field are chrome.
 struct FolderTreeSection: View {
   let gridService: GridService
+  /// The SAME loader the queue cards use (WP16 P5) — one actor, one cache keyed by
+  /// `(folderID, sourceTier)`, one 4-slot concurrency gate. Never a second image pipeline.
+  ///
+  /// What that cache does and does not buy, stated exactly (diff-gate r1, B2, correcting this
+  /// phase's own first claim): once a cover has been fetched, every later reader of that key —
+  /// queue card or tree row — is served from memory. It does NOT coalesce fetches already IN
+  /// FLIGHT: `HeroThumbnailLoader.hero` checks the cache, then suspends on the concurrency gate
+  /// (`HeroThumbnailLoader.swift:38-44`), so a shoot visible as a queue card AND as a tree row at
+  /// the same time, before either finishes, fetches twice. Cheap and read-only, but real.
+  let heroLoader: HeroThumbnailLoader
   let layoutMode: LayoutMode
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
@@ -174,7 +184,7 @@ struct FolderTreeSection: View {
         // inset, so a branch three deep is still one row in one list.
         ForEach(rows) { row in
           FolderTreeRowView(
-            row: row, tier: tier, isSearching: isSearching,
+            row: row, tier: tier, isSearching: isSearching, heroLoader: heroLoader,
             expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
             onSelect: onSelect)
         }
@@ -290,7 +300,10 @@ enum FolderTreeLoadPresentation {
 }
 
 /// One line of the tree: an expand control (only where there is something to expand), the
-/// folder's name at its depth, and the server's count.
+/// folder's name at its depth, and the server's count — as a subline under the name on a SHOOT
+/// row, which also leads with a cover thumbnail (WP16 P5, p3332 decision 2), and as the trailing
+/// caption it has always been on a container row. `FolderTreeRowPresentation` owns that split;
+/// this view only renders it.
 ///
 /// The two affordances are deliberately SEPARATE controls rather than one `DisclosureGroup`
 /// label. 110 production folders are both a shoot and a parent, and with a single combined label
@@ -302,9 +315,12 @@ private struct FolderTreeRowView: View {
   let row: FolderTreeOutlineRow
   let tier: GridSourceTier
   let isSearching: Bool
+  let heroLoader: HeroThumbnailLoader
   @Binding var expandedBranches: Set<Int>
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
+
+  @State private var coverImage: PlatformImage?
 
   var body: some View {
     HStack(spacing: 6) {
@@ -350,9 +366,10 @@ private struct FolderTreeRowView: View {
       rowContent
         .contentShape(Rectangle())
         .tag(row.id)
-        // Stable, id-derived identifiers so the UI test drives the REAL rows rather than
-        // matching a localizable label (the shoot name is server data).
-        .accessibilityIdentifier("folderRow-\(row.id)")
+        // The stable, id-derived identifier lives on the row's NAME text, not here: an
+        // identifier on a container overrides its descendants' (GridView.swift:743-747), which
+        // would make this row's cover and subline unaddressable. `FolderTreeRowPresentation
+        // .rowIdentifier` decides the string; `rowContent` applies it.
         .simultaneousGesture(
           TapGesture().onEnded {
             selectedFolderID = row.id
@@ -361,26 +378,88 @@ private struct FolderTreeRowView: View {
         )
     } else {
       // A container: it expands, and it does NOT navigate. Its identifier is deliberately a
-      // different prefix, so `folderRow-<id>` keeps meaning "a row that enters the grid".
+      // different prefix, so `folderRow-<id>` keeps meaning "a row that enters the grid" — and it
+      // is applied on the name text with the shoot's, for the override reason above.
       rowContent
-        .accessibilityIdentifier("folderContainer-\(row.id)")
     }
   }
 
   private var rowContent: some View {
     HStack(spacing: 8) {
-      Text(row.node.name)
-        .lineLimit(1)
-        .truncationMode(.middle)
+      if FolderTreeRowPresentation.showsThumbnail(row.node) {
+        cover
+      }
+      VStack(alignment: .leading, spacing: 2) {
+        Text(row.node.name)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .accessibilityIdentifier(
+            FolderTreeRowPresentation.rowIdentifier(for: row.node, id: row.id))
+        // A shoot's own roll-up, one line down: the server's number, never recomputed, and
+        // stated ONCE — this is the same count the trailing caption below carries on the
+        // container rows, moved rather than duplicated.
+        if let subline = FolderTreeRowPresentation.subline(for: row.node) {
+          Text(subline)
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier(FolderTreeRowPresentation.sublineIdentifier(for: row.id))
+        }
+      }
       Spacer(minLength: 8)
-      // The server's own roll-up, formatted and never recomputed.
-      Text(row.node.descendantImageCount.formatted())
-        .font(.caption)
-        .monospacedDigit()
-        .foregroundStyle(.secondary)
+      // The container row's trailing caption: same text, same modifiers, same number as at
+      // 4753450 — a folder of folders is not a shoot, so decision 2 leaves it alone. Its
+      // enclosing structure is not identical (the name now sits in a one-child VStack that a
+      // shoot row fills with a second line), which changes nothing about what is rendered.
+      if let trailing = FolderTreeRowPresentation.trailingCount(for: row.node) {
+        Text(trailing)
+          .font(.caption)
+          .monospacedDigit()
+          .foregroundStyle(.secondary)
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
+
+  /// The shoot row's cover, fetched through the SAME `HeroThumbnailLoader` the queue cards use —
+  /// its cache (keyed by folder and tier), its 4-slot concurrency gate and its cancellation —
+  /// never a second image pipeline, and never `GridStore`, which the loader is deliberately
+  /// independent of. Concurrent fetches of one key are not coalesced; see the loader property's
+  /// own comment above for what the cache does and does not promise.
+  ///
+  /// It renders a PLACEHOLDER until an image arrives, so the row's anatomy is on screen before
+  /// any network call finishes and a test can assert the anatomy without asserting the network.
+  /// `List` instantiates rows lazily, so only the shoot rows actually on screen ever fetch —
+  /// the same load profile the queue cards already impose.
+  private var cover: some View {
+    Group {
+      if let coverImage {
+        PlatformImageView(image: coverImage).aspectRatio(contentMode: .fill)
+      } else {
+        Rectangle().fill(.quaternary)
+      }
+    }
+    .frame(width: 40, height: 40)
+    .clipShape(RoundedRectangle(cornerRadius: 6))
+    .accessibilityElement()
+    .accessibilityLabel("Cover thumbnail")
+    .accessibilityIdentifier(FolderTreeRowPresentation.thumbnailIdentifier(for: row.id))
+    .task(id: coverTaskID) {
+      switch await heroLoader.hero(folderID: row.id, sourceTier: tier) {
+      case .image(let data):
+        if let decoded = PlatformImage(data: data), !Task.isCancelled {
+          coverImage = decoded
+        }
+      case .empty, .failure:
+        break
+      }
+    }
+  }
+
+  /// Identity for the cover fetch, in the loader's own cache-key terms: a row that is re-used for
+  /// a different folder (or the same folder on the other tier) starts a new fetch, and scrolling
+  /// away cancels the one in flight.
+  private var coverTaskID: String { "\(row.id)|\(tier.rawValue)" }
 
   private var isOpen: Bool {
     FolderTreePresentation.isExpanded(
