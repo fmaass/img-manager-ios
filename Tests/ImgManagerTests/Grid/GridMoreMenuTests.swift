@@ -512,9 +512,10 @@ struct GridMoreMenuSectionsTests {
         ["more.mergeScene", "more.splitScene", "more.extractScene"]
       ),
     ]
-    #expect(GridMoreMenu.sections.map(\.id) == decided.map(\.id))
-    #expect(GridMoreMenu.sections.map(\.title) == decided.map(\.title))
-    #expect(GridMoreMenu.sections.map { $0.entries.map(\.id) } == decided.map(\.entries))
+    // Closures rather than key paths on the right: Swift has no key path to a tuple element.
+    #expect(GridMoreMenu.sections.map(\.id) == decided.map { $0.id })
+    #expect(GridMoreMenu.sections.map(\.title) == decided.map { $0.title })
+    #expect(GridMoreMenu.sections.map { $0.entries.map(\.id) } == decided.map { $0.entries })
     // A `Section` with no words is grouping WITHOUT labels — the phase's declared deviation, not
     // something that may ship silently. Ids stay unique because they are the `ForEach` identity.
     #expect(GridMoreMenu.sections.allSatisfy { !$0.title.isEmpty })

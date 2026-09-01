@@ -24,6 +24,21 @@ struct MenuCommandDeclaration: Identifiable {
   let run: (GridKeyboardActions) -> Void
 }
 
+/// The menu bar's "Open in New Window" entry, AS DATA. WP16 P4 (IMGMGR-297), the plan's B8 fold.
+///
+/// The same discipline `MenuCommandDeclaration` applies to every keyed command, for the same
+/// reason: the `Commands` body renders exactly this value and decides nothing of its own, so what
+/// the entry says, whether it is enabled and what it opens are a TEST (`ShootWindowEntryTests`)
+/// rather than a comment. It is deliberately NOT a `MenuCommandDeclaration` — every row of that
+/// table is a key equivalent dispatched into `GridKeyboardActions`, and this entry claims no key.
+struct ShootWindowMenuEntry {
+  let title: String
+  let isEnabled: Bool
+  /// Closes over the ONE opening path (`ShootWindowAction.open`, reached through the focused
+  /// command's own `run()`), so the menu bar and the grid's More row cannot open different things.
+  let action: @MainActor () -> Void
+}
+
 /// A run of declarations rendered together, separated from its neighbours by one `Divider`.
 struct MenuCommandGroup: Identifiable {
   let id: String
@@ -74,13 +89,17 @@ struct AppCommands: Commands {
   /// shortcut inventory. It also dispatches into the window command rather than the grid actions,
   /// for the reason recorded on `ShootWindowCommand`.
   ///
-  /// Its title comes from `ShootWindowCopy`, the same constant the grid's More menu row renders,
-  /// so the two entry points cannot be spelled differently.
+  /// WP16 P4 (IMGMGR-297) B8: the body is ONE `let` and ONE `Button` BY CONSTRUCTION. Every
+  /// decision the entry makes — its words (`ShootWindowCopy`, the same constant the grid's More
+  /// row renders, so the two cannot be spelled differently), whether it is enabled, and what it
+  /// opens — is made by `makeOpenInNewWindowEntry(command:)`, which the test drives directly.
+  /// ViewInspector is not a dependency of this project, so nothing automated proves this Button
+  /// renders `entry.title` and calls `entry.action`; a Button that bypasses the factory is a
+  /// diff-gate blocker, and the one-liner is what keeps that visible in review.
   @ViewBuilder private var openInNewWindowEntry: some View {
-    Button(ShootWindowCopy.title) {
-      shootWindow?.run()
-    }
-    .disabled(shootWindow?.isEnabled != true)
+    let entry = Self.makeOpenInNewWindowEntry(command: shootWindow)
+    Button(entry.title) { entry.action() }
+      .disabled(!entry.isEnabled)
   }
 
   @ViewBuilder
@@ -111,6 +130,22 @@ struct AppCommands: Commands {
 }
 
 extension AppCommands {
+  /// The menu-bar "Open in New Window" entry, built from the focused command and from nothing
+  /// else — the SAME factory `openInNewWindowEntry` renders, which is what lets a test stand in
+  /// for the UI leg that platform cannot give this entry (no key equivalent to send, and the
+  /// system menu bar is not XCUITest-openable).
+  ///
+  /// `isEnabled` is the command's own predicate (`ShootSceneValue.from(query:) != nil`) and the
+  /// action delegates to `ShootWindowCommand.run()`, i.e. the shared `ShootWindowAction.open`:
+  /// no second predicate and no second opening path. With no workspace scene focused the
+  /// `@FocusedValue` is nil, and the entry is then disabled with an action that opens nothing.
+  static func makeOpenInNewWindowEntry(command: ShootWindowCommand?) -> ShootWindowMenuEntry {
+    ShootWindowMenuEntry(
+      title: ShootWindowCopy.title,
+      isEnabled: command?.isEnabled == true,
+      action: { command?.run() })
+  }
+
   /// The "Grid" menu: WP8's bare web set, unchanged by WP13 P4.
   @MainActor static let gridMenuGroups: [MenuCommandGroup] = [
     MenuCommandGroup(

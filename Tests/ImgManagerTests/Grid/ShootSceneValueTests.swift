@@ -1,5 +1,6 @@
 import Foundation
 import ImgManagerAPI
+import SwiftUI
 import Testing
 
 @testable import ImgManager
