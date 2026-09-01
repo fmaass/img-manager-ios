@@ -166,11 +166,20 @@ struct GridView: View {
       ToolbarItem(placement: .primaryAction) {
         GridZoomControl(store: store)
       }
-      // WP16 P3 (IMGMGR-295), decision 1: the FIFTH primary item. It sits with the view options
-      // rather than after the help button because filtering is what a reader reaches for in the
-      // same breath as sort and group. Its named risk is that a fifth item tips this bar into an
-      // overflow chevron — `FilterPopoverUITests` asserts the chevron's absence with a positive
-      // control, the same shape `SortGroupScreenshotUITests` used when Sort became the fourth.
+      // WP16 P3 (IMGMGR-295), decision 1. It sits with the view options rather than after the
+      // help button because filtering is what a reader reaches for in the same breath as sort
+      // and group.
+      //
+      // COUNT THE COMPOSED BAR, not this builder (diff-gate round 1, A1). These are the fifth
+      // and last `.primaryAction` declared here, but `RootView` adds `inspectorChromeButton` to
+      // the same grid-pane bar, and WP16 P2 made `InspectorPresentation.usesChromeControl`
+      // return true at EVERY width — including Regular-3, where it used to be absent. So on
+      // Regular the bar now carries SIX primary items: Info, Sort, Group, Zoom, Filter, help.
+      // That is this phase's named risk, and it is a gate question rather than a code one:
+      // `FilterPopoverUITests` asserts no overflow chevron appeared, with a positive control,
+      // the shape `SortGroupScreenshotUITests` used when Sort became the fourth. If the chevron
+      // does appear, the plan's pre-decided pivot moves the shortcut-help control — the one item
+      // with three other routes — out of the Regular toolbar and keeps the funnel.
       ToolbarItem(placement: .primaryAction) {
         GridFilterControl(store: store)
       }
@@ -763,11 +772,13 @@ struct GridOptionsRow: View {
         .frame(minHeight: 44)
       GridZoomControl(store: store)
         .frame(minHeight: 44)
-      // WP16 P3 (IMGMGR-295): Compact's copy of the funnel. Icon-only like the help button, so it
-      // adds one 44 pt hit region and no value label to a row whose three value-carrying controls
-      // already truncate at the tail — the measurement the phase was told to make before letting a
-      // fifth control onto this row. `FilterPopoverUITests` asserts the help button is still
-      // hittable here, which is the "the row did not overflow" contract in one assertion.
+      // WP16 P3 (IMGMGR-295): Compact's copy of the funnel, the FOURTH control in this row's
+      // leading cluster and the fifth on the row. Icon-only like the help button, so it adds one
+      // 44 pt hit region and no value label to a row whose three value-carrying controls already
+      // truncate at the tail — the measurement the phase was told to make before letting another
+      // control onto this row. (Compact's bar is not the six-item case: `RootView` puts Info and
+      // the account item on the NAV BAR there, not on this row.) `FilterPopoverUITests` asserts
+      // the help button is still hittable here — the "the row did not overflow" contract.
       GridFilterControl(store: store)
         .frame(minHeight: 44)
       Spacer(minLength: 0)
