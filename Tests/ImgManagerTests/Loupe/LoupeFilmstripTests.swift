@@ -273,7 +273,8 @@ struct LoupeFilmstripTests {
       matchedCount: 2, memberCount: 2, pickedCount: 0,
       representative: makeImage(id: 900, revision: "cover-rev"), stackId: 5)
     await transport.setBrowseStacksPage(
-      .init(items: [imageRow(makeImage(id: 10)), stackRowItem(card)], limit: 100,
+      .init(
+        items: [imageRow(makeImage(id: 10)), stackRowItem(card)], limit: 100,
         nextCursor: "scene-2"))
     await transport.setBrowseStacksPage(
       .init(items: [imageRow(makeImage(id: 11))], limit: 100, nextCursor: nil),

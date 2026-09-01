@@ -299,9 +299,9 @@ struct SceneBandDerivationTests {
 
     // A photograph in a scene nobody opened is not in `members`, so its badge is left to the
     // server's own re-read rather than guessed at.
-    #expect(
-      SceneRowBuilder.pickCountDeltas(
-        [.init(imageID: 999, wasPicked: false, isPicked: true)], members: members).isEmpty)
+    let unopened = SceneRowBuilder.pickCountDeltas(
+      [.init(imageID: 999, wasPicked: false, isPicked: true)], members: members)
+    #expect(unopened.isEmpty)
 
     // Two scenes touched at once are two independent deltas.
     #expect(
