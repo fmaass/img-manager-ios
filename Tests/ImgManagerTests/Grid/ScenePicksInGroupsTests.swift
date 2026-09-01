@@ -37,6 +37,20 @@ struct ScenePicksInGroupsTests {
     #expect(ids.contains("more.filenamePlates"))
   }
 
+  /// The pivot itself, stated as a TABLE rather than checked against whatever the app happens to
+  /// compute. Every combination is written out here by hand: this is the one place that says
+  /// where the inline picks ship, and a change to `SceneInlinePicksPolicy` has to come here to be
+  /// blessed rather than quietly re-deriving its own expectation.
+  @Test("Inline picks ship on Regular and nowhere else, and only while the switch is on")
+  func thePivotIsRegularOnlyAndOffMeansOff() {
+    #expect(SceneInlinePicksPolicy.isShown(layoutMode: .compact, isEnabled: true) == false)
+    #expect(SceneInlinePicksPolicy.isShown(layoutMode: .regular2, isEnabled: true) == true)
+    #expect(SceneInlinePicksPolicy.isShown(layoutMode: .regular3, isEnabled: true) == true)
+    #expect(SceneInlinePicksPolicy.isShown(layoutMode: .compact, isEnabled: false) == false)
+    #expect(SceneInlinePicksPolicy.isShown(layoutMode: .regular2, isEnabled: false) == false)
+    #expect(SceneInlinePicksPolicy.isShown(layoutMode: .regular3, isEnabled: false) == false)
+  }
+
   // MARK: - Fixtures for the data-policy half
 
   private func makeImage(

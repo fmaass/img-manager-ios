@@ -57,16 +57,35 @@ final class SceneBandScreenshotUITests: XCTestCase {
       (handle.value as? String) ?? "", "Closed",
       "The handle does not carry its open/closed state.")
 
-    // IMGMGR-261: the app publishes which branch it took; assert THAT branch, whichever it is.
+    // IMGMGR-261. The probe is used to OBSERVE which layout this destination resolved to, and for
+    // nothing else — the expectation below is this test's own, written out here:
+    //
+    //     compact  -> no inline picks (badge-only card, the measured pivot)
+    //     regular* -> inline picks, because the launch argument turned the switch on
+    //
+    // Deriving the expectation from the probe's `inlinePicks=` half instead would be circular:
+    // that half IS the app's answer, so a pivot changed to draw the strip on Compact (or nowhere
+    // at all) would move the probe and the expectation together and this test would still pass.
+    // The `layout=` half cannot do that — it reports the resolved `LayoutMode`, which sits
+    // upstream of the pivot — so a pivot change now breaks the pair below.
     let probe = (card.value as? String) ?? ""
     XCTAssertTrue(
       probe.contains("layout="),
       "The scene card published no layout probe — the branch assertion below would be vacuous.")
+    let isCompact = probe.contains("layout=compact")
+    let expectsInlinePicks = !isCompact
+    // The pivot itself, pinned: the app's own decision must equal this test's table. This is the
+    // assertion that a pivot change has to come through.
+    XCTAssertEqual(
+      probe.contains("inlinePicks=true"), expectsInlinePicks,
+      "The app's inline-picks pivot disagrees with this test's own table (compact -> off, "
+        + "regular -> on with the switch on). Probe: '\(probe)'")
     let strip = app.descendants(matching: .any)["sceneInlinePicks-5000"].firstMatch
-    if probe.contains("inlinePicks=true") {
+    if expectsInlinePicks {
       XCTAssertTrue(
         strip.waitForExistence(timeout: 10),
-        "Regular ships the inline picks and none are drawn. Probe: '\(probe)'")
+        "This layout is not compact, so the inline picks are expected and none are drawn. "
+          + "Probe: '\(probe)'")
       XCTAssertTrue(
         strip.label.contains("2 picked"),
         "The inline strip does not describe what it shows. Label: '\(strip.label)'")

@@ -261,18 +261,11 @@ struct GridView: View {
     SceneRowBuilder.bandLeadMembers(expanded: store.sceneExpanded, members: store.sceneMembers)
   }
 
-  /// IMGMGR-261, iPad-first (AC 3): the inline picks ship on REGULAR only.
-  ///
-  /// The measurement is the card's own width. Compact's portrait pane is 402 pt wide, the grid
-  /// packs justified rows inside a 2 pt gutter at the default 200 pt row height, so a 3:2 card
-  /// there is ~300 pt at most and often two to a row (~150 pt). Three 26 pt thumbnails plus their
-  /// chrome need ~96 pt inside a card that also carries a count badge on the left and a ✓N/edited
-  /// cluster on the right — on the narrow case they would overlap the badges outright, and the
-  /// thumbnails themselves would be smaller than the 44 pt floor this app applies to anything a
-  /// finger goes near. So Compact keeps the badge-only card, and the limitation is recorded here
-  /// (the P5b/P9 measured-pivot precedent) rather than shipped illegibly.
+  /// IMGMGR-261, iPad-first (AC 3). The RULE lives in `SceneInlinePicksPolicy`, which is where
+  /// the measurement behind it is written down and where a test pins the table directly.
   private var showsInlinePicks: Bool {
-    store.preferences.picksInGroups && layoutMode != .compact
+    SceneInlinePicksPolicy.isShown(
+      layoutMode: layoutMode, isEnabled: store.preferences.picksInGroups)
   }
 
   @ViewBuilder
@@ -282,10 +275,17 @@ struct GridView: View {
     }
   }
 
-  /// Re-runs the read when the SWITCH moves or the scene's own pick count changes — never on
-  /// every body pass, and never at all while the preference is off.
+  /// Re-runs the read when the SWITCH moves, when the scene's own pick count changes, or when a
+  /// write DROPPED the cached summary (`refreshScenesFor`) — never on every body pass, and never
+  /// at all while the preference is off.
+  ///
+  /// The third term is what makes an invalidated card refill itself. A count alone cannot: a
+  /// batch that picks one member and un-picks another leaves `picked_count` unmoved while every
+  /// thumbnail changes. Flipping back once the read lands is not a loop — the second run finds
+  /// the entry present and returns immediately.
   private func inlinePicksTaskID(for row: Components.Schemas.StackBrowseStackRow) -> String {
-    "inlinePicks|\(row.stackId)|\(showsInlinePicks)|\(row.pickedCount)"
+    let hasSummary = store.sceneInlinePicks[row.stackId] != nil
+    return "inlinePicks|\(row.stackId)|\(showsInlinePicks)|\(row.pickedCount)|\(hasSummary)"
   }
 
   private var sceneCardProbeValue: String {

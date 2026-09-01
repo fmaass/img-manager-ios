@@ -1302,6 +1302,14 @@ final class GridStore {
     guard displayMode == .scene else { return }
     let touched = scenesHolding(imageIDs)
     guard !touched.isEmpty else { return }
+    // IMGMGR-261: the card summary describes exactly the state this write just changed, so it
+    // stops being an answer the moment the write lands. Dropped rather than patched locally —
+    // the strip is a capped read of the server's own membership, and re-reading it when the card
+    // is next drawn is both cheaper to reason about and correct for the case a local patch gets
+    // wrong (a batch that picks one member and un-picks another leaves `picked_count` unmoved
+    // while changing every thumbnail). Done BEFORE the row re-read below and independently of
+    // it, so a failed re-read still cannot leave a stale summary standing.
+    for stackID in touched { sceneInlinePicks[stackID] = nil }
     let generation = loadGeneration
     for stackID in touched {
       guard let fresh = try? await service.stackRow(stackID: stackID, query: query) else {

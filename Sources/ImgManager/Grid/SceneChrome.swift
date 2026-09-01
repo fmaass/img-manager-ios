@@ -65,6 +65,29 @@ struct SceneExpandHandle: View {
   }
 }
 
+/// WHERE the inline picks ship (IMGMGR-261 AC 3), as a value rather than as a condition buried in
+/// a view.
+///
+/// iPad-first, and the pivot is a MEASURED product decision: Compact's portrait pane is 402 pt,
+/// the justified grid packs a 3:2 card there at ~150–300 pt depending on how many share the row,
+/// and three 26 pt thumbnails plus their chrome need ~96 pt inside a card that already carries a
+/// count badge on the left and a ✓N/edited cluster on the right. On the narrow case they would
+/// overlap the badges outright. So Compact keeps the badge-only card and the limitation is
+/// recorded (the P5b/P9 measured-pivot precedent).
+///
+/// Pure and free-standing so the pivot is pinned by a test that states the table ITSELF —
+/// `GridView` reads this function rather than owning the rule, so a test cannot accidentally
+/// check the rule against its own output.
+enum SceneInlinePicksPolicy {
+  static func isShown(layoutMode: LayoutMode, isEnabled: Bool) -> Bool {
+    guard isEnabled else { return false }
+    switch layoutMode {
+    case .compact: return false
+    case .regular2, .regular3: return true
+    }
+  }
+}
+
 /// The picks a COLLAPSED scene holds, drawn inside the card's own region (IMGMGR-261).
 ///
 /// DISPLAY-ONLY, and structurally so rather than by remembering: these are not `TileView`s (the
