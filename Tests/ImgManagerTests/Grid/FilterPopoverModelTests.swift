@@ -35,7 +35,7 @@ struct FilterPopoverModelTests {
   private func row(
     _ sections: [FilterPopoverSection], _ field: InspectorFacetField, _ value: String
   ) -> FilterPopoverRow? {
-    sections.first { $0.field == field }?.rows.first { $0.value == value }
+    sections.first(where: { $0.field == field })?.rows.first(where: { $0.value == value })
   }
 
   // MARK: - Decision 3: the >=N rows state the number the `rating_min` filter actually delivers
@@ -86,9 +86,9 @@ struct FilterPopoverModelTests {
     #expect(sections.map(\.field) == FilterPopoverModel.sections.map(\.field))
     let rows = sections.flatMap(\.rows)
     #expect(!rows.isEmpty)
-    #expect(rows.allSatisfy { $0.count == 0 })
-    #expect(rows.allSatisfy { !$0.isEnabled })
-    #expect(rows.allSatisfy { !$0.isActive })
+    #expect(rows.allSatisfy({ $0.count == 0 }))
+    #expect(rows.allSatisfy({ !$0.isEnabled }))
+    #expect(rows.allSatisfy({ !$0.isActive }))
   }
 
   /// The acceptance criterion's own scenario: a response that omits `ext` and `has_master`. The
@@ -106,7 +106,7 @@ struct FilterPopoverModelTests {
     #expect(edited?.count == 0)
     #expect(edited?.isEnabled == false)
 
-    let type = sections.first { $0.field == .ext }
+    let type = sections.first(where: { $0.field == .ext })
     #expect(type != nil)
     #expect(type?.rows.count == 1)
     #expect(type?.rows.first?.count == 0)
@@ -128,8 +128,8 @@ struct FilterPopoverModelTests {
 
     // ...and the same row without the filter in force is disabled, so the rule above is doing the
     // work rather than "mark rows are always enabled".
-    let unfiltered = row(FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery()), .mark,
-      "dislike")
+    let clean = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
+    let unfiltered = row(clean, .mark, "dislike")
     #expect(unfiltered?.count == 0)
     #expect(unfiltered?.isEnabled == false)
   }
@@ -143,8 +143,8 @@ struct FilterPopoverModelTests {
     query.ext = "arw"
     let facets = Components.Schemas.ImageFacets(total: 0)
     let sections = FilterPopoverModel.rows(facets, query)
-    let type = sections.first { $0.field == .ext }
-    #expect(type?.rows.contains { $0.value == "arw" } == true)
+    let type = sections.first(where: { $0.field == .ext })
+    #expect(type?.rows.contains(where: { $0.value == "arw" }) == true)
     let arw = row(sections, .ext, "arw")
     #expect(arw?.count == 0)
     #expect(arw?.isActive == true)
@@ -160,7 +160,7 @@ struct FilterPopoverModelTests {
     let allZero = Components.Schemas.ImageFacets(
       mark: facetCounts([("pick", 0), ("dislike", 0), ("none", 0)]), total: 0)
     let sections = FilterPopoverModel.rows(allZero, GridImagesQuery())
-    let mark = sections.first { $0.field == .mark }
+    let mark = sections.first(where: { $0.field == .mark })
     #expect(mark?.rows.map(\.value) == ["pick", "none", "dislike"])
     #expect(mark?.rows.map(\.title) == ["Pick", "Unmarked", "Dislike"])
   }
@@ -172,13 +172,13 @@ struct FilterPopoverModelTests {
   @Test("No Camera row exists, and no camera_preview_only stand-in was substituted for one")
   func noCameraRowAndNoStandIn() {
     #expect(
-      !FilterPopoverModel.sections.contains {
+      !FilterPopoverModel.sections.contains(where: {
         $0.title.localizedCaseInsensitiveContains("camera")
-      })
+      }))
     let fields = FilterPopoverModel.sections.map(\.field)
     #expect(!fields.contains(.cameraPreviewOnly))
     let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
-    #expect(!live.flatMap(\.rows).contains { $0.field == .cameraPreviewOnly })
+    #expect(!live.flatMap(\.rows).contains(where: { $0.field == .cameraPreviewOnly }))
   }
 
   @Test("The declared sections are Rating, Mark, Edited and Type, in the owner's own order")
@@ -227,10 +227,10 @@ struct FilterPopoverModelTests {
   @Test("The Type section takes its values from the response, never from a declared vocabulary")
   func theTypeSectionIsResponseDiscovered() {
     let sections = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
-    let type = sections.first { $0.field == .ext }
+    let type = sections.first(where: { $0.field == .ext })
     #expect(type?.rows.map(\.value) == ["jpg", "arw"])
     #expect(type?.rows.map(\.count) == [9, 3])
-    #expect(type?.rows.allSatisfy { $0.isEnabled } == true)
+    #expect(type?.rows.allSatisfy({ $0.isEnabled }) == true)
   }
 
   // MARK: - B9: the DEBUG fixture really does exercise both paths
@@ -247,13 +247,13 @@ struct FilterPopoverModelTests {
       let sections = FilterPopoverModel.rows(
         DebugStubTransport.fixtureFacets(), GridImagesQuery())
       let rows = sections.flatMap(\.rows)
-      #expect(rows.contains { $0.count > 0 && $0.isEnabled })
-      #expect(rows.contains { $0.count == 0 && !$0.isEnabled })
+      #expect(rows.contains(where: { $0.count > 0 && $0.isEnabled }))
+      #expect(rows.contains(where: { $0.count == 0 && !$0.isEnabled }))
       // Every declared dimension carries a real answer, so no UI assertion is reading a zero that
       // only means "the fixture forgot this dimension".
-      #expect(row(sections, .rating, "4")?.count ?? 0 > 0)
-      #expect(row(sections, .hasMaster, "true")?.count ?? 0 > 0)
-      #expect(sections.first { $0.field == .ext }?.rows.count ?? 0 >= 2)
+      #expect((row(sections, .rating, "4")?.count ?? 0) > 0)
+      #expect((row(sections, .hasMaster, "true")?.count ?? 0) > 0)
+      #expect((sections.first(where: { $0.field == .ext })?.rows.count ?? 0) >= 2)
       #expect(DebugStubTransport.fixtureFacets().total == 12)
     }
   #endif

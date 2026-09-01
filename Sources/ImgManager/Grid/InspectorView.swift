@@ -166,16 +166,21 @@ struct InspectorView: View {
       Section(field.title) {
         ForEach(counts, id: \.value) { count in
           let active = field.isActive(count.value, in: store.currentQuery)
+          // B1: the label and the number come from the same pair of pure functions the popover
+          // uses, so a rating row cannot state one threshold here and another there.
+          let title = FilterPopoverModel.statsRowTitle(field, count.value)
+          let shown = FilterPopoverModel.statsRowCount(
+            field, count.value, serverCount: count.count, in: facets)
           Button {
             Task { await store.applyFacetFilter(field, value: count.value) }
           } label: {
             HStack {
               Image(systemName: active ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(active ? .primary : .tertiary)
-              Text(field.displayValue(count.value))
+              Text(title)
                 .fontWeight(active ? .semibold : .regular)
               Spacer()
-              Text("\(count.count)").foregroundStyle(.secondary).monospacedDigit()
+              Text("\(shown)").foregroundStyle(.secondary).monospacedDigit()
             }
           }
           .frame(minHeight: 44)

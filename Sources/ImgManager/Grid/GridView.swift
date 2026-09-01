@@ -166,6 +166,14 @@ struct GridView: View {
       ToolbarItem(placement: .primaryAction) {
         GridZoomControl(store: store)
       }
+      // WP16 P3 (IMGMGR-295), decision 1: the FIFTH primary item. It sits with the view options
+      // rather than after the help button because filtering is what a reader reaches for in the
+      // same breath as sort and group. Its named risk is that a fifth item tips this bar into an
+      // overflow chevron — `FilterPopoverUITests` asserts the chevron's absence with a positive
+      // control, the same shape `SortGroupScreenshotUITests` used when Sort became the fourth.
+      ToolbarItem(placement: .primaryAction) {
+        GridFilterControl(store: store)
+      }
       // Regular's route into the shortcut help sheet. The gate's UI leg proved the other two
       // routes are not drivable there — ⌘/ never reached the app on the iPad simulator
       // (no attached hardware keyboard) and the system menu bar is not a surface a UI test
@@ -754,6 +762,13 @@ struct GridOptionsRow: View {
       GridGroupControl(store: store)
         .frame(minHeight: 44)
       GridZoomControl(store: store)
+        .frame(minHeight: 44)
+      // WP16 P3 (IMGMGR-295): Compact's copy of the funnel. Icon-only like the help button, so it
+      // adds one 44 pt hit region and no value label to a row whose three value-carrying controls
+      // already truncate at the tail — the measurement the phase was told to make before letting a
+      // fifth control onto this row. `FilterPopoverUITests` asserts the help button is still
+      // hittable here, which is the "the row did not overflow" contract in one assertion.
+      GridFilterControl(store: store)
         .frame(minHeight: 44)
       Spacer(minLength: 0)
       GridShortcutHelpControl(store: store)

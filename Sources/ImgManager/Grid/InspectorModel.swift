@@ -243,6 +243,30 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     }
   }
 
+  /// The value this dimension is filtered to, if any — the same answer `isActive` gives, read out
+  /// rather than tested against a candidate.
+  ///
+  /// WP16 P3 (IMGMGR-295) needs it for the ONE dimension whose rows are discovered from the
+  /// response rather than declared (Type/`ext`, a free-form string in the contract): if the reader
+  /// filters to a value and the next response no longer carries it, the popover must re-offer that
+  /// value so the filter stays clearable from the surface that applied it. Deriving it here rather
+  /// than reading `query.ext` at the call site keeps the rule general and keeps this enum the one
+  /// place a dimension's query binding is written down.
+  func activeValue(in query: GridImagesQuery) -> String? {
+    switch self {
+    case .mark: return query.mark
+    case .rating: return query.ratingMin.map { String($0) }
+    case .label: return query.label
+    case .keyword: return query.keyword
+    case .tag: return query.tag
+    case .sourceTier: return query.sourceTier?.rawValue
+    case .ext: return query.ext
+    case .good: return query.good.map { String($0) }
+    case .hasMaster: return query.hasMaster.map { String($0) }
+    case .cameraPreviewOnly: return query.cameraPreviewOnly == true ? "true" : nil
+    }
+  }
+
   /// One value per dimension — the web's chip semantics: tapping a different value switches to
   /// it, tapping the value that is already active clears the dimension. A value this client
   /// cannot express as a filter (the rating facet's "unset" row, an unknown tier) clears the

@@ -85,7 +85,7 @@ struct InspectorStatsRatingAlignmentTests {
   func theTwoSurfacesAgree() {
     let f = facets()
     let popover = FilterPopoverModel.rows(f, GridImagesQuery())
-      .first { $0.field == .rating }?.rows.first { $0.value == "4" }
+      .first(where: { $0.field == .rating })?.rows.first(where: { $0.value == "4" })
     let statsCount = FilterPopoverModel.statsRowCount(.rating, "4", serverCount: 5, in: f)
     #expect(popover?.count == statsCount)
     #expect(popover?.title == FilterPopoverModel.statsRowTitle(.rating, "4"))
