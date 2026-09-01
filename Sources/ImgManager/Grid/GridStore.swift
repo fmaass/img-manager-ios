@@ -1382,11 +1382,15 @@ final class GridStore {
   private(set) var isSceneEditInFlight = false
 
   /// THE FROZEN PAYLOAD. Set only when a 503 refused an edit before it started, and replayed
-  /// VERBATIM by `retrySceneEdit()` — the stack id and the image ids as they were at the FIRST
-  /// attempt, never recomputed. A retry that re-read the selection or the focus would run a
-  /// DIFFERENT edit than the one the reader asked for, which is exactly what a reader does while
-  /// they wait for a busy folder.
-  private var frozenSceneEdit: SceneEditRequest?
+  /// VERBATIM — the stack id and the image ids as they were at the FIRST attempt, never
+  /// recomputed. A retry that re-read the selection or the focus would run a DIFFERENT edit than
+  /// the one the reader asked for, which is exactly what a reader does while they wait for a busy
+  /// folder.
+  ///
+  /// READABLE, deliberately: the alert captures this value when it is BUILT and carries it in its
+  /// retry action, because SwiftUI runs the dismissal binding's setter before that action — see
+  /// `SceneEditAlert`.
+  private(set) var pendingSceneEdit: SceneEditRequest?
 
   /// The merge-target sheet. A plain `var` like `isTagEntryPresented`/`isStatusPresented`, for the
   /// same reason: the menu entry that raises it is declared as data and reaches this screen only
@@ -1468,15 +1472,15 @@ final class GridStore {
 
   /// Run the edit the busy answer refused, exactly as it was asked the first time.
   func retrySceneEdit() async {
-    guard let frozen = frozenSceneEdit else { return }
+    guard let frozen = pendingSceneEdit else { return }
     sceneEditError = nil
-    frozenSceneEdit = nil
+    pendingSceneEdit = nil
     await runSceneEdit(frozen)
   }
 
   func dismissSceneEditError() {
     sceneEditError = nil
-    frozenSceneEdit = nil
+    pendingSceneEdit = nil
   }
 
   /// One scene edit: the call, the coordinator its confirmation asks for, and the typed refusal
@@ -1489,27 +1493,27 @@ final class GridStore {
     do {
       let result = try await performSceneEdit(request)
       sceneEditError = nil
-      frozenSceneEdit = nil
+      pendingSceneEdit = nil
       await reloadAfterTopologyEdit(result, request: request)
     } catch let error as StackEditError {
       switch error {
       case .busy(let seconds):
         // The ONLY branch that keeps the payload: "ask again, unchanged" is what a busy folder
         // means, and the retry must ask the same question.
-        frozenSceneEdit = request
+        pendingSceneEdit = request
         sceneEditError = .busy(retryAfterSeconds: seconds)
       case .conflict(let reason):
-        frozenSceneEdit = nil
+        pendingSceneEdit = nil
         sceneEditError = .conflict(reason)
       case .refused:
-        frozenSceneEdit = nil
+        pendingSceneEdit = nil
         sceneEditError = .refused
       case .unreachable:
-        frozenSceneEdit = nil
+        pendingSceneEdit = nil
         sceneEditError = .unreachable
       }
     } catch {
-      frozenSceneEdit = nil
+      pendingSceneEdit = nil
       sceneEditError = .unreachable
     }
   }

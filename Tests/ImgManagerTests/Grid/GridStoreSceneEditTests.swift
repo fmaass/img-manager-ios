@@ -52,10 +52,10 @@ struct GridStoreSceneEditTests {
     .init(value1: .init(image: image, kind: .image), value2: nil)
   }
 
-  private func page(_ items: [Components.Schemas.StackBrowsePage.ItemsPayloadPayload])
-    -> Components.Schemas.StackBrowsePage
-  {
-    Components.Schemas.StackBrowsePage(items: items, limit: 100, nextCursor: nil)
+  private func page(
+    _ items: [Components.Schemas.StackBrowsePage.ItemsPayloadPayload], nextCursor: String? = nil
+  ) -> Components.Schemas.StackBrowsePage {
+    Components.Schemas.StackBrowsePage(items: items, limit: 100, nextCursor: nextCursor)
   }
 
   private func members(_ ids: [Int], stackID: Int, nextCursor: String? = nil)
@@ -101,6 +101,26 @@ struct GridStoreSceneEditTests {
     await store.toggleSceneExpanded(5)
     store.focusedImageID = 2
     return (store, transport)
+  }
+
+  /// One scene row as a browse item, in one line — the same value
+  /// `stackItem(makeStackRow(…))` builds.
+  private func sceneItem(id: Int, count: Int, anchor: Date?, cover: Int)
+    -> Components.Schemas.StackBrowsePage.ItemsPayloadPayload
+  {
+    stackItem(
+      makeStackRow(
+        id: id, memberCount: count, anchor: anchor, representative: makeImage(id: cover)))
+  }
+
+  /// A bounded wait for a request to reach the transport — used where the action under test
+  /// starts a `Task` (the alert's buttons do, exactly as SwiftUI runs them).
+  private func waitForEdits(_ transport: GridStubTransport, count: Int) async {
+    for _ in 0..<200 {
+      if await transport.recordedStackEdits.count >= count { return }
+      await Task.yield()
+      try? await Task.sleep(for: .milliseconds(5))
+    }
   }
 
   private func decoded(_ record: GridStubTransport.RecordedStackEdit) -> [String: Any] {
@@ -380,6 +400,87 @@ struct GridStoreSceneEditTests {
     #expect(store.sceneMembers[11]?.map(\.id) == [50, 51])
   }
 
+  /// The coordinator's unconditional clause (codex gate, blocker 2): "ensure the RESULT stacks are
+  /// open" is not "…if they happen to be on page one".
+  ///
+  /// A reader edits the scene they are looking at, and the scene they are looking at is wherever
+  /// they have scrolled to. The reload rebuilds the window from page ONE, so a result stack that
+  /// lives on a later page is simply absent from it — and reopening only what the reloaded page
+  /// contains loses the survivor entirely: not open, not completed, no focus, and the selection
+  /// pruned out from under the reader. Here the edited scene sits on page two and its results are
+  /// nowhere in page one.
+  @Test("A result stack from a later browse page is still reopened, completed and focused")
+  func aResultStackBeyondPageOneIsStillEnsured() async throws {
+    let (store, transport) = makeStore()
+    let later = Date(timeIntervalSince1970: 1_700_100_000)
+    await transport.setBrowseStacksPage(
+      page(
+        [
+          sceneItem(id: 5, count: 3, anchor: anchorT0, cover: 1),
+          sceneItem(id: 6, count: 2, anchor: anchorT1, cover: 7),
+        ], nextCursor: "page-2"))
+    await transport.setBrowseStacksPage(
+      page([sceneItem(id: 30, count: 4, anchor: later, cover: 40)]), forCursor: "page-2")
+    await transport.setStackMemberPage(members([1, 2, 3], stackID: 5), forStack: 5)
+    await transport.setStackMemberPage(members([40, 41, 42, 43], stackID: 30), forStack: 30)
+    await store.selectShoot(folderID: 1)
+    await store.setDisplayMode(.scene)
+    #expect(store.sceneRows.count == 2)
+
+    // Page forward through the ONE scene pager, the way the grid does, and open the scene there.
+    await store.loadMoreScenesIfNeeded(currentRowID: .stack(6))
+    #expect(store.sceneRows.map(\.displayID).contains(.stack(30)))
+    await store.toggleSceneExpanded(30)
+    store.focusedImageID = 42
+    #expect(store.sceneEditSubject == SceneEditSubject(stackID: 30, focusedImageID: 42))
+
+    // Split 30 at member 42: the server keeps 30 and makes 31 — and NEITHER is on page one.
+    await transport.setStackEditOutcome(.success(editResult(stacks: [30, 31])))
+    await transport.setStackRow(
+      makeStackRow(id: 30, memberCount: 2, anchor: later, representative: makeImage(id: 40)),
+      forStack: 30)
+    await transport.setStackRow(
+      makeStackRow(id: 31, memberCount: 2, anchor: later, representative: makeImage(id: 42)),
+      forStack: 31)
+    await transport.setStackMemberPage(members([40, 41], stackID: 30), forStack: 30)
+    // The new scene's membership PAGES, so "completed past page one" is observable rather than
+    // vacuous: member 43 only exists on its second page.
+    await transport.setStackMemberPage(
+      members([42], stackID: 31, nextCursor: "thirtyone-2"), forStack: 31)
+    await transport.setStackMemberPage(members([43], stackID: 31), forCursor: "thirtyone-2")
+
+    await store.splitFocusedScene()
+
+    // Both result stacks are OPEN, whatever page they lived on…
+    #expect(store.sceneExpanded.contains(30), "the survivor was lost with its page")
+    #expect(store.sceneExpanded.contains(31), "the new scene was lost with its page")
+    // …the EDITED scenes came back whole…
+    #expect(store.sceneMembers[31]?.map(\.id) == [42, 43])
+    #expect(store.sceneMembers[30]?.map(\.id) == [40, 41])
+    // …and the reader is still on the photograph they cut at, in its new home.
+    #expect(store.focusedImageID == 42)
+    // Chronological order survives the ensure: the re-read rows sit after page one's, which is
+    // where their anchors put them.
+    #expect(store.sceneRows.map(\.displayID) == [.stack(5), .stack(6), .stack(30), .stack(31)])
+  }
+
+  @Test("A row the reload dropped is placed by its anchor, never at the head of the window")
+  func insertionIsChronological() {
+    let rows: [SceneBrowseRow] = [
+      .stack(makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
+      .image(makeImage(id: 20, captured: anchorT1)),
+    ]
+    let before = Date(timeIntervalSince1970: 1_699_000_000)
+    let between = Date(timeIntervalSince1970: 1_700_001_000)
+    let after = Date(timeIntervalSince1970: 1_700_100_000)
+    #expect(SceneEditPlanner.insertionIndex(for: before, in: rows) == 0)
+    #expect(SceneEditPlanner.insertionIndex(for: between, in: rows) == 1)
+    #expect(SceneEditPlanner.insertionIndex(for: after, in: rows) == 2)
+    // No anchor: the end, never the head the reader is looking at.
+    #expect(SceneEditPlanner.insertionIndex(for: nil, in: rows) == 2)
+    #expect(SceneEditPlanner.insertionIndex(for: after, in: []) == 0)
+  }
+
   // MARK: - Decision 3: extraction is the selection ∩ the subject's membership
 
   @Test("Extraction sends the subject scene's selected members, in membership order, and no others")
@@ -546,6 +647,73 @@ struct GridStoreSceneEditTests {
     #expect(first.path == second.path)
     #expect(decoded(second)["image_ids"] as? [Int] == [2, 3])
     #expect(store.sceneEditError == nil)
+  }
+
+  /// THE WIRING, not the store method (codex gate, blocker 1). SwiftUI dismisses an alert by
+  /// running the `isPresented` binding's SETTER first and the tapped button's action after it —
+  /// and the setter is `dismissSceneEditError()`, which clears the frozen payload. A retry action
+  /// that read that payload when it RAN would therefore read nil and send nothing, which is the
+  /// one thing this whole surface exists to prevent.
+  ///
+  /// So this test builds the alert's buttons the way the view does, fires them IN SWIFTUI'S ORDER,
+  /// and asserts a second request actually went out and is byte-identical to the first.
+  @Test("The alert's Retry survives the dismissal SwiftUI fires before it")
+  func theAlertRetrySurvivesTheDismissalFiredBeforeIt() async throws {
+    let (store, transport) = await loadedEditableStore()
+    store.selection.enterSelectExplicitly()
+    store.selection.toggle(2)
+    store.selection.toggle(3)
+
+    await transport.enqueueStackEditOutcomes([
+      .busy(retryAfterSeconds: 5),
+      .success(editResult(stacks: [5, 9])),
+    ])
+    await transport.setBrowseStacksPage(
+      page([
+        sceneItem(id: 5, count: 1, anchor: anchorT0, cover: 1),
+        sceneItem(id: 9, count: 2, anchor: anchorT0, cover: 2),
+      ]))
+    await transport.setStackMemberPage(members([1], stackID: 5), forStack: 5)
+    await transport.setStackMemberPage(members([2, 3], stackID: 9), forStack: 9)
+
+    await store.extractSelectionFromFocusedScene()
+    let failure = try #require(store.sceneEditError)
+
+    // RENDER TIME: the alert is built while the refusal stands, exactly as the view builds it.
+    let actions = SceneEditAlert.actions(for: failure, replaying: store.pendingSceneEdit)
+    let retry = try #require(actions.first { $0.id == "sceneEditAlert.retry" })
+
+    // SWIFTUI'S ORDER: the dismissal binding's setter runs FIRST…
+    store.dismissSceneEditError()
+    #expect(store.pendingSceneEdit == nil)
+    // …and the button's own action only afterwards.
+    retry.run(store)
+    await waitForEdits(transport, count: 2)
+
+    let records = await transport.recordedStackEdits
+    #expect(records.count == 2, "the retry sent nothing after the dismissal cleared the payload")
+    let first = try #require(records.first)
+    let second = try #require(records.last)
+    #expect(first.body == second.body)
+    #expect(first.path == second.path)
+    #expect(decoded(second)["image_ids"] as? [Int] == [2, 3])
+  }
+
+  @Test("The alert offers no Retry when there is nothing frozen to replay")
+  func theAlertOffersNoRetryWithoutAFrozenPayload() {
+    let withPayload = SceneEditAlert.actions(
+      for: .busy(retryAfterSeconds: 5),
+      replaying: .split(stackID: 5, atImageID: 2))
+    #expect(withPayload.map(\.id) == ["sceneEditAlert.retry", "sceneEditAlert.dismiss"])
+    // Same failure, no payload: the button that would replay nothing is not offered at all.
+    #expect(
+      SceneEditAlert.actions(for: .busy(retryAfterSeconds: 5), replaying: nil).map(\.id)
+        == ["sceneEditAlert.dismiss"])
+    // A refusal that is not retryable never offers it either, payload or not.
+    #expect(
+      SceneEditAlert.actions(
+        for: .conflict(.membershipChanged), replaying: .split(stackID: 5, atImageID: 2)
+      ).map(\.id) == ["sceneEditAlert.dismiss"])
   }
 
   @Test("Dismissing a busy answer abandons the retry — nothing replays afterwards")

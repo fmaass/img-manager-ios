@@ -108,12 +108,13 @@ extension View {
       ),
       presenting: store.sceneEditError
     ) { failure in
-      if SceneEditCopy.offersRetry(failure) {
-        Button("Retry") {
-          Task { await store.retrySceneEdit() }
-        }
+      // The buttons are DATA (`SceneEditAlert`), rendered here and nowhere else — and the replay
+      // payload is read HERE, at render time, because the dismissal that SwiftUI fires before a
+      // button's action would otherwise have cleared it first.
+      ForEach(SceneEditAlert.actions(for: failure, replaying: store.pendingSceneEdit)) { action in
+        Button(action.title, role: action.isCancel ? .cancel : nil) { action.run(store) }
+          .accessibilityIdentifier(action.id)
       }
-      Button("OK", role: .cancel) { store.dismissSceneEditError() }
     } message: { failure in
       Text(SceneEditCopy.message(for: failure))
     }

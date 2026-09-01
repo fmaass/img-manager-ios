@@ -114,6 +114,49 @@ enum SceneEditCopy {
   }
 }
 
+/// One button on the refusal alert, declared AS DATA — the same discipline `GridMoreMenuEntry`
+/// applies to the More menu, and here it is load-bearing rather than tidy.
+///
+/// SwiftUI dismisses an alert when a button is tapped: the `isPresented` binding's setter runs
+/// FIRST and the button's own action runs after it. The setter is what clears the refusal, so an
+/// action that read the frozen payload off the store when it RAN would read what the dismissal had
+/// just cleared and send nothing. The payload is therefore captured into the action's closure when
+/// the alert is BUILT, which is before any of that can happen — and because the buttons are data,
+/// a test can fire them in SwiftUI's own order instead of hoping.
+struct SceneEditAlertAction: Identifiable, Sendable {
+  let id: String
+  let title: String
+  /// `.cancel` in SwiftUI terms — the row that only dismisses.
+  let isCancel: Bool
+  let run: @MainActor @Sendable (GridStore) -> Void
+}
+
+enum SceneEditAlert {
+  /// The alert's buttons for one refusal, with the replay payload already captured.
+  ///
+  /// `pending` is read by the CALLER at render time and handed in, so this function cannot reach
+  /// store state at all — which is precisely the property that makes the dismissal ordering
+  /// irrelevant.
+  static func actions(for failure: SceneEditFailure, replaying pending: SceneEditRequest?)
+    -> [SceneEditAlertAction]
+  {
+    var actions: [SceneEditAlertAction] = []
+    if SceneEditCopy.offersRetry(failure), pending != nil {
+      actions.append(
+        SceneEditAlertAction(id: "sceneEditAlert.retry", title: "Retry", isCancel: false) {
+          store in
+          // WP14 P4 STAGED PRE-FIX — reads the payload off the store when it RUNS.
+          Task { await store.retrySceneEdit() }
+        })
+    }
+    actions.append(
+      SceneEditAlertAction(id: "sceneEditAlert.dismiss", title: "OK", isCancel: true) { store in
+        store.dismissSceneEditError()
+      })
+    return actions
+  }
+}
+
 /// The decisions a scene edit is made of, over values only.
 enum SceneEditPlanner {
 
@@ -225,6 +268,31 @@ enum SceneEditPlanner {
       if let first = members[stackID]?.first { return first.id }
     }
     return nil
+  }
+
+  /// The time a browse row sits at in the ONE order this stream has: a scene's STORED anchor, and
+  /// a loose photograph's capture time. Nil where the row has neither.
+  static func streamTime(of row: SceneBrowseRow) -> Date? {
+    switch row {
+    case .stack(let stack): return stack.anchorTakenAt
+    case .image(let image): return image.capturedAt
+    }
+  }
+
+  /// Where a row the reloaded page does not contain belongs in the loaded window.
+  ///
+  /// Chronological ascending, which is the only order `GET /api/browse/stacks` serves (ADR-0005
+  /// decision 1) and the order the page was fetched in. A row with no time sorts to the END rather
+  /// than to the top, for the same reason a scene with no anchor is offered last as a merge
+  /// target: it has no place in capture order, and inventing one at the front would put it where
+  /// the reader is looking.
+  static func insertionIndex(for anchor: Date?, in rows: [SceneBrowseRow]) -> Int {
+    guard let anchor else { return rows.count }
+    for (index, row) in rows.enumerated() {
+      guard let time = streamTime(of: row) else { return index }
+      if time > anchor { return index }
+    }
+    return rows.count
   }
 
   /// Which scenes are open after the edit: everything that was open and did not dissolve, plus
