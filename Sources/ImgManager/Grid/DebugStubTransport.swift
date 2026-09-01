@@ -12,6 +12,22 @@
   /// `operationID`, exactly like the test-target `GridStubTransport` — this is its Debug-build
   /// sibling, for retained SCREENSHOT evidence rather than `swift test`.
   actor DebugStubTransport: ClientTransport {
+    /// WP16 P2 (IMGMGR-298): the fixture counter this transport reports facet requests to. Held
+    /// as a stored reference rather than reached for at each call site so the object incremented
+    /// is unambiguously the object `ImgManagerApp` handed over and `GridView` observes.
+    ///
+    /// Optional-with-nil rather than the `= .shared` default argument the phase's plan sketched:
+    /// `DebugProbe` is `@MainActor`, so `.shared` is a MainActor-isolated expression, and an
+    /// actor's initializer is nonisolated — a MainActor default argument on it is rejected at the
+    /// declaration (SE-0411 evaluates default arguments in the caller's isolation). Resolving
+    /// `?? .shared` inside the `MainActor.run` hop below is the same singleton, on the isolation
+    /// domain that can name it.
+    private let probe: DebugProbe?
+
+    init(probe: DebugProbe? = nil) {
+      self.probe = probe
+    }
+
     /// A minimal valid 1×1 JPEG — the last-resort fallback where no drawing API exists.
     private static let tinyJPEG = Data(
       base64Encoded:
@@ -45,6 +61,13 @@
         // client-side tally, and the screenshot evidence is where that shows up.
         return try jsonResponse(.ok, Self.fixtureImageGroups())
       case Operations.ImageFacetsApiFacetsGet.id:
+        // WP16 P2 (IMGMGR-298): counted BEFORE the response goes back, so a UI test can observe
+        // that the facets fetch ran at all without the inspector ever having been on screen —
+        // the one observation showing the inspector cannot make, because showing it is what
+        // starts the fetch. Copied into a local first: the closure is `@Sendable`, so reading
+        // `self.probe` inside it would capture this actor's isolated state.
+        let probe = self.probe
+        await MainActor.run { (probe ?? .shared).facetsRequests += 1 }
         return try jsonResponse(
           .ok,
           Components.Schemas.ImageFacets(mark: [.init(count: 3, value: "pick")], total: 12))
@@ -420,6 +443,18 @@
     /// fixture's screenshot changes.
     static var enterSceneMode: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestEnterSceneMode")
+    }
+
+    /// WP16 P2 (IMGMGR-298): a SEVENTH, independent launch argument. Decision 4 makes the
+    /// Regular-3 inspector collapsible, and `FacetsWithoutInspectorUITests` has to observe the
+    /// facets fetch while the inspector has NEVER been on screen — tapping the chrome control to
+    /// collapse it would put it on screen first, which is exactly the observation that proves
+    /// nothing. So this starts Regular-3 already collapsed, through the same
+    /// `RootView.showRegular3Inspector` state the shipped control toggles, never a second code
+    /// path. Independent of every flag above and of `-UITestStubGrid`'s own effects; Debug-only,
+    /// like all of them, because a Release archive strips this whole file.
+    static var startsWithInspectorHidden: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestInspectorHidden")
     }
   }
 

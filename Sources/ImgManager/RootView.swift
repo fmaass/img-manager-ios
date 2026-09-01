@@ -51,6 +51,18 @@ struct RootView: View {
   private let heroLoader: HeroThumbnailLoader
   @State private var selectedFolderID: Int?
   @State private var showInspector = false
+  /// WP16 P2 (IMGMGR-298), design record [/link/3332] decision 4 "both panels collapsible":
+  /// whether Regular-3's inspector COLUMN is rendered. Its own flag rather than a second use of
+  /// `showInspector`, because the two mean opposite things at rest — the sheet and the slide-over
+  /// start hidden and are opened, the column starts SHOWN and is hidden. Defaulting this to false
+  /// would be a capability loss dressed as a collapse. Deliberately NOT persisted across launches
+  /// (no `GridPreferences` key): IMGMGR-298 does not ask for it, and a reader who quit with the
+  /// inspector hidden should not find the workspace's own third column missing next launch.
+  #if DEBUG
+    @State private var showRegular3Inspector = !DebugStubLaunch.startsWithInspectorHidden
+  #else
+    @State private var showRegular3Inspector = true
+  #endif
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
   /// WP13 P11 (IMGMGR-220): the scene value this window was opened (or restored) with, or nil for
@@ -61,13 +73,20 @@ struct RootView: View {
   /// The scene-level window action, read here because `RootView` is the app's composition root
   /// and the only view that spans both the menu bar's focused values and the workspace.
   @Environment(\.openWindow) private var openWindow
+  /// WP16 P2 (IMGMGR-298): the workspace-level facets-refresh trigger, injectable for exactly the
+  /// reason `GridView.pointerGestureInstaller` is — see `FacetsRefreshInstaller`'s own doc
+  /// comment. INTERNAL, like that one, so `RootViewFacetsWiringTests` can substitute a spy;
+  /// `.live` is the only installer the running app ever uses.
+  let facetsRefreshInstaller: FacetsRefreshInstaller
 
   init(
     shoot: ShootSceneValue? = nil,
     transport: (any ClientTransport)? = nil,
-    credentialStore: CredentialStore = CredentialStore()
+    credentialStore: CredentialStore = CredentialStore(),
+    facetsRefreshInstaller: FacetsRefreshInstaller = .live
   ) {
     self.initialShoot = shoot
+    self.facetsRefreshInstaller = facetsRefreshInstaller
     // Breaks an otherwise-circular wire: the transport needs to CALL into `AuthSession` on a
     // terminal 401 (diff-gate round 1, blocker 3), but `AuthSession` needs the CLIENT, which
     // needs the transport, to be constructed first. The box's `handler` is written exactly
@@ -197,7 +216,20 @@ struct RootView: View {
     }
   }
 
-  private var workspace: some View {
+  /// INTERNAL rather than private (WP16 P2 / IMGMGR-298). `workspace` is where the facets
+  /// trigger is now installed, and the assertion that it IS installed has to evaluate this
+  /// property — a private one is unreachable from a test even with `@testable import`, which is
+  /// what the phase's round-2 gate found. Exactly the visibility `GridView` already gives
+  /// `pointerGestureInstaller` for the same reason.
+  ///
+  /// The attach wraps the chrome rather than sitting inside it so the trigger is hosted by the
+  /// whole workspace — mounted in every layout mode and every collapse state — rather than by
+  /// any one column that a width or a toggle can remove.
+  var workspace: some View {
+    facetsRefreshInstaller.attach(workspaceChrome, store: gridStore)
+  }
+
+  private var workspaceChrome: some View {
     Group {
       if layoutMode == .regular3 {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -463,12 +495,22 @@ struct RootView: View {
   }
 
   /// The sheet presents ONLY where the resolved presentation IS the sheet. One `showInspector`
-  /// state drives every presentation, so there is no width at which two of them could be on
-  /// screen at once, and no second flag to drift out of step.
+  /// state drives every non-permanent presentation, so there is no width at which two of them
+  /// could be on screen at once, and no second flag to drift out of step.
   private var inspectorSheetBinding: Binding<Bool> {
     Binding(
       get: { showInspector && inspectorPresentation.isModal },
       set: { showInspector = $0 })
+  }
+
+  /// WP16 P2 (IMGMGR-298): which flag the persistent chrome control owns at the CURRENT width,
+  /// resolved in ONE place — the same discipline `inspectorSheetBinding` above follows, and for
+  /// the same reason. The column and the two transient presentations cannot share one flag (they
+  /// mean opposite things at rest, see `showRegular3Inspector`), so the risk is three surfaces
+  /// disagreeing about which one a tap moved. Reading the presentation here is what makes that
+  /// structurally impossible rather than a rule three call sites have to remember.
+  private var inspectorVisibilityBinding: Binding<Bool> {
+    inspectorPresentation == .permanentColumn ? $showRegular3Inspector : $showInspector
   }
 
   /// [/link/3220] §2.2's side panel: anchored to the trailing edge of the grid pane,
@@ -505,7 +547,9 @@ struct RootView: View {
       // A TOGGLE, not a one-way open: the slide-over has no sheet grabber to dismiss it, so the
       // persistent chrome control is also how it closes (zero gesture-only actions). At Compact
       // the sheet covers this control while it is up, so toggling reads exactly as before.
-      withAnimation(.snappy(duration: 0.25)) { showInspector.toggle() }
+      // WP16 P2 (IMGMGR-298): at Regular-3 the same tap hides and restores the COLUMN — which
+      // flag that is comes from `inspectorVisibilityBinding`, never from a branch written here.
+      withAnimation(.snappy(duration: 0.25)) { inspectorVisibilityBinding.wrappedValue.toggle() }
     } label: {
       if activeFilters > 0 {
         // IMGMGR-224: the spoken phrasing rides the TITLE TEXT itself. A `ToolbarItem`'s bar item
@@ -536,9 +580,13 @@ struct RootView: View {
     .accessibilityIdentifier("inspectorChromeButton")
   }
 
+  /// WP16 P2 (IMGMGR-298): the third column renders only while Regular-3 AND the reader has not
+  /// collapsed it. `InspectorPresentation` gains no case for the collapsed state — the
+  /// presentation at this width is still a column; whether it is on screen is view state, the
+  /// same relationship `showInspector` already has with the sheet and the slide-over.
   private var detailColumn: some View {
     Group {
-      if layoutMode == .regular3 {
+      if layoutMode == .regular3 && showRegular3Inspector {
         InspectorView(store: gridStore, service: gridService)
       } else {
         EmptyView()

@@ -636,20 +636,21 @@ final class GridStore {
   private(set) var facets: Components.Schemas.ImageFacets?
 
   /// The query the published `facets` describes. `refreshFacets` is a no-op while it already
-  /// matches, so the inspector's `.task(id: queryIdentity)` re-firing right after a tap that
-  /// already refreshed does not fetch the same counts a second time.
+  /// matches, so the workspace's `.task(id: queryIdentity)` (WP16 P2's `FacetsRefreshInstaller`,
+  /// formerly the inspector's own) re-firing right after a tap that already refreshed does not
+  /// fetch the same counts a second time.
   private(set) var facetsIdentity: GridImagesQuery?
 
   /// The refresh currently in flight, recorded SYNCHRONOUSLY — before this method's first
   /// suspension — so a second caller for the SAME query joins it instead of issuing a duplicate
   /// request. This is the reentrancy the MainActor does not prevent: `applyFacetFilter` sets
-  /// `query` and then suspends inside `reloadFirstPage`, and the inspector's
+  /// `query` and then suspends inside `reloadFirstPage`, and the workspace's
   /// `.task(id: queryIdentity)` fires for the NEW identity inside that window. With the identity
   /// only written after the network await, both calls passed the guard below and whichever
   /// response came home last won.
   private var facetsRefresh: (identity: GridImagesQuery, task: Task<Void, Never>)?
 
-  /// Idempotent per query: the inspector's `.task(id:)` calls this on appearance and on every
+  /// Idempotent per query: the workspace's `.task(id:)` calls this on appearance and on every
   /// query-identity change, and the tap handlers below call it after they mutate the filter.
   /// A response that arrives after the query moved on is discarded (same discipline as the
   /// paging generation fence), and a failed fetch leaves the last good counts standing rather

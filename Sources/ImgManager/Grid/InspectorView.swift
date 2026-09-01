@@ -44,11 +44,12 @@ struct InspectorView: View {
       guard let id = store.focusedImageID else { return }
       detail = try? await service.detail(imageID: id)
     }
-    .task(id: store.queryIdentity) {
-      // The trigger itself lives in the store (`refreshFacets` is idempotent per query), so the
-      // "a filter change refetches the counts" chain is testable; this modifier only says WHEN.
-      await store.refreshFacets()
-    }
+    // WP16 P2 (IMGMGR-298): the `.task(id: store.queryIdentity)` that used to sit here is gone.
+    // It was the ONLY trigger for `GridStore.refreshFacets()`, so the counts existed only where
+    // this view did — and decision 4 makes the Regular-3 column collapsible, removing the one
+    // width at which it always fired. The trigger now lives on `RootView.workspace` through
+    // `FacetsRefreshInstaller`, which is mounted in every layout mode and every collapse state.
+    // This view still renders `store.facets` and is otherwise unchanged.
   }
 
   @ViewBuilder
@@ -152,8 +153,10 @@ struct InspectorView: View {
   /// that is ALREADY active clears the dimension (one value per dimension — the web's chip
   /// semantics). Every tap routes through `GridStore.applyFilterChange`, which is what fires the
   /// "any effective filter change resets selection" rule and the generation-fenced reload; the
-  /// Stats counts refresh with it because the inspector's own `.task(id: store.queryIdentity)`
-  /// re-fires on the same mutation. A dimension the server sent nothing for renders as absence.
+  /// Stats counts refresh with it because the workspace's `.task(id: store.queryIdentity)`
+  /// (WP16 P2's `FacetsRefreshInstaller`) re-fires on the same mutation — from a host that is on
+  /// screen whether or not this view is. A dimension the server sent nothing for renders as
+  /// absence.
   @ViewBuilder
   private func facetRows(
     _ field: InspectorFacetField, _ facets: Components.Schemas.ImageFacets
@@ -192,9 +195,11 @@ struct InspectorView: View {
 }
 
 extension GridStore {
-  /// A cheap, comparable stand-in for "the current query generation" the inspector's Stats
-  /// fetch keys its `.task(id:)` on — recomputed whenever `applyFilterChange` actually changes
-  /// `query` (it stays equal across a no-op call, correctly not re-firing the facets fetch).
+  /// A cheap, comparable stand-in for "the current query generation" the Stats fetch keys its
+  /// `.task(id:)` on — recomputed whenever `applyFilterChange` actually changes `query` (it stays
+  /// equal across a no-op call, correctly not re-firing the facets fetch). WP16 P2 (IMGMGR-298)
+  /// moved that `.task` from this view to `RootView.workspace` via `FacetsRefreshInstaller`; the
+  /// identity it keys on is unchanged, which is why the move cannot alter WHEN counts refetch.
   var queryIdentity: GridImagesQuery { query }
   var currentQuery: GridImagesQuery { query }
 }

@@ -19,18 +19,28 @@ enum InspectorPresentation: Equatable {
   /// Regular-2: a non-modal panel anchored to the trailing edge of the grid pane. The grid stays
   /// visible AND interactive beside it ([/link/3220] §2.2).
   case slideOver
-  /// Regular-3: the permanent third column (`RootView.detailColumn`) — no chrome control needed
-  /// because the inspector is never absent.
+  /// Regular-3: the inspector as a real third column (`RootView.detailColumn`), shown by default.
+  /// WP16 P2 (IMGMGR-298) makes that column COLLAPSIBLE — see `usesChromeControl`; the case name
+  /// still describes the presentation (a column, not a sheet or an overlay), which is what every
+  /// call site branches on.
   case permanentColumn
 
   /// True only where the inspector takes the screen and the grid beneath it stops responding.
-  /// This is the property the phase turns over at Regular-2, so this is the property tested.
+  /// This is the property WP13 P10 turned over at Regular-2, so this is the property tested.
   var isModal: Bool { self == .sheet }
 
-  /// Both non-permanent presentations are opened — and, for the slide-over, closed again — from
-  /// the SAME persistent chrome control, the Info button that also carries the active-filter
-  /// count. Never a second, width-specific surface.
-  var usesChromeControl: Bool { self != .permanentColumn }
+  /// EVERY presentation is opened — and closed again — from the SAME persistent chrome control,
+  /// the Info button that also carries the active-filter count. Never a second, width-specific
+  /// surface.
+  ///
+  /// Constant, and deliberately still a property rather than an inlined `true`. WP16 P2
+  /// (IMGMGR-298, design record [/link/3332] decision 4: "both panels collapsible") reversed the
+  /// one case that used to answer false — at Regular-3 the inspector was permanent, so there was
+  /// nothing for a control to open. It is now hideable there too, so the answer is the same at
+  /// all three widths. Keeping the property is what keeps `RootView`'s toolbar condition, the
+  /// pinned unit test and this reversal in ONE named place: a future width that genuinely has no
+  /// chrome control changes this and nothing else.
+  var usesChromeControl: Bool { true }
 }
 
 /// The one place the layout mode is turned into an inspector presentation.
