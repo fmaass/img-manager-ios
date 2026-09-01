@@ -2195,6 +2195,31 @@ struct GridStoreTests {
 
   // MARK: - WP14: the mutation lane's silent races (IMGMGR-204, IMGMGR-250, IMGMGR-251)
 
+  /// Suspends until `count` calls are genuinely QUEUED on the mutation lane behind its holder.
+  ///
+  /// A CONDITION, never a fixed number of yields: it cannot pass before the milestone actually
+  /// holds, so a test gated on it either proves the interleaving it claims or hangs — it can
+  /// never quietly assert against a call that had not started yet.
+  private func waitUntilQueuedOnLane(_ store: GridStore, count: Int = 1) async {
+    while store.laneWaiterCount < count {
+      await Task.yield()
+    }
+  }
+
+  /// Takes the mutation lane with a refresh whose own read is held open, so a caller can queue
+  /// behind it deterministically. Returns the in-flight refresh to await after the release.
+  ///
+  /// A refresh rather than a mark: it holds the lane without spending a `setMarkState` call, so a
+  /// test that counts mark writes counts only the writes it is actually asking about.
+  private func holdLaneWithRefresh(_ store: GridStore, _ transport: GridStubTransport) async
+    -> Task<Bool, Never>
+  {
+    await transport.holdNextListImagesRequest()
+    let refresh = Task { @MainActor in await store.authoritativeRefresh() }
+    await transport.waitUntilListImagesStarted()
+    return refresh
+  }
+
   @Test(
     "IMGMGR-204: a tag write queued behind an authoritative refresh REPORTS the ids that refresh pruned, instead of silently writing fewer than it was asked to"
   )
@@ -2220,11 +2245,13 @@ struct GridStoreTests {
     await transport.setTagsOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r1")])))
     async let tagCall: Void = store.addTag("landscape", to: [1, 2])
-    // Two yields, the same proof `addTagQueuesBehindInFlightMutation` uses: the tag write has
-    // reached its (network-free) await and issued NOTHING — it is genuinely queued behind the
-    // refresh, which is the only way the prune can get underneath it.
-    await Task.yield()
-    await Task.yield()
+    // Gated on the MILESTONE, not on a guessed number of yields: this cannot proceed until the
+    // tag write has actually reached `acquireLaneQueueing()` and suspended on the lane — which
+    // is exactly the moment that guarantees it already captured its submission-time id set, with
+    // the prune still ahead of it. A fixed yield count could pass before that and quietly test
+    // nothing.
+    await waitUntilQueuedOnLane(store)
+    // ...and it issued NOTHING to get there: genuinely queued, not refused and not dropped.
     #expect(await transport.callCount(Operations.EditMarkTagsApiMarksTagsPost.id) == 0)
 
     await transport.releaseListImages()
@@ -2288,6 +2315,124 @@ struct GridStoreTests {
     #expect(await transport.lastMarkStateRequest?.imageIds == [2])
     // Applied, not merely reported as unapplied.
     #expect(store.droppedWriteIDs.isEmpty)
+  }
+
+  @Test(
+    "IMGMGR-250 (gate round 1, B1): every crossing queued during ONE lane wait coalesces into a single write with a single undo entry"
+  )
+  func crossingsQueuedDuringOneLaneWaitCoalesceIntoOneWrite() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: (1...3).map { makeImage(id: $0, revision: "r0") }, limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.pickLock.forceLatch(.pick)
+    store.beginPointerDrag()
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 3, requested: 3,
+          revisions: (1...3).map { .init(imageId: $0, revision: "r1") })))
+
+    // The lane is ALREADY taken when the drag starts — the ticket's own scenario, and the one
+    // where the drain has to wait rather than write straight through.
+    let refresh = await holdLaneWithRefresh(store, transport)
+    async let crossOne: Void = store.pointerDragCrossed(.image(1))
+    await waitUntilQueuedOnLane(store)  // the drain owner is genuinely parked on the lane
+
+    // ...and the pointer keeps moving while it waits. Both return at once: a drain is live.
+    await store.pointerDragCrossed(.image(2))
+    await store.pointerDragCrossed(.image(3))
+
+    await transport.releaseListImages()
+    _ = await refresh.value
+    _ = await crossOne
+
+    // ONE write. TWO would mean the first crossing dequeued itself before the wait and left the
+    // rest to a second batch — whose undo entry overwrites the first's, so the very first tile
+    // the reader painted becomes un-undoable while looking exactly as marked as the others.
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
+    #expect(await transport.lastMarkStateRequest?.imageIds.sorted() == [1, 2, 3])
+    #expect(
+      store.undo.entry?.priorStates.map(\.imageID).sorted() == [1, 2, 3],
+      "the undo slot does not cover every tile the one write marked")
+    for id in 1...3 {
+      #expect(MarkStateValue(store.images.first(where: { $0.id == id })?.mark.state) == .pick)
+    }
+    #expect(store.droppedWriteIDs.isEmpty)
+  }
+
+  @Test(
+    "IMGMGR-250 (gate round 1, B2): a crossing whose query changed DURING the lane wait is discarded — never written into the new scope, never reported dropped"
+  )
+  func aCrossingWhoseScopeChangedDuringTheLaneWaitIsDiscarded() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.pickLock.forceLatch(.pick)
+    store.beginPointerDrag()
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])))
+
+    let refresh = await holdLaneWithRefresh(store, transport)
+    async let crossOne: Void = store.pointerDragCrossed(.image(1))
+    await waitUntilQueuedOnLane(store)
+
+    // The reader leaves the scope while that crossing is still parked. A filter change does not
+    // take the lane, so it lands squarely INSIDE the wait — and its reload leaves id 1 loaded, so
+    // a write into the new scope would genuinely go out rather than being stopped by absence.
+    await store.applyFilterChange { $0.mark = "pick" }
+    #expect(store.images.map(\.id) == [1, 2])  // POSITIVE CONTROL: writable HERE, if anything asked
+
+    await transport.releaseListImages()
+    _ = await refresh.value
+    _ = await crossOne
+
+    // A crossing describes a photograph in the query it was made in. That query is gone, so the
+    // crossing goes with it: nothing is written into a scope the reader never painted...
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 0)
+    #expect(await transport.lastMarkStateRequest == nil)
+    #expect(MarkStateValue(store.images.first(where: { $0.id == 1 })?.mark.state) == .none)
+    // ...and no "couldn't write this" notice either. It was not dropped, it was abandoned, and
+    // saying otherwise would put a warning on every scope change made mid-drag.
+    #expect(store.droppedWriteIDs.isEmpty)
+  }
+
+  @Test(
+    "IMGMGR-204 (gate round 1, B4): a SUCCESSFUL refresh of the same scope clears the dropped-write notice — it names photographs from a window that no longer stands"
+  )
+  func aSuccessfulRefreshOfTheSameScopeClearsTheDroppedWriteNotice() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    // Earn a real notice, exactly the way IMGMGR-204's own test earns one.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 200, nextCursor: nil))
+    let refresh = await holdLaneWithRefresh(store, transport)
+    await transport.setTagsOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r1")])))
+    async let tagCall: Void = store.addTag("landscape", to: [1, 2])
+    await waitUntilQueuedOnLane(store)
+    await transport.releaseListImages()
+    _ = await refresh.value
+    _ = await tagCall
+    // POSITIVE CONTROL: the notice really is standing before the refresh below.
+    #expect(store.droppedWriteIDs == [1])
+
+    await store.authoritativeRefresh()
+
+    // A refresh republishes the very window the notice was naming photographs from. Same shoot,
+    // so `reloadFirstPage`'s own clear never runs — without this the notice outlives the state it
+    // describes and the reader is warned about a set that is no longer on screen.
+    #expect(store.droppedWriteIDs.isEmpty)
+    #expect(GridNotices.notices(store: store).isEmpty)
   }
 
   @Test(

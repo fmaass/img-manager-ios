@@ -1821,6 +1821,17 @@ final class GridStore {
   /// FIFO of calls waiting for a busy lane -- see `acquireLaneQueueing()`/`releaseLane()`.
   private var laneWaiters: [CheckedContinuation<Void, Never>] = []
 
+  /// How many calls are queued BEHIND the lane's current holder.
+  ///
+  /// Exposed for the same reason `isMutatingMark` and `groupHeadersIdentity` are — a test has to
+  /// be able to see it. "This call has genuinely reached the lane and suspended" is the milestone
+  /// every queueing-interleaving test needs to gate on: without it a test can only guess with
+  /// `Task.yield()`, and for the latched-drag queue a guess that lands wrong does not merely
+  /// weaken the assertion, it HANGS — an unscheduled first crossing makes the next awaited
+  /// crossing the drain owner, which then blocks on the very lane the test has not released yet.
+  /// A pure read of the FIFO above; nothing acts on it.
+  var laneWaiterCount: Int { laneWaiters.count }
+
   /// The REFUSING acquisition `applyMark`/`undoLastMark` use: `false` (no-op for the caller) if
   /// the lane is already held by anything (another mutation OR a refresh/tag-write in progress).
   private func tryAcquireLane() -> Bool {
