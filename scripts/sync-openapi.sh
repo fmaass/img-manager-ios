@@ -45,27 +45,37 @@ dest="$repo_root/Packages/ImgManagerAPI/Sources/ImgManagerAPI/openapi.json"
 provenance="$repo_root/Packages/ImgManagerAPI/OPENAPI_SOURCE"
 mkdir -p "$(dirname "$dest")" || die "cannot create the destination directory"
 
+# CANDIDATE-FILE FLOW (codex gate round 2). The live artifact is not touched until every check
+# has passed: the raw document is fetched into a CANDIDATE, the predicate's own probes and every
+# refusal check run against the candidate, the canonicalization rewrites the candidate, and only a
+# fully successful run renames it over `$dest`. A refusal therefore leaves the previous artifact
+# byte-identical, and an ABSENT `$dest` stays absent.
+#
+# The save-and-restore this replaces could do neither reliably: it fetched onto the live file
+# first, its `mktemp`/`cp` were unchecked, and with no previous file there was nothing to restore
+# — so a refused sync left the raw, un-canonicalized document in place, which still builds and
+# silently drops every nullable model reference.
+#
+# The candidate is created IN the destination directory rather than `$TMPDIR`, because `mv` is
+# only atomic within one filesystem; across devices it is a copy that can fail half-written. It is
+# named with a leading dot and removed by the EXIT trap on every path, including a refusal.
+candidate="$(mktemp "$(dirname "$dest")/.openapi.candidate.XXXXXX")" \
+  || die "cannot create a candidate file beside $dest" 1
+cleanup_candidate() {
+  [ -n "${candidate:-}" ] && rm -f "$candidate"
+  return 0
+}
+trap cleanup_candidate EXIT INT TERM
+
 fetch() {
-  local path="$1" dest="$2"
-  git -C "$src" show "$sha:$path" > "$dest.tmp" || { rm -f "$dest.tmp"; die "cannot read $path at $sha" 1; }
-  [ -s "$dest.tmp" ] || { rm -f "$dest.tmp"; die "$path is empty at $sha" 1; }
-  mv "$dest.tmp" "$dest"
+  local path="$1" target="$2"
+  git -C "$src" show "$sha:$path" > "$target" || die "cannot read $path at $sha" 1
+  [ -s "$target" ] || die "$path is empty at $sha" 1
   printf '  %-28s <- %s\n' "$(basename "$dest")" "$path"
 }
 
 echo "syncing from $src at $sha"
-# The canonicalization below can REFUSE, and `fetch` has already overwritten the destination by
-# then — which would leave the package holding a raw, un-canonicalized document that still builds
-# and silently drops fields. Observed while testing the refusal path, so the previous artifact is
-# kept and put back on any refusal: a refused sync changes nothing at all.
-previous="$(mktemp)"
-if [ -f "$dest" ]; then cp "$dest" "$previous"; else rm -f "$previous"; previous=""; fi
-restore_previous() {
-  [ -n "$previous" ] && [ -f "$previous" ] && cp "$previous" "$dest"
-  [ -n "$previous" ] && rm -f "$previous"
-  return 0
-}
-fetch frontend/openapi.json "$dest"
+fetch frontend/openapi.json "$candidate"
 
 # --- Nullable model references (IMGMGR-249) -------------------------------------------------
 # img-manager canonicalises SCALAR nullables to the OAS 3.1 `type: [X, "null"]` idiom natively —
@@ -93,7 +103,7 @@ fetch frontend/openapi.json "$dest"
 # byte (verified), so diffing the result against
 # `git -C <img-manager> show <sha>:frontend/openapi.json` shows the rewritten sites and nothing
 # else.
-canonicalized="$(python3 - "$dest" <<'PY'
+canonicalized="$(python3 - "$candidate" <<'PY'
 import json, sys
 
 path = sys.argv[1]
@@ -202,11 +212,32 @@ for line in rewritten:
 for pointer in remaining(doc):
     print("still-dropped %s" % pointer)
 PY
-)" || { restore_previous; die "nullable-ref canonicalization refused (the previous vendored document is untouched)" 1; }
-canonicalized_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote ')"
-dropped_count="$(printf '%s\n' "$canonicalized" | grep -c '^still-dropped ')"
+)" || die "nullable-ref canonicalization refused — $dest is untouched" 1
+
+# `grep -c` exits 1 on a legitimate zero, so the counts are validated by SHAPE rather than by that
+# exit code — a non-numeric here would mean the python step printed something unexpected, which
+# must not reach the provenance record.
+canonicalized_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote ' || true)"
+dropped_count="$(printf '%s\n' "$canonicalized" | grep -c '^still-dropped ' || true)"
+case "$canonicalized_count$dropped_count" in
+  *[!0-9]*|"") die "unreadable canonicalization counts ('$canonicalized_count'/'$dropped_count')" 1 ;;
+esac
 echo "canonicalized $canonicalized_count nullable model references; $dropped_count still dropped:"
 printf '%s\n' "$canonicalized" | sed 's/^/  /'
+
+# Every check has passed. Install the candidate — the ONE point at which the live artifact moves.
+# `mktemp` makes the candidate 0600, so the mode has to be set deliberately: the file it replaces
+# keeps its own (a sync must not quietly re-permission a tracked file, and git would not record
+# the change), and a first vendoring gets ordinary 644.
+if [ -f "$dest" ]; then
+  dest_mode="$(stat -c '%a' "$dest" 2>/dev/null || stat -f '%Lp' "$dest" 2>/dev/null)" \
+    || die "cannot read the current mode of $dest" 1
+else
+  dest_mode=644
+fi
+chmod "$dest_mode" "$candidate" || die "cannot set the candidate's file mode" 1
+mv "$candidate" "$dest" || die "cannot install the vendored document at $dest" 1
+candidate=""  # installed: the EXIT trap must not delete it
 
 {
   echo "# Provenance of the img-manager artefact vendored into this package."
@@ -220,6 +251,5 @@ printf '%s\n' "$canonicalized" | sed 's/^/  /'
   echo "still_dropped_nullable_unions=$dropped_count"
 } > "$provenance" || die "cannot write $provenance" 1
 
-[ -n "$previous" ] && rm -f "$previous"
 echo "recorded $provenance:"
 sed 's/^/  /' "$provenance"
