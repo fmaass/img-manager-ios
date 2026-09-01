@@ -1149,8 +1149,22 @@ final class GridStore {
       guard generation == loadGeneration else { return }
       // Dedup by display id, the same guarantee `mergeImages` gives the flat grid: a server that
       // repeats a row across a page boundary must never produce two cards for one scene.
-      let known = Set(sceneRows.map(\.displayID))
-      sceneRows.append(contentsOf: page.rows.filter { !known.contains($0.displayID) })
+      //
+      // And an ORDER-PRESERVING merge rather than a blind append (codex gate round 2). The window
+      // can hold a row this pager never fetched — `reloadAfterTopologyEdit` splices an edited
+      // scene back in by its anchor when the reloaded first page does not carry it — so rows
+      // arriving afterwards can belong BEFORE it, and appending them would break the one thing
+      // this browse promises. ONE code path, not a special case: with no spliced row present every
+      // incoming row is at or after everything loaded, `insertionIndex` answers "the end", and
+      // this is exactly the append it has always been.
+      var known = Set(sceneRows.map(\.displayID))
+      for row in page.rows where !known.contains(row.displayID) {
+        sceneRows.insert(
+          row,
+          at: SceneEditPlanner.insertionIndex(
+            for: SceneEditPlanner.streamTime(of: row), in: sceneRows))
+        known.insert(row.displayID)
+      }
       sceneNextCursor = page.nextCursor
       selection.pageAppended()
       lastPageLoadError = nil

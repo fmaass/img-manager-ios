@@ -542,6 +542,12 @@ struct GridStoreSceneEditTests {
     // No anchor: the end, never the head the reader is looking at.
     #expect(SceneEditPlanner.insertionIndex(for: nil, in: rows) == 2)
     #expect(SceneEditPlanner.insertionIndex(for: after, in: []) == 0)
+
+    // An UNDATED row already in the window is stepped over, not treated as a boundary — which is
+    // what keeps ordinary paging a plain append however the server placed it.
+    let withUndatedTail = rows + [.image(makeImage(id: 21))]
+    #expect(SceneEditPlanner.insertionIndex(for: after, in: withUndatedTail) == 3)
+    #expect(SceneEditPlanner.insertionIndex(for: between, in: withUndatedTail) == 1)
   }
 
   // MARK: - Decision 3: extraction is the selection ∩ the subject's membership

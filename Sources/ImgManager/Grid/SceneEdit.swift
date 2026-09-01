@@ -280,17 +280,25 @@ enum SceneEditPlanner {
     }
   }
 
-  /// Where a row the reloaded page does not contain belongs in the loaded window.
+  /// Where a row belongs in the loaded window — the ONE comparator both the topology coordinator's
+  /// splice and the scene pager's append go through.
   ///
   /// Chronological ascending, which is the only order `GET /api/browse/stacks` serves (ADR-0005
-  /// decision 1) and the order the page was fetched in. A row with no time sorts to the END rather
-  /// than to the top, for the same reason a scene with no anchor is offered last as a merge
-  /// target: it has no place in capture order, and inventing one at the front would put it where
-  /// the reader is looking.
+  /// decision 1) and the order every page was fetched in. An incoming row with no time sorts to
+  /// the END, for the same reason a scene with no anchor is offered last as a merge target: it has
+  /// no place in capture order, and inventing one at the front would put it where the reader is
+  /// looking.
+  ///
+  /// An UNDATED row already in the window is stepped over rather than treated as a boundary, and
+  /// that single `continue` is what makes this degenerate to a plain append for ordinary paging:
+  /// a page whose rows are at or after everything loaded finds no later row and lands at the end,
+  /// whatever undated rows the server chose to put there and wherever it put them. Stopping at one
+  /// instead would silently re-order normal pages around it, which is a real behaviour change to
+  /// pay for a placement the server, not this client, decides.
   static func insertionIndex(for anchor: Date?, in rows: [SceneBrowseRow]) -> Int {
     guard let anchor else { return rows.count }
     for (index, row) in rows.enumerated() {
-      guard let time = streamTime(of: row) else { return index }
+      guard let time = streamTime(of: row) else { continue }
       if time > anchor { return index }
     }
     return rows.count
