@@ -141,12 +141,13 @@ enum SceneEditAlert {
     -> [SceneEditAlertAction]
   {
     var actions: [SceneEditAlertAction] = []
-    if SceneEditCopy.offersRetry(failure), pending != nil {
+    if SceneEditCopy.offersRetry(failure), let pending {
       actions.append(
         SceneEditAlertAction(id: "sceneEditAlert.retry", title: "Retry", isCancel: false) {
           store in
-          // WP14 P4 STAGED PRE-FIX — reads the payload off the store when it RUNS.
-          Task { await store.retrySceneEdit() }
+          // CAPTURED, not read: `pending` is bound here, when the alert is built, so the
+          // dismissal SwiftUI runs before this action cannot take the payload away from it.
+          Task { await store.replaySceneEdit(pending) }
         })
     }
     actions.append(

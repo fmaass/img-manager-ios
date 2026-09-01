@@ -1470,12 +1470,17 @@ final class GridStore {
         focusedImageID: subject.focusedImageID))
   }
 
-  /// Run the edit the busy answer refused, exactly as it was asked the first time.
-  func retrySceneEdit() async {
-    guard let frozen = pendingSceneEdit else { return }
+  /// Run the edit the busy answer refused, exactly as it was asked the first time — over the
+  /// payload the CALLER captured, never over what this store happens to hold when it runs.
+  ///
+  /// That is the whole difference between a retry that works and one that silently does nothing:
+  /// the only caller is the alert's Retry button, and SwiftUI runs the alert's dismissal — which
+  /// clears `pendingSceneEdit` — BEFORE the button's action. A no-argument version of this method
+  /// read that cleared value and sent nothing (codex gate, blocker 1; RED-proven).
+  func replaySceneEdit(_ request: SceneEditRequest) async {
     sceneEditError = nil
     pendingSceneEdit = nil
-    await runSceneEdit(frozen)
+    await runSceneEdit(request)
   }
 
   func dismissSceneEditError() {
@@ -1561,11 +1566,26 @@ final class GridStore {
     let reopen = SceneEditPlanner.scenesToReopen(
       previouslyExpanded: sceneExpanded, result: result)
     await reloadFirstPage()
-    let present = Set(
+    let generation = loadGeneration
+    var present = Set(
       sceneRows.compactMap { row -> Int? in
         guard case .stack(let stack) = row else { return nil }
         return stack.stackId
       })
+    // ENSURE, unconditionally (codex gate, blocker 2; RED-proven). The reload rebuilds the window
+    // from page ONE, and the scene the reader just edited is wherever they had scrolled to — so a
+    // result stack can be perfectly real and simply not in the reloaded page. Reopening only what
+    // that page happens to contain loses it entirely: not open, not completed, no focus, and the
+    // selection pruned out from under the reader. One `GET /api/stacks/{id}` per missing result
+    // puts the row back where its own anchor says it belongs, which is what the rest of this
+    // method then treats exactly like any other row.
+    for stackID in result.stackIds where !present.contains(stackID) {
+      guard let row = try? await service.stackRow(stackID: stackID, query: query) else { continue }
+      guard generation == loadGeneration else { return }
+      sceneRows.insert(
+        .stack(row), at: SceneEditPlanner.insertionIndex(for: row.anchorTakenAt, in: sceneRows))
+      present.insert(stackID)
+    }
     for stackID in reopen where present.contains(stackID) {
       await toggleSceneExpanded(stackID)
     }

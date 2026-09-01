@@ -467,7 +467,8 @@ struct GridStoreSceneEditTests {
   @Test("A row the reload dropped is placed by its anchor, never at the head of the window")
   func insertionIsChronological() {
     let rows: [SceneBrowseRow] = [
-      .stack(makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
+      .stack(
+        makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
       .image(makeImage(id: 20, captured: anchorT1)),
     ]
     let before = Date(timeIntervalSince1970: 1_699_000_000)
@@ -636,7 +637,8 @@ struct GridStoreSceneEditTests {
     store.focusedImageID = 1
     #expect(store.sceneExtractionSelection == [1, 2])
 
-    await store.retrySceneEdit()
+    let frozen = try #require(store.pendingSceneEdit)
+    await store.replaySceneEdit(frozen)
 
     let records = await transport.recordedStackEdits
     #expect(records.count == 2)
@@ -716,15 +718,29 @@ struct GridStoreSceneEditTests {
       ).map(\.id) == ["sceneEditAlert.dismiss"])
   }
 
-  @Test("Dismissing a busy answer abandons the retry — nothing replays afterwards")
+  /// Dismissal abandons the replay by DESTROYING THE PAYLOAD, which is what makes the alert built
+  /// afterwards offer no Retry at all. (The alert built BEFORE it keeps its captured payload on
+  /// purpose — that is `theAlertRetrySurvivesTheDismissalFiredBeforeIt`, and the two together are
+  /// the whole rule: the button you pressed always replays, and a button you never saw never
+  /// exists.)
+  @Test("Dismissing a busy answer abandons the retry — the next alert offers none")
   func dismissingTheBusyAnswerAbandonsTheRetry() async {
     let (store, transport) = await loadedEditableStore()
     await transport.setStackEditOutcome(.busy(retryAfterSeconds: nil))
     await store.splitFocusedScene()
     #expect(store.sceneEditError == .busy(retryAfterSeconds: nil))
+    // Positive control: while the refusal stands, a Retry IS offered.
+    #expect(
+      SceneEditAlert.actions(
+        for: .busy(retryAfterSeconds: nil), replaying: store.pendingSceneEdit
+      ).contains { $0.id == "sceneEditAlert.retry" })
 
     store.dismissSceneEditError()
-    await store.retrySceneEdit()
+    #expect(store.pendingSceneEdit == nil)
+    #expect(
+      SceneEditAlert.actions(
+        for: .busy(retryAfterSeconds: nil), replaying: store.pendingSceneEdit
+      ).map(\.id) == ["sceneEditAlert.dismiss"])
     #expect(await transport.recordedStackEdits.count == 1)
     #expect(store.sceneEditError == nil)
   }
