@@ -42,8 +42,15 @@ struct FilterPopoverModelTests {
 
   /// The acceptance criterion's own vector. The server groups by EXACT `SidecarMeta.rating` while
   /// the filter the row applies (`rating_min`) is a `>=`, so an exact-value count under that row
-  /// is by construction not "the live result count before applying" the decision asks for. A build
-  /// that showed the exact bucket returns 2 / 5 / 1 here and fails every one of these.
+  /// is by construction not "the live result count before applying" the decision asks for.
+  ///
+  /// The two vectors in play, spelled out so neither is quoted for the other (diff-gate round 1,
+  /// B3 — commit a08eec4's message got this wrong):
+  ///   - THIS vector, `{unset:9, 2:1, 3:2, 4:5, 5:1}` (the plan's acceptance criterion):
+  ///     suffix sums `>= 3 / >= 4 / >= 5` are **8 / 6 / 1**, the exact buckets are **2 / 5 / 1**.
+  ///     A build that showed the exact bucket returns 2 / 5 / 1 and fails all three below.
+  ///   - The LIVE PROBE of 2026-09-01, `{unset:29, 2:1, 3:1, 4:1, 5:1}`: suffix sums are 3 / 2 / 1
+  ///     and the exact buckets are 1 / 1 / 1.
   @Test("ratingAtLeast is a suffix sum over the server's exact-value buckets")
   func ratingAtLeastSumsTheSuffix() {
     let facets = Components.Schemas.ImageFacets(
