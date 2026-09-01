@@ -255,6 +255,52 @@ struct LoupeFilmstripTests {
     #expect(stackCalls == 0)
     #expect(neighbourCalls == 0)
   }
+
+  // MARK: - 4. The same one paging path, in Scene mode (IMGMGR-267)
+
+  /// The strip walks PHOTOGRAPHS; the grid walks DISPLAY ROWS. In Scene mode those two sequences
+  /// have different tails — a stream ending in a collapsed card ends, for the strip, at the last
+  /// loose photograph before it — so a strip that only ever named the display tail could never
+  /// extend the pool at all. This is that case, deliberately: the last display row IS a card.
+  @Test("In Scene mode the strip extends the pool through the ONE scene pager")
+  func theStripPagesTheSceneStreamThroughTheOnePager() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    let card = Components.Schemas.StackBrowseStackRow(
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      matchedCount: 2, memberCount: 2, pickedCount: 0,
+      representative: makeImage(id: 900, revision: "cover-rev"), stackId: 5)
+    await transport.setBrowseStacksPage(
+      .init(
+        items: [imageRow(makeImage(id: 10)), stackRowItem(card)], limit: 100,
+        nextCursor: "scene-2"))
+    await transport.setBrowseStacksPage(
+      .init(items: [imageRow(makeImage(id: 11))], limit: 100, nextCursor: nil),
+      forCursor: "scene-2")
+    await store.setDisplayMode(.scene)
+
+    let strip = FilmstripView(store: store)
+    // The premise this test rests on: the two tails really do disagree.
+    #expect(strip.frames.map(\.id) == [10])
+    #expect(store.sceneDisplayRows.last?.id == .stack(5))
+
+    for image in strip.frames { await strip.pageIfNeeded(around: image) }
+
+    #expect(store.sceneRows.map(\.displayID) == [.image(10), .stack(5), .image(11)])
+    #expect(store.sceneNextCursor == nil)
+    let queries = await transport.recordedBrowseStacksQueries
+    // Positive control: the recorder saw the FIRST page too, so a zero-cursor claim below is
+    // about what the strip did, not about a recorder that never ran.
+    #expect(queries.count == 2)
+    #expect(queries.first?["cursor"] == nil)
+    // The claim: exactly ONE paged request, through the scene cursor — no second pager.
+    #expect(queries.compactMap({ $0["cursor"] }) == ["scene-2"])
+    // And the flat pool is untouched: Scene mode's photographs never land in `images`.
+    #expect(store.images.isEmpty)
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+  }
 }
 
 /// IMGMGR-268: the strip's thumbnails became real controls, so what they ANNOUNCE is now a

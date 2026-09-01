@@ -62,6 +62,15 @@
         let tier = request.path.flatMap { URLComponents(string: $0)?.path }?
           .split(separator: "/").last.map(String.init)
         return (response, HTTPBody(Self.fixtureProxy(tier: tier)))
+      // WP14 lane B (IMGMGR-240/-241/-261): Scene mode's own fixture. Without these three the
+      // Debug composition could not enter Scene mode with data at all, so the band, the ✓N badge
+      // and the inline picks had no rendered evidence — only unit assertions.
+      case Operations.BrowseStacksApiBrowseStacksGet.id:
+        return try jsonResponse(.ok, Self.fixtureStackPage())
+      case Operations.ListStackMembersApiStacksStackIdMembersGet.id:
+        return try jsonResponse(.ok, Self.fixtureStackMemberPage())
+      case Operations.GetStackApiStacksStackIdGet.id:
+        return try jsonResponse(.ok, Self.fixtureStackRow())
       case Operations.SetMarkStateApiMarksStatePost.id:
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
@@ -173,6 +182,52 @@
       case 4...7: return "FUJIFILM X-T2"
       default: return nil
       }
+    }
+
+    /// The fixture scene's id. One scene is enough and two would only make the screenshot
+    /// ambiguous about which card an assertion is talking about.
+    static let fixtureStackID = 5000
+
+    /// Five members of the fixture scene, TWO of them picked — so `picked_count` is a number a
+    /// screenshot can disagree with (a boolean flag could not), and the inline strip has more
+    /// than one thumbnail to lay out.
+    private static func fixtureStackMemberImages() -> [Components.Schemas.ImageSummary] {
+      fixtureImages().dropFirst(2).prefix(5).enumerated().map { index, image in
+        var member = image
+        member.mark = .init(
+          revision: image.mark.revision, state: (index == 0 || index == 2) ? .pick : .none)
+        return member
+      }
+    }
+
+    /// The card's own row. `representative` is a member whose `has_edit` is true, so the card
+    /// draws the ✎ badge beside the ✓N one — the two-badge cluster the owner decided on.
+    private static func fixtureStackRow() -> Components.Schemas.StackBrowseStackRow {
+      let members = fixtureStackMemberImages()
+      return Components.Schemas.StackBrowseStackRow(
+        anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000), hasPick: true, kind: .stack,
+        matchedCount: members.count, memberCount: members.count,
+        pickedCount: members.filter { $0.mark.state == .pick }.count,
+        representative: members[1], stackId: fixtureStackID)
+    }
+
+    /// Loose photographs either side of the scene, so the band's POSITION in the stream is part
+    /// of the rendered evidence rather than something to take on trust.
+    private static func fixtureStackPage() -> Components.Schemas.StackBrowsePage {
+      let loose = fixtureImages()
+      return Components.Schemas.StackBrowsePage(
+        items: [
+          .init(value1: .init(image: loose[0], kind: .image), value2: nil),
+          .init(value1: .init(image: loose[1], kind: .image), value2: nil),
+          .init(value1: nil, value2: fixtureStackRow()),
+          .init(value1: .init(image: loose[7], kind: .image), value2: nil),
+          .init(value1: .init(image: loose[8], kind: .image), value2: nil),
+        ], limit: 100, nextCursor: nil)
+    }
+
+    private static func fixtureStackMemberPage() -> Components.Schemas.StackMemberPage {
+      Components.Schemas.StackMemberPage(
+        items: fixtureStackMemberImages(), limit: 100, nextCursor: nil, stackId: fixtureStackID)
     }
 
     private static func fixtureImages() -> [Components.Schemas.ImageSummary] {
@@ -349,6 +404,22 @@
     /// code path. Debug-only, like every flag here: a Release archive strips this whole file.
     static var latchDislikeLock: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestLatchDislikeLock")
+    }
+
+    /// WP14 lane B (IMGMGR-240/-241/-261): a SIXTH, independent launch argument, for the same
+    /// reason the two above it exist. Scene mode's retained screenshot needs the app to BE in
+    /// Scene mode with the picks-in-groups switch on, and neither entry point is drivable from
+    /// XCUITest on every destination — the Group menu's items are not addressable by label or
+    /// identifier inside a popover on Regular-3 (three P1 gate runs established that), and ⌘⇧G
+    /// never reaches a simulator with no attached hardware keyboard.
+    ///
+    /// Both effects go through the SHIPPED entry points — `GridStore.setDisplayMode(.scene)` and
+    /// the same `GridPreferences` property the More menu's toggle writes — never a special code
+    /// path. It therefore PERSISTS the preference in the simulator's own defaults, exactly as a
+    /// reader flipping the switch would; nothing outside Scene mode reads it, so no other
+    /// fixture's screenshot changes.
+    static var enterSceneMode: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestEnterSceneMode")
     }
   }
 

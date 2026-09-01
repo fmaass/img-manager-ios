@@ -153,6 +153,19 @@ final class GridStore {
   /// an opening card, or a second "load more" while one page is still on the wire, is dropped
   /// rather than duplicating the page into the strip.
   private(set) var sceneMembersInFlight: Set<Int> = []
+  /// IMGMGR-261: the picks a COLLAPSED scene holds, for DISPLAY only.
+  ///
+  /// A SEPARATE array from `sceneMembers` on purpose, and the separation is the whole safety
+  /// argument. `sceneMembers` is what expansion writes into, and everything in it becomes an
+  /// ordinary, markable, selectable, focusable photograph through `actionableImages`. What this
+  /// holds must not: these are members of a scene nobody opened, drawn inside the card, and a
+  /// gesture must be no more able to reach them than it was before the toggle existed. Putting
+  /// them in a different array is what makes that true by construction rather than by a filter
+  /// somebody has to remember.
+  private(set) var sceneInlinePicks: [Int: [Components.Schemas.ImageSummary]] = [:]
+  /// Single-flight per scene, exactly like `sceneMembersInFlight` — several cards appearing at
+  /// once must not each start the same read.
+  private var sceneInlinePicksInFlight: Set<Int> = []
 
   /// The grid's row sequence in Scene mode: cards and loose photographs in the server's order,
   /// each opened scene followed by the members loaded for it.
@@ -882,6 +895,8 @@ final class GridStore {
     sceneMembers = [:]
     sceneMemberCursors = [:]
     sceneMembersInFlight = []
+    sceneInlinePicks = [:]
+    sceneInlinePicksInFlight = []
   }
 
   // MARK: - Authoritative refresh (P6: foreground + genuine same-shoot re-entry)
@@ -972,6 +987,11 @@ final class GridStore {
       sceneMembers = refreshedMembers
       sceneMemberCursors = refreshedCursors
       sceneMembersInFlight = []
+      // IMGMGR-261: the card summaries are dropped with the window they described. They are a
+      // cached read of somebody else's state, so an authoritative re-read is exactly the moment
+      // they stop being trustworthy; the visible cards fetch theirs again.
+      sceneInlinePicks = [:]
+      sceneInlinePicksInFlight = []
       let actionable = actionableImages
       pruneSelectionOutside(actionable)
       publishRefreshedFocusAndUndo(actionable: actionable)
@@ -1118,7 +1138,7 @@ final class GridStore {
   /// Consumes `sceneNextCursor` and only ever that — the flat cursor is a different namespace.
   func loadMoreScenesIfNeeded(currentRowID: GridDisplayID) async {
     guard displayMode == .scene else { return }
-    guard sceneDisplayRows.last?.id == currentRowID, let cursor = sceneNextCursor, !isLoadingPage
+    guard isSceneWindowTail(currentRowID), let cursor = sceneNextCursor, !isLoadingPage
     else { return }
     let generation = loadGeneration
     isLoadingPage = true
@@ -1143,6 +1163,27 @@ final class GridStore {
       guard generation == loadGeneration else { return }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
     }
+  }
+
+  /// "Has the caller reached the end of what IT walks?" — the tail test the one scene pager asks
+  /// (IMGMGR-267).
+  ///
+  /// Two surfaces walk the loaded scene window and they walk DIFFERENT sequences: the grid walks
+  /// display rows, whose tail can be a collapsed card, while the filmstrip walks the actionable
+  /// photographs, whose tail is the last loose photograph or band member — which, in a stream
+  /// ending in collapsed cards, is not the last display row at all. Asking only the first
+  /// question is what made the strip unable to extend the pool in Scene mode: its own last frame
+  /// was never "the tail", so it never asked for more and the strip simply ended.
+  ///
+  /// Both answers name the same window and are served by the SAME function through the SAME
+  /// `sceneNextCursor` — this widens what counts as the end, it does not add a second pager.
+  /// The grid's own trigger can now fire a page earlier than the very last cell when trailing
+  /// cards follow the last photograph; that is a prefetch through the same cursor, dedup'd by
+  /// display id and single-flighted by `isLoadingPage`, and it appends exactly the same rows.
+  func isSceneWindowTail(_ id: GridDisplayID) -> Bool {
+    if sceneDisplayRows.last?.id == id { return true }
+    if let lastActionable = actionableImages.last?.id, id == .image(lastActionable) { return true }
+    return false
   }
 
   /// Open or close ONE scene — the only thing a collapsed card can do.
@@ -1233,6 +1274,42 @@ final class GridStore {
     }
   }
 
+  /// IMGMGR-261: the picks inside a COLLAPSED scene, read once per card, for DISPLAY ONLY.
+  ///
+  /// A bespoke read rather than a reuse of `fetchSceneMembers`, and deliberately so: that method
+  /// writes `sceneMembers`, which is the array that makes photographs actionable. This one writes
+  /// a different array, follows NO cursor (the first membership page and nothing beyond it — a
+  /// card is a summary, and a summary does not page), and stores only the picks. So the worst a
+  /// bug here can do is draw the wrong thumbnails on a card; it cannot put a photograph nobody
+  /// opened into the reach of a mark.
+  ///
+  /// Nothing is read at all while the preference is off — the toggle gates the REQUEST, not just
+  /// the rendering, so OFF costs exactly what it cost before this story existed.
+  ///
+  /// A failed read is a non-event and deliberately not retried: the card simply keeps the badges
+  /// it already has, which is the state it had before the switch existed. Nothing here writes
+  /// `lastPageLoadError` either — a decoration that could not be fetched is not a reason to tell
+  /// the reader the grid is broken.
+  func loadInlinePicksIfNeeded(stackID: Int) async {
+    guard displayMode == .scene, preferences.picksInGroups else { return }
+    // An OPEN scene draws its members for real; the card's summary is not the question there.
+    guard !sceneExpanded.contains(stackID) else { return }
+    guard sceneInlinePicks[stackID] == nil, !sceneInlinePicksInFlight.contains(stackID) else {
+      return
+    }
+    sceneInlinePicksInFlight.insert(stackID)
+    defer { sceneInlinePicksInFlight.remove(stackID) }
+    let generation = loadGeneration
+    guard
+      let page = try? await service.stackMembers(
+        stackID: stackID, cursor: nil, limit: Self.sceneMemberPageLimit)
+    else { return }
+    // The window may have been replaced, or the reader may have opened the scene, while this was
+    // on the wire — the same two fences the membership read itself carries.
+    guard generation == loadGeneration, !sceneExpanded.contains(stackID) else { return }
+    sceneInlinePicks[stackID] = page.items.filter { $0.mark.state == .pick }
+  }
+
   /// Which OPENED scenes hold any of these photographs — the question a finished write asks so it
   /// can re-read exactly the cards whose badges or cover it may have changed.
   private func scenesHolding(_ imageIDs: [Int]) -> [Int] {
@@ -1245,8 +1322,12 @@ final class GridStore {
   /// "The cover follows the pick" — after a mark, an undo or a tag write touching a scene's
   /// member, re-read that scene's row and merge it IN PLACE.
   ///
-  /// ONE request per DISTINCT touched scene, and only the four fields a write can change:
-  /// `member_count`, `has_pick`, `matched_count` and `representative`. Everything else about the
+  /// ONE request per DISTINCT touched scene, and only the five fields a write can change:
+  /// `member_count`, `has_pick`, `picked_count`, `matched_count` and `representative`. The cover
+  /// is the SERVER's election, never re-derived here (IMGMGR-241): the derivation's first clause
+  /// is "an explicit cover override wins while it is still picked", and no field on this payload
+  /// says whether a scene HAS one — a client that guessed would disagree with the server on
+  /// exactly the scenes someone had curated. Everything else about the
   /// row is left exactly as it was — its POSITION in the stream (the stored anchor never moves
   /// for a mark), its expansion, the selection, and the page cursor. A reload would be the easy
   /// way to get a fresh cover and would cost the reader their scroll position, their open scenes
@@ -1259,6 +1340,14 @@ final class GridStore {
     guard displayMode == .scene else { return }
     let touched = scenesHolding(imageIDs)
     guard !touched.isEmpty else { return }
+    // IMGMGR-261: the card summary describes exactly the state this write just changed, so it
+    // stops being an answer the moment the write lands. Dropped rather than patched locally —
+    // the strip is a capped read of the server's own membership, and re-reading it when the card
+    // is next drawn is both cheaper to reason about and correct for the case a local patch gets
+    // wrong (a batch that picks one member and un-picks another leaves `picked_count` unmoved
+    // while changing every thumbnail). Done BEFORE the row re-read below and independently of
+    // it, so a failed re-read still cannot leave a stale summary standing.
+    for stackID in touched { sceneInlinePicks[stackID] = nil }
     let generation = loadGeneration
     for stackID in touched {
       guard let fresh = try? await service.stackRow(stackID: stackID, query: query) else {
@@ -1269,6 +1358,7 @@ final class GridStore {
         guard case .stack(var row) = sceneRows[index], row.stackId == stackID else { continue }
         row.memberCount = fresh.memberCount
         row.hasPick = fresh.hasPick
+        row.pickedCount = fresh.pickedCount
         row.matchedCount = fresh.matchedCount
         row.representative = fresh.representative
         sceneRows[index] = .stack(row)
@@ -2063,7 +2153,7 @@ final class GridStore {
     // would either stomp that fresh truth with a rollback/reconcile keyed by now-meaningless ids,
     // or record undo/recovery state that describes a scope the person has already left.
     let generation = loadGeneration
-    optimisticallyApply(state, to: priors.map(\.imageID))
+    optimisticallyApply(state, priors: priors)
     let preconditions = priors.map {
       Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
     }
@@ -2163,7 +2253,7 @@ final class GridStore {
       // Diff-gate round 2, B2: fence THIS group's completion against a scope change racing the
       // network await, same reasoning as `applyMark`'s own `generation` capture.
       let generation = loadGeneration
-      optimisticallyApply(targetState, to: priors.map(\.imageID))
+      optimisticallyApply(targetState, priors: priors)
       let preconditions = priors.map {
         Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
       }
@@ -2372,14 +2462,54 @@ final class GridStore {
     droppedWriteIDs.formUnion(dropped)
   }
 
-  private func optimisticallyApply(_ state: MarkStateValue, to imageIDs: [Int]) {
-    mutateActionable(Set(imageIDs)) { $0.mark.state = state.payload }
+
+  private func optimisticallyApply(_ state: MarkStateValue, priors: [PriorMarkSnapshot]) {
+    mutateActionable(Set(priors.map(\.imageID))) { $0.mark.state = state.payload }
+    applyPickCountDeltas(
+      SceneRowBuilder.pickCountDeltas(
+        priors.map {
+          SceneRowBuilder.PickTransition(
+            imageID: $0.imageID, wasPicked: $0.state == .pick, isPicked: state == .pick)
+        },
+        members: sceneMembers))
   }
 
   private func rollback(_ priors: [PriorMarkSnapshot]) {
+    // The badge unwinds from what is on screen RIGHT NOW back to each prior — read before the
+    // states are restored, or the transition would describe itself.
+    let current = Dictionary(
+      actionableImages.map { ($0.id, MarkStateValue($0.mark.state)) },
+      uniquingKeysWith: { first, _ in first })
+    applyPickCountDeltas(
+      SceneRowBuilder.pickCountDeltas(
+        priors.map {
+          SceneRowBuilder.PickTransition(
+            imageID: $0.imageID, wasPicked: current[$0.imageID] == .pick,
+            isPicked: $0.state == .pick)
+        },
+        members: sceneMembers))
     let byID = Dictionary(uniqueKeysWithValues: priors.map { ($0.imageID, $0.state) })
     mutateActionable(Set(byID.keys)) { image in
       if let prior = byID[image.id] { image.mark.state = prior.payload }
+    }
+  }
+
+  /// The ✓N badge's OPTIMISTIC half (IMGMGR-241), mirroring the web's own
+  /// (`frontend/src/lib/library.ts`): the count moves with the press rather than with the
+  /// round-trip, so a reader picking through a burst sees the scene's number answer them.
+  ///
+  /// It is arithmetic on a count, never a re-derivation of the scene: `has_pick` follows the
+  /// count because "some member is picked" and "the count is above zero" are the same statement,
+  /// and the COVER is deliberately left alone — `refreshScenesFor` re-reads the server's own
+  /// election a moment later, and guessing at it here would be wrong for any curated scene.
+  private func applyPickCountDeltas(_ deltas: [Int: Int]) {
+    guard !deltas.isEmpty else { return }
+    for index in sceneRows.indices {
+      guard case .stack(var row) = sceneRows[index], let delta = deltas[row.stackId], delta != 0
+      else { continue }
+      row.pickedCount = SceneRowBuilder.clampedCount(row.pickedCount, delta: delta)
+      row.hasPick = row.pickedCount > 0
+      sceneRows[index] = .stack(row)
     }
   }
 

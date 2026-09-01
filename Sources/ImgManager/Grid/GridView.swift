@@ -224,9 +224,84 @@ struct GridView: View {
         showsFilenamePlate: store.preferences.filenamePlates,
         store: store
       )
+      .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
     case .stack(let stackRow, let isExpanded):
       SceneCardView(row: stackRow, plan: plan, isExpanded: isExpanded, store: store)
+        // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
+        // control and for the same reason: the inline picks ship on Regular only (a measured
+        // product decision — see `showsInlinePicks`), so the screenshot test has to STATE which
+        // layout this destination resolved to and assert the branch the app actually took,
+        // rather than infer a device — which the mac-gate's own idiom grep forbids outright.
+        .accessibilityValue(sceneCardProbeValue)
+        // IMGMGR-240: a SIBLING of the card, never a child — see `SceneExpandHandle`.
+        .overlay(alignment: .bottomTrailing) {
+          SceneExpandHandle(stackID: stackRow.stackId, isExpanded: isExpanded, store: store)
+        }
+        .overlay(alignment: .bottomLeading) { inlinePicks(for: stackRow) }
+        .task(id: inlinePicksTaskID(for: stackRow)) {
+          guard showsInlinePicks, stackRow.pickedCount >= 1 else { return }
+          await store.loadInlinePicksIfNeeded(stackID: stackRow.stackId)
+        }
     }
+  }
+
+  /// The close control for an OPEN band (IMGMGR-240).
+  ///
+  /// A band has no card to hang a control on — that is what replacing the card costs — so the
+  /// handle is drawn over the band's LEADING member, the position the card's own handle occupied
+  /// a moment before. Rendered for that one member and nothing else, so an open scene has exactly
+  /// one handle however many rows its members reflow across.
+  @ViewBuilder
+  private func bandHandle(forMember imageID: Int) -> some View {
+    if let stackID = bandLeads[imageID] {
+      SceneExpandHandle(stackID: stackID, isExpanded: true, store: store)
+    }
+  }
+
+  private var bandLeads: [Int: Int] {
+    SceneRowBuilder.bandLeadMembers(expanded: store.sceneExpanded, members: store.sceneMembers)
+  }
+
+  /// IMGMGR-261, iPad-first (AC 3). The RULE lives in `SceneInlinePicksPolicy`, which is where
+  /// the measurement behind it is written down and where a test pins the table directly.
+  private var showsInlinePicks: Bool {
+    SceneInlinePicksPolicy.isShown(
+      layoutMode: layoutMode, isEnabled: store.preferences.picksInGroups)
+  }
+
+  @ViewBuilder
+  private func inlinePicks(for row: Components.Schemas.StackBrowseStackRow) -> some View {
+    if showsInlinePicks, let picks = store.sceneInlinePicks[row.stackId], !picks.isEmpty {
+      SceneInlinePicksStrip(stackID: row.stackId, picks: picks, store: store)
+    }
+  }
+
+  /// Re-runs the read when the SWITCH moves, when the scene's own pick count changes, or when a
+  /// write DROPPED the cached summary (`refreshScenesFor`) — never on every body pass, and never
+  /// at all while the preference is off.
+  ///
+  /// The third term is what makes an invalidated card refill itself. A count alone cannot: a
+  /// batch that picks one member and un-picks another leaves `picked_count` unmoved while every
+  /// thumbnail changes. Flipping back once the read lands is not a loop — the second run finds
+  /// the entry present and returns immediately.
+  private func inlinePicksTaskID(for row: Components.Schemas.StackBrowseStackRow) -> String {
+    let hasSummary = store.sceneInlinePicks[row.stackId] != nil
+    return "inlinePicks|\(row.stackId)|\(showsInlinePicks)|\(row.pickedCount)|\(hasSummary)"
+  }
+
+  private var sceneCardProbeValue: String {
+    #if DEBUG
+      guard DebugStubLaunch.isActive else { return "" }
+      let layout: String
+      switch layoutMode {
+      case .compact: layout = "compact"
+      case .regular2: layout = "regular2"
+      case .regular3: layout = "regular3"
+      }
+      return "layout=\(layout) inlinePicks=\(showsInlinePicks)"
+    #else
+      return ""
+    #endif
   }
 
   /// Appear-driven paging, routed by the cell's own kind. Each call is a no-op in the wrong mode
