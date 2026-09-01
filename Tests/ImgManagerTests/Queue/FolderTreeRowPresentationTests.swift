@@ -67,11 +67,22 @@ struct FolderTreeRowPresentationTests {
     #expect(FolderTreeRowPresentation.subline(for: shoot) != "12 photos")
   }
 
-  /// The identifiers the UI test drives (`FolderTreeRowAnatomyUITests`) are derived here and
-  /// nowhere else, so a rename cannot leave the test hunting for a handle the app stopped
-  /// emitting. Keyed by the server's folder id, like every other identifier in this tree.
-  @Test("cover and subline identifiers are keyed by the server's folder id")
+  /// The identifiers the UI tests drive (`FolderTreeRowAnatomyUITests`, and the two shipped tree
+  /// tests) are derived here and nowhere else, so a rename cannot leave a test hunting for a
+  /// handle the app stopped emitting. Keyed by the server's folder id, like every other
+  /// identifier in this tree.
+  ///
+  /// The row's own two strings are UNCHANGED from 4753450 — what moved (diff-gate r1, B1) is the
+  /// element they are applied to: the name text, never the row container, because a container
+  /// identifier overrides its descendants' (GridView.swift:743-747) and would hide the cover and
+  /// subline handles below.
+  @Test("row, cover and subline identifiers are keyed by the server's folder id")
   func identifiersAreKeyedByFolderID() {
+    let shoot = node(id: 1, kind: "dated", descendant: 12, own: 12)
+    let container = node(id: 2, kind: "other", descendant: 12, own: 0)
+
+    #expect(FolderTreeRowPresentation.rowIdentifier(for: shoot, id: 1) == "folderRow-1")
+    #expect(FolderTreeRowPresentation.rowIdentifier(for: container, id: 2) == "folderContainer-2")
     #expect(FolderTreeRowPresentation.thumbnailIdentifier(for: 1) == "folderRowThumbnail-1")
     #expect(FolderTreeRowPresentation.thumbnailIdentifier(for: 3) == "folderRowThumbnail-3")
     #expect(FolderTreeRowPresentation.sublineIdentifier(for: 1) == "folderRowSubline-1")

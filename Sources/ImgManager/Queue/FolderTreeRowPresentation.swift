@@ -42,6 +42,20 @@ enum FolderTreeRowPresentation {
     return node.descendantImageCount.formatted()
   }
 
+  /// The row's own handle — `folderRow-` where a tap enters the grid, `folderContainer-` where it
+  /// only expands. Unchanged strings; what changed (diff-gate r1, B1) is WHERE they are applied.
+  ///
+  /// They now sit on the NAME text rather than on the row container, because an identifier set on
+  /// a container OVERRIDES its descendants': observed on an iPhone gate leg and documented at
+  /// `GridView.swift:743-747`, where a row identifier made both of its own controls unaddressable.
+  /// With the identifier on the container, this row's new cover and subline handles would not
+  /// exist for XCUITest at all. The name text is also the element the shipped tree tests have
+  /// been finding and tapping all along — the container identifier reached them by that same
+  /// override — so the tap they drive lands exactly where it did before.
+  static func rowIdentifier(for node: FolderTreeNode, id: Int) -> String {
+    node.isSelectableShoot ? "folderRow-\(id)" : "folderContainer-\(id)"
+  }
+
   /// The cover's test handle. Derived here and nowhere else, so the UI test and the view cannot
   /// drift apart on a rename; keyed by the server's folder id like every other identifier in
   /// this tree (`folderRow-` / `folderContainer-` / `folderDisclose-`).

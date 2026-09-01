@@ -360,9 +360,10 @@ private struct FolderTreeRowView: View {
       rowContent
         .contentShape(Rectangle())
         .tag(row.id)
-        // Stable, id-derived identifiers so the UI test drives the REAL rows rather than
-        // matching a localizable label (the shoot name is server data).
-        .accessibilityIdentifier("folderRow-\(row.id)")
+        // The stable, id-derived identifier lives on the row's NAME text, not here: an
+        // identifier on a container overrides its descendants' (GridView.swift:743-747), which
+        // would make this row's cover and subline unaddressable. `FolderTreeRowPresentation
+        // .rowIdentifier` decides the string; `rowContent` applies it.
         .simultaneousGesture(
           TapGesture().onEnded {
             selectedFolderID = row.id
@@ -371,9 +372,9 @@ private struct FolderTreeRowView: View {
         )
     } else {
       // A container: it expands, and it does NOT navigate. Its identifier is deliberately a
-      // different prefix, so `folderRow-<id>` keeps meaning "a row that enters the grid".
+      // different prefix, so `folderRow-<id>` keeps meaning "a row that enters the grid" — and it
+      // is applied on the name text with the shoot's, for the override reason above.
       rowContent
-        .accessibilityIdentifier("folderContainer-\(row.id)")
     }
   }
 
@@ -386,6 +387,8 @@ private struct FolderTreeRowView: View {
         Text(row.node.name)
           .lineLimit(1)
           .truncationMode(.middle)
+          .accessibilityIdentifier(
+            FolderTreeRowPresentation.rowIdentifier(for: row.node, id: row.id))
         // A shoot's own roll-up, one line down: the server's number, never recomputed, and
         // stated ONCE — this is the same count the trailing caption below carries on the
         // container rows, moved rather than duplicated.
