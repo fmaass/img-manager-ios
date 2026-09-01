@@ -79,6 +79,72 @@ struct InspectorStatsRatingAlignmentTests {
     #expect(FilterPopoverModel.statsRowCount(.ext, "jpg", serverCount: 7, in: f) == 7)
   }
 
+  // MARK: - The rendered ROW SEQUENCE (diff-gate round 1, B1)
+
+  /// The assertion the per-value helpers could not make. `InspectorView` renders
+  /// `FilterPopoverModel.statsRows` verbatim, so this IS the row list on screen: one row per value
+  /// the server sent, in the server's own order. An implementation that narrowed the section to
+  /// `>= 3 / >= 4 / >= 5` — the draft this phase rejected — fails on the very first line here
+  /// while every `statsRowTitle`/`statsRowCount` assertion above stays green.
+  @Test("The rendered rating rows are one per server value, in order, with none dropped")
+  func theRenderedRatingRowSequenceIsComplete() {
+    let rows = FilterPopoverModel.statsRows(.rating, facets(), GridImagesQuery())
+    #expect(rows.map(\.value) == ["unset", "0", "1", "2", "3", "4", "5"])
+    #expect(rows.map(\.title) == ["unset", "≥ 0", "≥ 1", "≥ 2", "≥ 3", "≥ 4", "≥ 5"])
+    // unset keeps its own count; every numeric row is the suffix sum from that value up.
+    #expect(rows.map(\.count) == [9, 12, 10, 9, 8, 6, 1])
+  }
+
+  /// The same sequence against the wire shape the 2026-09-01 probe actually returned (`unset:29,
+  /// 2:1, 3:1, 4:1, 5:1`), where the server sent no `0` or `1` bucket at all: the tab renders what
+  /// arrived and invents nothing.
+  @Test("Against the live probe's own shape the rendered rows are [unset, ≥2, ≥3, ≥4, ≥5]")
+  func theRenderedSequenceFollowsTheLiveProbeShape() {
+    let probe = Components.Schemas.ImageFacets(
+      rating: [
+        .init(count: 29, value: "unset"), .init(count: 1, value: "2"),
+        .init(count: 1, value: "3"), .init(count: 1, value: "4"), .init(count: 1, value: "5"),
+      ], total: 33)
+    let rows = FilterPopoverModel.statsRows(.rating, probe, GridImagesQuery())
+    #expect(rows.map(\.title) == ["unset", "≥ 2", "≥ 3", "≥ 4", "≥ 5"])
+    #expect(rows.map(\.count) == [29, 4, 3, 2, 1])
+  }
+
+  /// Only the rating dimension is realigned, and no dimension loses a row: every other section
+  /// still renders one row per server value carrying the server's own number.
+  @Test("Every other dimension renders one row per server value, numbers untouched")
+  func otherDimensionsRenderEveryServerRowUnchanged() {
+    let f = facets()
+    let mark = FilterPopoverModel.statsRows(.mark, f, GridImagesQuery())
+    #expect(mark.map(\.value) == ["pick"])
+    #expect(mark.map(\.title) == ["pick"])
+    #expect(mark.map(\.count) == [4])
+    let master = FilterPopoverModel.statsRows(.hasMaster, f, GridImagesQuery())
+    #expect(master.map(\.title) == ["Yes"])
+    #expect(master.map(\.count) == [5])
+  }
+
+  /// A dimension the server sent nothing for still renders nothing HERE — the Stats tab's sections
+  /// are response-discovered, and only the popover departs from that (B2). Guarding it so the two
+  /// surfaces' opposite rules stay deliberate rather than drifting into each other.
+  @Test("A dimension the server omitted renders no Stats row at all, unlike the popover")
+  func anOmittedDimensionRendersNoStatsRow() {
+    let rows = FilterPopoverModel.statsRows(.ext, facets(), GridImagesQuery())
+    #expect(rows.isEmpty)
+    // Positive control: the same call on a dimension the response DOES carry returns rows, so the
+    // emptiness above is the omission and not a broken accessor.
+    #expect(!FilterPopoverModel.statsRows(.rating, facets(), GridImagesQuery()).isEmpty)
+  }
+
+  /// The rendered row carries its own active state, so the checkmark and the filter cannot drift.
+  @Test("The rendered row reports the active value, and only that one")
+  func theRenderedRowCarriesActiveState() {
+    var query = GridImagesQuery()
+    query.ratingMin = 4
+    let rows = FilterPopoverModel.statsRows(.rating, facets(), query)
+    #expect(rows.filter(\.isActive).map(\.value) == ["4"])
+  }
+
   /// The Stats tab and the popover state the SAME number for the same threshold — they are one
   /// function under two presentations, which is what stops the two surfaces from disagreeing.
   @Test("The Stats row and the popover row agree on the count for the same threshold")

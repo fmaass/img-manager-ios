@@ -24,6 +24,20 @@ struct FilterPopoverRow: Identifiable, Sendable {
   var accessibilityIdentifier: String { "filterPopoverRow-\(id)" }
 }
 
+/// One row of the inspector's Stats tab, exactly as rendered: the server's own value, the label
+/// it is shown under and the number it states. A separate type from `FilterPopoverRow` because the
+/// two surfaces differ in what they offer — the Stats tab renders every value the server sent and
+/// nothing it did not, the popover renders a declared set whatever the server sent.
+struct InspectorStatsRow: Identifiable, Sendable {
+  let field: InspectorFacetField
+  let value: String
+  let title: String
+  let count: Int
+  let isActive: Bool
+
+  var id: String { "\(field.rawValue)-\(value)" }
+}
+
 struct FilterPopoverSection: Identifiable, Sendable {
   let field: InspectorFacetField
   let title: String
@@ -123,6 +137,26 @@ enum FilterPopoverModel {
   }
 
   // MARK: - The inspector's Stats tab, aligned on the same function (gate round 1, B1)
+
+  /// The Stats tab's rating rows, as the SEQUENCE `InspectorView` renders — one row per value the
+  /// server sent, in the server's own order, nothing filtered out.
+  ///
+  /// Diff-gate round 1, B1: `statsRowTitle`/`statsRowCount` alone cannot witness that. They answer
+  /// about ONE value, so an implementation that narrowed the section to `>= 3 / >= 4 / >= 5` —
+  /// deleting the shipped `rating_min` = 0/1/2 controls and the `unset` row — would leave every
+  /// per-value assertion green. Deriving the whole list here, and rendering the view FROM it, is
+  /// what makes "no row was dropped" a thing a test can fail on.
+  static func statsRows(
+    _ field: InspectorFacetField, _ facets: Components.Schemas.ImageFacets,
+    _ query: GridImagesQuery
+  ) -> [InspectorStatsRow] {
+    field.counts(from: facets).map { count in
+      InspectorStatsRow(
+        field: field, value: count.value, title: statsRowTitle(field, count.value),
+        count: statsRowCount(field, count.value, serverCount: count.count, in: facets),
+        isActive: field.isActive(count.value, in: query))
+    }
+  }
 
   /// The Stats tab's label for one server-sent facet value.
   ///
