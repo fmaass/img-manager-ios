@@ -152,11 +152,16 @@ struct SceneCardView: View {
         if row.pickedCount >= 1 {
           Label("\(row.pickedCount)", systemImage: "checkmark")
             .accessibilityIdentifier("scenePickCount")
+            // WP16 P1 (p3332 decision 5). The enclosing `.foregroundStyle(.white)` below still
+            // answers for anything without its own — `countBadge` is a separate view and stays
+            // white, because how big a scene is says nothing about its verdict.
+            .foregroundStyle(MarkPalette.color(for: .pick))
         }
         if cover.hasEdit == true {
           Image(systemName: "pencil")
             .accessibilityIdentifier("sceneEdited")
             .accessibilityLabel("Edited")
+            .foregroundStyle(MarkPalette.color(for: .edited))
         }
       }
       .font(.caption2)
