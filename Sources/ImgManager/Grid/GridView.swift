@@ -1225,6 +1225,10 @@ struct ActionBarView: View {
         .buttonStyle(.bordered)
       }
     }
+    // WP16 P1 (p3332 decision 5): the tint SOURCE moves from the implicit accent colour to the
+    // mark palette, for these two verbs only — Clear and Undo are not verdicts and keep theirs.
+    // What each button STYLE does with a tint stays the system's business.
+    .tint(MarkPalette.color(for: verb.markRole))
     .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
     // Select mode alone no longer disables these — it is P1's whole point. What stays disabled
     // is LOCK entry, in the context menu below and in the store's own guard.

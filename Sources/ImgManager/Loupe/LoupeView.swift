@@ -371,7 +371,9 @@ struct LoupeMarkBar: View {
       Label(control.title, systemImage: LoupeMarkPresentation.symbol(for: control, state: state))
     }
     .buttonStyle(.bordered)
-    .tint(isActive ? Color.accentColor : nil)
+    // WP16 P1 (p3332 decision 5): an ACTIVE verdict reads in its own colour rather than the
+    // accent colour. Inactive stays `nil` — an always-tinted bar states nothing.
+    .tint(isActive ? MarkPalette.color(for: control.markRole) : nil)
     .disabled(store.focusedImageID == nil || store.isMutatingMark)
     .frame(minWidth: 44, minHeight: 44)
     // No per-button `accessibilityIdentifier` here: this bar's own identifier is set on the

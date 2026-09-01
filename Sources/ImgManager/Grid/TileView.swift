@@ -155,28 +155,16 @@ struct TileView: View {
           .font(.caption2)
           .padding(3)
           .background(.black.opacity(0.55), in: Circle())
-          .foregroundStyle(.white)
+          // WP16 P1 (p3332 decision 5): the three mark badges take the palette, the other three
+          // stay white. The glyph, the priority order and the two-badge cap are unchanged.
+          .foregroundStyle(item.markRole.map { MarkPalette.color(for: $0) } ?? Color.white)
       }
     }
     .padding(3)
   }
 
-  private enum BadgeItem: Hashable {
-    case selected, pick, dislike, edited, good, changedElsewhere
-    var systemImage: String {
-      switch self {
-      case .selected: return "checkmark.circle.fill"
-      case .pick: return "hand.thumbsup.fill"
-      case .dislike: return "hand.thumbsdown.fill"
-      case .edited: return "pencil.circle.fill"
-      case .good: return "star.fill"
-      case .changedElsewhere: return "arrow.triangle.2.circlepath"
-      }
-    }
-  }
-
-  private func badgeItems() -> [BadgeItem] {
-    var items: [BadgeItem] = []
+  private func badgeItems() -> [TileBadgeItem] {
+    var items: [TileBadgeItem] = []
     // P6 (IMGMGR-116): highest priority — a refused write's compact, tile-local recovery
     // indicator (plan item 3.3, "tile-local in the grid") must never be crowded out by the
     // ordinary two-badge cap.
@@ -190,6 +178,24 @@ struct TileView: View {
     if image.hasEdit == true { items.append(.edited) }
     if image.lightroom.good == true { items.append(.good) }
     return items
+  }
+}
+
+/// One badge a tile can show. Top-level and internal since WP16 P1 (p3332 decision 5): the mark
+/// colours are a truth table over exactly these cases, and a table nothing outside `TileView`
+/// could name is a table no test could read. `systemImage` is unchanged from 4753450 — this
+/// phase moves the type, it does not touch the SF-Symbol vocabulary.
+enum TileBadgeItem: Hashable, CaseIterable {
+  case selected, pick, dislike, edited, good, changedElsewhere
+  var systemImage: String {
+    switch self {
+    case .selected: return "checkmark.circle.fill"
+    case .pick: return "hand.thumbsup.fill"
+    case .dislike: return "hand.thumbsdown.fill"
+    case .edited: return "pencil.circle.fill"
+    case .good: return "star.fill"
+    case .changedElsewhere: return "arrow.triangle.2.circlepath"
+    }
   }
 }
 
