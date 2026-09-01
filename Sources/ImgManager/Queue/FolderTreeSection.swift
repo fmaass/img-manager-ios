@@ -35,8 +35,14 @@ import SwiftUI
 struct FolderTreeSection: View {
   let gridService: GridService
   /// The SAME loader the queue cards use (WP16 P5) — one actor, one cache keyed by
-  /// `(folderID, sourceTier)`, one 4-slot concurrency gate, so a shoot that appears both as a
-  /// queue card and as a tree row fetches its cover once. Never a second image pipeline.
+  /// `(folderID, sourceTier)`, one 4-slot concurrency gate. Never a second image pipeline.
+  ///
+  /// What that cache does and does not buy, stated exactly (diff-gate r1, B2, correcting this
+  /// phase's own first claim): once a cover has been fetched, every later reader of that key —
+  /// queue card or tree row — is served from memory. It does NOT coalesce fetches already IN
+  /// FLIGHT: `HeroThumbnailLoader.hero` checks the cache, then suspends on the concurrency gate
+  /// (`HeroThumbnailLoader.swift:38-44`), so a shoot visible as a queue card AND as a tree row at
+  /// the same time, before either finishes, fetches twice. Cheap and read-only, but real.
   let heroLoader: HeroThumbnailLoader
   let layoutMode: LayoutMode
   @Binding var selectedFolderID: Int?
@@ -401,8 +407,10 @@ private struct FolderTreeRowView: View {
         }
       }
       Spacer(minLength: 8)
-      // The container row's trailing caption, exactly as it shipped: a folder of folders is not
-      // a shoot, so decision 2 leaves it alone.
+      // The container row's trailing caption: same text, same modifiers, same number as at
+      // 4753450 — a folder of folders is not a shoot, so decision 2 leaves it alone. Its
+      // enclosing structure is not identical (the name now sits in a one-child VStack that a
+      // shoot row fills with a second line), which changes nothing about what is rendered.
       if let trailing = FolderTreeRowPresentation.trailingCount(for: row.node) {
         Text(trailing)
           .font(.caption)
@@ -414,9 +422,10 @@ private struct FolderTreeRowView: View {
   }
 
   /// The shoot row's cover, fetched through the SAME `HeroThumbnailLoader` the queue cards use —
-  /// its cache (keyed by folder and tier, so a shoot on both surfaces fetches once), its 4-slot
-  /// concurrency gate and its cancellation — never a second image pipeline, and never
-  /// `GridStore`, which the loader is deliberately independent of.
+  /// its cache (keyed by folder and tier), its 4-slot concurrency gate and its cancellation —
+  /// never a second image pipeline, and never `GridStore`, which the loader is deliberately
+  /// independent of. Concurrent fetches of one key are not coalesced; see the loader property's
+  /// own comment above for what the cache does and does not promise.
   ///
   /// It renders a PLACEHOLDER until an image arrives, so the row's anatomy is on screen before
   /// any network call finishes and a test can assert the anatomy without asserting the network.
