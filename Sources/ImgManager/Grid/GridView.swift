@@ -1044,6 +1044,12 @@ struct ActionBarView: View {
     .sheet(isPresented: $store.isStatusPresented) {
       StatusSheet(store: store)
     }
+    // WP14 P4: hosted here for the same reason the two above are — on the OUTER body, never on a
+    // `ViewThatFits` child, which would declare each of them once per tier.
+    .sheet(isPresented: $store.isSceneMergePickerPresented) {
+      SceneMergePicker(store: store)
+    }
+    .sceneEditAlert(store: store)
   }
 
   /// One tier's rendering. Deliberately NOT `.frame(maxWidth: .infinity)`: a child that claims
