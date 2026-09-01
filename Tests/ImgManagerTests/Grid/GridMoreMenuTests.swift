@@ -456,6 +456,117 @@ struct GridViewMoreMenuTests {
   }
 }
 
+/// WP16 P4 (IMGMGR-297, p3332 decision 3): the More menu's decided set reads as four labelled
+/// groups — "organization only, no new entries". The discipline that makes that impossible to
+/// get wrong is that `sections` is the SINGLE inventory and `entries` is DERIVED from it, so
+/// there is no second list to drift; these tests read the derived list and the partition that
+/// produced it.
+@MainActor
+@Suite("Grid More menu — the grouped sections (WP16 P4)")
+struct GridMoreMenuSectionsTests {
+
+  /// The eleven ids at `4753450`, in the order the owner decided (WP13 kickoff decision 2, epic
+  /// IMGMGR-211 comment 2106; P11 and WP14 P4 APPENDED, never reordered). Grouping is a
+  /// CONTIGUOUS partition over exactly this sequence, so a reorder, a drop or a duplicate fails
+  /// element-wise here.
+  private let shippedOrder = [
+    "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
+    "more.picksInGroups", "more.density", "more.status", "more.openInNewWindow",
+    "more.mergeScene", "more.splitScene", "more.extractScene",
+  ]
+
+  @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
+  func entriesAreDerivedFromTheSections() {
+    #expect(GridMoreMenu.entries.map(\.id) == GridMoreMenu.sections.flatMap(\.entries).map(\.id))
+    let counted = GridMoreMenu.sections.reduce(0) { $0 + $1.entries.count }
+    #expect(GridMoreMenu.entries.count == counted)
+    // Positive control for the equalities above: there really are sections and entries to
+    // compare, so neither line can pass on two empty arrays.
+    #expect(GridMoreMenu.sections.count == 4)
+    #expect(GridMoreMenu.entries.count == 11)
+  }
+
+  @Test("Grouping changed nothing about the set: the eleven ids, in the shipped order")
+  func groupingKeptTheDecidedSetAndItsOrder() {
+    #expect(GridMoreMenu.sections.flatMap(\.entries).map(\.id) == shippedOrder)
+    #expect(GridMoreMenu.entries.map(\.id) == shippedOrder)
+    // No entry appears in two sections, and none was dropped on the way in.
+    #expect(Set(shippedOrder).count == shippedOrder.count)
+    #expect(Set(GridMoreMenu.entries.map(\.id)).count == GridMoreMenu.entries.count)
+  }
+
+  @Test("Each section carries its decided label and its own contiguous run of the shipped order")
+  func eachSectionCarriesItsDecidedLabelAndRun() {
+    let decided: [(id: String, title: String, entries: [String])] = [
+      (
+        "more.section.marks", "Marks",
+        ["more.select", "more.clearMark", "more.copyForLightroom"]
+      ),
+      (
+        "more.section.view", "View",
+        ["more.filenamePlates", "more.picksInGroups", "more.density"]
+      ),
+      ("more.section.shoot", "Shoot", ["more.status", "more.openInNewWindow"]),
+      (
+        "more.section.scene", "Scene",
+        ["more.mergeScene", "more.splitScene", "more.extractScene"]
+      ),
+    ]
+    #expect(GridMoreMenu.sections.map(\.id) == decided.map(\.id))
+    #expect(GridMoreMenu.sections.map(\.title) == decided.map(\.title))
+    #expect(GridMoreMenu.sections.map { $0.entries.map(\.id) } == decided.map(\.entries))
+    // A `Section` with no words is grouping WITHOUT labels — the phase's declared deviation, not
+    // something that may ship silently. Ids stay unique because they are the `ForEach` identity.
+    #expect(GridMoreMenu.sections.allSatisfy { !$0.title.isEmpty })
+    #expect(GridMoreMenu.sections.allSatisfy { !$0.entries.isEmpty })
+    #expect(Set(GridMoreMenu.sections.map(\.id)).count == GridMoreMenu.sections.count)
+  }
+
+  /// The Clear-folds-into-More rule (WP13 P1) is untouched by the grouping: folded, the Clear row
+  /// still answers to the bar's identifier, and it does so from INSIDE the Marks section.
+  @Test("The folded Clear row keeps its identity, inside the Marks section")
+  func theFoldedClearRowKeepsItsIdentityInsideTheMarksSection() {
+    guard let marks = GridMoreMenu.sections.first(where: { $0.id == "more.section.marks" }) else {
+      Issue.record("there is no Marks section to fold the bar's Clear into")
+      return
+    }
+    let folded = marks.entries.map {
+      GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true)
+    }
+    #expect(folded.filter { $0 == ActionBarMarkControl.clear.accessibilityIdentifier }.count == 1)
+    // Positive control: the Marks section really was enumerated, so the count above is a fact
+    // about the fold and not about an empty section.
+    #expect(folded.contains("gridSelectCommand"))
+    // And no OTHER section grew a Clear on the way.
+    let elsewhere = GridMoreMenu.sections
+      .filter { $0.id != "more.section.marks" }
+      .flatMap(\.entries)
+      .map { GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true) }
+    #expect(!elsewhere.contains(ActionBarMarkControl.clear.accessibilityIdentifier))
+    #expect(elsewhere.contains("gridMoreMenu.more.status"))
+  }
+
+  /// Organisation only: no identifier moved, so every UI test that resolves a row by identifier
+  /// keeps resolving it.
+  @Test("No entry's accessibility identifier changed when the sections arrived")
+  func noEntryIdentifierChangedWhenTheSectionsArrived() {
+    #expect(
+      GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
+        "gridSelectCommand", "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
+        "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
+        "gridMoreMenu.more.density", "gridMoreMenu.more.status",
+        "gridMoreMenu.more.openInNewWindow", "gridMoreMenu.more.mergeScene",
+        "gridMoreMenu.more.splitScene", "gridMoreMenu.more.extractScene",
+      ])
+    #expect(
+      GridMoreMenu.entries.map(\.systemImage) == [
+        "checkmark.circle", ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
+        "textformat", "checkmark.square", "square.grid.2x2", "info.circle",
+        "macwindow.badge.plus", "arrow.triangle.merge", "scissors", "square.on.square.dashed",
+      ])
+  }
+}
+
 /// WP13 P5a (IMGMGR-221): the app's first persisted preference store.
 @MainActor
 @Suite("GridPreferences — the first persisted preference (WP13 P5a)")

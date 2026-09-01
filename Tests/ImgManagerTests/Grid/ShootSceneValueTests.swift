@@ -172,3 +172,134 @@ struct SceneValueRoutingTests {
     #expect(untouched.query.folderID == nil)
   }
 }
+
+/// WP16 P4 (IMGMGR-297) B8: the two "Open in New Window" entry points share ONE production
+/// opening path, and the menu-bar entry is DATA produced by the factory its own view body
+/// renders.
+///
+/// The plan's round-2 finding is what these tests are shaped against: at `4753450` the two
+/// entry points did not share a call path (the More row derived the value and called
+/// `opener.open` itself; the menu bar called `ShootWindowCommand.run()` on a `@FocusedValue`),
+/// so a test that constructed a command by hand proved nothing about the menu-bar wiring. Now
+/// BOTH sites route through `ShootWindowAction.open`, and the menu-bar leg drives
+/// `AppCommands.makeOpenInNewWindowEntry(command:)` — the same factory the `Commands` body
+/// renders — so deleting either call site turns its own assertion RED.
+///
+/// **Two limits, stated rather than implied.** The menu-bar twin has NO UI leg: the entry
+/// deliberately declares no key equivalent (`AppCommands.swift`'s own note), so `typeKey` has
+/// nothing to send, and the system menu bar is not a surface XCUITest can open. And with
+/// ViewInspector absent from this project, no automated check proves the Button renders
+/// `entry.title` and calls `entry.action` — the body is a one-liner by construction, and a
+/// Button that bypasses the factory is a diff-gate blocker.
+@MainActor
+@Suite("Multi-window — one opening path, two entry points (WP16 P4)")
+struct ShootWindowEntryTests {
+
+  private func makeImage(id: Int) -> Components.Schemas.ImageSummary {
+    Components.Schemas.ImageSummary(
+      aspectRatio: 1.0, ext: "jpg", filename: "img\(id).jpg", folderId: 1, hasEdit: false, id: id,
+      lightroom: .init(sidecarPresent: false),
+      mark: .init(revision: "r0", state: .none, tags: []),
+      missing: false, proxies: .init(additionalProperties: [:]), sourceTier: "local")
+  }
+
+  private func makeStore() async -> GridStore {
+    let transport = GridStubTransport()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    let client = ImgManagerAPIClient.make(transport: transport)
+    return GridStore(service: GridService(client: client))
+  }
+
+  /// The acceptance criterion's own words: the More-menu entry AND the menu-bar entry each drive
+  /// ONE call on the SAME injected opener with the SAME scene value. One opener, so "the two
+  /// entry points agree" is read off a single recording rather than compared across two.
+  @Test("Both entry points drive one open each, on one opener, with the same scene value")
+  func bothEntryPointsDriveOneOpenEachOnTheSameOpener() async {
+    let store = await makeStore()
+    await store.selectShoot(folderID: 42, sourceTier: .archive)
+    guard let value = ShootSceneValue.from(query: store.query) else {
+      Issue.record("a folder-selected scope produced no scene value")
+      return
+    }
+
+    let opened = OpenedShootWindows()
+    let opener = ShootWindowOpener { opened.values.append($0) }
+
+    guard case .sceneWindow(let run) = GridMoreMenu.openInNewWindow.surface else {
+      Issue.record("more.openInNewWindow is not a scene-window entry")
+      return
+    }
+    #expect(GridMoreMenu.openInNewWindow.isEnabled(store))
+    run(store, opener)
+    #expect(
+      opened.values == [value], "the More row did not open the scope's own shoot exactly once")
+
+    let entry = AppCommands.makeOpenInNewWindowEntry(
+      command: ShootWindowCommand(value: value, opener: opener))
+    #expect(entry.title == ShootWindowCopy.title, "the two entry points are spelled differently")
+    #expect(entry.isEnabled)
+    entry.action()
+    #expect(
+      opened.values == [value, value],
+      "the menu-bar entry opened \(opened.values.count - 1) windows on the second call, not one")
+  }
+
+  /// With no workspace scene focused there is no command at all — the `@FocusedValue` is nil.
+  /// The factory the body renders must then produce a DISABLED entry whose action opens nothing,
+  /// rather than the body deciding that for itself.
+  @Test("With no focused command the menu-bar entry is disabled and its action opens nothing")
+  func withNoFocusedCommandTheEntryIsDisabledAndOpensNothing() {
+    let opened = OpenedShootWindows()
+    let absent = AppCommands.makeOpenInNewWindowEntry(command: nil)
+    #expect(absent.isEnabled == false)
+    #expect(absent.title == ShootWindowCopy.title, "a disabled entry lost its words")
+    absent.action()
+    #expect(opened.values.isEmpty)
+
+    // Positive control on the SAME spy: over a constructible command the same factory does open.
+    let value = ShootSceneValue(folderID: 5, sourceTier: nil)
+    let present = AppCommands.makeOpenInNewWindowEntry(
+      command: ShootWindowCommand(
+        value: value, opener: ShootWindowOpener { opened.values.append($0) }))
+    #expect(present.isEnabled)
+    present.action()
+    #expect(opened.values == [value])
+  }
+
+  /// A command with nothing in scope: the entry is disabled AND its action is a no-op, so a
+  /// disabled control that somehow fired is harmless rather than a trap — the same rule the More
+  /// row has followed since P11, now enforced in one place for both.
+  @Test("A command with no shoot in scope is disabled and its action is a no-op")
+  func aCommandWithNoShootIsDisabledAndItsActionIsANoOp() {
+    let opened = OpenedShootWindows()
+    let opener = ShootWindowOpener { opened.values.append($0) }
+    let entry = AppCommands.makeOpenInNewWindowEntry(
+      command: ShootWindowCommand(value: nil, opener: opener))
+    #expect(entry.isEnabled == false)
+    entry.action()
+    #expect(opened.values.isEmpty, "a disabled entry opened a window")
+
+    // Positive control on the same opener: it really does record when something opens.
+    let value = ShootSceneValue(folderID: 8, sourceTier: .local)
+    #expect(ShootWindowAction.open(value, using: opener))
+    #expect(opened.values == [value])
+  }
+
+  /// The ONE guard, tested where it lives: both entry points delegate their nil-check here, so
+  /// neither carries a second `folderID != nil` rule that could disagree with the other.
+  @Test("The shared opening path is the one guard: nil opens nothing and reports it")
+  func theSharedOpeningPathIsTheOneGuard() {
+    let opened = OpenedShootWindows()
+    let opener = ShootWindowOpener { opened.values.append($0) }
+    #expect(ShootWindowAction.open(nil, using: opener) == false)
+    #expect(opened.values.isEmpty)
+
+    let value = ShootSceneValue(folderID: 3, sourceTier: .archive)
+    #expect(ShootWindowAction.open(value, using: opener))
+    #expect(opened.values == [value])
+    // Called twice, it opens twice — the guard is the only thing it decides.
+    #expect(ShootWindowAction.open(value, using: opener))
+    #expect(opened.values == [value, value])
+  }
+}
