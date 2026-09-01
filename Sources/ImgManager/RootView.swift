@@ -492,6 +492,7 @@ struct RootView: View {
   @ViewBuilder
   private var inspectorChromeButton: some View {
     let activeFilters = InspectorFacetFilters.activeCount(gridStore.currentQuery)
+    let spokenLabel = InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: activeFilters)
     Button {
       // A TOGGLE, not a one-way open: the slide-over has no sheet grabber to dismiss it, so the
       // persistent chrome control is also how it closes (zero gesture-only actions). At Compact
@@ -499,17 +500,32 @@ struct RootView: View {
       withAnimation(.snappy(duration: 0.25)) { showInspector.toggle() }
     } label: {
       if activeFilters > 0 {
-        Label(
-          InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters),
-          systemImage: "line.3.horizontal.decrease.circle.fill"
-        )
+        // IMGMGR-224: the spoken phrasing rides the TITLE TEXT itself. A `ToolbarItem`'s bar item
+        // is built from the button's title, and the WP13 P10 gate log recorded VoiceOver reading
+        // the visual "Info · 1" while `.accessibilityLabel` on the button sat there as dead code;
+        // the 23:26 run of this lane showed the same for the collapsed-content form. Labelling
+        // the Text is the remaining attachment point that travels with the title the bar item
+        // actually takes. The visual string is unchanged either way.
+        Label {
+          Text(InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters))
+            .accessibilityLabel(spokenLabel)
+        } icon: {
+          Image(systemName: "line.3.horizontal.decrease.circle.fill")
+        }
         .labelStyle(.titleAndIcon)
       } else {
-        Label("Info", systemImage: "info.circle")
+        Label {
+          Text("Info").accessibilityLabel(spokenLabel)
+        } icon: {
+          Image(systemName: "info.circle")
+        }
       }
     }
-    .accessibilityLabel(
-      InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: activeFilters))
+    .accessibilityLabel(spokenLabel)
+    // Diagnostic AND useful: the account item's own identifier surfaces through the same bridge
+    // (gate tree, `accountToolbarButton`), so if this one appears while the label still does not,
+    // the bridge drops labels specifically — which is the finding, not a guess.
+    .accessibilityIdentifier("inspectorChromeButton")
   }
 
   private var detailColumn: some View {

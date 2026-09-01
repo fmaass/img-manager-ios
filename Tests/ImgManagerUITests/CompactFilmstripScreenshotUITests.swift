@@ -71,6 +71,57 @@ final class CompactFilmstripScreenshotUITests: XCTestCase {
     XCTAssertEqual(zoomToggle.value as? String, "100 %")
   }
 
+  // MARK: - IMGMGR-268: the strip's thumbnails are CONTROLS, not a bare gesture
+
+  /// The filmstrip's focus action shipped as `.onTapGesture` on a plain view, so the running
+  /// app's accessibility tree contained no control for it at all: VoiceOver announced an image
+  /// and offered nothing to activate, on the phone where the strip is the only context there is.
+  /// This reads the SHIPPED tree — a thumbnail has to be a real button, carry a meaningful label,
+  /// and still move focus when it is activated.
+  ///
+  /// Runs on both gate destinations for the same reason the test above does: P9 put the strip on
+  /// every layout mode, so the control contract has to hold on every layout mode.
+  func testFilmstripThumbnailsAreAccessibleButtonsThatStillMoveFocus() throws {
+    let app = launchAndOpenLoupe()
+
+    let strip = element(app, "loupeFilmstrip")
+    XCTAssertTrue(strip.waitForExistence(timeout: 10), "The loupe thumb bar is missing.")
+
+    let thumbnails = app.buttons.matching(
+      NSPredicate(format: "identifier BEGINSWITH 'filmstripThumbnail-'"))
+    if thumbnails.count < 2 {
+      XCTContext.runActivity(named: "element tree with no filmstrip thumbnail buttons") {
+        activity in
+        activity.add(XCTAttachment(string: app.debugDescription))
+      }
+    }
+    XCTAssertGreaterThanOrEqual(
+      thumbnails.count, 2,
+      "The filmstrip's thumbnails are not exposed as buttons — the focus action is a bare tap "
+        + "gesture, so VoiceOver announces no control for it (IMGMGR-268).")
+
+    let candidates = thumbnails.allElementsBoundByIndex
+    guard let target = candidates.first(where: { !$0.isSelected && $0.isHittable }) else {
+      XCTFail(
+        "No unfocused, hittable filmstrip thumbnail to activate — cannot prove the tap behavior "
+          + "survived becoming a control.")
+      return
+    }
+    XCTAssertFalse(
+      target.label.isEmpty,
+      "A filmstrip thumbnail button announces no label — a button VoiceOver cannot name is not "
+        + "an improvement on a gesture.")
+    let identifier = target.identifier
+    XCTContext.runActivity(named: "activating \(identifier) labelled '\(target.label)'") { _ in }
+    attach(name: "compact-loupe-filmstrip-buttons")
+
+    target.tap()
+    let activated = app.buttons.matching(identifier: identifier).firstMatch
+    let becameFocused = expectation(
+      for: NSPredicate(format: "isSelected == true"), evaluatedWith: activated)
+    wait(for: [becameFocused], timeout: 10)
+  }
+
   // MARK: - Shared
 
   private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {

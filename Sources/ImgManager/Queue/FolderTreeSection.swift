@@ -39,16 +39,21 @@ struct FolderTreeSection: View {
   let onSelect: (Int, GridSourceTier) -> Void
 
   @State private var expansion = FolderTreeExpansion()
-  @State private var localFolders: [Components.Schemas.FolderNode] = []
-  @State private var archiveFolders: [Components.Schemas.FolderNode] = []
-  @State private var didLoad = false
+  @State private var load = FolderTreeLoad.loading
   @State private var searchText = ""
   @State private var expandedBranches: Set<Int> = []
   @State private var expandedTiers: Set<GridSourceTier> = []
 
+  private var localFolders: [Components.Schemas.FolderNode] { load.localFolders }
+  private var archiveFolders: [Components.Schemas.FolderNode] { load.archiveFolders }
+
   var body: some View {
     DisclosureGroup(isExpanded: expansionBinding) {
-      if didLoad {
+      if load.phase != .loading {
+        // IMGMGR-174: a load that failed says so, above whatever rows did arrive. It sits FIRST
+        // because a partial failure still renders a tree underneath it, and a note below rows the
+        // reader has already started scanning is a note they will not read.
+        failureNotice
         searchField
         tierBranch("Local", folders: localFolders, tier: .local)
         tierBranch("Archive", folders: archiveFolders, tier: .archive)
@@ -70,13 +75,33 @@ struct FolderTreeSection: View {
       Text("Folders").accessibilityIdentifier("foldersDisclosure")
     }
     .task {
-      if let tree = try? await gridService.folders(sourceTier: .local) {
-        localFolders = tree.items
+      guard load.phase == .loading else { return }
+      load = await FolderTreeLoad.perform(using: gridService)
+    }
+  }
+
+  /// The visible half of IMGMGR-174: what a failed (or half-failed) load says, and the one way
+  /// back from it. Retry re-runs the SAME `FolderTreeLoad.perform` the `.task` ran — there is no
+  /// second fetch path that could behave differently — and returns to `.loading` first so the
+  /// spinner replaces the notice while it is in flight, rather than leaving a stale failure on
+  /// screen. Chrome, not a gesture: the whole recovery is a labelled button.
+  @ViewBuilder
+  private var failureNotice: some View {
+    if let message = FolderTreeLoadPresentation.message(for: load.phase) {
+      VStack(alignment: .leading, spacing: 4) {
+        Label(message, systemImage: "exclamationmark.triangle")
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("folderTreeLoadError")
+        Button("Retry") {
+          Task {
+            load = .loading
+            load = await FolderTreeLoad.perform(using: gridService)
+          }
+        }
+        .buttonStyle(.borderless)
+        .accessibilityIdentifier("folderTreeRetry")
       }
-      if let tree = try? await gridService.folders(sourceTier: .archive) {
-        archiveFolders = tree.items
-      }
-      didLoad = true
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -175,6 +200,92 @@ struct FolderTreeSection: View {
           expandedTiers.remove(tier)
         }
       })
+  }
+}
+
+/// The Folders disclosure's two per-tier fetches and what they produced — lifted out of the
+/// view's `.task` so a test can drive it (IMGMGR-174). A value, and one `async` function that
+/// makes it, for the same reason `FolderTreePresentation`/`QueueSort` are pure: the decision is
+/// then something a test reads directly rather than a `.task` body nothing can reach.
+///
+/// The extraction changed nothing about WHAT happens: both fetches are still swallowed with
+/// `try?` and the section still ends up "loaded" whatever occurred — which is exactly the shipped
+/// defect the tests beside it now name. `GridService` collapses a non-ok status and a decode
+/// failure alike into one opaque `.unreachable`, so a silent failure and a genuinely empty
+/// library render the identical empty disclosure (found while diagnosing IMGMGR-173, session
+/// review /link/3237).
+struct FolderTreeLoad: Equatable, Sendable {
+  /// Four rendered states. `.loaded` with two empty arrays IS the genuinely-empty library — a
+  /// successful response carrying no rows — which is precisely the state a failure must never be
+  /// confused with.
+  enum Phase: Equatable, Sendable {
+    case loading
+    case loaded
+    /// One tier answered and the other did not: the rows that arrived are real and worth showing,
+    /// beside a note that part of the tree is missing.
+    case partiallyFailed(GridSourceTier)
+    case failed
+  }
+
+  var phase: Phase = .loading
+  var localFolders: [Components.Schemas.FolderNode] = []
+  var archiveFolders: [Components.Schemas.FolderNode] = []
+
+  /// The pre-fetch value the view starts from, and the one a retry returns to.
+  static let loading = FolderTreeLoad()
+
+  /// Both tier fetches, and the one place their outcomes become a rendered state. A throw is
+  /// RECORDED rather than swallowed (IMGMGR-174): `GridService.folders` throws only
+  /// `.unreachable` — it collapses a non-ok status and a decode failure into that one case — so
+  /// what a failure means cannot be reported, but THAT there was one always can, and that is the
+  /// difference between an empty tree and a broken one.
+  static func perform(using service: GridService) async -> FolderTreeLoad {
+    var result = FolderTreeLoad()
+    var localFailed = false
+    var archiveFailed = false
+    do {
+      result.localFolders = try await service.folders(sourceTier: .local).items
+    } catch {
+      localFailed = true
+    }
+    do {
+      result.archiveFolders = try await service.folders(sourceTier: .archive).items
+    } catch {
+      archiveFailed = true
+    }
+    switch (localFailed, archiveFailed) {
+    case (false, false): result.phase = .loaded
+    case (true, false): result.phase = .partiallyFailed(.local)
+    case (false, true): result.phase = .partiallyFailed(.archive)
+    case (true, true): result.phase = .failed
+    }
+    return result
+  }
+}
+
+/// What a load phase LOOKS like — the pure half of IMGMGR-174, so the wording and the
+/// failure/not-failure split are values a test reads rather than strings buried in a view.
+enum FolderTreeLoadPresentation {
+  static func isFailure(_ phase: FolderTreeLoad.Phase) -> Bool {
+    switch phase {
+    case .failed, .partiallyFailed: return true
+    case .loading, .loaded: return false
+    }
+  }
+
+  /// Deliberately says what could not be LOADED, never why — `GridService` collapses a non-ok
+  /// status and a decode failure into one opaque `.unreachable` (its own doc comment), so a
+  /// reason here would be invented rather than reported. `nil` where there is nothing to say.
+  static func message(for phase: FolderTreeLoad.Phase) -> String? {
+    switch phase {
+    case .loading, .loaded: return nil
+    case .failed: return "Folders could not be loaded."
+    case .partiallyFailed(let tier):
+      switch tier {
+      case .local: return "Local folders could not be loaded."
+      case .archive: return "Archive folders could not be loaded."
+      }
+    }
   }
 }
 

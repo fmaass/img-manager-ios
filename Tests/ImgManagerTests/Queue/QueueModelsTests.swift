@@ -115,21 +115,44 @@ struct QueueModelsTests {
     #expect(sections.map(\.section) == [.reviewInProgress, .needsPreviews, .historicalUnreviewed])
   }
 
-  @Test("Within a section: last_touched descending, nulls last, folder_id tiebreak")
-  func withinSectionSort() {
+  /// IMGMGR-264 (owner directive, 2026-08-31): the ORDER is the server's — `/api/folder-summaries`
+  /// returns folders by name descending (names are dates, so newest first) with a `folder_id`
+  /// tiebreak, and the client's job is grouping ONLY. The shipped client re-sorted by
+  /// `last_touched` descending, which is a different question entirely ("what did I touch last",
+  /// not "which shoot is newest") and silently overrode whatever order the server chose.
+  ///
+  /// `last_touched` here deliberately CONTRADICTS the response order — the most recently touched
+  /// folder is served last — so a surviving client sort is visible rather than coincidental.
+  @Test("Within a section the SERVER's order is preserved verbatim — no client re-sort")
+  func withinSectionServerOrderIsPreserved() {
     let older = Date(timeIntervalSince1970: 1000)
     let newer = Date(timeIntervalSince1970: 2000)
     let items = [
-      makeSummary(folderId: 5, readiness: "ready_to_review", lastTouched: nil),
-      makeSummary(folderId: 3, readiness: "ready_to_review", lastTouched: older),
-      makeSummary(folderId: 1, readiness: "ready_to_review", lastTouched: newer),
-      makeSummary(folderId: 2, readiness: "ready_to_review", lastTouched: newer),
-      makeSummary(folderId: 4, readiness: "ready_to_review", lastTouched: nil),
+      makeSummary(folderId: 5, readiness: "ready_to_review", lastTouched: nil),  // "2026-08-31"
+      makeSummary(folderId: 3, readiness: "ready_to_review", lastTouched: older),  // "2026-08-30"
+      makeSummary(folderId: 1, readiness: "ready_to_review", lastTouched: newer),  // "2026-08-29"
     ]
     let sections = QueueSort.sections(from: items)
     #expect(sections.count == 1)
-    // newer group (folder_id tiebreak 1 before 2), then older, then nulls last (4 before 5).
-    #expect(sections[0].items.map(\.folderId) == [1, 2, 3, 4, 5])
+    #expect(sections[0].items.map(\.folderId) == [5, 3, 1])
+  }
+
+  /// The other half of "grouping only": splitting an interleaved response into sections must not
+  /// disturb the relative order WITHIN each section either. The folder ids descend in the
+  /// response, so the old `folder_id`-ascending tiebreak (the shipped comparator's answer when
+  /// `last_touched` is absent on every row) reverses both sections and is visible here.
+  @Test("Grouping an interleaved response is order-preserving inside every section")
+  func groupingPreservesOrderWithinEachSection() {
+    let items = [
+      makeSummary(folderId: 40, readiness: "review_in_progress", lastTouched: nil),
+      makeSummary(folderId: 30, readiness: "ready_to_review", lastTouched: nil),
+      makeSummary(folderId: 20, readiness: "review_in_progress", lastTouched: nil),
+      makeSummary(folderId: 10, readiness: "ready_to_review", lastTouched: nil),
+    ]
+    let sections = QueueSort.sections(from: items)
+    #expect(sections.map(\.section) == [.reviewInProgress, .readyToReview])
+    #expect(sections[0].items.map(\.folderId) == [40, 20])
+    #expect(sections[1].items.map(\.folderId) == [30, 10])
   }
 
   // MARK: - QueueCardDestination (diff-gate round 3 closure, B1)

@@ -8,14 +8,14 @@ import Testing
 /// through the REAL generated `Client` over `GridStubTransport` — the same discipline as
 /// `Grid/GridServiceContractProbeTests.swift`.
 ///
-/// THE FINDING THIS SUITE RECORDS. `Operations.DownloadImageApiImagesImageIdDownloadGet
-/// .Output.Ok` is generated as an EMPTY STRUCT (`public struct Ok { public init() {} }`),
-/// because the vendored contract's `200` declares no `content` at all. The master export's
-/// BYTES are therefore unreachable through the generated client, and the master half of this
-/// lane stops at `ShareMasterSeam` — no hand-built request stands in for the missing
-/// declaration. `masterBytesAreUnreachableAtThisContract` below is that finding as a passing
-/// test rather than a comment: it goes RED the day the contract grows a body, which is exactly
-/// the day the seam should be reconsidered.
+/// THE FINDING THIS SUITE RECORDED, AND ITS EXPIRY. Until the IMGMGR-249 re-vendor
+/// (img-manager `74203992`, 2026-08-31) the contract's `200` declared no `content` at all, so
+/// `Output.Ok` was generated as an empty struct and the master export's BYTES were unreachable
+/// through the generated client — the master half of this lane stopping at `ShareMasterSeam`
+/// with no hand-built request standing in for the missing declaration. The operation now
+/// declares binary content, so the tripwire that suite carried has fired exactly as written:
+/// `masterBytesAreReachableAtThisContract` below records the new position, and the seam stays
+/// off because its steps 3 and 4 are unbuilt, not because the bytes cannot be had.
 ///
 /// The 403 half, by contrast, IS fully expressed by the generated types — including the
 /// `X-Img-Policy` header — so the refusal the whole feature exists to respect is already
@@ -83,10 +83,19 @@ struct DownloadContractProbeTests {
     #expect(ShareExportPlan.refusal(status: 404, policyHeader: nil) == .noMaster)
   }
 
-  @Test(
-    "THE PARKED PREMISE: a 200 carrying real bytes still yields an Output.Ok with no body to read"
-  )
-  func masterBytesAreUnreachableAtThisContract() async throws {
+  /// THE TRIPWIRE FIRED (WP14 lane A, 2026-08-31). This test used to record the opposite: the
+  /// `200` declared no `content` at all, `Output.Ok` was an empty struct, and the master's bytes
+  /// were unreachable through the generated client. Its own comment named the day it would stop
+  /// compiling as the day the seam should be reconsidered — and the IMGMGR-249 re-vendor at
+  /// img-manager `74203992` is that day: the operation now declares binary content, so `Ok`
+  /// carries a `Body`.
+  ///
+  /// What that changes is the CONTRACT, which is steps 1 and 2 of `ShareMasterSeam`'s own
+  /// activation list. Steps 3 and 4 — a `MasterDownloading` conformance on `GridService`, then
+  /// flipping `isAvailable` — are a feature decision with its own lane, so this suite records the
+  /// new position rather than taking it: the body exists, and the seam is still off ON PURPOSE.
+  @Test("The 200 now DECLARES a body, so the master seam's parked premise no longer holds")
+  func masterBytesAreReachableAtThisContract() async throws {
     let transport = GridStubTransport()
     let bytes = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0xD9])
     await transport.setDownloadOutcome(
@@ -97,12 +106,21 @@ struct DownloadContractProbeTests {
       Issue.record("expected .ok, got \(output)")
       return
     }
-    // The whole finding in one line: the ONLY thing `Ok` can be compared against is another
-    // default-constructed `Ok`, because it has no members at all. The bytes the transport
-    // genuinely sent, and the `Content-Disposition` it genuinely set, are both unreachable
-    // from here. Give this response a declared body in the contract and this line stops
-    // compiling as an equality — which is the intended way to discover that the seam can open.
-    #expect(ok == Operations.DownloadImageApiImagesImageIdDownloadGet.Output.Ok())
+    // The finding, as a compile-time check rather than a comment: `Ok` has a `body` of the
+    // generated `Body` type. A keypath literal into it does not type-check if the property is
+    // absent, which is precisely the state this suite recorded before the re-vendor. Deliberately
+    // NOT matched against a content-type case — which case a response carries is the downloader's
+    // question (step 3), and this probe is about the contract, not about consuming it.
+    let bodyKeyPath:
+      KeyPath<
+        Operations.DownloadImageApiImagesImageIdDownloadGet.Output.Ok,
+        Operations.DownloadImageApiImagesImageIdDownloadGet.Output.Ok.Body
+      > = \.body
+    _ = bodyKeyPath
+    _ = ok
+    // Still OFF, and now by decision rather than by impossibility: steps 3 and 4 of
+    // `ShareMasterSeam`'s activation list are unbuilt, and flipping this without them would
+    // route the loupe's master entry at a downloader that does not exist.
     #expect(ShareMasterSeam.isAvailable == false)
   }
 }

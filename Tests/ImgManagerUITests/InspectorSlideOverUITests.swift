@@ -171,7 +171,7 @@ final class InspectorSlideOverUITests: XCTestCase {
   /// `InspectorFacetFilters` — it drives the shipped chain end to end (tap a facet row → the
   /// store's query changes → `RootView`'s Info control re-renders) and then reads the control's
   /// own accessibility label. Drop `.accessibilityLabel(...)` from that button and the label
-  /// falls back to plain "Info", which fails here.
+  /// falls back to the visual title, which fails here (IMGMGR-224).
   ///
   /// Run at Regular-2 specifically because the slide-over leaves the navigation bar uncovered, so
   /// the control stays readable while the panel is open — under Compact's modal sheet it is not.
@@ -230,22 +230,24 @@ final class InspectorSlideOverUITests: XCTestCase {
           + "\(markRowLabel); buttons now: \(labels)")
     }
 
-    // ...and THAT is what the production control must now be reporting. The expected string is
-    // `InspectorFacetFilters.infoButtonTitle(activeCount: 1)` verbatim
-    // (`InspectorModel.swift:326-328`, "Info · \(activeCount)" with a U+00B7 middle dot) — the
-    // test pins production, not the other way round.
+    // ...and THAT is what the production control must now be reporting — in the phrasing written
+    // for a screen reader, not the terse visual one.
     //
-    // NOTE, not a change: what XCUITest reads back here is that TITLE, even though the button
-    // also carries `.accessibilityLabel(infoButtonAccessibilityLabel(...))` ("Info, 1 filter
-    // active"). That modifier does not surface on this toolbar item, so a screen reader gets the
-    // terser visual string rather than the sentence written for it. Production is out of this
-    // phase's fence, so it is recorded here rather than touched.
+    // IMGMGR-224: what XCUITest reads back here IS the accessibility label. Until this ticket the
+    // toolbar item dropped `.accessibilityLabel(infoButtonAccessibilityLabel(...))` and the
+    // element fell back to the visual title ("Info · 1", `InspectorFacetFilters.infoButtonTitle`),
+    // so the sentence written for VoiceOver ("Info, 1 filter active",
+    // `InspectorModel.swift:330`) was dead code. The expected string below is that function's
+    // output verbatim — the test pins production, not the other way round — and the screenshot
+    // attached beside it is the evidence that the VISUAL title is still the middle-dot form.
     XCTAssertTrue(
       chromeInfo.waitForExistence(timeout: 5), "The chrome control vanished while filtering.")
+    attach(app: app, named: "P10-info-control-filtered")
     XCTAssertEqual(
-      chromeInfo.label, "Info · 1",
-      "The Info control must carry the active-filter count — it is the only place a filtered "
-        + "grid announces itself, and losing it is the regression this test exists to catch.")
+      chromeInfo.label, "Info, 1 filter active",
+      "The Info control must announce the active-filter count in the accessible phrasing — it is "
+        + "the only place a filtered grid announces itself, and a screen reader that hears the "
+        + "terse visual title instead is the IMGMGR-224 regression this test exists to catch.")
   }
 
   private func attach(app: XCUIApplication, named name: String) {

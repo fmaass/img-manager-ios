@@ -103,30 +103,23 @@ enum QueueSort {
   }
 
   /// Zero-item sections are omitted entirely (Q1: "Zero-item sections not rendered").
+  ///
+  /// IMGMGR-264 (owner directive, 2026-08-31): grouping ONLY — the WITHIN-section order is the
+  /// server's. `/api/folder-summaries` orders folders by name descending (the names are dates, so
+  /// newest first) with a `folder_id` tiebreak, one implementation both clients consume. The
+  /// client used to re-sort by `last_touched` descending, which answers a different question
+  /// ("what did I touch last", not "which shoot is newest") and silently overrode whatever order
+  /// the server chose. The accumulation below is explicitly order-preserving rather than relying
+  /// on `Dictionary(grouping:)`'s undocumented within-bucket ordering.
   static func sections(from summaries: [Components.Schemas.FolderSummary]) -> [Section] {
-    let grouped = Dictionary(grouping: summaries) {
-      ReadinessSection(rawValue: $0.readiness.rawValue)
+    var grouped: [ReadinessSection: [Components.Schemas.FolderSummary]] = [:]
+    for summary in summaries {
+      guard let key = ReadinessSection(rawValue: summary.readiness.rawValue) else { continue }
+      grouped[key, default: []].append(summary)
     }
     return ReadinessSection.displayOrder.compactMap { key in
       guard let items = grouped[key], !items.isEmpty else { return nil }
-      return Section(section: key, items: sort(items))
-    }
-  }
-
-  /// Within-section order (Q1): `last_touched` descending, nulls last, `folder_id` tiebreak
-  /// (ascending — unspecified direction in the brief; picked for a stable, deterministic order).
-  static func sort(_ items: [Components.Schemas.FolderSummary])
-    -> [Components.Schemas.FolderSummary]
-  {
-    items.sorted { a, b in
-      switch (a.lastTouched, b.lastTouched) {
-      case (nil, nil): return a.folderId < b.folderId
-      case (nil, _): return false
-      case (_, nil): return true
-      case (let da?, let db?):
-        if da != db { return da > db }
-        return a.folderId < b.folderId
-      }
+      return Section(section: key, items: items)
     }
   }
 }

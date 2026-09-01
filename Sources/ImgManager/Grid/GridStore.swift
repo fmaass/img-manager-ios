@@ -213,7 +213,17 @@ final class GridStore {
   /// so a NEW shoot/filter always starts un-exhausted.
   private(set) var loupeExhausted = false
 
+  /// Which loupe SESSION is current — one per `openLoupe`, monotonic, never reused. The
+  /// distinction matters because "a loupe is open" and "the loupe that asked for this is still
+  /// open" are different questions, and only the second one licenses a completion to move the
+  /// frame: closing and reopening on the same image (a tile tap on the frame the grid still has
+  /// focused — the ordinary way back in) satisfies the first while the reader has plainly not
+  /// asked the new session to advance anywhere. Incremented unconditionally, including on an
+  /// `openLoupe` over an already-open loupe, because that is a new act of opening either way.
+  private var loupeSession = 0
+
   func openLoupe(on imageID: Int) {
+    loupeSession += 1
     focusedImageID = imageID
     // Pin (`SelectionState.swift`'s own `SelectionResetTrigger.enteredLoupe` doc comment,
     // written ahead of P5 for exactly this call site): entering the loupe resets selection.
@@ -273,6 +283,16 @@ final class GridStore {
     focusedImageID = imageID
   }
 
+  /// The FOCUSED photograph's own mark, or `nil` when nothing is focused (or the focused id is
+  /// not in the actionable projection — a scope change can leave focus naming a row this store no
+  /// longer holds). Reads `actionableImages`, never `images`: that is the same projection the
+  /// loupe and the filmstrip walk, so in Scene mode an opened scene's members answer too, where
+  /// `images` is empty by design (IMGMGR-275).
+  var focusedMarkState: Components.Schemas.MarkView.StatePayload? {
+    guard let id = focusedImageID else { return nil }
+    return actionableImages.first(where: { $0.id == id })?.mark.state
+  }
+
   var canLoupeGoPrevious: Bool {
     let pool = actionableImages
     guard let current = focusedImageID, let idx = pool.firstIndex(where: { $0.id == current })
@@ -300,6 +320,9 @@ final class GridStore {
     // discarded whole, or it appends old-scope rows into the new scope and can focus the
     // loupe on an id the new scope does not contain.
     let generation = loadGeneration
+    // IMGMGR-269 (codex gate round 1, blocker 1): the loupe session that ASKED, captured before
+    // the await — see `loupeSession` for why current open-state is the wrong question.
+    let session = loupeSession
     do {
       let page = try await service.neighbours(after: imageID, query: query, limit: 5)
       guard generation == loadGeneration else { return }
@@ -312,7 +335,21 @@ final class GridStore {
         loupeExhausted = true
       } else {
         loupeExhausted = false
-        if focusedImageID == imageID,
+        // IMGMGR-269: the focus advance is SESSION-scoped, the merge above is not.
+        // `applyLoupeMark` checks `isLoupeOpen` before it calls `loupeNext()`, but at the loaded
+        // tail that call awaits this fetch — and Close is never disabled by a write, so the reader
+        // can leave the loupe while the page is in flight. `closeLoupe()` neither clears
+        // `focusedImageID` nor bumps `loadGeneration` (the bumps belong to scope changes, and this
+        // is not one), so the generation guard above passes and, unfenced, this line would move
+        // GRID focus after the loupe is gone.
+        //
+        // `session == loupeSession` rather than `isLoupeOpen` alone (codex gate round 1, blocker
+        // 1): closing and REOPENING on the same image — a tile tap on the frame the grid still has
+        // focused — makes open-state and focus both read true again, and a stale completion would
+        // then advance a session that asked for nothing. `isLoupeOpen` is kept beside it so a
+        // completion arriving into a closed loupe is refused on its own terms rather than only as
+        // a session mismatch. The rows still merge either way: the grid legitimately gains them.
+        if isLoupeOpen, session == loupeSession, focusedImageID == imageID,
           let idx = images.firstIndex(where: { $0.id == imageID }),
           images.indices.contains(idx + 1)
         {
@@ -1638,6 +1675,13 @@ final class GridStore {
   @discardableResult
   func applyLoupeMark(_ state: MarkStateValue) async -> Bool {
     guard let markedID = focusedImageID else { return false }
+    // The SECOND site of the same class as the neighbours-completion fence below (codex gate
+    // round 1, blocker 1, enumerated rather than fixed one instance at a time): this guard also
+    // spans an await, and a close-then-reopen on the same image satisfies both of its original
+    // conditions. Those are the only two awaits in the loupe's advance path — `loupeNext`'s
+    // local branch and `loupePrevious` are synchronous, so nothing else can complete into a
+    // session that did not ask.
+    let session = loupeSession
     let committed = await applyMark(state, to: [markedID])
     guard committed, preferences.autoAdvanceOnMark else { return committed }
     // Diff-gate r1, blocker 1: the advance is fenced to the frame this call actually MARKED and
@@ -1646,7 +1690,7 @@ final class GridStore {
     // returning, the reader can have closed the loupe (an advance would then move GRID focus) or
     // stepped to another frame (an advance would skip past the one they deliberately chose).
     // Neither is a cadence. The mutation itself always stands; only the advance is withheld.
-    guard isLoupeOpen, focusedImageID == markedID else { return committed }
+    guard isLoupeOpen, session == loupeSession, focusedImageID == markedID else { return committed }
     await loupeNext()
     return committed
   }

@@ -99,6 +99,38 @@ struct NullableSurvivalTests {
     #expect(Bool(true))  // reaching here means every keypath above type-checked
   }
 
+  /// IMGMGR-249. The one nullability idiom img-manager CANNOT spell as a type array: JSON Schema
+  /// has no nullable-`$ref` shorthand, so a nullable model reference is always
+  /// `anyOf: [{$ref}, {"type": "null"}]` — and swift-openapi-generator 1.13.0 drops such a
+  /// property whole. Measured before the fix, on the gate's own generated `Types.swift` at
+  /// 0466798: `activeRun` 0 hits, positive control `lastIndexedAt` 5 hits, and the Status sheet
+  /// consequently could not name the job that was running. `scripts/sync-openapi.sh` now
+  /// canonicalises that shape to the bare `$ref` at optional sites; all seven are pinned
+  /// individually here, because losing one again would be silent.
+  @Test("Nullable MODEL references survive generation (all seven anyOf-$ref-null properties)")
+  func nullableModelReferencesSurvive() {
+    let _:
+      WritableKeyPath<Components.Schemas.StatusResponse, Components.Schemas.MaintenanceRunView?> =
+        \.activeRun
+    let _:
+      WritableKeyPath<Components.Schemas.MaintenanceBusy, Components.Schemas.MaintenanceRunView?> =
+        \.activeRun
+    let _:
+      WritableKeyPath<Components.Schemas.ApiHealthResponse, Components.Schemas.MaintenanceStatus?> =
+        \.maintenance
+    let _:
+      WritableKeyPath<Components.Schemas.RunCounters, Components.Schemas.BackfillRunCounters?> =
+        \.backfill
+    let _: WritableKeyPath<Components.Schemas.RunCounters, Components.Schemas.IndexRunCounters?> =
+      \.index
+    let _:
+      WritableKeyPath<Components.Schemas.RunCounters, Components.Schemas.PrecomputeRunCounters?> =
+        \.precompute
+    let _: WritableKeyPath<Components.Schemas.RunCounters, Components.Schemas.RunProgress?> =
+      \.progress
+    #expect(Bool(true))  // reaching here means every keypath above type-checked
+  }
+
   @Test("ImagePage round-trips a present and an absent next_cursor through Codable")
   func imagePageRoundTrip() throws {
     let withCursor = Components.Schemas.ImagePage(

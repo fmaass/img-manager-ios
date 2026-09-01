@@ -96,3 +96,97 @@ struct FolderTreeSectionTests {
     #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: true))
   }
 }
+
+/// IMGMGR-174. The sidebar swallowed every `folders()` throw with `try?`, and `GridService`
+/// collapses a non-ok status and a decode failure alike into one opaque `.unreachable` — so
+/// loading, genuinely-empty and silently-failed were the same picture on screen: nothing. These
+/// pins are the distinction, driven through the REAL `GridService` and the real generated client
+/// over a stub transport, never a re-implementation of the fetch.
+@MainActor
+@Suite("Folder tree loading — a failure is visible, and retryable (IMGMGR-174)")
+struct FolderTreeLoadTests {
+
+  private func makeService(_ transport: GridStubTransport) -> GridService {
+    GridService(client: ImgManagerAPIClient.make(transport: transport))
+  }
+
+  private func node(_ id: Int) -> Components.Schemas.FolderNode {
+    .init(id: id, kind: "dated", name: "n\(id)", path: "p\(id)")
+  }
+
+  @Test("Both tiers unreachable is a FAILED disclosure, never a silent empty list")
+  func bothTiersFailingIsAVisibleFailure() async {
+    let transport = GridStubTransport()
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
+
+    let load = await FolderTreeLoad.perform(using: makeService(transport))
+
+    #expect(load.phase == .failed)
+    #expect(load.localFolders.isEmpty)
+    #expect(load.archiveFolders.isEmpty)
+  }
+
+  /// Stated positively first, so the assertion above cannot pass by a load that calls everything
+  /// a failure: a server that answers with nothing is a LOADED, empty library.
+  @Test("A genuinely empty library is loaded, not failed")
+  func anEmptyLibraryIsLoadedNotFailed() async {
+    let transport = GridStubTransport()
+
+    let load = await FolderTreeLoad.perform(using: makeService(transport))
+
+    #expect(load.phase == .loaded)
+    #expect(load.localFolders.isEmpty)
+  }
+
+  @Test("One tier unreachable still shows the other's rows, flagged as partial")
+  func oneTierFailingIsPartialNotTotal() async {
+    let transport = GridStubTransport()
+    await transport.setFolderTree([node(1), node(2)], tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
+
+    let load = await FolderTreeLoad.perform(using: makeService(transport))
+
+    #expect(load.phase == .partiallyFailed(.archive))
+    #expect(load.localFolders.map(\.id) == [1, 2])
+    #expect(load.archiveFolders.isEmpty)
+  }
+
+  @Test("Retry after a failure re-fetches and recovers")
+  func retryAfterAFailureRecovers() async {
+    let transport = GridStubTransport()
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
+    let service = makeService(transport)
+    let failed = await FolderTreeLoad.perform(using: service)
+    #expect(failed.phase == .failed)
+
+    // The server comes back; the reader taps Retry, which is this same call again.
+    await transport.setFoldersShouldFail(false, tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(false, tier: GridSourceTier.archive.rawValue)
+    await transport.setFolderTree([node(9)], tier: GridSourceTier.local.rawValue)
+    let recovered = await FolderTreeLoad.perform(using: service)
+
+    #expect(recovered.phase == .loaded)
+    #expect(recovered.localFolders.map(\.id) == [9])
+    // Four calls: two that failed, two that recovered — the retry really re-fetched.
+    #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 4)
+  }
+
+  /// The failure surface is not a state the loader keeps to itself: the section renders an error
+  /// with a retry path, so both halves are named where a test can read them.
+  @Test("A failed phase is what the section renders its error state from")
+  func aFailedPhaseIsRenderable() {
+    #expect(FolderTreeLoadPresentation.isFailure(.failed))
+    #expect(FolderTreeLoadPresentation.isFailure(.partiallyFailed(.local)))
+    #expect(!FolderTreeLoadPresentation.isFailure(.loaded))
+    #expect(!FolderTreeLoadPresentation.isFailure(.loading))
+    #expect(
+      FolderTreeLoadPresentation.message(for: .failed)
+        == "Folders could not be loaded.")
+    #expect(
+      FolderTreeLoadPresentation.message(for: .partiallyFailed(.archive))
+        == "Archive folders could not be loaded.")
+    #expect(FolderTreeLoadPresentation.message(for: .loaded) == nil)
+  }
+}

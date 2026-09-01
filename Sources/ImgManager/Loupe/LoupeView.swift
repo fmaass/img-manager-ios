@@ -323,24 +323,10 @@ struct LoupeMarkBar: View {
   @Bindable var store: GridStore
 
   var body: some View {
-    HStack(spacing: 24) {
-      Button {
-        Task { await store.applyLoupeMark(.pick) }
-      } label: {
-        Label("Pick", systemImage: "hand.thumbsup")
-      }
-      .buttonStyle(.bordered)
-      .disabled(store.focusedImageID == nil || store.isMutatingMark)
-      .frame(minWidth: 44, minHeight: 44)
-
-      Button {
-        Task { await store.applyLoupeMark(.dislike) }
-      } label: {
-        Label("Dislike", systemImage: "hand.thumbsdown")
-      }
-      .buttonStyle(.bordered)
-      .disabled(store.focusedImageID == nil || store.isMutatingMark)
-      .frame(minWidth: 44, minHeight: 44)
+    let markState = store.focusedMarkState
+    return HStack(spacing: 24) {
+      markButton(.pick, state: markState)
+      markButton(.dislike, state: markState)
 
       Button {
         Task { await store.applyLoupeMark(.none) }
@@ -366,6 +352,101 @@ struct LoupeMarkBar: View {
     .padding()
     .background(.bar)
     .accessibilityIdentifier("loupeMarkBar")
+  }
+
+  /// IMGMGR-275: Pick and Dislike are the two controls whose meaning depends on the photograph in
+  /// front of the reader, so they are built from one function that takes the FOCUSED frame's mark
+  /// — never two hand-written buttons that could drift apart. Tap behaviour is unchanged: the
+  /// control still applies its own state through `applyLoupeMark` (never a toggle), the same
+  /// entry point and the same cadence it has had since WP13 P8.
+  @ViewBuilder
+  private func markButton(
+    _ control: LoupeMarkPresentation.Control,
+    state: Components.Schemas.MarkView.StatePayload?
+  ) -> some View {
+    let isActive = LoupeMarkPresentation.isActive(control, state: state)
+    Button {
+      Task { await store.applyLoupeMark(control.appliedState) }
+    } label: {
+      Label(control.title, systemImage: LoupeMarkPresentation.symbol(for: control, state: state))
+    }
+    .buttonStyle(.bordered)
+    .tint(isActive ? Color.accentColor : nil)
+    .disabled(store.focusedImageID == nil || store.isMutatingMark)
+    .frame(minWidth: 44, minHeight: 44)
+    // No per-button `accessibilityIdentifier` here: this bar's own identifier is set on the
+    // enclosing HStack and PROPAGATES down over every child's (gate run 23:26 dumped all four
+    // controls reporting `identifier: 'loupeMarkBar'`, `loupeClearButton` included). One that
+    // never surfaces would be a lie a test could not catch, so the controls are resolved by
+    // label within the bar instead.
+    .accessibilityValue(LoupeMarkPresentation.accessibilityValue(for: control, state: state))
+    .accessibilityAddTraits(isActive ? [.isSelected] : [])
+  }
+}
+
+/// How the loupe's two verdict controls READ for the photograph currently in front of the reader
+/// (IMGMGR-275, owner report 2026-08-31: "marks cannot be seen" while culling in the loupe). Pure
+/// and separate from the view so the state-reflection rule is something a test reads directly —
+/// the grid tile's badge has always had this, the loupe never did.
+enum LoupeMarkPresentation {
+  enum Control: Sendable, Equatable, CaseIterable {
+    case pick
+    case dislike
+
+    var title: String {
+      switch self {
+      case .pick: return "Pick"
+      case .dislike: return "Dislike"
+      }
+    }
+
+    /// What tapping the control WRITES — unchanged by this ticket, and deliberately not derived
+    /// from the current state: these buttons apply a verdict, they do not toggle one.
+    var appliedState: MarkStateValue {
+      switch self {
+      case .pick: return .pick
+      case .dislike: return .dislike
+      }
+    }
+
+    fileprivate var baseSymbol: String {
+      switch self {
+      case .pick: return "hand.thumbsup"
+      case .dislike: return "hand.thumbsdown"
+      }
+    }
+  }
+
+  /// Whether this control is the verdict currently ON the focused photograph. Reads the state and
+  /// nothing else — never the last button pressed, which would keep showing a verdict after an
+  /// advance moved to a different frame.
+  static func isActive(
+    _ control: Control, state: Components.Schemas.MarkView.StatePayload?
+  ) -> Bool {
+    switch control {
+    case .pick: return state == .pick
+    case .dislike: return state == .dislike
+    }
+  }
+
+  /// The SF Symbol the control draws: the filled variant of its own glyph while it is the current
+  /// verdict, the outline otherwise. Same pair the grid tile's badge already uses, so the two
+  /// surfaces say the same thing in the same vocabulary.
+  static func symbol(
+    for control: Control, state: Components.Schemas.MarkView.StatePayload?
+  ) -> String {
+    isActive(control, state: state) ? "\(control.baseSymbol).fill" : control.baseSymbol
+  }
+
+  /// The spoken half of the same signal: a filled glyph is invisible to VoiceOver, so the state
+  /// rides the control's accessibility VALUE beside its unchanged label.
+  static func accessibilityValue(
+    for control: Control, state: Components.Schemas.MarkView.StatePayload?
+  ) -> String {
+    switch control {
+    case .pick: return isActive(control, state: state) ? "Picked" : "Not picked"
+    case .dislike: return isActive(control, state: state) ? "Disliked" : "Not disliked"
+    }
   }
 }
 
@@ -430,10 +511,23 @@ struct FilmstripView: View {
       ScrollView(.horizontal) {
         LazyHStack(spacing: 4) {
           ForEach(frames, id: \.id) { image in
-            FilmstripThumbnail(
-              image: image, isFocused: store.focusedImageID == image.id, store: store
-            )
-            .onTapGesture { store.loupeFocus(on: image.id) }
+            let isFocused = store.focusedImageID == image.id
+            // IMGMGR-268: a real Button, never `.onTapGesture` on a plain view. The strip's focus
+            // action used to exist only as a gesture, so the accessibility tree carried no
+            // control for it at all — on Compact, where the strip is the only context there is,
+            // that left VoiceOver with an image and nothing to activate. The hit region is
+            // unchanged (the thumbnail's own `contentShape`), `.plain` keeps the visual identical,
+            // and the focused frame carries the selected trait so the announcement says which one
+            // it is.
+            Button {
+              store.loupeFocus(on: image.id)
+            } label: {
+              FilmstripThumbnail(image: image, isFocused: isFocused, store: store)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("filmstripThumbnail-\(image.id)")
+            .accessibilityLabel(FilmstripThumbnailAccessibility.label(for: image))
+            .accessibilityAddTraits(isFocused ? [.isSelected] : [])
             .task(id: image.id) { await pageIfNeeded(around: image) }
           }
         }
@@ -468,6 +562,20 @@ struct FilmstripFocusScroller {
 
   static let live = FilmstripFocusScroller { proxy, id in
     withAnimation(.easeOut(duration: 0.2)) { proxy?.scrollTo(id, anchor: .center) }
+  }
+}
+
+/// What one strip thumbnail ANNOUNCES (IMGMGR-268). Pure, so the wording is a value a test reads
+/// rather than a string literal inside a `ForEach`. It names the photograph and, when there is
+/// one, the verdict already on it — the same information the thumbnail's own visual state carries
+/// for a reader who can see it.
+enum FilmstripThumbnailAccessibility {
+  static func label(for image: Components.Schemas.ImageSummary) -> String {
+    switch image.mark.state {
+    case .pick: return "\(image.filename), picked"
+    case .dislike: return "\(image.filename), disliked"
+    default: return image.filename
+    }
   }
 }
 

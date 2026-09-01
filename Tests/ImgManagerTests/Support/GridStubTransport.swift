@@ -45,6 +45,12 @@ actor GridStubTransport: ClientTransport {
     [Components.Schemas.MarkStateRequest.StatePayload: MarkMutationOutcome] = [:]
   var tagsOutcome: MarkMutationOutcome = .success(
     Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
+  /// IMGMGR-174: `GET /api/folders` answers PER TIER — the sidebar asks for local and archive
+  /// separately, and "one tier is unreachable while the other answers" is a state the disclosure
+  /// has to render distinctly, so the stub has to be able to produce it.
+  private var folderTrees: [String: [Components.Schemas.FolderNode]] = [:]
+  private var foldersFailingTiers: Set<String> = []
+
   /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
   var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
 
@@ -452,6 +458,21 @@ actor GridStubTransport: ClientTransport {
   }
   func setTagsOutcome(_ outcome: MarkMutationOutcome) { tagsOutcome = outcome }
   func setNeighboursPage(_ page: Components.Schemas.ImagePage) { neighboursPage = page }
+  /// IMGMGR-174: one tier's `GET /api/folders` answer, and its reachability. The tier is the
+  /// WIRE string, not the app's `GridSourceTier` — this file deliberately imports only the
+  /// generated API and the transport types (never `ImgManager`), the same way it keys every other
+  /// operation off the generated `operationID` rather than off an app-level vocabulary. Callers
+  /// pass `GridSourceTier.<case>.rawValue`, which is that wire string.
+  func setFolderTree(_ items: [Components.Schemas.FolderNode], tier: String) {
+    folderTrees[tier] = items
+  }
+  func setFoldersShouldFail(_ fail: Bool, tier: String) {
+    if fail {
+      foldersFailingTiers.insert(tier)
+    } else {
+      foldersFailingTiers.remove(tier)
+    }
+  }
   // WP13 P5b (IMGMGR-221 part 2): the group-header endpoint.
   func setImageGroupsResult(_ result: Components.Schemas.ImageGroups) { imageGroupsResult = result }
   func setImageGroupsShouldFail(_ fail: Bool) { imageGroupsShouldFail = fail }
@@ -470,7 +491,12 @@ actor GridStubTransport: ClientTransport {
 
     switch operationID {
     case Operations.FolderTreeApiFoldersGet.id:
-      return try jsonResponse(.ok, Components.Schemas.FolderTree(items: []))
+      let tier = queryParameters(of: request)["source_tier"] ?? "local"
+      if foldersFailingTiers.contains(tier) {
+        return (HTTPResponse(status: .internalServerError), nil)
+      }
+      return try jsonResponse(
+        .ok, Components.Schemas.FolderTree(items: folderTrees[tier] ?? []))
 
     case Operations.FolderSummariesApiFolderSummariesGet.id:
       // Resolved BEFORE any hold-suspend, same discipline as `listImages` above: a held call
@@ -703,7 +729,7 @@ actor GridStubTransport: ClientTransport {
         lastMarkStateRequest.flatMap { markStateOutcomeByState[$0.state] } ?? markStateOutcome
       switch effectiveOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
-      case .conflict: return (HTTPResponse(status: .conflict), nil)
+      case .conflict: return try staleRevisionConflict(for: lastMarkStateRequest?.imageIds ?? [])
       }
 
     case Operations.ExportMarksApiMarksExportGet.id:
@@ -737,12 +763,25 @@ actor GridStubTransport: ClientTransport {
       }
       switch tagsOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
-      case .conflict: return (HTTPResponse(status: .conflict), nil)
+      case .conflict: return try staleRevisionConflict(for: lastTagsRequest?.imageIds ?? [])
       }
 
     default:
       throw SentinelTransportError(raw: "GridStubTransport: unexpected operationID: \(operationID)")
     }
+  }
+
+  /// The 409 the server actually sends since the WP14 re-vendor (IMGMGR-177's
+  /// `StaleMarkRevisionError`, now DECLARED on both mark writes). A bodyless 409 no longer
+  /// decodes through the generated client at all, so it surfaces as `.unreachable` and every
+  /// conflict test would be measuring a decode failure instead of a refusal. The submitted ids
+  /// are echoed as the stale set, which is the shape `_refuse_if_stale` produces: the whole
+  /// request is refused, so every id named in it is one the caller has to re-read.
+  private func staleRevisionConflict(for imageIDs: [Int]) throws -> (HTTPResponse, HTTPBody?) {
+    try jsonResponse(
+      .conflict,
+      Components.Schemas.StaleMarkRevisionError(
+        detail: .init(code: .staleMarkRevision, staleImageIds: imageIDs)))
   }
 
   private func jsonResponse<T: Encodable>(
