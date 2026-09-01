@@ -38,7 +38,7 @@ enum MarkPalette {
 
 extension TileBadgeItem {
   /// Which tile badges take the palette; `nil` means "keep `.white`". The badge priority order,
-  /// the two-badge cap and every SF-Symbol name are untouched by decision 5 — colour augments the
+  /// the two-badge cap and every SF-Symbol name are untouched by decision 5: colour augments the
   /// shape channel, it never replaces it.
   var markRole: MarkRole? {
     switch self {

@@ -4,7 +4,7 @@ import UIKit
 
 @testable import ImgManager
 
-/// WP16 P1 (IMGMGR-299, p3332 decision 5 — "Marks gain the web's colors"): the badge truth table,
+/// WP16 P1 (IMGMGR-299, p3332 decision 5 — "Marks gain the web's colors"): the truth table,
 /// the untouched SF-Symbol vocabulary, and the RESOLVED colour behind each mark role.
 ///
 /// The colour leg is deliberately an RGB assertion rather than a name-existence one: a colour set
@@ -52,13 +52,11 @@ struct MarkPaletteTests {
 
     for style in [UIUserInterfaceStyle.light, .dark] {
       let got = try components(of: named, style: style)
-      #expect(abs(got.red - CGFloat(expected.red)) <= 1, "red, \(role.assetName), style \(style)")
-      #expect(
-        abs(got.green - CGFloat(expected.green)) <= 1, "green, \(role.assetName), style \(style)")
-      #expect(
-        abs(got.blue - CGFloat(expected.blue)) <= 1, "blue, \(role.assetName), style \(style)")
+      #expect(abs(got.red - CGFloat(expected.red)) <= 1, "red, \(role), \(style)")
+      #expect(abs(got.green - CGFloat(expected.green)) <= 1, "green, \(role), \(style)")
+      #expect(abs(got.blue - CGFloat(expected.blue)) <= 1, "blue, \(role), \(style)")
       // A transparent swatch renders nothing at all, which no other assertion here would catch.
-      #expect(abs(got.alpha - 1) <= 1.0 / 255.0, "alpha, \(role.assetName), style \(style)")
+      #expect(abs(got.alpha - 1) <= 1.0 / 255.0, "alpha, \(role), \(style)")
     }
   }
 
@@ -73,7 +71,7 @@ struct MarkPaletteTests {
     #expect(abs(got.blue - CGFloat(expected.blue)) <= 1, "blue, \(role)")
   }
 
-  @Test("Only Pick, Dislike and Edited take a colour — Select, Good and changed-elsewhere do not")
+  @Test("Only Pick, Dislike and Edited take a colour — not Select, Good or changed-elsewhere")
   func badgeTruthTable() {
     #expect(TileBadgeItem.pick.markRole == .pick)
     #expect(TileBadgeItem.dislike.markRole == .dislike)
