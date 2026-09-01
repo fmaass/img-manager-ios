@@ -55,9 +55,13 @@ enum GridMoreMenu {
 
   /// WP13 P11 (IMGMGR-220) APPENDS "Open in New Window"; it does not reorder the owner's decided
   /// set. The six rows above it, and their order, are still decision 2 verbatim.
+  /// WP14 P4 (IMGMGR-277) APPENDS the three scene-edit actions, in the plan's own order — Merge
+  /// into…, Split here, Extract selected. They are appended for the same reason P11's row was:
+  /// the owner's decided set and its order are untouched, and a topology action is chrome by
+  /// decision ("no new gestures", plan Decision 2).
   static let entries: [GridMoreMenuEntry] = [
     select, clearMark, copyForLightroom, filenamePlates, picksInGroups, density, status,
-    openInNewWindow,
+    openInNewWindow, mergeScene, splitScene, extractScene,
   ]
 
   /// Already shipped as the menu's one item; unchanged, and now declared beside its five
@@ -210,6 +214,44 @@ enum GridMoreMenu {
       // guard makes it a no-op rather than a trap.
       guard let value = ShootSceneValue.from(query: store.query) else { return }
       opener.open(value)
+    })
+
+  /// WP14 P4 (IMGMGR-277). All three rows follow P11's single-predicate discipline: the
+  /// `isEnabled` closure and the action read the SAME store derivation, so "the control is
+  /// enabled" and "the action has a subject" cannot drift apart, and a disabled row that somehow
+  /// fired would be a no-op rather than a trap (each store method re-derives its own guard).
+  ///
+  /// The subject is always the FOCUSED member's scene (plan Decision 2) — several scenes can be
+  /// open at once (`sceneExpanded` is a Set), so "the open scene" is not a thing that exists.
+  static let mergeScene = GridMoreMenuEntry(
+    id: "more.mergeScene",
+    accessibilityIdentifier: "gridMoreMenu.more.mergeScene",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "arrow.triangle.merge",
+    title: { _ in "Merge into…" },
+    isEnabled: { $0.canMergeFocusedScene },
+    surface: .action { store in store.presentSceneMergePicker() })
+
+  static let splitScene = GridMoreMenuEntry(
+    id: "more.splitScene",
+    accessibilityIdentifier: "gridMoreMenu.more.splitScene",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "scissors",
+    title: { _ in "Split here" },
+    isEnabled: { $0.canSplitFocusedScene },
+    surface: .action { store in
+      Task { await store.splitFocusedScene() }
+    })
+
+  static let extractScene = GridMoreMenuEntry(
+    id: "more.extractScene",
+    accessibilityIdentifier: "gridMoreMenu.more.extractScene",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "square.on.square.dashed",
+    title: { _ in "Extract selected" },
+    isEnabled: { $0.canExtractSelectionFromScene },
+    surface: .action { store in
+      Task { await store.extractSelectionFromFocusedScene() }
     })
 }
 

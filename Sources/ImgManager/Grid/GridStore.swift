@@ -1366,6 +1366,229 @@ final class GridStore {
     }
   }
 
+  // MARK: - Scene editing (WP14 P4, IMGMGR-277)
+
+  /// Why the last scene edit did not happen, or nil. Rendered as an ALERT beside the account
+  /// sheet's own (`AccountSheetView`'s `.alert(presenting:)` is the app's one typed-decision
+  /// idiom) — never as a banner: the connectivity/stale-cache banner surface is somebody else's
+  /// and a refusal that changed nothing is a question, not a status line.
+  private(set) var sceneEditError: SceneEditFailure?
+
+  /// One edit at a time. A second activation while the first is on the wire is a mistake, not a
+  /// queue — the same answer the web gives (`stackEditBusy`), and the reason it is not the mark
+  /// lane is that a topology edit is not a mark: it takes no preconditions, writes no revision and
+  /// never enters the undo slot (there is no un-split endpoint, so the slot would promise a
+  /// rollback nothing can perform).
+  private(set) var isSceneEditInFlight = false
+
+  /// THE FROZEN PAYLOAD. Set only when a 503 refused an edit before it started, and replayed
+  /// VERBATIM by `retrySceneEdit()` — the stack id and the image ids as they were at the FIRST
+  /// attempt, never recomputed. A retry that re-read the selection or the focus would run a
+  /// DIFFERENT edit than the one the reader asked for, which is exactly what a reader does while
+  /// they wait for a busy folder.
+  private var frozenSceneEdit: SceneEditRequest?
+
+  /// The merge-target sheet. A plain `var` like `isTagEntryPresented`/`isStatusPresented`, for the
+  /// same reason: the menu entry that raises it is declared as data and reaches this screen only
+  /// through the store.
+  var isSceneMergePickerPresented = false
+
+  /// The subject of every scene-edit action, derived once (plan Decision 2).
+  var sceneEditSubject: SceneEditSubject? {
+    guard displayMode == .scene else { return nil }
+    return SceneEditPlanner.subject(
+      expanded: sceneExpanded, members: sceneMembers, focusedImageID: focusedImageID)
+  }
+
+  /// The scenes "Merge into…" offers: the same folder's OTHER loaded scenes, in capture order.
+  var sceneMergeTargets: [SceneMergeTarget] {
+    guard let subject = sceneEditSubject else { return [] }
+    return SceneEditPlanner.mergeTargets(rows: sceneRows, subjectStackID: subject.stackID)
+  }
+
+  /// The extraction set: the selection intersected with the SUBJECT scene's loaded membership, in
+  /// membership order. Membership SELECTION — never a client-side topology mutation.
+  var sceneExtractionSelection: [Int] {
+    guard let subject = sceneEditSubject else { return [] }
+    return SceneEditPlanner.selectedMembers(
+      of: subject.stackID, members: sceneMembers, selected: selection.members)
+  }
+
+  var canMergeFocusedScene: Bool { !sceneMergeTargets.isEmpty && !isSceneEditInFlight }
+
+  /// A split BEFORE the first member would leave a memberless half, which the server refuses as
+  /// `empty_split_side`. The first member is on the first membership page by construction, so this
+  /// is knowable here and the control is disabled rather than offered as a guaranteed refusal.
+  var canSplitFocusedScene: Bool {
+    guard let subject = sceneEditSubject, !isSceneEditInFlight else { return false }
+    guard let first = sceneMembers[subject.stackID]?.first else { return false }
+    return first.id != subject.focusedImageID
+  }
+
+  var canExtractSelectionFromScene: Bool {
+    guard let subject = sceneEditSubject, !isSceneEditInFlight else { return false }
+    let complete = sceneMemberCursors[subject.stackID] == .exhausted
+    return SceneEditPlanner.extractionIsOffered(
+      chosen: sceneExtractionSelection.count,
+      loaded: sceneMembers[subject.stackID]?.count ?? 0, membershipComplete: complete)
+  }
+
+  func presentSceneMergePicker() {
+    guard canMergeFocusedScene else { return }
+    isSceneMergePickerPresented = true
+  }
+
+  /// Join the subject scene with one the reader picked in the sheet. The target is re-derived
+  /// through the SAME list the sheet was built from — never a second check, and a target that has
+  /// left the window while the sheet stood open is a no-op rather than a request.
+  func mergeFocusedScene(into targetStackID: Int) async {
+    guard let subject = sceneEditSubject,
+      sceneMergeTargets.contains(where: { $0.stackID == targetStackID })
+    else { return }
+    isSceneMergePickerPresented = false
+    await runSceneEdit(
+      .merge(
+        stackIDs: [subject.stackID, targetStackID], focusedImageID: subject.focusedImageID))
+  }
+
+  /// Cut the subject scene BEFORE the focused member.
+  func splitFocusedScene() async {
+    guard let subject = sceneEditSubject, canSplitFocusedScene else { return }
+    await runSceneEdit(.split(stackID: subject.stackID, atImageID: subject.focusedImageID))
+  }
+
+  /// Take the subject scene's SELECTED members into a scene of their own.
+  func extractSelectionFromFocusedScene() async {
+    guard let subject = sceneEditSubject, canExtractSelectionFromScene else { return }
+    await runSceneEdit(
+      .extract(
+        stackID: subject.stackID, imageIDs: sceneExtractionSelection,
+        focusedImageID: subject.focusedImageID))
+  }
+
+  /// Run the edit the busy answer refused, exactly as it was asked the first time.
+  func retrySceneEdit() async {
+    guard let frozen = frozenSceneEdit else { return }
+    sceneEditError = nil
+    frozenSceneEdit = nil
+    await runSceneEdit(frozen)
+  }
+
+  func dismissSceneEditError() {
+    sceneEditError = nil
+    frozenSceneEdit = nil
+  }
+
+  /// One scene edit: the call, the coordinator its confirmation asks for, and the typed refusal
+  /// otherwise. Nothing local changes on a refusal — every one of them means ZERO writes server-
+  /// side, so the window the reader is looking at is still the truth.
+  private func runSceneEdit(_ request: SceneEditRequest) async {
+    guard !isSceneEditInFlight else { return }
+    isSceneEditInFlight = true
+    defer { isSceneEditInFlight = false }
+    do {
+      let result = try await performSceneEdit(request)
+      sceneEditError = nil
+      frozenSceneEdit = nil
+      await reloadAfterTopologyEdit(result, request: request)
+    } catch let error as StackEditError {
+      switch error {
+      case .busy(let seconds):
+        // The ONLY branch that keeps the payload: "ask again, unchanged" is what a busy folder
+        // means, and the retry must ask the same question.
+        frozenSceneEdit = request
+        sceneEditError = .busy(retryAfterSeconds: seconds)
+      case .conflict(let reason):
+        frozenSceneEdit = nil
+        sceneEditError = .conflict(reason)
+      case .refused:
+        frozenSceneEdit = nil
+        sceneEditError = .refused
+      case .unreachable:
+        frozenSceneEdit = nil
+        sceneEditError = .unreachable
+      }
+    } catch {
+      frozenSceneEdit = nil
+      sceneEditError = .unreachable
+    }
+  }
+
+  private func performSceneEdit(_ request: SceneEditRequest) async throws
+    -> Components.Schemas.StackEditResult
+  {
+    switch request {
+    case .merge(let stackIDs, _):
+      return try await service.mergeStacks(stackIDs: stackIDs)
+    case .split(let stackID, let atImageID):
+      return try await service.splitStack(stackID: stackID, atImageID: atImageID)
+    case .extract(let stackID, let imageIDs, _):
+      return try await service.extractFromStack(stackID: stackID, imageIDs: imageIDs)
+    }
+  }
+
+  /// How many membership pages a completion will walk before it stops. A bound, not an expected
+  /// size: a scene is transitive gap clustering, so it can be long, but a server that kept handing
+  /// back cursors must not be able to spin this forever.
+  private static let sceneMemberCompletionPageCap = 20
+
+  /// THE TOPOLOGY COORDINATOR (plan §Phase 4).
+  ///
+  /// A topology edit changes which rows EXIST and where they sit — the anchors are recomputed
+  /// server-side — so a local patch is not available to the client at any price and a reload is
+  /// the honest answer. What the reload costs is the reader's place, and the four steps here are
+  /// what buy it back:
+  ///
+  /// 1. **Reload** page one of the scene stream (`reloadFirstPage`, which drops the whole scene
+  ///    window including every expansion).
+  /// 2. **Reopen** the RESULT stacks and everything that was open and did not dissolve — only
+  ///    those the reloaded page actually contains, since a scene the edit removed from the stream
+  ///    has no card to sit under any more.
+  /// 3. **Complete** the membership of the EDITED scenes past page one. Opening a scene is a
+  ///    tap's contract — one page, the rest on demand — which is right for looking at a scene and
+  ///    wrong for the one just reorganised: a merge is precisely the gesture after which "how many
+  ///    photographs are in here now" is the question being asked. Only the edited scenes, never
+  ///    every reopened one (IMGMGR-254's own reasoning on the web).
+  /// 4. **Restore focus** by rule (`SceneEditPlanner.restoredFocus`), and prune from the selection
+  ///    anything the new window cannot show — the same invariant `refreshScenePage` keeps.
+  private func reloadAfterTopologyEdit(
+    _ result: Components.Schemas.StackEditResult, request: SceneEditRequest
+  ) async {
+    let reopen = SceneEditPlanner.scenesToReopen(
+      previouslyExpanded: sceneExpanded, result: result)
+    await reloadFirstPage()
+    let present = Set(
+      sceneRows.compactMap { row -> Int? in
+        guard case .stack(let stack) = row else { return nil }
+        return stack.stackId
+      })
+    for stackID in reopen where present.contains(stackID) {
+      await toggleSceneExpanded(stackID)
+    }
+    for stackID in result.stackIds where sceneExpanded.contains(stackID) {
+      await completeSceneMembers(stackID: stackID)
+    }
+    let actionable = actionableImages
+    pruneSelectionOutside(actionable)
+    focusedImageID = SceneEditPlanner.restoredFocus(
+      anchorImageID: request.anchorImageID, actionable: actionable,
+      resultStackIDs: result.stackIds, members: sceneMembers)
+    if focusedImageID == nil, isLoupeOpen { closeLoupe() }
+  }
+
+  /// Page an opened scene's membership to the end, through the ONE membership pager. A page that
+  /// changes nothing (a failed read leaves the cursor where it was) ends the walk rather than
+  /// retrying it — the band keeps what it has, exactly as an ordinary "load more" failure does.
+  private func completeSceneMembers(stackID: Int) async {
+    var pages = 0
+    while pages < Self.sceneMemberCompletionPageCap {
+      guard let cursor = sceneMemberCursors[stackID], case .more = cursor else { return }
+      await loadMoreSceneMembers(stackID: stackID)
+      pages += 1
+      if sceneMemberCursors[stackID] == cursor { return }
+    }
+  }
+
   // MARK: - Focus / arrow navigation
 
   /// WP12: navigation moves between PHOTOGRAPHS. A scene card occupies a cell in a packed row

@@ -42,13 +42,17 @@ struct GridViewMoreMenuTests {
       GridMoreMenu.entries.map(\.id) == [
         "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
         "more.picksInGroups", "more.density", "more.status", "more.openInNewWindow",
+        // WP14 P4 (IMGMGR-277): the three scene-edit actions, APPENDED — the owner's decided set
+        // and its order above are untouched, exactly as P11's row left them.
+        "more.mergeScene", "more.splitScene", "more.extractScene",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
         "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
-        "Density: 200 pt", "Status", "Open in New Window",
+        "Density: 200 pt", "Status", "Open in New Window", "Merge into…", "Split here",
+        "Extract selected",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
@@ -208,6 +212,41 @@ struct GridViewMoreMenuTests {
         let opened = OpenedShootWindows()
         run(store, ShootWindowOpener { opened.values.append($0) })
         #expect(!opened.values.isEmpty, "the Open in New Window entry opened nothing")
+
+      case "more.mergeScene":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("more.mergeScene is not an action entry")
+          continue
+        }
+        await loadSceneEditFixture(store, transport)
+        #expect(entry.isEnabled(store), "Merge into… is disabled with a focused scene member")
+        #expect(store.isSceneMergePickerPresented == false)
+        run(store)
+        #expect(store.isSceneMergePickerPresented, "Merge into… raised no target sheet")
+
+      case "more.splitScene":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("more.splitScene is not an action entry")
+          continue
+        }
+        await loadSceneEditFixture(store, transport)
+        #expect(entry.isEnabled(store), "Split here is disabled at a splittable member")
+        run(store)
+        await waitForEdits(transport, count: 1)
+        #expect(await transport.recordedStackEdits.count == 1, "Split here sent nothing")
+
+      case "more.extractScene":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("more.extractScene is not an action entry")
+          continue
+        }
+        await loadSceneEditFixture(store, transport)
+        store.selection.enterSelectExplicitly()
+        store.selection.toggle(2)
+        #expect(entry.isEnabled(store), "Extract selected is disabled with a member selected")
+        run(store)
+        await waitForEdits(transport, count: 1)
+        #expect(await transport.recordedStackEdits.count == 1, "Extract selected sent nothing")
 
       default:
         // ONE literal, not two concatenated: `Issue.record` takes a `Comment`, and `+` on a
@@ -375,6 +414,37 @@ struct GridViewMoreMenuTests {
     let opened = OpenedShootWindows()
     run(store, ShootWindowOpener { opened.values.append($0) })
     #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
+  }
+
+  /// WP14 P4: a Scene window with one open scene and the focus on its SECOND member — the state
+  /// in which all three scene-edit rows have a subject (plan Decision 2). Built on the store the
+  /// enclosing loop already made, so each entry's probe still runs against its own store.
+  private func loadSceneEditFixture(_ store: GridStore, _ transport: GridStubTransport) async {
+    let row = Components.Schemas.StackBrowseStackRow(
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      matchedCount: 3, memberCount: 3, pickedCount: 0, representative: makeImage(id: 1),
+      stackId: 5)
+    let other = Components.Schemas.StackBrowseStackRow(
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_003_600), hasPick: false, kind: .stack,
+      matchedCount: 2, memberCount: 2, pickedCount: 0, representative: makeImage(id: 7), stackId: 6)
+    await transport.setBrowseStacksPage(
+      .init(
+        items: [.init(value1: nil, value2: row), .init(value1: nil, value2: other)], limit: 100))
+    await transport.setStackMemberPage(
+      .init(
+        items: [makeImage(id: 1), makeImage(id: 2), makeImage(id: 3)], limit: 100, stackId: 5),
+      forStack: 5)
+    await store.setDisplayMode(.scene)
+    await store.toggleSceneExpanded(5)
+    store.focusedImageID = 2
+  }
+
+  private func waitForEdits(_ transport: GridStubTransport, count: Int) async {
+    for _ in 0..<200 {
+      if await transport.recordedStackEdits.count >= count { return }
+      await Task.yield()
+      try? await Task.sleep(for: .milliseconds(5))
+    }
   }
 
   private func waitFor(_ condition: () -> Bool) async {

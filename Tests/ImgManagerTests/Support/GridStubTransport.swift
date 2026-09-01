@@ -328,6 +328,132 @@ actor GridStubTransport: ClientTransport {
     membersHasStarted = false
   }
 
+  // MARK: - WP14 P4 (IMGMGR-277): the three scene-edit writes
+
+  /// What one scene edit answers. Modelled at the WIRE level, like `DownloadOutcome`: the 409 and
+  /// 503 bodies are the ones the contract declares, so the tests decode them through the REAL
+  /// generated client rather than through a hand-written model of it.
+  enum StackEditOutcome: Sendable {
+    case success(Components.Schemas.StackEditResult)
+    /// 409 — extraction only; the only editor that declares one.
+    case conflict(Components.Schemas.StackExtractConflict.CodePayload)
+    /// 422 in the shape the operation DECLARES (`HTTPValidationError`: `detail` is an ARRAY).
+    case refused
+    /// 422 in the shape the server actually emits for a coded refusal — an OBJECT detail
+    /// (`{"detail": {"code", "message"}}`), which the declared array schema cannot decode. Kept as
+    /// its own case so the consequence is pinned by a test instead of assumed.
+    case refusedCodedDetail(code: String)
+    /// 503 `stack_edit_busy`, with the `Retry-After` the contract declares beside it.
+    case busy(retryAfterSeconds: Int?)
+  }
+
+  /// One recorded scene-edit request, with its body EXACTLY as it went on the wire — which is what
+  /// makes "the retry replayed the frozen payload" a byte comparison rather than a re-derivation.
+  struct RecordedStackEdit: Sendable, Equatable {
+    let operationID: String
+    let path: String
+    let body: Data
+  }
+
+  private(set) var recordedStackEdits: [RecordedStackEdit] = []
+
+  /// Consumed in order, one per edit call; when it runs out, `stackEditOutcome` answers. A queue
+  /// rather than a single slot because the 503 retry is precisely a SECOND call that must be able
+  /// to answer differently from the first.
+  private var stackEditOutcomes: [StackEditOutcome] = []
+  private var stackEditOutcome: StackEditOutcome = .success(
+    Components.Schemas.StackEditResult(
+      dissolvedStackIds: [], loosenedImageIds: [], stackIds: []))
+
+  func setStackEditOutcome(_ outcome: StackEditOutcome) { stackEditOutcome = outcome }
+  func enqueueStackEditOutcomes(_ outcomes: [StackEditOutcome]) {
+    stackEditOutcomes.append(contentsOf: outcomes)
+  }
+
+  private func nextStackEditOutcome() -> StackEditOutcome {
+    stackEditOutcomes.isEmpty ? stackEditOutcome : stackEditOutcomes.removeFirst()
+  }
+
+  /// The same hold/release pattern the other operations carry, for the three edits — what makes
+  /// "one edit at a time" provable deterministically: a second action lands while the first is
+  /// genuinely still on the wire, not after a sleep and a hope.
+  private var stackEditHoldEnabled = false
+  private var stackEditHasStarted = false
+  private var stackEditStartedContinuation: CheckedContinuation<Void, Never>?
+  private var stackEditReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdStackEditRequests(_ hold: Bool) { stackEditHoldEnabled = hold }
+
+  func waitUntilStackEditStarted() async {
+    if stackEditHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.stackEditStartedContinuation = continuation
+    }
+  }
+
+  func releaseStackEdit() {
+    stackEditReleaseContinuation?.resume()
+    stackEditReleaseContinuation = nil
+    stackEditHasStarted = false
+  }
+
+  private func holdStackEditIfArmed() async {
+    guard stackEditHoldEnabled else { return }
+    stackEditHasStarted = true
+    stackEditStartedContinuation?.resume()
+    stackEditStartedContinuation = nil
+    await withCheckedContinuation { continuation in
+      self.stackEditReleaseContinuation = continuation
+    }
+  }
+
+  private func recordStackEdit(_ request: HTTPRequest, _ body: HTTPBody?, _ operationID: String)
+    async throws
+  {
+    let data: Data
+    if let body {
+      data = try await Data(collecting: body, upTo: 1024 * 1024)
+    } else {
+      data = Data()
+    }
+    recordedStackEdits.append(
+      RecordedStackEdit(operationID: operationID, path: request.path ?? "", body: data))
+  }
+
+  private func stackEditResponse(_ outcome: StackEditOutcome) throws -> (HTTPResponse, HTTPBody?) {
+    switch outcome {
+    case .success(let result):
+      return try jsonResponse(.ok, result)
+    case .conflict(let code):
+      return try jsonResponse(
+        .conflict,
+        Components.Schemas.StackExtractConflictError(
+          detail: .init(code: code, message: "the scene is not in the state you asked about")))
+    case .refused:
+      // Written as raw JSON rather than through the generated `HTTPValidationError`: this is the
+      // DECLARED shape and the point is that it is on the wire byte for byte, not that a Swift
+      // value can be built for it (`ValidationError.loc` is a generated anyOf union whose spelling
+      // is an implementation detail of the generator).
+      return jsonBytes(
+        .unprocessableContent,
+        #"{"detail": [{"loc": ["body"], "msg": "refused", "type": "value_error"}]}"#)
+    case .refusedCodedDetail(let code):
+      return jsonBytes(
+        .unprocessableContent, #"{"detail": {"code": "\#(code)", "message": "refused"}}"#)
+    case .busy(let seconds):
+      var response = HTTPResponse(status: .serviceUnavailable)
+      response.headerFields[.contentType] = "application/json"
+      if let seconds, let name = HTTPField.Name("Retry-After") {
+        response.headerFields[name] = String(seconds)
+      }
+      let data = try JSONEncoder.grid.encode(
+        Components.Schemas.StackEditBusyError(
+          detail: .init(
+            code: .stackEditBusy, message: "a maintenance lane holds this folder's lock")))
+      return (response, HTTPBody(data))
+    }
+  }
+
   enum ProxyOutcome: Sendable {
     case ok(Data)
     case notModified
@@ -732,6 +858,16 @@ actor GridStubTransport: ClientTransport {
       case .conflict: return try staleRevisionConflict(for: lastMarkStateRequest?.imageIds ?? [])
       }
 
+    // WP14 P4 (IMGMGR-277). All three take the SAME shape: record the request exactly as it went
+    // on the wire, then answer with the next configured outcome. The body is captured BEFORE any
+    // outcome is resolved, so a test can compare two attempts' bodies whatever either answered.
+    case Operations.MergeStacksApiStacksMergePost.id,
+      Operations.SplitStackApiStacksStackIdSplitPost.id,
+      Operations.ExtractFromStackApiStacksStackIdExtractPost.id:
+      try await recordStackEdit(request, body, operationID)
+      await holdStackEditIfArmed()
+      return try stackEditResponse(nextStackEditOutcome())
+
     case Operations.ExportMarksApiMarksExportGet.id:
       recordedMarksExportQueries.append(queryParameters(of: request))
       if marksExportShouldFail {
@@ -782,6 +918,17 @@ actor GridStubTransport: ClientTransport {
       .conflict,
       Components.Schemas.StaleMarkRevisionError(
         detail: .init(code: .staleMarkRevision, staleImageIds: imageIDs)))
+  }
+
+  /// A JSON response whose body is written LITERALLY — for shapes the generated types cannot
+  /// express (a coded object where the declared schema says array) or where the wire bytes
+  /// themselves are the subject.
+  private func jsonBytes(_ status: HTTPResponse.Status, _ json: String) -> (
+    HTTPResponse, HTTPBody?
+  ) {
+    var response = HTTPResponse(status: status)
+    response.headerFields[.contentType] = "application/json"
+    return (response, HTTPBody(Data(json.utf8)))
   }
 
   private func jsonResponse<T: Encodable>(

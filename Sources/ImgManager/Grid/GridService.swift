@@ -240,6 +240,103 @@ struct GridService: Sendable {
     return row
   }
 
+  // MARK: - Scene editing (WP14 P4, IMGMGR-277)
+
+  /// `POST /api/stacks/merge` — join two or more scenes of ONE folder into one.
+  ///
+  /// The SURVIVOR is the server's choice (the lowest id) and comes back in `stack_ids`; the others
+  /// come back in `dissolved_stack_ids`. Nothing here names one, and nothing here changes local
+  /// membership: the client re-reads (ADR-0005's server-authority stance, which ADR-0008 leaves
+  /// untouched).
+  ///
+  /// This operation declares NO 409 — the contract documents only what it really emits, and a
+  /// cross-folder or cross-tier merge is a coded 422 — so the `.conflict` case simply does not
+  /// exist on its generated `Output`.
+  func mergeStacks(stackIDs: [Int]) async throws -> Components.Schemas.StackEditResult {
+    let output: Operations.MergeStacksApiStacksMergePost.Output
+    do {
+      output = try await client.mergeStacksApiStacksMergePost(
+        .init(body: .json(Components.Schemas.StackMergeRequest(stackIds: stackIDs))))
+    } catch {
+      throw StackEditError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let result = try? ok.body.json else { throw StackEditError.unreachable }
+      return result
+    case .unprocessableContent:
+      throw StackEditError.refused
+    case .serviceUnavailable(let busy):
+      throw StackEditError.busy(retryAfterSeconds: busy.headers.retryAfter)
+    case .undocumented:
+      throw StackEditError.unreachable
+    }
+  }
+
+  /// `POST /api/stacks/{id}/split` — cut a scene BEFORE `atImageID`: it and every later member
+  /// become a new stack, and both halves come back fenced `manual`.
+  func splitStack(stackID: Int, atImageID: Int) async throws
+    -> Components.Schemas.StackEditResult
+  {
+    let output: Operations.SplitStackApiStacksStackIdSplitPost.Output
+    do {
+      output = try await client.splitStackApiStacksStackIdSplitPost(
+        .init(
+          path: .init(stackId: stackID),
+          body: .json(Components.Schemas.StackSplitRequest(atImageId: atImageID))))
+    } catch {
+      throw StackEditError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let result = try? ok.body.json else { throw StackEditError.unreachable }
+      return result
+    case .unprocessableContent:
+      throw StackEditError.refused
+    case .serviceUnavailable(let busy):
+      throw StackEditError.busy(retryAfterSeconds: busy.headers.retryAfter)
+    case .undocumented:
+      throw StackEditError.unreachable
+    }
+  }
+
+  /// `POST /api/stacks/{id}/extract` — take exactly these members into a scene of their own.
+  ///
+  /// The ONE editor that answers 409 at all, and the contract says why it is the only one: the
+  /// route declares `StackExtractConflictError` alone, "because a status code declared on a route
+  /// that never emits it would be as wrong as an emitted one nobody declared". Its two codes are
+  /// mapped to a typed reason here, so the surface that renders it never sees a status number.
+  func extractFromStack(stackID: Int, imageIDs: [Int]) async throws
+    -> Components.Schemas.StackEditResult
+  {
+    let output: Operations.ExtractFromStackApiStacksStackIdExtractPost.Output
+    do {
+      output = try await client.extractFromStackApiStacksStackIdExtractPost(
+        .init(
+          path: .init(stackId: stackID),
+          body: .json(Components.Schemas.StackExtractRequest(imageIds: imageIDs))))
+    } catch {
+      throw StackEditError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let result = try? ok.body.json else { throw StackEditError.unreachable }
+      return result
+    case .conflict(let conflict):
+      guard let body = try? conflict.body.json else { throw StackEditError.unreachable }
+      switch body.detail.code {
+      case .foreignFolderMember: throw StackEditError.conflict(.foreignFolderMember)
+      case .membershipChanged: throw StackEditError.conflict(.membershipChanged)
+      }
+    case .unprocessableContent:
+      throw StackEditError.refused
+    case .serviceUnavailable(let busy):
+      throw StackEditError.busy(retryAfterSeconds: busy.headers.retryAfter)
+    case .undocumented:
+      throw StackEditError.unreachable
+    }
+  }
+
   // MARK: - Facets (Stats tab filter rows)
 
   func facets(_ query: GridImagesQuery) async throws -> Components.Schemas.ImageFacets {
@@ -453,6 +550,33 @@ enum GridServiceError: Error, Sendable, Equatable {
   case conflict
   /// 400 on `GET /api/images`: the cursor-fingerprint refusal (see `images(_:)`'s doc comment).
   case cursorInvalid
+}
+
+/// A scene edit's refusals, as the three DIFFERENT answers they are (WP14 P4, IMGMGR-277).
+///
+/// Separate from `GridServiceError` rather than folded into it: that type's cases are about
+/// reachability and a stale mark precondition, while these are a contract's own vocabulary — a
+/// busy folder that says WHEN to ask again, a conflict that names WHY, and a refusal the contract
+/// makes. Folding them together would force the surface that renders them to re-derive the
+/// distinction it was handed.
+///
+/// Opaque on the same terms as its sibling: a typed code and an integer, never the server's
+/// sentence, body or hostname.
+enum StackEditError: Error, Sendable, Equatable {
+  /// 503 `stack_edit_busy`, with `Retry-After` if the server named one.
+  case busy(retryAfterSeconds: Int?)
+  /// 409 — extraction only; the only editor that answers 409 at all.
+  case conflict(SceneEditConflictReason)
+  /// 422. The refusals arrive as a CODED OBJECT detail (`{"detail": {"code", "message"}}`) while
+  /// the operation declares FastAPI's default `HTTPValidationError`, whose `detail` is an ARRAY —
+  /// so the coded body does not decode through the generated boundary at all and WHICH refusal it
+  /// was is not knowable here. Recorded rather than worked around: the honest client answer is
+  /// "this edit cannot be made", and the specific guards (`empty_split_side`, `not_a_member`,
+  /// `cross_folder_merge`) are backend-proven in `tests/test_api_stack_edit.py`. Two of the three
+  /// are also unreachable from this app by construction — the cross-folder merge is filtered out
+  /// of the target list, and an empty-side extraction is never offered.
+  case refused
+  case unreachable
 }
 
 /// The filter surface P4's Stats-tab facet rows and paging both need, shared between
