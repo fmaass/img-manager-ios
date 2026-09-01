@@ -217,11 +217,33 @@ PY
 # `grep -c` exits 1 on a legitimate zero, so the counts are validated by SHAPE rather than by that
 # exit code — a non-numeric here would mean the python step printed something unexpected, which
 # must not reach the provenance record.
+#
+# EACH count is checked on its own (codex gate round 3). Checking them concatenated was a hole:
+# an empty extraction on one side and digits on the other concatenate to a digits-only string, so
+# `canonicalized_count=""` with `dropped_count="3"` read as "3" and passed — and the provenance
+# record then carried an empty count for the side that had actually failed.
+require_count() {
+  case "$2" in
+    "") die "the $1 count came back empty — the canonicalization output was not readable" 1 ;;
+    *[!0-9]*) die "the $1 count is not a number ('$2')" 1 ;;
+  esac
+}
+
+# The guard's own probes, in subshells so a refusal is observed rather than taken. Cheap, and they
+# run on every sync for the same reason the predicate's probes do: this script has no other
+# harness. The accepted "0" is the positive control — a guard that rejected everything would
+# satisfy the two rejections above and still be wrong.
+( require_count probe "" ) >/dev/null 2>&1 \
+  && die "the count guard is inert: it accepted an empty value" 1
+( require_count probe "7x" ) >/dev/null 2>&1 \
+  && die "the count guard is inert: it accepted a non-numeric value" 1
+( require_count probe "0" ) >/dev/null 2>&1 \
+  || die "the count guard rejects a legitimate zero" 1
+
 canonicalized_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote ' || true)"
 dropped_count="$(printf '%s\n' "$canonicalized" | grep -c '^still-dropped ' || true)"
-case "$canonicalized_count$dropped_count" in
-  *[!0-9]*|"") die "unreadable canonicalization counts ('$canonicalized_count'/'$dropped_count')" 1 ;;
-esac
+require_count canonicalized "$canonicalized_count"
+require_count still-dropped "$dropped_count"
 echo "canonicalized $canonicalized_count nullable model references; $dropped_count still dropped:"
 printf '%s\n' "$canonicalized" | sed 's/^/  /'
 
