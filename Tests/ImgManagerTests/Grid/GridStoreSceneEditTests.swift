@@ -464,6 +464,68 @@ struct GridStoreSceneEditTests {
     #expect(store.sceneRows.map(\.displayID) == [.stack(5), .stack(6), .stack(30), .stack(31)])
   }
 
+  /// The invariant the ensure-splice put at risk (codex gate round 2): the loaded pool is
+  /// CHRONOLOGICAL, and the pager knows nothing about a row that was spliced into it. Page two's
+  /// own rows arrive after the splice and belong BEFORE it, so a blind append breaks the order of
+  /// the spliced row's neighbours — the dedup only ever protected the spliced row itself.
+  ///
+  /// Asserted over the WHOLE pool, not at a spot: every dated row, in the order the grid renders
+  /// them, must be non-decreasing.
+  @Test("Paging after an ensure-splice keeps the whole pool chronological")
+  func pagingAfterAnEnsureSpliceKeepsTheWholePoolChronological() async throws {
+    let (store, transport) = makeStore()
+    let middle = Date(timeIntervalSince1970: 1_700_050_000)
+    let later = Date(timeIntervalSince1970: 1_700_100_000)
+    await transport.setBrowseStacksPage(
+      page(
+        [
+          sceneItem(id: 5, count: 3, anchor: anchorT0, cover: 1),
+          sceneItem(id: 6, count: 2, anchor: anchorT1, cover: 7),
+        ], nextCursor: "page-2"))
+    // Page two really holds BOTH: a scene between page one and the edited one, and the edited one.
+    await transport.setBrowseStacksPage(
+      page([
+        sceneItem(id: 20, count: 2, anchor: middle, cover: 60),
+        sceneItem(id: 30, count: 4, anchor: later, cover: 40),
+      ]), forCursor: "page-2")
+    await transport.setStackMemberPage(members([40, 41, 42, 43], stackID: 30), forStack: 30)
+    await store.selectShoot(folderID: 1)
+    await store.setDisplayMode(.scene)
+    await store.loadMoreScenesIfNeeded(currentRowID: .stack(6))
+    #expect(store.sceneRows.map(\.displayID) == [.stack(5), .stack(6), .stack(20), .stack(30)])
+    await store.toggleSceneExpanded(30)
+    store.focusedImageID = 42
+
+    await transport.setStackEditOutcome(.success(editResult(stacks: [30, 31])))
+    await transport.setStackRow(
+      makeStackRow(id: 30, memberCount: 2, anchor: later, representative: makeImage(id: 40)),
+      forStack: 30)
+    await transport.setStackRow(
+      makeStackRow(id: 31, memberCount: 2, anchor: later, representative: makeImage(id: 42)),
+      forStack: 31)
+    await transport.setStackMemberPage(members([40, 41], stackID: 30), forStack: 30)
+    await transport.setStackMemberPage(members([42, 43], stackID: 31), forStack: 31)
+
+    await store.splitFocusedScene()
+    // The reload rebuilt from page one and the ensure put the two result scenes back.
+    #expect(store.sceneRows.map(\.displayID) == [.stack(5), .stack(6), .stack(30), .stack(31)])
+
+    // …and NOW the reader scrolls on, which fetches page two again.
+    let tail = try #require(store.sceneDisplayRows.last?.id)
+    await store.loadMoreScenesIfNeeded(currentRowID: tail)
+
+    // The whole pool, in render order, is chronologically ascending — scene 20 belongs BEFORE the
+    // scenes the edit produced, however late it arrived.
+    let times = store.sceneRows.map { SceneEditPlanner.streamTime(of: $0) }
+    let dated = times.compactMap { $0 }
+    #expect(dated == dated.sorted(), "the loaded pool is out of capture order: \(times)")
+    #expect(
+      store.sceneRows.map(\.displayID)
+        == [.stack(5), .stack(6), .stack(20), .stack(30), .stack(31)])
+    // The dedup still holds: page two carried scene 30, which is already in the pool.
+    #expect(store.sceneRows.filter { $0.displayID == .stack(30) }.count == 1)
+  }
+
   @Test("A row the reload dropped is placed by its anchor, never at the head of the window")
   func insertionIsChronological() {
     let rows: [SceneBrowseRow] = [
