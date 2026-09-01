@@ -154,16 +154,118 @@ final class InspectorSlideOverUITests: XCTestCase {
       assertTheChromeControlReportsTheActiveFilterCount(app: app, chromeInfo: chromeInfo)
 
     case .regular3:
-      XCTAssertFalse(
-        hasChromeInfo,
-        "Regular-3's inspector is a permanent column — there is nothing for a chrome control to "
-          + "open.")
-      XCTAssertTrue(
-        inspectorAlreadyOnScreen, "Regular-3's inspector column must be on screen with no tap.")
-      XCTAssertTrue(dislike.isHittable, "The grid stays interactive beside the permanent column.")
+      assertTheRegular3InspectorCollapsesAndRestores(
+        app: app, chromeInfo: chromeInfo, statsSegment: statsSegment, dislike: dislike,
+        hasChromeInfo: hasChromeInfo, inspectorAlreadyOnScreen: inspectorAlreadyOnScreen,
+        orientationName: orientationName)
     }
 
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-inspectorShown")
+  }
+
+  /// WP16 P2 (IMGMGR-298), design record [/link/3332] decision 4: **both panels collapsible.**
+  ///
+  /// This branch REVERSES a pinned, tested contract. At `4753450` it read
+  /// `XCTAssertFalse(hasChromeInfo, "Regular-3's inspector is a permanent column — there is
+  /// nothing for a chrome control to open.")`, so leg (i) below is RED against the shipped app
+  /// for exactly the reason the phase exists.
+  ///
+  /// A ROUND TRIP, never "a control exists" (gate round 1, B5): a control that toggles a flag
+  /// nothing renders fails leg (ii); a hide that never restores fails leg (iii).
+  ///
+  /// Leg (ii) also measures that the grid ACTUALLY TOOK THE PANE. `statsSegment.exists == false`
+  /// alone cannot distinguish a real collapse from the plan's own "Known unknown" — a
+  /// `NavigationSplitView` that keeps reserving a third column for an `EmptyView`, which is the
+  /// failure `RootView.swift`'s own 2-column comment records for the Regular-2 case with
+  /// retained screenshot evidence. `ActionBarView` centres its chosen tier inside
+  /// `.frame(maxWidth: .infinity)`, so the action bar's mid-x IS the grid pane's centre: when
+  /// the pane grows the bar moves right, and when a blank pane is reserved it does not move at
+  /// all. Strictly-greater needs no predicted pixel value.
+  private func assertTheRegular3InspectorCollapsesAndRestores(
+    app: XCUIApplication, chromeInfo: XCUIElement, statsSegment: XCUIElement,
+    dislike: XCUIElement, hasChromeInfo: Bool, inspectorAlreadyOnScreen: Bool,
+    orientationName: String
+  ) {
+    // Leg (i). RED at 4753450: `usesChromeControl` was false for `.permanentColumn`, so no Info
+    // item was declared on the content column's bar at all (`RootView.swift:422`).
+    XCTAssertTrue(
+      hasChromeInfo,
+      "Regular-3 must reach the inspector from the SAME persistent chrome control the other two "
+        + "widths use (decision 4). If this fails while the inspector is visibly on screen, "
+        + "check for an `OverflowBarButtonItem` — the Info item is the fifth `.primaryAction` "
+        + "on a content column measured at ~315 pt, and a folded item is not a reachable "
+        + "control.")
+    XCTAssertTrue(
+      inspectorAlreadyOnScreen,
+      "Regular-3 must still LAUNCH with the inspector shown — a launch that hides it is a "
+        + "capability loss, not a collapse.")
+    XCTAssertTrue(dislike.isHittable, "The grid stays interactive beside the column.")
+
+    let barBeforeCollapse = dislike.frame.midX
+    chromeInfo.tap()
+
+    // Leg (ii): it actually hides, and the grid actually gains the space.
+    XCTAssertTrue(
+      waitForNonExistence(of: statsSegment, timeout: 10),
+      "Tapping the chrome control at Regular-3 left the inspector on screen — the control "
+        + "toggles a flag nothing renders.")
+    XCTAssertTrue(
+      dislike.isHittable, "The grid must still be reachable once the inspector is collapsed.")
+    let barAfterCollapse = dislike.frame.midX
+    print(
+      "WP16P2-COLLAPSE \(orientationName): window=\(app.frame.size) "
+        + "actionBarMidX before=\(barBeforeCollapse) after=\(barAfterCollapse)")
+    attach(app: app, named: "P2-regular3-inspector-collapsed")
+    XCTAssertGreaterThan(
+      barAfterCollapse, barBeforeCollapse,
+      "The inspector left the screen but the grid pane did not grow (action bar mid-x unmoved at "
+        + "\(barAfterCollapse)). That is the plan's Known unknown: the 3-column split view is "
+        + "still reserving a pane for the collapsed `EmptyView` detail column, so the reader "
+        + "traded a useful inspector for a blank pane. Pivot: render the Regular-3 branch with "
+        + "the 2-column initializer while the inspector is hidden.")
+
+    // Leg (iii): and it comes back.
+    chromeInfo.tap()
+    XCTAssertTrue(
+      statsSegment.waitForExistence(timeout: 10),
+      "The inspector never came back after a second tap — a hide that cannot be undone is not a "
+        + "collapse.")
+
+    recordTheRegular3SidebarProbe(app: app, orientationName: orientationName)
+  }
+
+  /// The plan's mandatory FIRST-ACTION probe, carried here because the lane that wrote this
+  /// runs on Linux and has no simulator: the gate itself is the only surface that can answer it.
+  ///
+  /// Deliberately ASSERTS NOTHING. Its three readings are (a) whether the queue column is on
+  /// screen at Regular-3, (b) whether a system `NavigationSplitView` sidebar toggle is in the
+  /// hierarchy at all, and (c) whether it is hittable. (a) is already recorded as false by this
+  /// file's own classification note; (b)/(c) had no recorded answer, and decision 4's sidebar
+  /// half turns on them: if the sidebar cannot be revealed at Regular-3 under
+  /// `.prominentDetail`, NO control ships and the half is a declared deviation. A probe that
+  /// asserted an answer would be pinning whichever behaviour the OS happened to have.
+  private func recordTheRegular3SidebarProbe(app: XCUIApplication, orientationName: String) {
+    let queueCard = app.staticTexts
+      .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
+    let sidebarToggle = app.buttons
+      .matching(NSPredicate(format: "label CONTAINS[c] 'sidebar'")).firstMatch
+    let navBarButtonLabels = app.navigationBars.buttons.allElementsBoundByIndex.map { $0.label }
+    print(
+      "WP16P2-SIDEBAR-PROBE \(orientationName): window=\(app.frame.size) "
+        + "queueCardOnScreen=\(queueCard.exists) "
+        + "sidebarToggleExists=\(sidebarToggle.exists) "
+        + "sidebarToggleHittable=\(sidebarToggle.exists && sidebarToggle.isHittable) "
+        + "navBarButtons=\(navBarButtonLabels)")
+    attach(app: app, named: "P2-regular3-sidebar-probe")
+  }
+
+  /// `XCTNSPredicateExpectation` rather than a poll: the collapse is animated
+  /// (`withAnimation(.snappy(duration: 0.25))`), so a single immediate `.exists` read after the
+  /// tap would race the animation rather than observe the outcome.
+  private func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"), object: element)
+    return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
   }
 
   /// Diff-gate round 1, blocking finding 2: the filter-count indicator must be proven ON THE
