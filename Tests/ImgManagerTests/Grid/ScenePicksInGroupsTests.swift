@@ -159,6 +159,69 @@ struct ScenePicksInGroupsTests {
         == afterExpansion)
   }
 
+  /// The card summary describes state a WRITE can change, and until this test it was read once
+  /// and kept forever: open a scene, judge a member, close it again, and the card went on drawing
+  /// the picks it held before the reader touched anything — including a scene whose last pick had
+  /// just been taken away. Both directions are exercised, because a strip that only ever grows is
+  /// the easier half.
+  @Test("A mark inside a scene drops its card summary — a collapsed card never shows stale picks")
+  func aWriteInvalidatesTheCardSummary() async {
+    let members = Operations.ListStackMembersApiStacksStackIdMembersGet.id
+    let (store, transport, preferences) = await loadedSceneStore()
+    preferences.picksInGroups = true
+
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+    #expect(store.sceneInlinePicks[5]?.map(\.id) == [501, 503])
+    #expect(await transport.callCount(members) == 1)
+
+    // Open it and pick the one member that was not picked — an ordinary write on an expanded
+    // member, which is the only kind this scene can receive.
+    await store.toggleSceneExpanded(5)
+    #expect(await transport.callCount(members) == 2)
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(applied: 1, requested: 1, revisions: [.init(imageId: 502, revision: "m-2")])))
+    #expect(await store.applyMark(.pick, to: [502]))
+
+    // The server now holds three picks. Nothing about the client's cached summary knows that.
+    await transport.setStackMemberPage(
+      .init(
+        items: [
+          makeImage(id: 501, mark: .pick), makeImage(id: 502, mark: .pick),
+          makeImage(id: 503, mark: .pick),
+        ], limit: 100, nextCursor: nil, stackId: 5),
+      forStack: 5)
+
+    await store.toggleSceneExpanded(5)  // collapse — the card is the summary again
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+
+    #expect(store.sceneInlinePicks[5]?.map(\.id) == [501, 502, 503])
+    // The re-read is the point: a cache that survived the write would answer from memory.
+    #expect(await transport.callCount(members) == 3)
+
+    // The other direction: a member that STOPS being a pick has to leave the strip.
+    await store.toggleSceneExpanded(5)  // members are still in hand, so this fetches nothing
+    #expect(await transport.callCount(members) == 3)
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-3")])))
+    #expect(await store.applyMark(MarkStateValue.none, to: [501]))
+    await transport.setStackMemberPage(
+      .init(
+        items: [
+          makeImage(id: 501), makeImage(id: 502, mark: .pick), makeImage(id: 503, mark: .pick),
+        ], limit: 100, nextCursor: nil, stackId: 5),
+      forStack: 5)
+
+    await store.toggleSceneExpanded(5)  // collapse
+    await store.loadInlinePicksIfNeeded(stackID: 5)
+
+    #expect(store.sceneInlinePicks[5]?.map(\.id) == [502, 503])
+    #expect(await transport.callCount(members) == 4)
+    // Still display-only after all of it: the write path touched nothing a gesture can reach.
+    #expect(store.actionableImages.map(\.id) == [10])
+  }
+
   @Test("A scope change drops the summaries with the window they described")
   func aScopeChangeDropsTheSummaries() async {
     let (store, transport, preferences) = await loadedSceneStore()
