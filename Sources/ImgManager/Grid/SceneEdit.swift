@@ -88,15 +88,28 @@ enum SceneEditCopy {
   static let title = "The scene was not changed"
 
   static func message(for failure: SceneEditFailure) -> String {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
-    return "Nothing was changed."
+    switch failure {
+    case .busy(let seconds):
+      let wait =
+        seconds.map { " Try again in about \($0) second\($0 == 1 ? "" : "s")." } ?? ""
+      return "The library is reorganising this folder, so the edit could not start."
+        + " Nothing was changed." + wait
+    case .conflict(.foreignFolderMember):
+      return "One of the chosen photographs is no longer in this folder. Nothing was changed."
+    case .conflict(.membershipChanged):
+      return "This scene changed while the edit was being prepared. Nothing was changed."
+    case .refused:
+      return "This edit cannot be made to this scene. Nothing was changed."
+    case .unreachable:
+      return "The edit could not be sent. Nothing was changed."
+    }
   }
 
   /// Only the busy answer gets a Retry: it is the one refusal that means "ask again, unchanged".
   /// A 409 or a 422 asks for a DIFFERENT edit, and replaying the frozen payload would replay the
   /// refusal.
   static func offersRetry(_ failure: SceneEditFailure) -> Bool {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
+    if case .busy = failure { return true }
     return false
   }
 }
@@ -115,7 +128,12 @@ enum SceneEditPlanner {
     members: [Int: [Components.Schemas.ImageSummary]],
     focusedImageID: Int?
   ) -> SceneEditSubject? {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
+    guard let focused = focusedImageID else { return nil }
+    for stackID in expanded.sorted() {
+      guard let loaded = members[stackID] else { continue }
+      guard loaded.contains(where: { $0.id == focused }) else { continue }
+      return SceneEditSubject(stackID: stackID, focusedImageID: focused)
+    }
     return nil
   }
 
@@ -131,8 +149,33 @@ enum SceneEditPlanner {
   /// forward on its own cursor and this list is what has arrived; a scene further down the stream
   /// is not a target until the reader has paged to it.
   static func mergeTargets(rows: [SceneBrowseRow], subjectStackID: Int) -> [SceneMergeTarget] {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
-    return []
+    var subjectFolderID: Int?
+    var candidates: [SceneMergeTarget] = []
+    for row in rows {
+      guard case .stack(let stack) = row else { continue }
+      if stack.stackId == subjectStackID {
+        subjectFolderID = stack.representative.folderId
+        continue
+      }
+      candidates.append(
+        SceneMergeTarget(
+          stackID: stack.stackId, representative: stack.representative,
+          memberCount: stack.memberCount, anchorTakenAt: stack.anchorTakenAt))
+    }
+    guard let folderID = subjectFolderID else { return [] }
+    return
+      candidates
+      .filter { $0.representative.folderId == folderID }
+      .sorted { left, right in
+        switch (left.anchorTakenAt, right.anchorTakenAt) {
+        case (let a?, let b?): return a == b ? left.stackID < right.stackID : a < b
+        // A scene with no stored anchor has no place in capture order, so it goes last rather
+        // than to the top, where a nil would sort under any comparison that treated it as zero.
+        case (nil, _?): return false
+        case (_?, nil): return true
+        case (nil, nil): return left.stackID < right.stackID
+        }
+      }
   }
 
   /// The members of THIS scene that are selected, in the MEMBERSHIP's own order (web parity,
@@ -144,8 +187,7 @@ enum SceneEditPlanner {
     members: [Int: [Components.Schemas.ImageSummary]],
     selected: Set<Int>
   ) -> [Int] {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
-    return []
+    (members[stackID] ?? []).filter { selected.contains($0.id) }.map(\.id)
   }
 
   /// Whether "Extract selected" is offered at all.
@@ -158,7 +200,8 @@ enum SceneEditPlanner {
   /// in may hold members the client has not seen, and refusing on a partial count would refuse an
   /// extraction the server would allow.
   static func extractionIsOffered(chosen: Int, loaded: Int, membershipComplete: Bool) -> Bool {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
+    guard chosen > 0 else { return false }
+    guard membershipComplete, chosen == loaded else { return true }
     return false
   }
 
@@ -177,7 +220,10 @@ enum SceneEditPlanner {
     resultStackIDs: [Int],
     members: [Int: [Components.Schemas.ImageSummary]]
   ) -> Int? {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
+    if actionable.contains(where: { $0.id == anchorImageID }) { return anchorImageID }
+    for stackID in resultStackIDs {
+      if let first = members[stackID]?.first { return first.id }
+    }
     return nil
   }
 
@@ -187,7 +233,8 @@ enum SceneEditPlanner {
   static func scenesToReopen(
     previouslyExpanded: Set<Int>, result: Components.Schemas.StackEditResult
   ) -> [Int] {
-    // WP14 P4 STAGED INERT — implemented in the next commit.
-    return []
+    var reopen = previouslyExpanded.subtracting(result.dissolvedStackIds)
+    reopen.formUnion(result.stackIds)
+    return reopen.sorted()
   }
 }
