@@ -70,11 +70,15 @@ final class SceneBandScreenshotUITests: XCTestCase {
       XCTAssertTrue(
         strip.label.contains("2 picked"),
         "The inline strip does not describe what it shows. Label: '\(strip.label)'")
-      // DISPLAY-ONLY (ADR-0005): the strip is never a target — the card stays one tap that
-      // opens the group.
+      // DISPLAY-ONLY (ADR-0005): what is drawn inside the card is NOT a tile. `gridTile-<id>` is
+      // the identifier every real, markable, selectable cell carries, and member 3 is one of the
+      // two picks this strip is drawing — so its absence here is the boundary, stated in the
+      // hierarchy. (`isHittable` cannot say this: XCUITest derives hittability from the
+      // accessibility tree, not from SwiftUI's `allowsHitTesting`, so it answers true for a view
+      // that refuses every gesture. The 06:38 iPad leg is where that assertion was wrong.)
       XCTAssertFalse(
-        strip.isHittable,
-        "The inline picks are hit-testable — a collapsed scene's member became a target.")
+        app.descendants(matching: .any)["gridTile-3"].exists,
+        "A member drawn inside a collapsed card became a real tile.")
     } else {
       XCTAssertFalse(
         strip.exists,
