@@ -88,8 +88,10 @@ struct GridStoreSceneEditTests {
     let (store, transport) = makeStore()
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 3, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 6, memberCount: 2, anchor: anchorT1, representative: makeImage(id: 7))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 3, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 6, memberCount: 2, anchor: anchorT1, representative: makeImage(id: 7))),
         imageItem(makeImage(id: 20)),
       ]))
     await transport.setStackMemberPage(members([1, 2, 3], stackID: 5), forStack: 5)
@@ -172,9 +174,12 @@ struct GridStoreSceneEditTests {
     let earlier = Date(timeIntervalSince1970: 1_699_000_000)
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 3, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 6, memberCount: 2, anchor: anchorT1, representative: makeImage(id: 7))),
-        stackItem(makeStackRow(id: 7, memberCount: 4, anchor: earlier, representative: makeImage(id: 30))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 3, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 6, memberCount: 2, anchor: anchorT1, representative: makeImage(id: 7))),
+        stackItem(
+          makeStackRow(id: 7, memberCount: 4, anchor: earlier, representative: makeImage(id: 30))),
         // Another folder entirely: scenes are folder-scoped, so this can never be a target.
         stackItem(
           makeStackRow(
@@ -207,7 +212,8 @@ struct GridStoreSceneEditTests {
     await transport.setStackEditOutcome(.success(editResult(stacks: [5], dissolved: [6])))
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 5, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 5, anchor: anchorT0, representative: makeImage(id: 1))),
         imageItem(makeImage(id: 20)),
       ]))
     await transport.setStackMemberPage(members([1, 2, 3, 7, 8], stackID: 5), forStack: 5)
@@ -241,14 +247,17 @@ struct GridStoreSceneEditTests {
   /// Coordinator cases 1 and 2: the scene the edit CREATED comes back open, and the focused
   /// member is found in its new home.
   @Test("Split: the new scene opens and the focus follows the member into it")
-  func splitOpensTheNewSceneAndFocusFollows() async {
+  func splitOpensTheNewSceneAndFocusFollows() async throws {
     let (store, transport) = await loadedEditableStore()
     await transport.setStackEditOutcome(.success(editResult(stacks: [5, 9])))
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 9, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 2))),
-        stackItem(makeStackRow(id: 6, memberCount: 2, anchor: anchorT1, representative: makeImage(id: 7))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 9, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 2))),
+        stackItem(
+          makeStackRow(id: 6, memberCount: 2, anchor: anchorT1, representative: makeImage(id: 7))),
         imageItem(makeImage(id: 20)),
       ]))
     await transport.setStackMemberPage(members([1], stackID: 5), forStack: 5)
@@ -258,8 +267,12 @@ struct GridStoreSceneEditTests {
 
     let records = await transport.recordedStackEdits
     #expect(records.count == 1)
-    #expect(records.first?.path.hasSuffix("/api/stacks/5/split") == true)
-    #expect(decoded(records[0])["at_image_id"] as? Int == 2)
+    // `#require`, never a subscript: on a regression this array is EMPTY, and `records[0]` would
+    // trap and restart the whole test runner instead of failing this one test (observed in the
+    // RED run, 2026-09-01).
+    let record = try #require(records.first)
+    #expect(record.path.hasSuffix("/api/stacks/5/split"))
+    #expect(decoded(record)["at_image_id"] as? Int == 2)
 
     // The survivor was open and stays open; the NEW scene is open because the edit produced it.
     #expect(store.sceneExpanded == [5, 9])
@@ -278,7 +291,8 @@ struct GridStoreSceneEditTests {
     await transport.setStackEditOutcome(.success(editResult(stacks: [6], dissolved: [5])))
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 6, memberCount: 5, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 6, memberCount: 5, anchor: anchorT0, representative: makeImage(id: 1))),
         imageItem(makeImage(id: 20)),
       ]))
     await transport.setStackMemberPage(members([1, 2, 3, 7, 8], stackID: 6), forStack: 6)
@@ -301,7 +315,8 @@ struct GridStoreSceneEditTests {
     await transport.setStackEditOutcome(.success(editResult(stacks: [6], dissolved: [5])))
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 6, memberCount: 4, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 6, memberCount: 4, anchor: anchorT0, representative: makeImage(id: 1)))
       ]))
     await transport.setStackMemberPage(members([1, 3, 7, 8], stackID: 6), forStack: 6)
 
@@ -319,9 +334,12 @@ struct GridStoreSceneEditTests {
     let (store, transport) = makeStore()
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 6, memberCount: 3, anchor: anchorT1, representative: makeImage(id: 7))),
-        stackItem(makeStackRow(id: 11, memberCount: 4, anchor: anchorT1, representative: makeImage(id: 50))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 6, memberCount: 3, anchor: anchorT1, representative: makeImage(id: 7))),
+        stackItem(
+          makeStackRow(id: 11, memberCount: 4, anchor: anchorT1, representative: makeImage(id: 50))),
       ]))
     await transport.setStackMemberPage(members([1, 2], stackID: 5), forStack: 5)
     await transport.setStackMemberPage(members([7, 8], stackID: 6), forStack: 6)
@@ -342,8 +360,10 @@ struct GridStoreSceneEditTests {
     await transport.setStackEditOutcome(.success(editResult(stacks: [5], dissolved: [6])))
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 4, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 11, memberCount: 4, anchor: anchorT1, representative: makeImage(id: 50))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 4, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 11, memberCount: 4, anchor: anchorT1, representative: makeImage(id: 50))),
       ]))
     await transport.setStackMemberPage(
       members([1, 2], stackID: 5, nextCursor: "five-2"), forStack: 5)
@@ -379,8 +399,10 @@ struct GridStoreSceneEditTests {
     await transport.setStackEditOutcome(.success(editResult(stacks: [5, 9])))
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 9, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 2))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 9, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 2))),
       ]))
     await transport.setStackMemberPage(members([1], stackID: 5), forStack: 5)
     await transport.setStackMemberPage(members([2, 3], stackID: 9), forStack: 9)
@@ -423,7 +445,8 @@ struct GridStoreSceneEditTests {
     let (store, transport) = makeStore()
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 9, anchor: anchorT0, representative: makeImage(id: 1)))
+        stackItem(
+          makeStackRow(id: 5, memberCount: 9, anchor: anchorT0, representative: makeImage(id: 1)))
       ]))
     await transport.setStackMemberPage(
       members([1, 2], stackID: 5, nextCursor: "five-2"), forStack: 5)
@@ -457,7 +480,8 @@ struct GridStoreSceneEditTests {
     #expect(SceneEditCopy.offersRetry(.conflict(.membershipChanged)) == false)
     // Nothing was changed server-side, so nothing is re-read: the window the reader is looking at
     // is still the truth.
-    #expect(await transport.callCount(Operations.BrowseStacksApiBrowseStacksGet.id) == reloadsBefore)
+    #expect(
+      await transport.callCount(Operations.BrowseStacksApiBrowseStacksGet.id) == reloadsBefore)
     #expect(store.sceneExpanded == [5])
 
     store.dismissSceneEditError()
@@ -493,8 +517,10 @@ struct GridStoreSceneEditTests {
     ])
     await transport.setBrowseStacksPage(
       page([
-        stackItem(makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
-        stackItem(makeStackRow(id: 9, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 2))),
+        stackItem(
+          makeStackRow(id: 5, memberCount: 1, anchor: anchorT0, representative: makeImage(id: 1))),
+        stackItem(
+          makeStackRow(id: 9, memberCount: 2, anchor: anchorT0, representative: makeImage(id: 2))),
       ]))
     await transport.setStackMemberPage(members([1], stackID: 5), forStack: 5)
     await transport.setStackMemberPage(members([2, 3], stackID: 9), forStack: 9)

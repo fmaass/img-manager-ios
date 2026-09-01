@@ -85,10 +85,14 @@ struct StackEditContractProbeTests {
   @Test("The extraction's 409 decodes to its TYPED reason — both declared codes")
   func extractConflictDecodesBothCodes() async throws {
     for (code, expected) in [
-      (Components.Schemas.StackExtractConflict.CodePayload.foreignFolderMember,
-        SceneEditConflictReason.foreignFolderMember),
-      (Components.Schemas.StackExtractConflict.CodePayload.membershipChanged,
-        SceneEditConflictReason.membershipChanged),
+      (
+        Components.Schemas.StackExtractConflict.CodePayload.foreignFolderMember,
+        SceneEditConflictReason.foreignFolderMember
+      ),
+      (
+        Components.Schemas.StackExtractConflict.CodePayload.membershipChanged,
+        SceneEditConflictReason.membershipChanged
+      ),
     ] {
       let transport = GridStubTransport()
       await transport.setStackEditOutcome(.conflict(code))
@@ -180,7 +184,8 @@ struct StackEditContractProbeTests {
   func transportFailureIsUnreachable() async throws {
     // No case is configured for this operation on the auth-only stub, so the transport throws —
     // the network-level failure `GridService` maps to `.unreachable`.
-    let service = GridService(client: ImgManagerAPIClient.make(transport: AuthOperationStubTransport()))
+    let service = GridService(
+      client: ImgManagerAPIClient.make(transport: AuthOperationStubTransport()))
     do {
       _ = try await service.mergeStacks(stackIDs: [5, 6])
       Issue.record("expected .unreachable")

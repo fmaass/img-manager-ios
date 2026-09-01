@@ -2685,7 +2685,6 @@ final class GridStore {
     droppedWriteIDs.formUnion(dropped)
   }
 
-
   private func optimisticallyApply(_ state: MarkStateValue, priors: [PriorMarkSnapshot]) {
     mutateActionable(Set(priors.map(\.imageID))) { $0.mark.state = state.payload }
     applyPickCountDeltas(
