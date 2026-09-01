@@ -2193,6 +2193,176 @@ struct GridStoreTests {
     #expect(store.conflictRecovery == nil)
   }
 
+  // MARK: - WP14: the mutation lane's silent races (IMGMGR-204, IMGMGR-250, IMGMGR-251)
+
+  @Test(
+    "IMGMGR-204: a tag write queued behind an authoritative refresh REPORTS the ids that refresh pruned, instead of silently writing fewer than it was asked to"
+  )
+  func aQueuedTagWriteReportsIdsPrunedWhileItWaitedOnTheLane() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    // POSITIVE CONTROL: both ids really are writable at the moment of submission, so a dropped
+    // one below means the RACE, not the pre-existing "was never loaded" skip.
+    #expect(store.actionableImages.map(\.id) == [1, 2])
+
+    // The refresh's own response — the stub resolves it at REQUEST time, before its hold — no
+    // longer contains id 1. That is what a refresh landing under a queued write looks like.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 2, revision: "r0")], limit: 200, nextCursor: nil))
+    await transport.holdNextListImagesRequest()
+    async let refresh: Bool = store.authoritativeRefresh()
+    await transport.waitUntilListImagesStarted()
+
+    await transport.setTagsOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "r1")])))
+    async let tagCall: Void = store.addTag("landscape", to: [1, 2])
+    // Two yields, the same proof `addTagQueuesBehindInFlightMutation` uses: the tag write has
+    // reached its (network-free) await and issued NOTHING — it is genuinely queued behind the
+    // refresh, which is the only way the prune can get underneath it.
+    await Task.yield()
+    await Task.yield()
+    #expect(await transport.callCount(Operations.EditMarkTagsApiMarksTagsPost.id) == 0)
+
+    await transport.releaseListImages()
+    _ = await refresh
+    _ = await tagCall
+
+    // The write itself still covers only what is loaded — the actionable-only write boundary,
+    // deliberately unchanged...
+    #expect(store.images.map(\.id) == [2])
+    #expect(await transport.lastTagsRequest?.imageIds == [2])
+    // ...but the id the wait cost the reader is now STATED rather than silently missing.
+    #expect(
+      store.droppedWriteIDs == [1],
+      "the pruned id left the write with no signal of any kind to the reader")
+    #expect(GridNotices.notices(store: store).contains(.droppedWrites(count: 1)))
+
+    store.dismissDroppedWriteNotice()
+    #expect(store.droppedWriteIDs.isEmpty)
+    #expect(GridNotices.notices(store: store).isEmpty)
+  }
+
+  @Test(
+    "IMGMGR-250: a latched crossing made while the previous crossing's write is in flight is QUEUED, never refused into nothing"
+  )
+  func latchedCrossingsDuringAnInFlightMarkAreQueuedNotDropped() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [makeImage(id: 1, revision: "r0"), makeImage(id: 2, revision: "r0")], limit: 100,
+        nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    store.pickLock.forceLatch(.pick)
+    store.beginPointerDrag()
+
+    // One outcome for both writes, set BEFORE the hold: the stub resolves a held call's outcome
+    // after it resumes, so changing it mid-test would only make the assertions ambiguous.
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(
+          applied: 1, requested: 1,
+          revisions: [.init(imageId: 1, revision: "r1"), .init(imageId: 2, revision: "r1")])))
+    await transport.holdMarkStateRequests(true)
+    async let crossingA: Void = store.pointerDragCrossed(.image(1))
+    await transport.waitUntilMarkStateStarted()
+
+    // The pointer keeps moving while that write is genuinely in flight — which is the whole
+    // point of a lock, and over a VPN is the common case rather than the corner one.
+    await store.pointerDragCrossed(.image(2))
+
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    _ = await crossingA
+
+    #expect(
+      MarkStateValue(store.images.first(where: { $0.id == 2 })?.mark.state) == .pick,
+      "the crossing made during the in-flight write was refused into nothing")
+    // POSITIVE CONTROL: the first crossing — the one that was never contended — still applied,
+    // so the assertion above is about the SECOND crossing rather than about marks in general.
+    #expect(MarkStateValue(store.images.first(where: { $0.id == 1 })?.mark.state) == .pick)
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 2)
+    #expect(await transport.lastMarkStateRequest?.imageIds == [2])
+    // Applied, not merely reported as unapplied.
+    #expect(store.droppedWriteIDs.isEmpty)
+  }
+
+  @Test(
+    "IMGMGR-251: a failed rows fetch never lets FRESH group headers publish over the abandoned query's photographs"
+  )
+  func aFailedRowsFetchSuppressesTheNewQuerysGroupHeaders() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1), makeImage(id: 2)], limit: 100, nextCursor: nil))
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 2, key: "FUJIFILM X-T2", label: "FUJIFILM X-T2")],
+        timezone: nil, total: 2))
+    await store.selectShoot(folderID: 1)
+    await store.selectGrouping(.key(.camera))
+    // POSITIVE CONTROL: this scope really is vouched and sectioned before the failure below.
+    #expect(store.groupHeaders[.known("FUJIFILM X-T2")]?.count == 2)
+    #expect(store.images.map(\.id) == [1, 2])
+
+    // The scope moves. `/api/images` fails for the NEW query while `/api/image-groups` succeeds
+    // for it — the narrow partial-failure window the ticket describes.
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 989, key: "SONY ILCE-7RM5", label: "SONY ILCE-7RM5")],
+        timezone: nil, total: 989))
+    await transport.setListImagesShouldFail(true)
+    await store.applyFilterChange { $0.mark = "pick" }
+
+    // The rows on screen are the ABANDONED query's — kept deliberately rather than blanked...
+    #expect(store.images.map(\.id) == [1, 2])
+    // ...so nothing may vouch the new query's sections over them.
+    #expect(
+      store.groupHeaders.isEmpty,
+      "headers vouched for the new query published over the abandoned query's photographs")
+    #expect(store.groupTimezone == nil)
+    #expect(
+      store.groupHeadersIdentity != store.currentQuery,
+      "the new query was vouched for even though its rows never arrived")
+    // And the failed reload is a state the reader is actually told about — `lastPageLoadError`
+    // had no rendering consumer anywhere in the app sources before this.
+    #expect(store.lastPageLoadError != nil)
+    #expect(GridNotices.notices(store: store).contains(.pageLoadFailed))
+  }
+
+  @Test(
+    "IMGMGR-251: a later SUCCESSFUL reload of that same query publishes its sections normally — the fix is a gate, not a permanent refusal"
+  )
+  func headersReturnOnTheNextSuccessfulReloadOfTheSameQuery() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1), makeImage(id: 2)], limit: 100, nextCursor: nil))
+    await transport.setImageGroupsResult(
+      .init(
+        costHint: .standard, groupBy: .camera,
+        headers: [.init(count: 989, key: "SONY ILCE-7RM5", label: "SONY ILCE-7RM5")],
+        timezone: "Europe/Zurich", total: 989))
+    await store.selectShoot(folderID: 1)
+    await store.selectGrouping(.key(.camera))
+
+    // `setListImagesShouldFail` is self-disarming: this reload fails, the retry below does not.
+    await transport.setListImagesShouldFail(true)
+    await store.applyFilterChange { $0.mark = "pick" }
+    #expect(store.lastPageLoadError != nil)
+
+    await store.fullReload()
+
+    #expect(store.lastPageLoadError == nil)
+    #expect(store.groupHeaders[.known("SONY ILCE-7RM5")]?.count == 989)
+    #expect(store.groupTimezone == "Europe/Zurich")
+    #expect(store.groupHeadersIdentity == store.currentQuery)
+    #expect(GridNotices.notices(store: store).isEmpty)
+  }
+
   // MARK: - P6: diff-gate round 2 B1/B2 -- generation fencing against a racing reload
 
   @Test(

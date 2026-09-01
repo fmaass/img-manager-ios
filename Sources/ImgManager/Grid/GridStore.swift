@@ -90,6 +90,24 @@ final class GridStore {
   private(set) var lastMutationError: GridMutationError?
   private(set) var lastPageLoadError: GridMutationError?
 
+  /// WP14 (IMGMGR-204, IMGMGR-250): photographs a write was SUBMITTED for while they were
+  /// genuinely writable, and which had stopped being writable by the time that write — queued
+  /// behind something else on the mutation lane — actually ran.
+  ///
+  /// The mutation lane serialises writes, so a write can wait; `capturePriorTagSnapshots` /
+  /// `capturePriorSnapshots` then filter against the LIVE actionable pool, so an authoritative
+  /// refresh that lands in that window can prune an id out from under a write already submitted
+  /// for it. Nothing downstream could tell: the write simply went out for fewer ids.
+  ///
+  /// This is NOT the pre-existing "an id that was never loaded is silently skipped" rule (the
+  /// loaded-only membership boundary `applyMark`'s own doc comment states). Only ids this store
+  /// could have written when the person asked for the write, and then lost before it ran, ever
+  /// land here — which is exactly the race, and nothing else.
+  private(set) var droppedWriteIDs: Set<Int> = []
+
+  /// The notice's own dismissal — the reader has seen which photographs were not written.
+  func dismissDroppedWriteNotice() { droppedWriteIDs = [] }
+
   /// WP8 P7 (coexistence adjudication 7c): increments on every COMMITTED mark/undo/tag mutation
   /// — never on a rollback/conflict/refusal (each success branch below sets this alongside its
   /// own `lastMutationError = nil`). The ONE signal `RootView` watches (`.onChange`) to invalidate
