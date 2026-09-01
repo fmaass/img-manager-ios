@@ -556,7 +556,14 @@ struct GridStoreSceneEditTests {
 
   // MARK: - One edit at a time
 
-  @Test("A second action while an edit is genuinely in flight is refused, not queued")
+  /// The time limit is not decoration. `waitUntilStackEditStarted()` is a CONTINUATION handshake —
+  /// deterministic when the edit really goes out, and an indefinite wait when it does not, which
+  /// is exactly the state a regression here produces. Bounded, that regression FAILS; unbounded it
+  /// would hang the whole test run instead (observed, RED run 2026-09-01: with the derivations
+  /// inert, this test blocked until the gate's own 1800s cap killed it).
+  @Test(
+    "A second action while an edit is genuinely in flight is refused, not queued",
+    .timeLimit(.minutes(1)))
   func oneEditAtATime() async {
     let (store, transport) = await loadedEditableStore()
     await transport.setStackEditOutcome(.success(editResult(stacks: [5])))
