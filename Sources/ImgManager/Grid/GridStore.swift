@@ -1057,6 +1057,12 @@ final class GridStore {
   private func publishRefreshedFocusAndUndo(actionable: [Components.Schemas.ImageSummary]) {
     let previousFocus = focusedImageID
     lastPageLoadError = nil
+    // WP14 (diff-gate round 1, blocker 4): the dropped-write notice names photographs from the
+    // window this publish is REPLACING, so it dies with that window — exactly like the undo slot
+    // below, and for the same reason. `reloadFirstPage` clears it on a scope change; this is the
+    // other way a window is replaced (a same-shoot refresh), and without it a stale notice could
+    // outlive the state it describes indefinitely. Both modes' refreshes publish through here.
+    droppedWriteIDs = []
     undo.clear()
     let survived = previousFocus.map { id in actionable.contains { $0.id == id } } ?? false
     guard !survived else { return }
@@ -1493,19 +1499,35 @@ final class GridStore {
   /// One drain at a time: a crossing that arrives while the drain is mid-write simply lands in
   /// the queue the running drain picks up on its next turn. Reentrancy here would be the very
   /// concurrent-mutation race the lane exists to prevent.
+  ///
+  /// EVERY decision is made AFTER the lane is acquired, and that ordering is the whole design
+  /// (diff-gate round 1, blockers 1 and 2). The lane WAIT is precisely the window in which the
+  /// drag keeps producing crossings, and it is also a window in which the query can change:
+  ///
+  /// - Forming the batch before the wait made the crossing that started the drain wait ALONE
+  ///   while the rest of the drag piled up behind it, so the release produced two writes rather
+  ///   than one — and the second overwrote the single undo slot, leaving the first tile the
+  ///   reader painted marked but un-undoable. Read the queue after the wait and the whole run
+  ///   coalesces into the one write it should always have been.
+  /// - Filtering by scope before the wait let a query change land inside it, so priors were
+  ///   captured in the NEW scope for ids latched in the OLD one — a write into a scope the reader
+  ///   never painted, or an id legitimately absent from it mislabelled as a dropped write.
   private func drainLatchedCrossings() async {
     guard !isDrainingLatchedCrossings else { return }
     isDrainingLatchedCrossings = true
     defer { isDrainingLatchedCrossings = false }
     while !pendingLatchedCrossings.isEmpty {
+      await acquireLaneQueueing()
       // A crossing made in a scope the reader has since left is discarded — not written, and not
       // reported either, the same posture `performMark`'s own stale-generation escape takes.
       pendingLatchedCrossings.removeAll { $0.scope != query }
-      guard let verb = pendingLatchedCrossings.first?.verb else { return }
+      guard let verb = pendingLatchedCrossings.first?.verb else {
+        // The wait outlived every crossing it was holding the lane for.
+        releaseLane()
+        continue
+      }
       let batch = pendingLatchedCrossings.prefix(while: { $0.verb == verb }).map(\.imageID)
       pendingLatchedCrossings.removeFirst(batch.count)
-
-      await acquireLaneQueueing()
       let priors = capturePriorSnapshots(for: batch)
       recordDroppedWrites(submitted: Set(batch), written: Set(priors.map(\.imageID)))
       _ = await performMark(verb.markState, priors: priors)
