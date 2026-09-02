@@ -461,70 +461,44 @@ if [ -d ImgManager.xcodeproj ]; then
     -derivedDataPath "$derived" \
     -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
 
-  # Device-idiom-branching absence, WITH a positive control in the same invocation (bare grep -c
-  # exits 1 on zero matches, which would wrongly fail this bare-gate step on the pass case —
-  # so the check is "0 real hits" computed explicitly, not the exit code of the bare grep).
-  idiom_hits="$(grep -rn --exclude-dir=.build 'userInterfaceIdiom' Sources/ Tests/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
-  control_hits="$(grep -rln 'NavigationSplitView' Sources/ 2>/dev/null || true)"
-  {
-    echo "device-idiom-branching hits (expect 0):"
-    echo "$idiom_hits"
-    echo "positive control — NavigationSplitView hits (expect >=1, proves the grep runs over real content):"
-    echo "$control_hits"
-  } > .gate-artifacts/idiom-grep.log
-  if [ -z "$idiom_hits" ] && [ -n "$control_hits" ]; then
-    echo "idiom-grep exit=0" ; summary="$summary idiom-grep=0"
-  else
-    echo "idiom-grep exit=1"; summary="$summary idiom-grep=1"
-  fi
+  # Absence legs (IMGMGR-346): each scan keeps grep's own exit status through bin/gate-lib.sh,
+  # so a scan ERROR (rc 2 — unreadable directory, bad pattern) turns the leg red instead of
+  # reading as a green zero-hit; every leg carries a positive control in the same invocation.
+  . bin/gate-lib.sh
 
-  # `C` (compare) absence in SHIPPED code, WITH a positive control (same doctrine as the
-  # idiom grep above): native compare is cancelled outright (Amendment 7) and P3's fold
-  # requires it declared NOWHERE, never present-and-dead. Scoped to Sources/+Packages/
-  # only (never Tests/) and to the actual SwiftUI keyboard-binding call shape — the
-  # Swift-level ShortcutCatalogTests already cover the enum's own case list exhaustively
-  # (including proving ITS OWN absence, which would otherwise self-defeat a broader text
-  # scan here); this leg exists so a future hand-rolled `.keyboardShortcut("c")`
-  # bypassing the catalog entirely is still caught — "a check a comment can defeat is not
-  # a check".
-  c_shortcut_hits="$(grep -rniE --exclude-dir=.build 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/ 2>/dev/null | grep -v '^Binary' || true)"
-  c_control_hits="$(grep -rln 'ShortcutCatalog' Sources/ 2>/dev/null || true)"
-  {
-    echo "C-shortcut/compare hits (expect 0):"
-    echo "$c_shortcut_hits"
-    echo "positive control — ShortcutCatalog hits (expect >=1, proves the grep runs over real content):"
-    echo "$c_control_hits"
-  } > .gate-artifacts/no-c-shortcut-grep.log
-  if [ -z "$c_shortcut_hits" ] && [ -n "$c_control_hits" ]; then
-    echo "no-c-shortcut-grep exit=0"; summary="$summary no-c-shortcut-grep=0"
-  else
-    echo "no-c-shortcut-grep exit=1"; summary="$summary no-c-shortcut-grep=1"
-  fi
+  # Device-idiom-branching absence.
+  scan grep -rnI --exclude-dir=.build 'userInterfaceIdiom' Sources/ Tests/ Packages/
+  idiom_hits=$scan_out; idiom_rc=$scan_rc
+  scan grep -rlI 'NavigationSplitView' Sources/
+  absence_leg idiom-grep "device-idiom-branching hits" "$idiom_hits" "$idiom_rc" \
+    "NavigationSplitView hits" "$scan_out" "$scan_rc"
+
+  # `C` (compare) absence in SHIPPED code: native compare is cancelled outright (Amendment 7)
+  # and P3's fold requires it declared NOWHERE, never present-and-dead. Scoped to
+  # Sources/+Packages/ only (never Tests/) and to the actual SwiftUI keyboard-binding call
+  # shape — the Swift-level ShortcutCatalogTests already cover the enum's own case list
+  # exhaustively; this leg exists so a future hand-rolled `.keyboardShortcut("c")` bypassing
+  # the catalog entirely is still caught — "a check a comment can defeat is not a check".
+  scan grep -rniIE --exclude-dir=.build 'keyboardShortcut\("c"|keyEquivalent: *"c"' Sources/ Packages/
+  c_hits=$scan_out; c_rc=$scan_rc
+  scan grep -rlI 'ShortcutCatalog' Sources/
+  absence_leg no-c-shortcut-grep "C-shortcut/compare hits" "$c_hits" "$c_rc" \
+    "ShortcutCatalog hits" "$scan_out" "$scan_rc"
 
   # Every UI test class inherits `OrientationPinnedUITestCase` (IMGMGR-336). Device orientation
   # is SIMULATOR-GLOBAL and outlives the class that set it, so a class that subclasses
   # `XCTestCase` directly runs against whatever the previously-sorted class left behind — the
   # failure this repo has paid two gate cycles for, and the one a comment inside a test file did
   # not stop. The base class disarms it for the classes that exist; this leg is what keeps the
-  # NEXT one from slipping out. Positive control in the SAME invocation (the idiom-grep shape):
-  # the base's own declaration must be found, so a check pointed at a renamed or empty tree fails
-  # instead of passing quietly.
-  ui_base_hits="$(grep -rnE --include='*.swift' --exclude='OrientationPinnedUITestCase.swift' \
-    'class [A-Za-z0-9_]+: *XCTestCase' Tests/ImgManagerUITests 2>/dev/null || true)"
-  ui_base_control="$(grep -nE 'class OrientationPinnedUITestCase: *XCTestCase' \
-    Tests/ImgManagerUITests/OrientationPinnedUITestCase.swift 2>/dev/null || true)"
-  {
-    echo "UI test classes bypassing the orientation-pinned base (expect 0):"
-    echo "$ui_base_hits"
-    echo "positive control — the base class's own declaration (expect 1 line):"
-    echo "$ui_base_control"
-  } > .gate-artifacts/ui-orientation-base-grep.log
-  if [ -z "$ui_base_hits" ] && [ -n "$ui_base_control" ]; then
-    echo "ui-orientation-base-grep exit=0"; summary="$summary ui-orientation-base-grep=0"
-  else
-    echo "ui-orientation-base-grep exit=1"; summary="$summary ui-orientation-base-grep=1"
-    tail -20 .gate-artifacts/ui-orientation-base-grep.log
-  fi
+  # NEXT one from slipping out. The control is the base's own declaration, so a check pointed
+  # at a renamed or empty tree fails instead of passing quietly.
+  scan grep -rnE --include='*.swift' --exclude='OrientationPinnedUITestCase.swift' \
+    'class [A-Za-z0-9_]+: *XCTestCase' Tests/ImgManagerUITests
+  ui_hits=$scan_out; ui_rc=$scan_rc
+  scan grep -nE 'class OrientationPinnedUITestCase: *XCTestCase' \
+    Tests/ImgManagerUITests/OrientationPinnedUITestCase.swift
+  absence_leg ui-orientation-base-grep "UI test classes bypassing the orientation-pinned base" \
+    "$ui_hits" "$ui_rc" "the base class's own declaration" "$scan_out" "$scan_rc"
 
   step lint swift format lint --strict --recursive Sources Tests Packages/ImgManagerAPI/Sources Packages/ImgManagerAPI/Tests
 
