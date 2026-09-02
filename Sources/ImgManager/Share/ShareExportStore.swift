@@ -80,6 +80,11 @@ final class ShareExportStore {
   /// Re-entrant taps are refused rather than raced — the same posture as `GridStore`'s
   /// `isMutatingMark` guard, so a double-tap can never leave two writers on one temp path.
   ///
+  /// Cancellation is honoured at the one await this method has (and inside it: both byte paths
+  /// abort their own reads, `Data(collecting:)` and `ShareStreamWriter`'s streaming loop alike,
+  /// and the streaming writer deletes its partial file on the way out). What is left when the
+  /// call returns is handled by the cancellation guard below.
+  ///
   /// A fetch takes time, and the loupe's focus can move while it is in flight. The generation
   /// captured before the await is what makes that safe: a result that comes back into a
   /// CHANGED generation is discarded and its file deleted, so the status bar can never end up
@@ -110,6 +115,18 @@ final class ShareExportStore {
       // individual file path, which a live export could by then be using for a same-named
       // export of its own. `state`, already owned by whatever superseded this, is not touched.
       try? FileManager.default.removeItem(at: destination)
+      return
+    }
+    guard !Task.isCancelled else {
+      // CANCELLED means the view that asked for this export is gone — the loupe closed while the
+      // fetch was in flight — so nothing can present it and nothing will ever dismiss it: no
+      // sheet completion, no `onDismiss`, no `finish(_:)` from a user gesture. That makes
+      // cancellation an ENDING, and it runs the ending path rather than a second one of its own:
+      // `finish(_:)` with this export's own token deletes the prepared file and returns the
+      // store to `.idle`, exactly as a cancelled sheet does. Without this a successful prepare
+      // landed `.ready` bytes on disk with no live presenter (diff-gate BLOCKING, IMGMGR-348).
+      state = outcome
+      finish(ShareExportToken(generation: requested))
       return
     }
     state = outcome

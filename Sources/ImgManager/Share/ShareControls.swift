@@ -33,6 +33,11 @@ struct ShareControl: View {
   /// store tell those apart (see `ShareExportStore.finish`).
   @State private var presentedToken: ShareExportToken?
   @State private var isSharePresented = false
+  /// The in-flight prepare, held so the VIEW owns its lifetime. A share belongs to the loupe
+  /// that asked for it: if this control goes away mid-fetch there is nothing left that could
+  /// present the result or dismiss it, so the task is cancelled and the store ends the export
+  /// through its own `finish(_:)` path (diff-gate BLOCKING, IMGMGR-348).
+  @State private var prepareTask: Task<Void, Never>?
 
   var body: some View {
     Group {
@@ -45,7 +50,8 @@ struct ShareControl: View {
       } else {
         Button {
           guard let image else { return }
-          Task { await presentShare(for: image) }
+          prepareTask?.cancel()
+          prepareTask = Task { await presentShare(for: image) }
         } label: {
           Label("Share", systemImage: "square.and.arrow.up")
         }
@@ -55,6 +61,13 @@ struct ShareControl: View {
     }
     .labelStyle(.iconOnly)
     .frame(minWidth: 44, minHeight: 44)
+    .onDisappear {
+      // Closing the loupe mid-prepare is the case this exists for. Cancelling here is what makes
+      // the store's cancellation path run at all, so no prepared bytes outlive a share that can
+      // no longer be presented.
+      prepareTask?.cancel()
+      prepareTask = nil
+    }
     .sheet(
       isPresented: $isSharePresented,
       onDismiss: {
@@ -86,6 +99,11 @@ struct ShareControl: View {
   /// `ShareStatusBar` renders the refusal inline exactly as it always did.
   private func presentShare(for image: Components.Schemas.ImageSummary) async {
     await share.prepare(ShareExportPlan.variant(hasEdit: image.hasEdit), for: image)
+    // A prepare that finishes AFTER this control is gone must not present anything. The store
+    // has already ended that export (its cancellation path), so `.ready` is not reachable here
+    // either — this is the second half of the same statement, said where the presentation
+    // actually happens rather than inferred from the store's state.
+    guard !Task.isCancelled else { return }
     guard case .ready = share.state else { return }
     presentedToken = share.currentToken
     isSharePresented = true
