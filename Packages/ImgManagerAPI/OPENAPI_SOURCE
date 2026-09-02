@@ -1,9 +1,9 @@
 # Provenance of the img-manager artefact vendored into this package.
 # Written by scripts/sync-openapi.sh — do not edit by hand.
 repo=img-manager
-commit=74203992ac1d41d6a2eea097bbe3b7101753e41a
-subject=Merge feature/wp14-p1-web: server-ordered queue rollup, declared stack-edit refusals, touch plates, filmstrip scene clamp (IMGMGR-264/-278/-274/-273)
-committed=2026-08-31T23:18:23+02:00
+commit=0edeb4f370e99f5f4f309522c054085c89f20961
+subject=Merge fix/release-0.18.0: version 0.18.0
+committed=2026-09-02T08:41:27+02:00
 files=Sources/ImgManagerAPI/openapi.json (source, with the nullable-$ref canonicalization below)
 canonicalized_nullable_refs=7
 still_dropped_nullable_unions=10

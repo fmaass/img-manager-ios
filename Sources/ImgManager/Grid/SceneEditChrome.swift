@@ -12,21 +12,65 @@ import SwiftUI
 /// LOADED scenes in capture order, and the sheet says so — the window pages forward on its own
 /// cursor, so a scene further down the stream is not offered until the reader has paged to it.
 struct SceneMergePicker: View {
+
+  /// WHICH edit is choosing a target (IMGMGR-347). One view rather than two, because it is the
+  /// same choice made from two directions — a scene of this folder, from the same list, in the
+  /// same order — and only the words, the row identifier and the store method the tap runs
+  /// differ. A second view would be this one copied, and the copy is where a fix lands on one
+  /// surface and not the other.
+  enum Kind: Sendable {
+    /// The focused member's scene joins the one picked (WP14 P4, IMGMGR-277).
+    case mergeFocusedScene
+    /// The focused LOOSE photograph joins the one picked (IMGMGR-347).
+    case absorbLoosePhotograph
+  }
+
   let store: GridStore
+  var kind: Kind = .mergeFocusedScene
   @Environment(\.dismiss) private var dismiss
+
+  private var targets: [SceneMergeTarget] {
+    switch kind {
+    case .mergeFocusedScene: return store.sceneMergeTargets
+    case .absorbLoosePhotograph: return store.sceneAbsorbTargets
+    }
+  }
+
+  private var title: String {
+    switch kind {
+    case .mergeFocusedScene: return "Merge into…"
+    case .absorbLoosePhotograph: return SceneAbsorbCopy.offered
+    }
+  }
+
+  private func identifier(for target: SceneMergeTarget) -> String {
+    switch kind {
+    case .mergeFocusedScene: return "sceneMergeTarget-\(target.stackID)"
+    case .absorbLoosePhotograph: return "sceneAbsorbTarget-\(target.stackID)"
+    }
+  }
+
+  private func choose(_ target: SceneMergeTarget) {
+    switch kind {
+    case .mergeFocusedScene:
+      Task { await store.mergeFocusedScene(into: target.stackID) }
+    case .absorbLoosePhotograph:
+      Task { await store.absorbFocusedPhoto(into: target.stackID) }
+    }
+  }
 
   var body: some View {
     NavigationStack {
       List {
         Section {
-          ForEach(store.sceneMergeTargets) { target in
+          ForEach(targets) { target in
             Button {
               dismiss()
-              Task { await store.mergeFocusedScene(into: target.stackID) }
+              choose(target)
             } label: {
               SceneMergeTargetRow(target: target, store: store)
             }
-            .accessibilityIdentifier("sceneMergeTarget-\(target.stackID)")
+            .accessibilityIdentifier(identifier(for: target))
           }
         } footer: {
           // The v1 limitation, DECLARED where the choice is made rather than in a release note.
@@ -35,7 +79,7 @@ struct SceneMergePicker: View {
               + " reach more.")
         }
       }
-      .navigationTitle("Merge into…")
+      .navigationTitle(title)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Cancel") { dismiss() }
@@ -116,7 +160,9 @@ extension View {
           .accessibilityIdentifier(action.id)
       }
     } message: { failure in
-      Text(SceneEditCopy.message(for: failure))
+      // Keyed on the edit that was refused: one 409 code means two different things depending on
+      // it (`SceneEditCopy.message`), and the reader is owed the one that happened to them.
+      Text(SceneEditCopy.message(for: failure, of: store.sceneEditErrorKind))
     }
   }
 }

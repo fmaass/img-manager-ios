@@ -140,6 +140,16 @@ struct GridView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe")
           .accessibilityValue("facetsRequests=\(DebugProbe.shared.facetsRequests)")
+        // IMGMGR-347, its OWN element rather than a second half of the value above: the facets
+        // probe is read with a full-string `MATCHES` predicate, so appending to its value would
+        // break that test rather than extend this one.
+        Text("debugProbeAbsorb")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.absorb")
+          .accessibilityValue("absorbRequests=\(DebugProbe.shared.absorbRequests)")
       }
     }
   #else
@@ -1128,6 +1138,10 @@ struct ActionBarView: View {
     // `ViewThatFits` child, which would declare each of them once per tier.
     .sheet(isPresented: $store.isSceneMergePickerPresented) {
       SceneMergePicker(store: store)
+    }
+    // IMGMGR-347: the absorb's own target sheet, hosted beside its sibling for the same reason.
+    .sheet(isPresented: $store.isSceneAbsorbPickerPresented) {
+      SceneMergePicker(store: store, kind: .absorbLoosePhotograph)
     }
     .sceneEditAlert(store: store)
   }

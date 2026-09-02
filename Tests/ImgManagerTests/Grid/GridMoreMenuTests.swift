@@ -45,6 +45,8 @@ struct GridViewMoreMenuTests {
         // WP14 P4 (IMGMGR-277): the three scene-edit actions, APPENDED — the owner's decided set
         // and its order above are untouched, exactly as P11's row left them.
         "more.mergeScene", "more.splitScene", "more.extractScene",
+        // IMGMGR-347: the absorb, APPENDED on the same terms.
+        "more.absorbScene",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
@@ -53,6 +55,10 @@ struct GridViewMoreMenuTests {
         "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
         "Density: 200 pt", "Status", "Open in New Window", "Merge into…", "Split here",
         "Extract selected",
+        // IMGMGR-347: the absorb row's title IS its reason while it cannot act, and this store
+        // has nothing focused at all — a plain "Add to scene…" here would be the inert control
+        // the ticket exists to remove.
+        "Add to scene — focus a loose photograph",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
@@ -248,6 +254,17 @@ struct GridViewMoreMenuTests {
         await waitForEdits(transport, count: 1)
         #expect(await transport.recordedStackEdits.count == 1, "Extract selected sent nothing")
 
+      case "more.absorbScene":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("more.absorbScene is not an action entry")
+          continue
+        }
+        await loadLooseAbsorbFixture(store, transport)
+        #expect(entry.isEnabled(store), "Add to scene… is disabled with a loose photograph focused")
+        #expect(store.isSceneAbsorbPickerPresented == false)
+        run(store)
+        #expect(store.isSceneAbsorbPickerPresented, "Add to scene… raised no target sheet")
+
       default:
         // ONE literal, not two concatenated: `Issue.record` takes a `Comment`, and `+` on a
         // Comment is not a string append (gate p5a-red2, GridMoreMenuTests.swift:148).
@@ -416,6 +433,50 @@ struct GridViewMoreMenuTests {
     #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
   }
 
+  /// IMGMGR-347 ACCEPTANCE PROBE, written RED: before the row existed this failed on the first
+  /// expectation, which is the owner's device finding stated as a test — the More menu had
+  /// nothing that acts on a LOOSE photograph.
+  ///
+  /// Both states are asserted from the SAME row, because the AC is about the row never being
+  /// inert: with nothing focused it is present, disabled, and its own words say what is missing;
+  /// with a loose photograph focused in a folder that has a scene, it is offered.
+  @Test("The absorb row is offered on a loose photograph and states its reason otherwise")
+  func theAbsorbRowIsOfferedOnALoosePhotographAndStatesItsReasonOtherwise() async {
+    let (store, transport, _, _) = makeStore()
+
+    let matches = GridMoreMenu.entries.filter {
+      $0.accessibilityIdentifier == "gridMoreMenu.more.absorbScene"
+    }
+    #expect(matches.count == 1, "the More menu carries no absorb row")
+    guard let entry = matches.first else { return }
+
+    #expect(entry.isEnabled(store) == false, "the absorb row is live with nothing focused")
+    #expect(
+      entry.title(store).localizedCaseInsensitiveContains("loose"),
+      "the disabled row does not say what is missing: '\(entry.title(store))'")
+
+    await loadLooseAbsorbFixture(store, transport)
+    #expect(entry.isEnabled(store), "the absorb row is dead with a loose photograph focused")
+    #expect(entry.title(store) == "Add to scene…")
+  }
+
+  /// IMGMGR-347: a Scene window holding one scene and one LOOSE photograph of the same folder,
+  /// with the focus on the loose photograph — the state the absorb is offered in.
+  private func loadLooseAbsorbFixture(_ store: GridStore, _ transport: GridStubTransport) async {
+    let row = Components.Schemas.StackBrowseStackRow(
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      matchedCount: 3, memberCount: 3, pickedCount: 0, representative: makeImage(id: 1),
+      stackId: 5)
+    await transport.setBrowseStacksPage(
+      .init(
+        items: [
+          .init(value1: nil, value2: row),
+          .init(value1: .init(image: makeImage(id: 20), kind: .image), value2: nil),
+        ], limit: 100))
+    await store.setDisplayMode(.scene)
+    store.focusedImageID = 20
+  }
+
   /// WP14 P4: a Scene window with one open scene and the focus on its SECOND member — the state
   /// in which all three scene-edit rows have a subject (plan Decision 2). Built on the store the
   /// enclosing loop already made, so each entry's probe still runs against its own store.
@@ -465,14 +526,14 @@ struct GridViewMoreMenuTests {
 @Suite("Grid More menu — the grouped sections (WP16 P4)")
 struct GridMoreMenuSectionsTests {
 
-  /// The eleven ids at `4753450`, in the order the owner decided (WP13 kickoff decision 2, epic
-  /// IMGMGR-211 comment 2106; P11 and WP14 P4 APPENDED, never reordered). Grouping is a
+  /// The twelve ids at `4753450`, in the order the owner decided (WP13 kickoff decision 2, epic
+  /// IMGMGR-211 comment 2106; P11, WP14 P4 and IMGMGR-347 APPENDED, never reordered). Grouping is a
   /// CONTIGUOUS partition over exactly this sequence, so a reorder, a drop or a duplicate fails
   /// element-wise here.
   private let shippedOrder = [
     "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
     "more.picksInGroups", "more.density", "more.status", "more.openInNewWindow",
-    "more.mergeScene", "more.splitScene", "more.extractScene",
+    "more.mergeScene", "more.splitScene", "more.extractScene", "more.absorbScene",
   ]
 
   @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
@@ -483,10 +544,10 @@ struct GridMoreMenuSectionsTests {
     // Positive control for the equalities above: there really are sections and entries to
     // compare, so neither line can pass on two empty arrays.
     #expect(GridMoreMenu.sections.count == 4)
-    #expect(GridMoreMenu.entries.count == 11)
+    #expect(GridMoreMenu.entries.count == 12)
   }
 
-  @Test("Grouping changed nothing about the set: the eleven ids, in the shipped order")
+  @Test("Grouping changed nothing about the set: the twelve ids, in the shipped order")
   func groupingKeptTheDecidedSetAndItsOrder() {
     #expect(GridMoreMenu.sections.flatMap(\.entries).map(\.id) == shippedOrder)
     #expect(GridMoreMenu.entries.map(\.id) == shippedOrder)
@@ -509,7 +570,7 @@ struct GridMoreMenuSectionsTests {
       ("more.section.shoot", "Shoot", ["more.status", "more.openInNewWindow"]),
       (
         "more.section.scene", "Scene",
-        ["more.mergeScene", "more.splitScene", "more.extractScene"]
+        ["more.mergeScene", "more.splitScene", "more.extractScene", "more.absorbScene"]
       ),
     ]
     // Closures rather than key paths on the right: Swift has no key path to a tuple element.
@@ -558,12 +619,14 @@ struct GridMoreMenuSectionsTests {
         "gridMoreMenu.more.density", "gridMoreMenu.more.status",
         "gridMoreMenu.more.openInNewWindow", "gridMoreMenu.more.mergeScene",
         "gridMoreMenu.more.splitScene", "gridMoreMenu.more.extractScene",
+        "gridMoreMenu.more.absorbScene",
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
         "checkmark.circle", ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
         "textformat", "checkmark.square", "square.grid.2x2", "info.circle",
         "macwindow.badge.plus", "arrow.triangle.merge", "scissors", "square.on.square.dashed",
+        "rectangle.stack.badge.plus",
       ])
   }
 }

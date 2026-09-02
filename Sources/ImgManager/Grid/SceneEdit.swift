@@ -21,9 +21,26 @@ struct SceneEditSubject: Equatable, Sendable {
   let focusedImageID: Int
 }
 
+/// WHAT an absorb acts on (IMGMGR-347): a LOOSE photograph — one the browse stream serves as a row
+/// of its own rather than inside a scene — and the folder it sits in.
+///
+/// Deliberately NOT a `SceneEditSubject`: that value IS a membership (a scene and a member of it),
+/// and the absorb is the one editor whose subject is a photograph that belongs to no scene, which
+/// is exactly why `sceneEditSubject` is nil for it and why the other three rows are dead while a
+/// loose photograph is focused. Its folder is what decides which scenes may take it — the server
+/// refuses a cross-folder absorb, so the client offers only the folder's own scenes rather than
+/// arranging a guaranteed refusal.
+struct SceneAbsorbSubject: Equatable, Sendable {
+  let imageID: Int
+  let folderID: Int
+}
+
 /// One scene the subject may be merged INTO: a scene of the same folder that is currently loaded
 /// in the window. Carries what the sheet draws — cover, count, when the scene sits in capture
 /// order — and nothing else.
+///
+/// The absorb's targets are the same value (IMGMGR-347): a loose photograph is choosing among the
+/// same scenes, drawn by the same sheet, so a second type would only be this one renamed.
 struct SceneMergeTarget: Identifiable, Equatable, Sendable {
   let stackID: Int
   let representative: Components.Schemas.ImageSummary
@@ -45,6 +62,23 @@ enum SceneEditRequest: Equatable, Sendable {
   case merge(stackIDs: [Int], focusedImageID: Int)
   case split(stackID: Int, atImageID: Int)
   case extract(stackID: Int, imageIDs: [Int], focusedImageID: Int)
+  /// IMGMGR-347. `stackID` is the scene the photographs JOIN — the one the reader picked, not a
+  /// subject they were already inside — and `imageIDs` are loose photographs. Frozen like its
+  /// siblings, so the busy retry asks the same question.
+  case absorb(stackID: Int, imageIDs: [Int], focusedImageID: Int)
+
+  /// WHICH edit this is, as a value the refusal copy can be keyed on — the same 409 code means a
+  /// different thing depending on the edit that got it, and the reader is owed the difference
+  /// (codex gate, blocker: the absorb's `membership_changed` is about the PHOTOGRAPH, not the
+  /// target scene). Derived from the request rather than stored beside it, so it cannot drift.
+  var kind: SceneEditKind {
+    switch self {
+    case .merge: return .merge
+    case .split: return .split
+    case .extract: return .extract
+    case .absorb: return .absorb
+    }
+  }
 
   /// The photograph the reader was on when they asked — where the coordinator tries to put focus
   /// back. For a split it is the cut itself, which is the first member of the new scene.
@@ -53,8 +87,19 @@ enum SceneEditRequest: Equatable, Sendable {
     case .merge(_, let focused): return focused
     case .split(_, let atImageID): return atImageID
     case .extract(_, _, let focused): return focused
+    case .absorb(_, _, let focused): return focused
     }
   }
+}
+
+/// The four edits, named so a refusal can say what was refused. Not a second copy of
+/// `SceneEditRequest` — it is that value's own `kind`, carried past the point where the payload
+/// has been dropped (the alert stands after the request is gone).
+enum SceneEditKind: Equatable, Sendable {
+  case merge
+  case split
+  case extract
+  case absorb
 }
 
 /// Why a scene edit did not happen. Opaque by construction, exactly like `GridServiceError`: every
@@ -71,6 +116,11 @@ enum SceneEditFailure: Equatable, Sendable {
   /// `cross_folder_merge`, …). The coded detail arrives as an object where the declared schema
   /// says array, so the generated client cannot decode WHICH — see `GridService`.
   case refused
+  /// 404 on an absorb (IMGMGR-347): the scene, or a photograph this request named, is not in the
+  /// library any more. Its own case rather than a `.refused`, because it says something different
+  /// to the reader — nothing about this edit was wrong, the thing it acted on left — and because
+  /// the absorb is the only editor that declares a 404 with a coded detail at all.
+  case vanished
   case unreachable
 }
 
@@ -87,7 +137,10 @@ enum SceneEditConflictReason: Equatable, Sendable {
 enum SceneEditCopy {
   static let title = "The scene was not changed"
 
-  static func message(for failure: SceneEditFailure) -> String {
+  /// `kind` is optional because most of these sentences are the family's, not one edit's: only
+  /// `membership_changed` describes a DIFFERENT cause per edit, and a nil kind (a caller that has
+  /// no edit in hand) gets the wording the three membership-based edits share.
+  static func message(for failure: SceneEditFailure, of kind: SceneEditKind? = nil) -> String {
     switch failure {
     case .busy(let seconds):
       let wait =
@@ -97,9 +150,21 @@ enum SceneEditCopy {
     case .conflict(.foreignFolderMember):
       return "One of the chosen photographs is no longer in this folder. Nothing was changed."
     case .conflict(.membershipChanged):
+      // The contract gives this code two different causes. For merge, split and extract the
+      // SCENE moved under the request. For an absorb the target scene may be untouched: the
+      // photograph "stopped being loose between the check and the write" (openapi.json,
+      // StackExtractConflict), i.e. something else put it in a scene first — so naming the scene
+      // here would tell the reader to look at the wrong thing. Neither offers a Retry: both mean
+      // the reader must ask a different question, which is `offersRetry`'s existing rule.
+      if kind == .absorb {
+        return "That photograph stopped being loose while the edit was being prepared —"
+          + " something else put it in a scene. Nothing was changed."
+      }
       return "This scene changed while the edit was being prepared. Nothing was changed."
     case .refused:
       return "This edit cannot be made to this scene. Nothing was changed."
+    case .vanished:
+      return "That photograph or scene is no longer in the library. Nothing was changed."
     case .unreachable:
       return "The edit could not be sent. Nothing was changed."
     }
@@ -111,6 +176,41 @@ enum SceneEditCopy {
   static func offersRetry(_ failure: SceneEditFailure) -> Bool {
     if case .busy = failure { return true }
     return false
+  }
+}
+
+/// Why the absorb cannot run right now (IMGMGR-347 AC2). One value, ordered by what the reader
+/// would have to change FIRST, so the row can name a single missing thing rather than a list.
+enum SceneAbsorbUnavailability: Equatable, Sendable {
+  /// Nothing focused, the focus is on a scene MEMBER, or the grid is not in Scene mode at all —
+  /// in every one of those there is no loose photograph for the absorb to act on.
+  case noLoosePhotographFocused
+  /// A loose photograph, but no scene of its folder has been paged into the window yet, so there
+  /// is nothing to offer as a target.
+  case noSceneInTheSameFolderLoaded
+  /// One edit at a time (`isSceneEditInFlight`), the same answer every other topology row gives.
+  case anotherEditIsRunning
+}
+
+/// The absorb row's own words, as a pure function of why it cannot act.
+///
+/// The words matter here more than on the other rows, and the ticket is why: the owner's device
+/// pass (TestFlight 0.11.0 (14)) hit "'merge into..' is not doing anything" — a row that greys out
+/// says nothing about WHAT is missing, so a reader who cannot make it enabled has no way to learn
+/// what would. The menu idiom in this app is present-and-disabled (`GridMoreMenuItem` applies
+/// `.disabled`), and a menu row's only visible surface is its title, so the reason goes in the
+/// title. Kept beside the failure copy because it is the same kind of thing: the reader's words,
+/// unit-testable, held in exactly one place.
+enum SceneAbsorbCopy {
+  static let offered = "Add to scene…"
+
+  static func title(for unavailability: SceneAbsorbUnavailability?) -> String {
+    guard let unavailability else { return offered }
+    switch unavailability {
+    case .noLoosePhotographFocused: return "Add to scene — focus a loose photograph"
+    case .noSceneInTheSameFolderLoaded: return "Add to scene — no scene in view yet"
+    case .anotherEditIsRunning: return "Add to scene — an edit is running"
+    }
   }
 }
 
@@ -207,19 +307,61 @@ enum SceneEditPlanner {
           memberCount: stack.memberCount, anchorTakenAt: stack.anchorTakenAt))
     }
     guard let folderID = subjectFolderID else { return [] }
-    return
-      candidates
-      .filter { $0.representative.folderId == folderID }
-      .sorted { left, right in
-        switch (left.anchorTakenAt, right.anchorTakenAt) {
-        case (let a?, let b?): return a == b ? left.stackID < right.stackID : a < b
-        // A scene with no stored anchor has no place in capture order, so it goes last rather
-        // than to the top, where a nil would sort under any comparison that treated it as zero.
-        case (nil, _?): return false
-        case (_?, nil): return true
-        case (nil, nil): return left.stackID < right.stackID
-        }
+    return candidates.filter { $0.representative.folderId == folderID }.sorted(by: inCaptureOrder)
+  }
+
+  /// The order both target lists are offered in — the stream's own, so the sheet reads like the
+  /// grid behind it. Shared rather than copied because "which scenes may take these photographs,
+  /// in what order" is one question asked from two directions (IMGMGR-347).
+  ///
+  /// A scene with no stored anchor has no place in capture order, so it goes LAST rather than to
+  /// the top, where a nil would sort under any comparison that treated it as zero.
+  private static func inCaptureOrder(_ left: SceneMergeTarget, _ right: SceneMergeTarget) -> Bool {
+    switch (left.anchorTakenAt, right.anchorTakenAt) {
+    case (let a?, let b?): return a == b ? left.stackID < right.stackID : a < b
+    case (nil, _?): return false
+    case (_?, nil): return true
+    case (nil, nil): return left.stackID < right.stackID
+    }
+  }
+
+  /// The absorb's subject: the focused photograph, if the stream is serving it as a LOOSE row.
+  ///
+  /// Read off `sceneRows` rather than off `sceneMembers`, and that is the whole difference from
+  /// `subject(expanded:members:focusedImageID:)`: a photograph is loose exactly when the server
+  /// put it in the stream as its own row, which is a fact the client is told rather than one it
+  /// derives (ADR-0005 — the server owns membership). A member of a scene, open or closed, never
+  /// appears as an `.image` row, so this is nil for it without a second membership check.
+  static func absorbSubject(rows: [SceneBrowseRow], focusedImageID: Int?) -> SceneAbsorbSubject? {
+    guard let focused = focusedImageID else { return nil }
+    for row in rows {
+      guard case .image(let image) = row, image.id == focused else { continue }
+      return SceneAbsorbSubject(imageID: image.id, folderID: image.folderId)
+    }
+    return nil
+  }
+
+  /// The scenes a loose photograph may join: every scene of ITS folder currently loaded in the
+  /// window, in capture order.
+  ///
+  /// Same folder for the same reason a merge is folder-scoped — the server refuses a cross-folder
+  /// absorb (`foreign_folder_member`), so offering one would be arranging a guaranteed refusal —
+  /// and decided from the cover's `folder_id`, which is sound because every member of a scene,
+  /// the cover included, is in the scene's own folder.
+  ///
+  /// **Same v1 limitation as the merge sheet, declared in the same place:** only LOADED scenes
+  /// are offered, because the window pages forward on its own cursor and this list is what has
+  /// arrived.
+  static func absorbTargets(rows: [SceneBrowseRow], folderID: Int) -> [SceneMergeTarget] {
+    rows.compactMap { row -> SceneMergeTarget? in
+      guard case .stack(let stack) = row, stack.representative.folderId == folderID else {
+        return nil
       }
+      return SceneMergeTarget(
+        stackID: stack.stackId, representative: stack.representative,
+        memberCount: stack.memberCount, anchorTakenAt: stack.anchorTakenAt)
+    }
+    .sorted(by: inCaptureOrder)
   }
 
   /// The members of THIS scene that are selected, in the MEMBERSHIP's own order (web parity,
