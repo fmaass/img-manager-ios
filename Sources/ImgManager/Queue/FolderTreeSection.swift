@@ -49,6 +49,10 @@ struct FolderTreeSection: View {
   /// thing that re-runs the tree load — the load itself is view state, so the gesture reaches it
   /// as a value the `.task(id:)` below keys on rather than as a call.
   let reloadToken: Int
+  /// The queue's answers, keyed by `folder_id` (IMGMGR-350 P3) — what the row badge reads. It is
+  /// a VALUE the composition root hands over, not a store this view observes: the tree renders
+  /// without it (checkpoint-2 finding B1), and an empty join is simply a tree with no badges.
+  let summariesByFolderID: [Int: Components.Schemas.FolderSummary]
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
@@ -209,6 +213,7 @@ struct FolderTreeSection: View {
         ForEach(rows) { row in
           FolderTreeRowView(
             row: row, tier: tier, isSearching: isSearching, heroLoader: heroLoader,
+            summariesByFolderID: summariesByFolderID,
             expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
             onSelect: onSelect)
         }
@@ -365,6 +370,7 @@ private struct FolderTreeRowView: View {
   let tier: FolderTreeTier
   let isSearching: Bool
   let heroLoader: HeroThumbnailLoader
+  let summariesByFolderID: [Int: Components.Schemas.FolderSummary]
   @Binding var expandedBranches: Set<FolderTreeItemID>
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
@@ -471,6 +477,19 @@ private struct FolderTreeRowView: View {
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .accessibilityIdentifier(FolderTreeRowPresentation.sublineIdentifier(for: node.id))
+        }
+        // P3: the shoot's readiness, in the server's own words. Its own line rather than a
+        // trailing chip for the reason the queue card's badges were stacked (WP16 P5): a sidebar
+        // column is narrow enough that side-by-side captions wrap character by character.
+        if let readiness = FolderTreeRowPresentation.readinessBadge(
+          for: node, summaries: summariesByFolderID)
+        {
+          Text(readiness)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .accessibilityIdentifier(
+              FolderTreeRowPresentation.readinessIdentifier(for: node.id))
         }
       }
       Spacer(minLength: 8)

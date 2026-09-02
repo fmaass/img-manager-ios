@@ -450,6 +450,9 @@ struct RootView: View {
             // one concurrency gate for every cover in this column.
             gridService: gridService, heroLoader: heroLoader, layoutMode: layoutMode,
             reloadToken: treeReloadToken,
+            // P3: read here in the body, so a summaries load that lands later re-renders the
+            // rows — `queueStore` is observed, the tree section is a value.
+            summariesByFolderID: FolderTreeRowPresentation.index(queueStore.summaries),
             selectedFolderID: $selectedFolderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }

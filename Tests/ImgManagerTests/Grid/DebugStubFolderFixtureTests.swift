@@ -103,6 +103,26 @@ struct DebugStubFolderFixtureTests {
       #expect(renderedFolderIDs(.edits) == [11])
     }
 
+    /// IMGMGR-350 P3: the badge is a `folder_id` join, so a summary whose folder the tree does
+    /// not render is a badge nobody can see. The fixture's summaries used to be ids 101-106
+    /// against a tree of ids 1-4 — an empty join on every row, and a badge suite that would have
+    /// been green against a screen with no badges on it.
+    @Test("every fixture summary joins onto a folder the tree actually renders")
+    func everyFixtureSummaryJoinsOntoARenderedFolder() {
+      let rendered = renderedFolderIDs(.incoming)
+        .union(renderedFolderIDs(.edits))
+        .union(renderedFolderIDs(.archive))
+      let summaryIDs = Set(DebugStubTransport.fixtureSummaries().map(\.folderId))
+
+      #expect(summaryIDs == [1, 3, 5, 11, 21, 22])
+      #expect(summaryIDs.isSubset(of: rendered))
+      // Every readiness value the string table knows is represented, so the badge suite walks a
+      // real vocabulary rather than one value repeated six times.
+      #expect(
+        Set(DebugStubTransport.fixtureSummaries().map(\.readiness.rawValue)).count
+          == ReadinessSection.allCases.count)
+    }
+
     /// The control for IMGMGR-350's "no prune in this package" default (Context default 6): the
     /// archive's mirrored, zero-count folder is STILL a row. A follow-up ticket under IMGMGR-322
     /// adds the web's prune behind a persisted toggle, and this assertion is what it inverts.

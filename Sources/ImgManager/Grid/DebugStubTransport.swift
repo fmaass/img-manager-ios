@@ -450,46 +450,54 @@
         name: "2025-11-01 — Mirrored", parentId: 20, path: "2025/2025-11-01-mirrored"),
     ]
 
-    private static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
+    /// IMGMGR-350 P3: every row's `folderId` is a folder the TREE renders — ids 1/3/5 (incoming),
+    /// 11 (edits) and 21/22 (archive) — because the badge is a `folder_id` join and a summary for
+    /// a folder that is not on screen renders nothing. They used to be 101-106, which intersected
+    /// the tree nowhere, so the join would have been empty on every row. Readiness values, counts
+    /// and the deliberate contradictions between them are unchanged; `sourceTier` follows the
+    /// folder's own store. Internal, not private, so `DebugStubFolderFixtureTests` can prove the
+    /// join lands.
+    static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
       [
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 25, decided: 12, disliked: 2, edited: 5, folderId: 101,
+          cameraPreviewOnly: 25, decided: 12, disliked: 2, edited: 5, folderId: 1,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_421_712),
-          nothingLeftUnmarked: false, path: "photo_edits/2026/2026-08-13-1", picked: 10,
+          nothingLeftUnmarked: false, path: "photo_incoming/stub", picked: 10,
           previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
           sourceTier: "local", sync: .init(never: 3, refused: 1, stale: 2, synced: 5), total: 40,
           unmarked: 28, withMasters: 15),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 60, decided: 0, disliked: 0, edited: 0, folderId: 102,
+          cameraPreviewOnly: 60, decided: 0, disliked: 0, edited: 0, folderId: 21,
           kind: "dated_split", lastTouched: Date(timeIntervalSince1970: 1_755_508_112),
-          nothingLeftUnmarked: false, path: "photo_edits/2026/2026-08-14-1", picked: 0,
+          nothingLeftUnmarked: false, path: "2025/2025-12-24-archive-shoot", picked: 0,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 3, stale: 0, synced: 0),
           total: 60, unmarked: 60, withMasters: 0),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 12, decided: 5, disliked: 1, edited: 3, folderId: 103, kind: "dated",
-          lastTouched: nil, nothingLeftUnmarked: true, path: "photo_edits/2026/2026-08-15-1",
+          cameraPreviewOnly: 12, decided: 5, disliked: 1, edited: 3, folderId: 3, kind: "dated",
+          lastTouched: nil, nothingLeftUnmarked: true,
+          path: "photo_incoming/2026/2026-09-14-wandern",
           picked: 4, previewOutstanding: 8, readiness: .init(rawValue: "sync_problem")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 7, synced: 0), total: 12,
           unmarked: 7, withMasters: 4),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 0, decided: 32, disliked: 4, edited: 20, folderId: 104,
+          cameraPreviewOnly: 0, decided: 32, disliked: 4, edited: 20, folderId: 11,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_594_512),
-          nothingLeftUnmarked: true, path: "photo_edits/2026/2026-08-16-1", picked: 28,
+          nothingLeftUnmarked: true, path: "photo_edits/2026-08-02-edits-pass", picked: 28,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_for_editing")!,
           sourceTier: "local", sync: .init(never: 32, refused: 0, stale: 0, synced: 0), total: 32,
           unmarked: 0, withMasters: 32),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 255, decided: 0, disliked: 0, edited: 0, folderId: 105,
+          cameraPreviewOnly: 255, decided: 0, disliked: 0, edited: 0, folderId: 22,
           kind: "dated_split", lastTouched: Date(timeIntervalSince1970: 1_755_680_912),
-          nothingLeftUnmarked: false, path: "photo_edits/2026/2026-08-17-1", picked: 0,
+          nothingLeftUnmarked: false, path: "2025/2025-11-01-mirrored", picked: 0,
           previewOutstanding: 255, readiness: .init(rawValue: "needs_previews")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 0, stale: 0, synced: 12),
           total: 255, unmarked: 255, withMasters: 0),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 18, decided: 18, disliked: 3, edited: 10, folderId: 106,
+          cameraPreviewOnly: 18, decided: 18, disliked: 3, edited: 10, folderId: 5,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_767_312),
-          nothingLeftUnmarked: true, path: "photo_edits/2025/2025-12-24-1", picked: 15,
+          nothingLeftUnmarked: true, path: "photo_incoming/2026/2026-09-27-ufer", picked: 15,
           previewOutstanding: 0, readiness: .init(rawValue: "historical_unreviewed")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 0, synced: 0), total: 18,
           unmarked: 0, withMasters: 18),

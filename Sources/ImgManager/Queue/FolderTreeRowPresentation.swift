@@ -1,4 +1,5 @@
 import Foundation
+import ImgManagerAPI
 
 /// What ONE line of the Folders tree shows, as values rather than as a shape only a screenshot
 /// could disagree with — WP16 P5, p3332 decision 2 (IMGMGR-296).
@@ -60,6 +61,39 @@ enum FolderTreeRowPresentation {
   /// drift apart on a rename; keyed by the server's folder id like every other identifier in
   /// this tree (`folderRow-` / `folderContainer-` / `folderDisclose-`).
   static func thumbnailIdentifier(for id: Int) -> String { "folderRowThumbnail-\(id)" }
+
+  /// The shoot row's READINESS, as the server said it (IMGMGR-350 P3). The badge states the
+  /// served identifier's title and derives nothing: `ReadinessSection` is the one string table in
+  /// this app (`QueueModels.swift:36-45`, shared with the widget), keyed by the wire value the
+  /// server sent, exactly as `QueueSort.sections(from:)` keys its sections. A readiness this
+  /// client does not know is rendered as NO badge rather than as a guess — the same
+  /// unknown-vocabulary posture `ShootListFilter` takes for `kind` (IMGMGR-173).
+  ///
+  /// Whatever the ADR-0004 amendment round (IMGMGR-330, /link/3376) lands as the readiness VALUE
+  /// is what this says: the badge consumes that contract and does not define it.
+  ///
+  /// Shoot rows only, for the same reason the cover and the subline are shoot-only: a container
+  /// is a folder of folders and `/api/folder-summaries` has no row for it. A folder with no
+  /// summary shows no badge — nothing here invents one from counts.
+  static func readinessBadge(
+    for node: FolderTreeNode, summaries: [Int: Components.Schemas.FolderSummary]
+  ) -> String? {
+    guard node.isSelectableShoot, let summary = summaries[node.id] else { return nil }
+    return ReadinessSection(rawValue: summary.readiness.rawValue)?.title
+  }
+
+  /// The summaries as a `folder_id` join table — the ONE place the tree's rows meet the queue's
+  /// answers. Last row wins on a duplicate id, which the server does not emit (one summary per
+  /// folder); stated because a trapping `uniqueKeysWithValues` would turn a server-side surprise
+  /// into a crash on the home screen.
+  static func index(
+    _ summaries: [Components.Schemas.FolderSummary]
+  ) -> [Int: Components.Schemas.FolderSummary] {
+    Dictionary(summaries.map { ($0.folderId, $0) }, uniquingKeysWith: { _, latest in latest })
+  }
+
+  /// The badge's test handle, keyed by the server's folder id like every other identifier here.
+  static func readinessIdentifier(for id: Int) -> String { "folderReadiness-\(id)" }
 
   /// The subline's test handle, on the same terms.
   static func sublineIdentifier(for id: Int) -> String { "folderRowSubline-\(id)" }
