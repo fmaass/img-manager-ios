@@ -157,6 +157,13 @@ struct GridView: View {
   /// overflow chevron came back as a result.
   @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
     if layoutMode != .compact {
+      // WP16 P3 (IMGMGR-295), decision 1: filtering reaches the grid's own chrome. Declared
+      // FIRST deliberately — the OS folds a crowded bar from the TRAILING end, so declaration
+      // order decides which control survives a narrow pane, and decision 1's control should not
+      // be the first casualty. Every shipped item below keeps its own shipped position.
+      ToolbarItem(placement: .primaryAction) {
+        GridFilterControl(store: store)
+      }
       ToolbarItem(placement: .primaryAction) {
         GridSortControl(store: store)
       }
@@ -166,11 +173,21 @@ struct GridView: View {
       ToolbarItem(placement: .primaryAction) {
         GridZoomControl(store: store)
       }
-      // Regular's route into the shortcut help sheet. The gate's UI leg proved the other two
-      // routes are not drivable there — ⌘/ never reached the app on the iPad simulator
-      // (no attached hardware keyboard) and the system menu bar is not a surface a UI test
-      // can open — so without this the sheet had no chrome path and no rendered evidence on
-      // Regular at all. Compact carries the same control in its options row.
+      // Regular's route into the shortcut help sheet, in its shipped position. The gate's UI leg
+      // proved the other two routes are not drivable there — ⌘/ never reached the app on the iPad
+      // simulator (no attached hardware keyboard) and the system menu bar is not a surface a UI
+      // test can open — so without this the sheet has no chrome path on Regular at all, which is
+      // what `ViewOptionsScreenshotUITests.testShortcutHelpSheetListsEveryActiveShortcut` drives.
+      // Compact carries the same control in its options row.
+      //
+      // WP16 P3 briefly removed this item as the plan's pre-decided pivot, to buy the funnel a
+      // slot on a bar the 5e2e9d4 gate had measured folding three of six primary items. Reverted:
+      // the pivot cost a SHIPPED control its only Regular route and failed that shipped test,
+      // while not actually solving the fold (five items into three slots still folds something).
+      // WP16 P2's two-column Regular-3 is what solved it — with the inspector collapsed the bar
+      // has room and the funnel is primary, which the iPad leg now passes on all four popover
+      // tests. The remaining inspector-SHOWN fold is the declared deviation on IMGMGR-293, not
+      // something to pay for with a shipped control.
       ToolbarItem(placement: .primaryAction) {
         GridShortcutHelpControl(store: store)
       }
@@ -778,6 +795,15 @@ struct GridOptionsRow: View {
       GridGroupControl(store: store)
         .frame(minHeight: 44)
       GridZoomControl(store: store)
+        .frame(minHeight: 44)
+      // WP16 P3 (IMGMGR-295): Compact's copy of the funnel, the FOURTH control in this row's
+      // leading cluster and the fifth on the row. Icon-only like the help button, so it adds one
+      // 44 pt hit region and no value label to a row whose three value-carrying controls already
+      // truncate at the tail — the measurement the phase was told to make before letting another
+      // control onto this row. (Compact's bar is not the six-item case: `RootView` puts Info and
+      // the account item on the NAV BAR there, not on this row.) `FilterPopoverUITests` asserts
+      // the help button is still hittable here — the "the row did not overflow" contract.
+      GridFilterControl(store: store)
         .frame(minHeight: 44)
       Spacer(minLength: 0)
       GridShortcutHelpControl(store: store)

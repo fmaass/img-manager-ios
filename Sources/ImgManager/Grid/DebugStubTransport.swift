@@ -68,9 +68,7 @@
         // `self.probe` inside it would capture this actor's isolated state.
         let probe = self.probe
         await MainActor.run { (probe ?? .shared).facetsRequests += 1 }
-        return try jsonResponse(
-          .ok,
-          Components.Schemas.ImageFacets(mark: [.init(count: 3, value: "pick")], total: 12))
+        return try jsonResponse(.ok, Self.fixtureFacets())
       case Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id:
         // P5: no more stub images beyond the fixed dozen `fixtureImages()` already returns —
         // an empty page is the truthful "nothing further" answer, keeping the loupe's own
@@ -251,6 +249,41 @@
     private static func fixtureStackMemberPage() -> Components.Schemas.StackMemberPage {
       Components.Schemas.StackMemberPage(
         items: fixtureStackMemberImages(), limit: 100, nextCursor: nil, stackId: fixtureStackID)
+    }
+
+    /// WP16 P3 (IMGMGR-295), the named fixture work item (gate round 1, B9). Until this phase the
+    /// stub answered `/api/facets` with ONE mark row (`pick`, 3) and no `rating`, `ext` or
+    /// `has_master` at all, so the filter popover's assertions could not be written against it:
+    /// every declared row would have read 0 and the difference between "the fixture is thin" and
+    /// "the popover is broken" would have been unobservable.
+    ///
+    /// Shaped like the live probe of 2026-09-01 (`GET /api/facets`, HTTP 200), which is what makes
+    /// the numbers meaningful rather than invented: `rating` in EXACT-value buckets plus `unset`
+    /// (so the `>= N` rows exercise the suffix sum instead of echoing a bucket), `mark` in all
+    /// three states INCLUDING a zero, `has_master` both ways, and two `ext` values. Chosen so ONE
+    /// response drives both paths the popover has: rows with results (enabled, non-zero) and a row
+    /// with none (`dislike`, rendered at 0 and disabled — B2's rule, on the real surface).
+    ///
+    /// `total` stays 12, consistent with `fixtureImages()`'s twelve rows. The per-dimension counts
+    /// sum to twelve as well, so nothing here reads as a page-derived tally.
+    ///
+    /// Internal rather than private, unlike its siblings: `FilterPopoverModelTests` runs the MODEL
+    /// over this exact response, so a later edit that quietly drops the zero-count row — and with
+    /// it the popover's zero-disabled UI coverage — fails a named unit test instead of silently
+    /// making a UI leg vacuous.
+    static func fixtureFacets() -> Components.Schemas.ImageFacets {
+      Components.Schemas.ImageFacets(
+        ext: [.init(count: 9, value: "jpg"), .init(count: 3, value: "arw")],
+        hasMaster: [.init(count: 5, value: "true"), .init(count: 7, value: "false")],
+        mark: [
+          .init(count: 4, value: "pick"), .init(count: 0, value: "dislike"),
+          .init(count: 8, value: "none"),
+        ],
+        rating: [
+          .init(count: 4, value: "unset"), .init(count: 1, value: "2"),
+          .init(count: 2, value: "3"), .init(count: 3, value: "4"), .init(count: 2, value: "5"),
+        ],
+        total: 12)
     }
 
     private static func fixtureImages() -> [Components.Schemas.ImageSummary] {

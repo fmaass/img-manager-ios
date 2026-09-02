@@ -161,25 +161,29 @@ struct InspectorView: View {
   private func facetRows(
     _ field: InspectorFacetField, _ facets: Components.Schemas.ImageFacets
   ) -> some View {
-    let counts = field.counts(from: facets)
-    if !counts.isEmpty {
+    // B1 (diff-gate round 1): the row SEQUENCE is derived once, by a pure function this view
+    // renders verbatim — never assembled inline here. `FilterPopoverModel.statsRows` is what a
+    // test can hold to "one row per value the server sent, in the server's order, relabelled but
+    // never filtered"; assembling the list in the body would have put that guarantee somewhere no
+    // test could reach, which is exactly how a narrowed rating section could have shipped green.
+    let rows = FilterPopoverModel.statsRows(field, facets, store.currentQuery)
+    if !rows.isEmpty {
       Section(field.title) {
-        ForEach(counts, id: \.value) { count in
-          let active = field.isActive(count.value, in: store.currentQuery)
+        ForEach(rows) { row in
           Button {
-            Task { await store.applyFacetFilter(field, value: count.value) }
+            Task { await store.applyFacetFilter(field, value: row.value) }
           } label: {
             HStack {
-              Image(systemName: active ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(active ? .primary : .tertiary)
-              Text(field.displayValue(count.value))
-                .fontWeight(active ? .semibold : .regular)
+              Image(systemName: row.isActive ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(row.isActive ? .primary : .tertiary)
+              Text(row.title)
+                .fontWeight(row.isActive ? .semibold : .regular)
               Spacer()
-              Text("\(count.count)").foregroundStyle(.secondary).monospacedDigit()
+              Text("\(row.count)").foregroundStyle(.secondary).monospacedDigit()
             }
           }
           .frame(minHeight: 44)
-          .accessibilityAddTraits(active ? [.isSelected] : [])
+          .accessibilityAddTraits(row.isActive ? [.isSelected] : [])
         }
       }
     }
