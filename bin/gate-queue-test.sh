@@ -30,7 +30,13 @@ export GATE_QUEUE_STATE="$tmp/state"
 export GATE_QUEUE_SUMMARY="$tmp/summary"
 fail=0
 strays=""
-cleanup() { local p; for p in $strays; do kill -9 "$p" 2>/dev/null; done; rm -rf "$tmp"; }
+kids() { cat "/proc/$1/task/$1/children" 2>/dev/null; }
+release() { # PID of a `flock … <command>` holder — a killed flock parent leaves its child
+            # holding the inherited descriptor, and with it the lock
+  local k; for k in $(kids "$1"); do kill "$k" 2>/dev/null; done
+  kill "$1" 2>/dev/null; wait "$1" 2>/dev/null
+}
+cleanup() { local p k; for p in $strays; do for k in $(kids "$p"); do kill -9 "$k" 2>/dev/null; done; kill -9 "$p" 2>/dev/null; done; rm -rf "$tmp"; }
 trap cleanup EXIT
 ok()  { echo "PASS $1: $2"; }
 bad() { echo "FAIL $1: $2"; fail=1; }
@@ -180,7 +186,7 @@ else
 fi
 
 # ------------------------------------------- 3/4: a genuinely waiting spec, dry-run then kill
-flock -w 120 "$GATE_QUEUE_LOCK" sleep 120 &
+flock -w 120 "$GATE_QUEUE_LOCK" sleep 90 &
 holder=$!; strays="$strays $holder"
 sleep 0.5
 
@@ -204,6 +210,27 @@ out="$("$qs" drop dup-demo 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok F4-cleanup "the admitted dup-demo spec was dropped (rc=0)" \
                 || bad F4-cleanup "drop dup-demo rc=$rc: $out"
 wait "$dup1" "$dup2" 2>/dev/null
+if state_is dup-demo done; then
+  ( "$qs" enqueue "$wt:$sha:dup-demo" > "$tmp/r1.out" 2>&1; echo $? > "$tmp/r1.rc" ) &
+  re1=$!; strays="$strays $re1"
+  ( "$qs" enqueue "$wt:$sha:dup-demo" > "$tmp/r2.out" 2>&1; echo $? > "$tmp/r2.rc" ) &
+  re2=$!; strays="$strays $re2"
+  waitfor 20 test -s "$tmp/r1.rc" -o -s "$tmp/r2.rc"
+  sleep 0.5
+  losers=0; loser_rc=""; loser_out=""
+  for n in 1 2; do
+    if [ -s "$tmp/r$n.rc" ]; then losers=$((losers + 1)); loser_rc="$(cat "$tmp/r$n.rc")"; loser_out="$(cat "$tmp/r$n.out")"; fi
+  done
+  if [ "$losers" -eq 1 ] && [ "$loser_rc" = 2 ] && state_is dup-demo waiting; then
+    ok F4-readmit "two re-enqueues of a finished label admitted exactly one (loser rc=2)"
+  else
+    bad F4-readmit "losers=$losers rc=$loser_rc state=$(field dup-demo state): $loser_out"
+  fi
+  "$qs" drop dup-demo > /dev/null 2>&1
+  wait "$re1" "$re2" 2>/dev/null
+else
+  bad F4-readmit "dup-demo did not end up done: state=$(field dup-demo state)"
+fi
 
 STUB_GATE_SLEEP=1 "$qs" enqueue "$wt:$sha:waiting-demo" > "$tmp/enq2.out" 2>&1 &
 enq2=$!; strays="$strays $enq2"
@@ -236,7 +263,7 @@ if [ "$rc" -eq 6 ] && alive "$wpid" && printf '%s' "$out" | grep -q "per-record 
 else
   bad F3a-lockwait "rc=$rc: $out"
 fi
-kill "$reclock" 2>/dev/null; wait "$reclock" 2>/dev/null
+release "$reclock"
 
 # F3b: the spec turns `running` while the drop is waiting for that same lock.
 flock "$GATE_QUEUE_STATE/waiting-demo.lock" \
@@ -277,8 +304,23 @@ if [ "$rc" -eq 5 ] && alive "$opid" && printf '%s' "$out" | grep -q "belongs to 
 else
   bad F1-reclock "rc=$rc: $out"
 fi
+# …and the same trick with this queue's lock present in argv as flock's COMMAND rather than
+# as its operand: the entry is there, but the process waits on another lock.
+flock "$other" "$GATE_QUEUE_LOCK" "$qs" __run "$wt" "$sha" otherlock-demo "$tmp/never.log" &
+opid2=$!; strays="$strays $opid2"
+sleep 0.5
+sed -e "s/^label=.*/label=otherlock-demo/" -e "s/^flock_pid=.*/flock_pid=$opid2/" \
+    -e "s|^flock_start=.*|flock_start=$(proc_start "$opid2")|" \
+    "$rec" > "$GATE_QUEUE_STATE/otherlock-demo.spec"
+out="$("$qs" drop otherlock-demo 2>&1)"; rc=$?
+if [ "$rc" -eq 5 ] && alive "$opid2" && printf '%s' "$out" | grep -q "flock operand"; then
+  ok F1-operand "drop refused a flock whose operand is another lock, our lock being its command"
+else
+  bad F1-operand "rc=$rc alive=$(alive "$opid2" && echo yes || echo no): $out"
+fi
+kill "$opid2" 2>/dev/null; wait "$opid2" 2>/dev/null
 kill "$opid" 2>/dev/null; wait "$opid" 2>/dev/null
-kill "$olholder" 2>/dev/null; wait "$olholder" 2>/dev/null
+release "$olholder"
 rm -f "$GATE_QUEUE_STATE/otherlock-demo.spec"
 out="$("$qs" drop waiting-demo --dry-run 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "$wpid" && alive "$wpid" \
@@ -320,30 +362,53 @@ if [ "$rc" -ne 0 ]; then
 else
   bad 4-done "expected a refusal for the finished spec, got rc=$rc"
 fi
-kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+release "$holder"
 
 # 4b: the last window F3 leaves — a run that forks between the children check and the signal.
-# The drop's marker is written under the per-record lock exactly as drop writes it; the run
-# then acquires the queue lock, finds the marker and exits 99 without touching the worktree.
-flock -w 30 "$GATE_QUEUE_LOCK" sleep 3 &
+# (a) A REAL drop, while the test holds the per-record lock: it can neither write its marker nor
+# signal until the lock is free, which is the ordering F3 requires. (b) A real __run started for
+# the record that drop marked exits 99 without touching the worktree. No marker is ever injected.
+flock -w 60 "$GATE_QUEUE_LOCK" sleep 60 &
 holder2=$!; strays="$strays $holder2"
 sleep 0.3
-"$qs" enqueue "$wt:$sha:abort-demo" > "$tmp/enq3.out" 2>&1 &
+"$qs" enqueue "$wt:$sha:abortsrc-demo" > "$tmp/enq3.out" 2>&1 &
 enq3=$!; strays="$strays $enq3"
-if waitfor 15 has_pid abort-demo; then
-  flock "$GATE_QUEUE_STATE/abort-demo.lock" \
-    bash -c 'printf "drop_requested=%s\n" "$(date)" >> "$1"' _ "$GATE_QUEUE_STATE/abort-demo.spec"
-  wait "$enq3" 2>/dev/null
-  if [ "$(field abort-demo rc)" = 99 ] && grep -q DROPPED-BEFORE-START "$(field abort-demo log)" \
-     && [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = lane ]; then
-    ok 4b-abort "a run that found a drop request exited 99 without starting the gate"
+if waitfor 20 has_pid abortsrc-demo && state_is abortsrc-demo waiting; then
+  apid="$(field abortsrc-demo flock_pid)"
+  exec 7>>"$GATE_QUEUE_STATE/abortsrc-demo.lock"
+  flock 7
+  # fd 7 must NOT reach the drop: an inherited descriptor carries the test's own lock, and the
+  # drop would then block on a lock its own process already holds through that copy.
+  ( exec 7>&-; "$qs" drop abortsrc-demo --lock-wait 30 > "$tmp/drop_a.out" 2>&1; echo $? > "$tmp/drop_a.rc" ) &
+  dropbg=$!; strays="$strays $dropbg"
+  sleep 1.5
+  if [ -z "$(field abortsrc-demo drop_requested)" ] && alive "$apid" && [ ! -s "$tmp/drop_a.rc" ]; then
+    ok 4b-ordering "while the test held the record lock the real drop wrote no marker and signalled nothing"
   else
-    bad 4b-abort "rc=$(field abort-demo rc) log=$(cat "$(field abort-demo log)" 2>&1)"
+    bad 4b-ordering "marker=$(field abortsrc-demo drop_requested) alive=$(alive "$apid" && echo yes || echo no) rc=$(cat "$tmp/drop_a.rc" 2>/dev/null)"
+  fi
+  exec 7>&-
+  wait "$dropbg" 2>/dev/null
+  if [ "$(cat "$tmp/drop_a.rc" 2>/dev/null)" = 0 ] && [ -n "$(field abortsrc-demo drop_requested)" ] \
+     && dead "$apid"; then
+    ok 4b-marker "once the lock was free the drop wrote its marker and killed the flock parent"
+  else
+    bad 4b-marker "rc=$(cat "$tmp/drop_a.rc" 2>/dev/null) marker=$(field abortsrc-demo drop_requested): $(cat "$tmp/drop_a.out")"
+  fi
+  wait "$enq3" 2>/dev/null
+  release "$holder2"
+  flock -w 30 "$GATE_QUEUE_LOCK" "$qs" __run "$wt" "$sha" abortsrc-demo "$tmp/abort-b.log"
+  brc=$?
+  if [ "$brc" -eq 99 ] && grep -q DROPPED-BEFORE-START "$tmp/abort-b.log" \
+     && [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = lane ]; then
+    ok 4b-abort "a run started for that marked record exited 99 without touching the worktree"
+  else
+    bad 4b-abort "rc=$brc log=$(cat "$tmp/abort-b.log" 2>&1) head=$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   fi
 else
-  bad 4b-abort "spec abort-demo never reached the queue"
+  bad 4b-ordering "spec abortsrc-demo never reached the queue"
+  release "$holder2"
 fi
-kill "$holder2" 2>/dev/null; wait "$holder2" 2>/dev/null
 
 # ------------------------------------------------------------------------------- 5: list
 out="$("$qs" list 2>&1)"; rc=$?

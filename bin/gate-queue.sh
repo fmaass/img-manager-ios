@@ -20,10 +20,14 @@
 #   record   state == waiting, and the record's `lock` is the lock this invocation would use
 #   /proc/<pid>/cmdline, NUL-split into argv entries:
 #     argv[0]        basename == flock
-#     argv[j]        == the resolved lock path, for some j in 1 … i-1  (flock's lock operand,
-#                      so a flock parent of another queue instance can never match)
-#     argv[i]        basename == this script's own name, for some i > j
-#     argv[i+1..i+4] == __run  <worktree>  <ref>  <label>   (all four exact, whole entries)
+#     then flock's OWN options are walked and skipped (-w/--wait/--timeout, -E/--conflict-exit-code
+#                      and -c/--command with their values, attached -wN forms, --opt=value forms,
+#                      the valueless flags, and a terminating --); an option flock does not have
+#                      refuses the drop rather than guessing where the operand is
+#     the first non-option entry == the resolved lock path — flock's lock OPERAND, so no flock
+#                      of any other lock file can match, wherever the path also appears
+#     the entry after it == this script (same path string, or the same file by inode)
+#     the next four    == __run  <worktree>  <ref>  <label>   (all four exact, whole entries)
 #   /proc/<pid>/stat field 22 (start time) == the record's `flock_start`, recorded when the
 #                      process was spawned — a recycled pid cannot pass
 #   /proc/<pid>/task/<pid>/children empty — a flock that has already forked its run child
@@ -31,6 +35,10 @@
 #   pid              is not this process, not its parent, and not <= 1
 #
 # No substring ever matches a whole command line here, and nothing is ever searched for by name.
+# Accepted residual: bash has no signal-by-identity primitive, so a pid could in principle be
+# recycled between the re-check and the kill — a microsecond window inside the per-record lock
+# that needs a full pid wraparound to hit, and the start-time match rejects any other process
+# at check time; it is accepted rather than mitigated.
 #
 # WHY A PER-RECORD LOCK: `drop` must not read `state=waiting`, then have the run acquire the
 # queue lock, and only then land its signal. The run's first act inside the queue lock is to
@@ -202,7 +210,7 @@ read_argv() {
 # with the per-record lock held. See the proof list in the header.
 vmsg=""
 verify_waiting_pid() {
-  local pid=$1 label=$2 wt ref rlock start i j n hc
+  local pid=$1 label=$2 wt ref rlock start a i n hc
   vmsg=""
   case "$pid" in
     ''|*[!0-9]*) vmsg="the record for '$label' holds no usable pid ('$pid') — the spec has not been launched yet"; return 1 ;;
@@ -219,26 +227,31 @@ verify_waiting_pid() {
   wt="$(rec_get "$label" worktree)" || wt=""
   ref="$(rec_get "$label" ref)" || ref=""
   n=${#QARGV[@]}
-  j=-1
   i=1
   while [ "$i" -lt "$n" ]; do
-    if [ "$j" -lt 0 ]; then
-      [ "${QARGV[$i]}" = "$LOCK" ] && j=$i
-    elif [ "$(basename "${QARGV[$i]}")" = "$self_name" ] && [ $((i + 4)) -lt "$n" ] \
-       && [ "${QARGV[$((i + 1))]}" = "__run" ] \
-       && [ "${QARGV[$((i + 2))]}" = "$wt" ] \
-       && [ "${QARGV[$((i + 3))]}" = "$ref" ] \
-       && [ "${QARGV[$((i + 4))]}" = "$label" ]; then
-      break
-    fi
-    i=$((i + 1))
+    a="${QARGV[$i]}"
+    case "$a" in
+      --) i=$((i + 1)); break ;;
+      -w|--wait|--timeout|-E|--conflict-exit-code|-c|--command) i=$((i + 2)) ;;
+      --*=*) i=$((i + 1)) ;;
+      -n|--nb|--nonblock|-x|--exclusive|-s|--shared|-u|--unlock|-o|--close|-F|--no-fork|-e|-v|--verbose|-V|--version|-h|--help) i=$((i + 1)) ;;
+      -w*|-E*|-c*) i=$((i + 1)) ;;
+      -*) vmsg="pid $pid's argv carries '$a', which is not an option of flock this script knows; refusing to guess where its lock operand is (argv: ${QARGV[*]})"; return 1 ;;
+      *) break ;;
+    esac
   done
-  if [ "$j" -lt 0 ]; then
-    vmsg="pid $pid does not hold '$LOCK' as its flock operand (argv: ${QARGV[*]}); it belongs to another queue — refusing"
+  if [ "$i" -ge "$n" ] || [ "${QARGV[$i]}" != "$LOCK" ]; then
+    vmsg="pid $pid's flock operand is '${QARGV[$i]:-<none>}', not this queue's lock '$LOCK'; refusing"
     return 1
   fi
-  if [ "$i" -ge "$n" ]; then
-    vmsg="pid $pid does not parse as '$self_name __run $wt $ref $label …' after the lock operand (argv: ${QARGV[*]}); refusing to signal it"
+  i=$((i + 1))
+  if [ $((i + 4)) -ge "$n" ] || [ "$(basename "${QARGV[$i]}")" != "$self_name" ] \
+     || { [ "${QARGV[$i]}" != "$self_path" ] && ! [ "${QARGV[$i]}" -ef "$self_path" ]; } \
+     || [ "${QARGV[$((i + 1))]}" != "__run" ] \
+     || [ "${QARGV[$((i + 2))]}" != "$wt" ] \
+     || [ "${QARGV[$((i + 3))]}" != "$ref" ] \
+     || [ "${QARGV[$((i + 4))]}" != "$label" ]; then
+    vmsg="pid $pid does not run '$self_path __run $wt $ref $label …' behind its lock operand (argv: ${QARGV[*]}); refusing to signal it"
     return 1
   fi
   start="$(rec_get "$label" flock_start)" || start=""
@@ -282,7 +295,7 @@ cmd_run() {
 
 cmd_enqueue() {
   [ $# -ge 1 ] || die 2 "enqueue needs at least one <worktree>:<ref>:<label> spec"
-  local spec wt rest ref label log fpid rc worst=0 prev rec
+  local spec wt rest ref label log fpid rc worst=0 prev prev_pid rec
   mkdir -p "$STATE"
   [ -d "$(dirname "$LOCK")" ] || die 2 "the lock directory $(dirname "$LOCK") does not exist"
   for spec in "$@"; do
@@ -297,19 +310,28 @@ cmd_enqueue() {
     [ -d "$wt" ] || die 2 "no such worktree: $wt"
     [ -x "$wt/bin/mac-gate.sh" ] || die 2 "$wt/bin/mac-gate.sh is missing or not executable"
     rec="$(rec_file "$label")"
+    mkdir -p "$wt/.gate-artifacts"
+    log="$wt/.gate-artifacts/queue-$label-$(date +%H%M%S).log"
+    # Admission holds the per-record lock, so re-admitting a finished label cannot interleave
+    # with another enqueue doing the same (one reading `done` while the other re-creates).
+    rec_lock_open "$label"
     prev="$(rec_get "$label" state)" || prev=""
     case "$prev" in
-      waiting|running) die 2 "a spec named '$label' is already $prev (pid $(rec_get "$label" flock_pid)); pick another label, or drop it first" ;;
+      waiting|running)
+        prev_pid="$(rec_get "$label" flock_pid)" || prev_pid=""
+        rec_lock_close
+        die 2 "a spec named '$label' is already $prev (pid ${prev_pid:-not launched yet}); pick another label, or drop it first" ;;
       done) rm -f "$rec" ;;
     esac
     # O_EXCL admission: two concurrent enqueues of one label cannot both create the record.
     ( set -o noclobber; : > "$rec" ) 2>/dev/null \
-      || die 2 "a record for '$label' already exists ($rec) — another enqueue admitted that label first; pick another label, or drop it"
-    mkdir -p "$wt/.gate-artifacts"
-    log="$wt/.gate-artifacts/queue-$label-$(date +%H%M%S).log"
+      || { rec_lock_close; die 2 "a record for '$label' already exists ($rec) — another enqueue admitted that label first; pick another label, or drop it"; }
     rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" \
       "lock=$LOCK" "enqueue_pid=$$" "flock_pid=" "flock_start=" "run_pid=" "state=waiting" \
       "rc=" "enqueued=$(now)"
+    # Released before the spawn so the child cannot inherit this descriptor's lock. A drop in
+    # the gap sees an empty flock_pid and refuses; no other enqueue can pass the O_EXCL create.
+    rec_lock_close
     flock -w "$LOCK_WAIT" "$LOCK" "$self_path" __run "$wt" "$ref" "$label" "$log" &
     fpid=$!
     rec_set "$label" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")"
