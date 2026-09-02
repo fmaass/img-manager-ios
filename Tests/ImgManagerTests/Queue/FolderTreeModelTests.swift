@@ -125,31 +125,10 @@ struct FolderTreeModelTests {
     #expect(forest[0].children[0].descendantImageCount == 1)
   }
 
-  /// The rendered line-up: only the branches that are open, each with the depth its inset is
-  /// drawn from. A closed branch contributes exactly its own row and nothing beneath it.
-  @Test("visible rows show only the open branches and carry their depth")
-  func visibleRowsShowOnlyTheOpenBranchesAndCarryTheirDepth() {
-    let nodes = [
-      node(id: 1, kind: "other", name: "2024"),
-      node(id: 2, parent: 1, kind: "dated", name: "2024-05-06"),
-      node(id: 3, parent: 2, kind: "template", name: "edits"),
-      node(id: 4, kind: "dated", name: "2024-08-20"),
-    ]
-    let forest = FolderTreeModel.forest(nodes)
-
-    let closed = FolderTreeModel.visibleRows(forest) { _ in false }
-    #expect(closed.map(\.id) == [1, 4])
-    #expect(closed.map(\.depth) == [0, 0])
-    #expect(closed.map(\.isExpandable) == [true, false])
-
-    let oneOpen = FolderTreeModel.visibleRows(forest) { $0 == 1 }
-    #expect(oneOpen.map(\.id) == [1, 2, 4])
-    #expect(oneOpen.map(\.depth) == [0, 1, 0])
-
-    let allOpen = FolderTreeModel.visibleRows(forest) { _ in true }
-    #expect(allOpen.map(\.id) == [1, 2, 3, 4])
-    #expect(allOpen.map(\.depth) == [0, 1, 2, 0])
-  }
+  // The rendered line-up (which branches are open, and at what depth) moved to
+  // `FolderTreeTierItemsTests.visibleRowsWalkFoldsAndFoldersAlike` with `visibleRows` itself: a
+  // rendered row is a folder OR a month fold since IMGMGR-350, so the forest overload this test
+  // drove no longer exists to be driven.
 
   /// One boundary guard, both causes: nothing the response contained may vanish from the tree,
   /// whether its parent is missing or its parent chain closes on itself. A cycle is not something

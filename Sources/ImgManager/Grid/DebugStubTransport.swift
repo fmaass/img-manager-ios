@@ -46,7 +46,17 @@
       case Operations.ExportMarksApiMarksExportGet.id:
         return try jsonResponse(.ok, Self.fixtureMarksExport())
       case Operations.FolderTreeApiFoldersGet.id:
-        return try jsonResponse(.ok, Components.Schemas.FolderTree(items: Self.fixtureFolders()))
+        // IMGMGR-350 P2: the fixture answers PER `(source_tier, tree)`, parsed off the request
+        // the real generated client built — the same way the proxy branch below reads its tier
+        // out of `request.path`. Until this phase it returned ONE taxonomy whatever was asked,
+        // so the three tier branches would have repeated each other and a tier walk could have
+        // passed against a shape the API never returns.
+        let folderQuery = Self.queryParameters(of: request)
+        return try jsonResponse(
+          .ok,
+          Components.Schemas.FolderTree(
+            items: Self.fixtureFolders(
+              sourceTier: folderQuery["source_tier"], tree: folderQuery["tree"])))
       case Operations.FolderSummariesApiFolderSummariesGet.id:
         return try jsonResponse(
           .ok, Components.Schemas.FolderSummaryList(items: Self.fixtureSummaries()))
@@ -124,6 +134,17 @@
       default:
         return (HTTPResponse(status: .notFound), nil)
       }
+    }
+
+    /// The request's query as name → value. `request.path` carries the path AND the query (the
+    /// proxy branch reads the path half of the same string), so one parse answers both.
+    private static func queryParameters(of request: HTTPRequest) -> [String: String] {
+      guard let path = request.path, let items = URLComponents(string: path)?.queryItems else {
+        return [:]
+      }
+      return Dictionary(
+        items.compactMap { item in item.value.map { (item.name, $0) } },
+        uniquingKeysWith: { first, _ in first })
     }
 
     private func jsonResponse<T: Encodable>(
@@ -352,22 +373,71 @@
     /// The counts are deliberately NOT self-consistent sums: `2026` reports 12 descendants while
     /// its visible child reports 9 of its own. A client that rolled the numbers up itself would
     /// show a different figure here, which is the point.
-    private static func fixtureFolders() -> [Components.Schemas.FolderNode] {
-      [
-        .init(
-          descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated",
-          name: "2026-08-27 — Stub Shoot", path: "stub"),
-        .init(
-          descendantImageCount: 12, id: 2, imageCount: 0, kind: "other", name: "2026",
-          path: "2026"),
-        .init(
-          descendantImageCount: 12, id: 3, imageCount: 9, kind: "dated",
-          name: "2026-09-14 — Wandern", parentId: 2, path: "2026/2026-09-14-wandern"),
-        .init(
-          descendantImageCount: 3, id: 4, imageCount: 3, kind: "template", name: "template",
-          parentId: 3, path: "2026/2026-09-14-wandern/template"),
-      ]
+    /// IMGMGR-350 P2: SCOPED like the real endpoint. `/api/folders` answers per
+    /// `(source_tier, tree)` (img-manager `app/api/folders.py:33-59`), and the three browse tiers
+    /// are `(local, photo_incoming)`, `(local, photo_edits)` and `(archive, —)`. Internal rather
+    /// than private so `DebugStubFolderFixtureTests` can read the same three answers the app does.
+    static func fixtureFolders(sourceTier: String?, tree: String?)
+      -> [Components.Schemas.FolderNode]
+    {
+      if sourceTier == GridSourceTier.archive.rawValue { return archiveFixtureFolders }
+      if tree == FolderTreeTier.edits.treePrefix { return editsFixtureFolders }
+      return incomingFixtureFolders
     }
+
+    /// The incoming tier, live-shaped: ONE indexed root row (`photo_incoming`, which the tier-root
+    /// hoist then drops, so the rows on screen are unchanged) over the shape the shipped tree
+    /// tests walk — a root-level shoot (`folderRow-1`) beside the `2026` container whose child
+    /// shoot carries a `template` subfolder. IMGMGR-350 adds the SECOND dated child, so the year
+    /// has two shoots in one month for the fold to fold.
+    private static let incomingFixtureFolders: [Components.Schemas.FolderNode] = [
+      .init(
+        descendantImageCount: 12, id: 9, imageCount: 0, kind: "other", name: "photo_incoming",
+        path: "photo_incoming"),
+      .init(
+        descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated",
+        name: "2026-08-27 — Stub Shoot", parentId: 9, path: "photo_incoming/stub"),
+      .init(
+        descendantImageCount: 12, id: 2, imageCount: 0, kind: "other", name: "2026", parentId: 9,
+        path: "photo_incoming/2026"),
+      .init(
+        descendantImageCount: 12, id: 3, imageCount: 9, kind: "dated",
+        name: "2026-09-14 — Wandern", parentId: 2, path: "photo_incoming/2026/2026-09-14-wandern"),
+      .init(
+        descendantImageCount: 3, id: 4, imageCount: 3, kind: "template", name: "template",
+        parentId: 3, path: "photo_incoming/2026/2026-09-14-wandern/template"),
+      .init(
+        descendantImageCount: 6, id: 5, imageCount: 6, kind: "dated", name: "2026-09-27 — Ufer",
+        parentId: 2, path: "photo_incoming/2026/2026-09-27-ufer"),
+    ]
+
+    /// The edits tier: its own root row and its own shoot, no id shared with any other tier —
+    /// `edits` is the SAME store as incoming, told apart only by the `tree` prefix, so a fixture
+    /// that answered one taxonomy for both would have hidden exactly that.
+    private static let editsFixtureFolders: [Components.Schemas.FolderNode] = [
+      .init(
+        descendantImageCount: 7, id: 10, imageCount: 0, kind: "other", name: "photo_edits",
+        path: "photo_edits"),
+      .init(
+        descendantImageCount: 7, id: 11, imageCount: 7, kind: "dated",
+        name: "2026-08-02 — Edits Pass", parentId: 10, path: "photo_edits/2026-08-02-edits-pass"),
+    ]
+
+    /// The archive tier: one REAL shoot with a nonzero count, beside one MIRRORED folder counting
+    /// zero — the archive's counts drop every image the archive view hides, so a folder fully
+    /// mirrored by the incoming library reports 0 (`app/api/folders.py:49-51`). IMGMGR-350 runs no
+    /// prune, so that row stays visible; it is the control proving so, and the oracle the
+    /// follow-up prune ticket (under IMGMGR-322) will invert.
+    private static let archiveFixtureFolders: [Components.Schemas.FolderNode] = [
+      .init(
+        descendantImageCount: 4, id: 20, imageCount: 0, kind: "other", name: "2025", path: "2025"),
+      .init(
+        descendantImageCount: 4, id: 21, imageCount: 4, kind: "dated",
+        name: "2025-12-24 — Archive Shoot", parentId: 20, path: "2025/2025-12-24-archive-shoot"),
+      .init(
+        descendantImageCount: 0, id: 22, imageCount: 0, kind: "dated",
+        name: "2025-11-01 — Mirrored", parentId: 20, path: "2025/2025-11-01-mirrored"),
+    ]
 
     private static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
       [

@@ -75,4 +75,15 @@ enum FolderTreeRowPresentation {
   static func monthIdentifier(for month: FolderTreeMonth) -> String {
     "folderTreeMonth-\(month.parentID)-\(month.year)-\(month.month)"
   }
+
+  /// The EXPAND control's handle, for a folder row and a fold alike — `folderDisclose-<id>` where
+  /// the row is a folder, unchanged, and `folderDisclose-<parentId>-<yyyy>-<mm>` where it is a
+  /// fold. A fold has to be openable from a test for the same reason it is openable at all: it is
+  /// where the year's shoots now live.
+  static func discloseIdentifier(for id: FolderTreeItemID) -> String {
+    switch id {
+    case .folder(let folderID): return "folderDisclose-\(folderID)"
+    case .month(let key): return "folderDisclose-\(key.replacingOccurrences(of: ":", with: "-"))"
+    }
+  }
 }

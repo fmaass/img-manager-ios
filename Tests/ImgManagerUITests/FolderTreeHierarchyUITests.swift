@@ -15,9 +15,15 @@ import XCTest
 /// phase's screenshots.
 ///
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`, never in a Release
-/// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the queue. That fixture's tree
-/// is `2026-08-27 — Stub Shoot` (id 1, a root-level shoot) beside `2026` (id 2, a container) over
-/// `2026-09-14 — Wandern` (id 3) over `template` (id 4).
+/// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the home. That fixture's
+/// incoming tier is `2026-08-27 — Stub Shoot` (id 1, a root-level shoot) beside `2026` (id 2, a
+/// container) over `2026-09-14 — Wandern` (id 3) over `template` (id 4).
+///
+/// IMGMGR-350 changed two things about the walk and nothing about the property: the tree is the
+/// HOME (no "Folders" disclosure above it, and the tier is Incoming), and the year's dated
+/// children now sit under a presentation-only MONTH FOLD, so reaching the nested shoot opens one
+/// more row. The fold carries no folder id and is not selectable — which is why the walk still
+/// ends on `folderRow-3`.
 final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
   func testTheTreeNestsTwoLevelsAndTheSearchFieldFiltersIt() throws {
@@ -25,13 +31,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
 
-    let disclosure = app.descendants(matching: .any)["foldersDisclosure"].firstMatch
-    XCTAssertTrue(reveal(disclosure, in: app), "The Folders disclosure never became reachable.")
-    let localTier = app.descendants(matching: .any)["folderTreeTier-Local"].firstMatch
-    if !localTier.exists {
-      disclosure.tap()
-    }
-    XCTAssertTrue(reveal(localTier, in: app), "The Local tier branch never appeared.")
+    let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
+    XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
     localTier.tap()
 
     // Level one: a folder that is NOT a shoot, which is exactly what the pre-P7 list dropped —
@@ -43,7 +44,15 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
         + "list of shoot leaves rather than the server's folder hierarchy (IMGMGR-217).")
     expander.tap()
 
-    // Level two: the shoot underneath it.
+    // Level two: the month fold the year's dated children now sit under (IMGMGR-350 P1).
+    let month = app.descendants(matching: .any)["folderTreeMonth-2-2026-09"].firstMatch
+    XCTAssertTrue(
+      reveal(month, in: app),
+      "The year container revealed no month fold — its dated children are grouped under one "
+        + "(lib/folderTree.ts:222), and the shoot below is reached through it.")
+    app.descendants(matching: .any)["folderDisclose-2-2026-09"].firstMatch.tap()
+
+    // Level three: the shoot underneath it.
     let nested = app.descendants(matching: .any)["folderRow-3"].firstMatch
     XCTAssertTrue(
       reveal(nested, in: app),
@@ -93,10 +102,9 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     attach(named: "P7-grid-reached-from-a-nested-shoot")
   }
 
-  /// Scrolls the queue list until `element` is on screen, in BOTH directions: the Folders
-  /// disclosure sits below the readiness sections, but its own search field sits above the rows,
-  /// so an up-only scan walks past what it is looking for and never comes back (observed in gate
-  /// run 1cfa3f4).
+  /// Scrolls the home list until `element` is on screen, in BOTH directions: the search field
+  /// sits above the rows, so an up-only scan walks past what it is looking for and never comes
+  /// back (observed in gate run 1cfa3f4).
   private func reveal(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 8) -> Bool {
     if element.waitForExistence(timeout: 15), element.isHittable { return true }
     // SwiftUI's `List` is a collection view; the queue is the first one on both idioms. Falling

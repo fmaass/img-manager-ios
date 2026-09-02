@@ -46,31 +46,11 @@ struct FolderTreeSectionTests {
     #expect(compact.map(\.id) == regular3.map(\.id))
   }
 
-  @Test("the Folders disclosure opens itself on Compact and stays collapsed on Regular")
-  func foldersDisclosureOpensOnCompactOnly() {
-    #expect(FolderTreePresentation.startsExpanded(in: .compact))
-    #expect(!FolderTreePresentation.startsExpanded(in: .regular2))
-    #expect(!FolderTreePresentation.startsExpanded(in: .regular3))
-  }
-
-  /// Diff-gate round 1, blocker 1. `RootView.layoutMode` is `.compact` until the first
-  /// `.onGeometryChange` pass resolves it (`RootView.swift:28`), and this section mounts before
-  /// that — so an expansion frozen at mount time makes an iPad launch open the secondary tree,
-  /// against D13. The state model must answer from the CURRENT mode until the reader has chosen.
-  @Test("a Regular launch never inherits the transient Compact default")
-  func regularLaunchStaysCollapsedThroughTheUnresolvedCompactDefault() {
-    var expansion = FolderTreeExpansion()
-    #expect(expansion.isExpanded(in: .compact))
-    #expect(!expansion.isExpanded(in: .regular2))
-    #expect(!expansion.isExpanded(in: .regular3))
-
-    // And once the reader has chosen, the choice wins in every mode — a resize must not stomp it.
-    expansion.setExpanded(true)
-    #expect(expansion.isExpanded(in: .regular2))
-    #expect(expansion.isExpanded(in: .regular3))
-    expansion.setExpanded(false)
-    #expect(!expansion.isExpanded(in: .compact))
-  }
+  // IMGMGR-350 removed two pins with the thing they pinned: `FolderTreePresentation
+  // .startsExpanded` and `FolderTreeExpansion` decided whether the "Folders" WRAPPER disclosure
+  // opened (D13: opened on Compact, collapsed on Regular). The wrapper is gone — the tree is the
+  // home on both idioms, so its tier rows are always on screen and there is no mode-dependent
+  // default left to inherit. `TierHomeUITests` is what asserts they are.
 
   /// P7 (IMGMGR-217): the tree now carries the WHOLE folder hierarchy, so the rows that navigate
   /// have to be distinguishable from the rows that merely expand. `ShootListFilter` stays the one
@@ -91,9 +71,20 @@ struct FolderTreeSectionTests {
   /// the only thing that opens a branch.
   @Test("a live search opens the branches it kept, and the reader rules otherwise")
   func searchOpensTheBranchesItKept() {
-    #expect(!FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: false))
-    #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [7], isSearching: false))
-    #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: true))
+    #expect(
+      !FolderTreePresentation.isExpanded(.folder(7), readerExpanded: [], isSearching: false))
+    #expect(
+      FolderTreePresentation.isExpanded(
+        .folder(7), readerExpanded: [.folder(7)], isSearching: false))
+    #expect(FolderTreePresentation.isExpanded(.folder(7), readerExpanded: [], isSearching: true))
+    // A month fold opens on the same rule and by the same reader choice — it is a branch, and
+    // the only thing it is not is selectable.
+    #expect(
+      FolderTreePresentation.isExpanded(
+        .month("2:2026-09"), readerExpanded: [.month("2:2026-09")], isSearching: false))
+    #expect(
+      !FolderTreePresentation.isExpanded(
+        .month("2:2026-09"), readerExpanded: [.folder(2)], isSearching: false))
   }
 }
 

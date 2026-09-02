@@ -6,14 +6,16 @@ import XCTest
 /// `QueueView` a `nil` tree on Compact, because only this one actually mounts the sidebar, finds
 /// the disclosure, expands a tier and taps a shoot row through to the grid.
 ///
-/// Runs on BOTH gate destinations and asserts nothing idiom-shaped: it tolerates the disclosure
-/// already being open (Compact opens itself) or closed (Regular stays collapsed, D13) and opens
-/// it from chrome if needed — there is no gesture-only path here to begin with. The iPhone
-/// destination's run is the one that is RED if the Compact browse surface disappears.
+/// Runs on BOTH gate destinations and asserts nothing idiom-shaped. The iPhone destination's run
+/// is the one that is RED if the Compact browse surface disappears.
+///
+/// IMGMGR-350: the tree is the HOME, so there is no "Folders" disclosure to open first and the
+/// tier is called Incoming rather than Local. What this suite pins is unchanged — a tier branch
+/// reaches a shoot row and that row enters the grid.
 ///
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`, never in a Release
-/// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the queue instead of being
-/// auto-navigated into the grid. The stub's folder tree is one `kind: "dated"` node, id 1.
+/// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the home instead of being
+/// auto-navigated into the grid. The stub's incoming tier carries the shoot id 1 at its root.
 final class CompactFolderBrowseUITests: OrientationPinnedUITestCase {
   private let stubShootRow = "folderRow-1"
 
@@ -22,22 +24,12 @@ final class CompactFolderBrowseUITests: OrientationPinnedUITestCase {
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
 
-    let disclosure = app.descendants(matching: .any)["foldersDisclosure"].firstMatch
-    XCTAssertTrue(
-      reveal(disclosure, in: app),
-      "The Folders disclosure never became reachable in the queue. On Compact this is the only "
-        + "browse surface beyond the queue cards (IMGMGR-216); a nil tree section is exactly the "
-        + "defect this phase fixed.")
-    attach(named: "P6-queue-folders-disclosure")
-
-    let localTier = app.descendants(matching: .any)["folderTreeTier-Local"].firstMatch
-    if !localTier.exists {
-      disclosure.tap()
-    }
+    let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(
       reveal(localTier, in: app),
-      "The Local tier branch never appeared under the Folders disclosure — the folder tree "
-        + "loaded no shoot rows from GET /api/folders.")
+      "The Incoming tier branch never appeared on the home. On Compact this is the only browse "
+        + "surface (IMGMGR-216); a nil tree section is exactly the defect this phase fixed.")
+    attach(named: "P6-home-tier-branch")
 
     localTier.tap()
     let shootRow = app.descendants(matching: .any)[stubShootRow].firstMatch
@@ -58,8 +50,7 @@ final class CompactFolderBrowseUITests: OrientationPinnedUITestCase {
     attach(named: "P6-grid-reached-from-folders")
   }
 
-  /// Scrolls the queue list until `element` is on screen. The Folders disclosure sits BELOW the
-  /// readiness sections by design, so it is off-screen at launch on a phone.
+  /// Scrolls the home list until `element` is on screen.
   private func reveal(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 10) -> Bool {
     if element.waitForExistence(timeout: 15), element.isHittable { return true }
     // SwiftUI's `List` is a collection view; the queue is the first one on both idioms. Falling

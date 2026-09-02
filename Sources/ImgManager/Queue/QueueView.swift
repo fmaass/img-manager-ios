@@ -1,29 +1,32 @@
 import ImgManagerAPI
 import SwiftUI
 
-/// P7 (WP8, IMGMGR-116): the work-queue home. Six server-derived readiness sections, rendered
-/// straight from `FolderSummary.readiness`/`nothingLeftUnmarked` — NEVER classified client-side
-/// (Q4 drift hazards: this view recomputes nothing). Compact: this IS the launch surface, a
-/// full-screen list. Regular: this IS the sidebar column. BOTH carry the folder/tier tree below
-/// the readiness sections (D13) via `treeSection` — collapsed on Regular, opened on Compact
-/// (P6/IMGMGR-216: the tree used to be Regular-only, which left the phone with no browse surface
-/// at all beyond its queue cards).
+/// The home. IMGMGR-350: the tier-grouped FOLDER TREE — Incoming / Edits / Archive, each folding
+/// into the server's own taxonomy — is what this surface renders, on both idioms. Compact: this
+/// IS the launch surface, a full-screen list. Regular: this IS the sidebar column.
 ///
-/// 396-item strategy (Q4): `List` gives lazy off-screen row instantiation for free — a collapsed
-/// section's rows, and any section's off-screen rows, are simply never built. There is no
-/// client-defined "active" subset anywhere here; every summary the server returned is reachable
-/// by expanding its section.
+/// What it stopped being (owner decision, 2026-09-02: "i think i would prefer the same folder
+/// view on the ios app as on web - incoming, edits and archive"): six server-derived readiness
+/// sections with the tree as a collapsed "Folders" disclosure below them. Readiness does not
+/// disappear — it becomes per-folder metadata on the tree's own rows (P3) and stays exactly as it
+/// was in the widget — but it is no longer the home's spine, and this view no longer classifies,
+/// sorts or counts anything (it never did; now it does not even arrange).
+///
+/// `QueueStore` stays mounted and stays the phase machine: the first-load spinner, the
+/// refresh-in-progress indicator, the degraded banner with its cached-answer timestamp and the
+/// "Try Again" recovery are all IMGMGR-198's, unchanged, and the summaries they carry are what
+/// P3's row badge reads. The tree's own load is `FolderTreeSection`'s (`FolderTreeLoad`).
 struct QueueView: View {
   @Bindable var queueStore: QueueStore
-  let heroLoader: HeroThumbnailLoader
   @Binding var selectedFolderID: Int?
-  let onSelect: (Int, GridSourceTier?) -> Void
+  /// What a pull-to-refresh does to the TREE — see `QueueHomeRefresh`. The tree's load is view
+  /// state inside `FolderTreeSection`, so the gesture reaches it by advancing the token that
+  /// section's `.task(id:)` keys on rather than by calling into it.
+  let onRefreshTree: () -> Void
   /// On BOTH idioms since P6 (IMGMGR-216), and non-optional on purpose: the `nil`-on-Compact
   /// branch that left the phone without a browse surface cannot return without a type change.
+  /// Since IMGMGR-350 it is not a section of this view but its whole content.
   let treeSection: FolderTreeSection
-
-  @State private var expandedSections: Set<ReadinessSection> = Set(
-    ReadinessSection.allCases.filter(\.isDefaultExpanded))
 
   var body: some View {
     Group {
@@ -44,54 +47,22 @@ struct QueueView: View {
   }
 
   private var listContent: some View {
-    let sections = QueueSort.sections(from: queueStore.summaries)
-    return List(selection: $selectedFolderID) {
+    List(selection: $selectedFolderID) {
       if case .unreachableStale = queueStore.phase {
         Section {
           unreachableBanner
         }
       }
-      if sections.isEmpty {
-        Section {
-          ContentUnavailableView("No shoots", systemImage: "photo.stack")
-        }
-      } else {
-        ForEach(sections, id: \.section) { group in
-          Section {
-            if expandedSections.contains(group.section) {
-              ForEach(group.items, id: \.folderId) { summary in
-                QueueCardRow(summary: summary, heroLoader: heroLoader)
-                  .tag(summary.folderId)
-                  .contentShape(Rectangle())
-                  .simultaneousGesture(
-                    TapGesture().onEnded {
-                      // Diff-gate round-3 closure, B1: route through the ONE production
-                      // function that decides a queue card's destination — never re-derive the
-                      // tier here (that regressed to `summary.sourceTier`, defeating the
-                      // atomic-clear contract; see `QueueCardDestination`'s own doc comment).
-                      let destination = QueueCardDestination.route(for: summary)
-                      selectedFolderID = destination.folderID
-                      onSelect(destination.folderID, destination.sourceTier)
-                    }
-                  )
-              }
-            }
-          } header: {
-            sectionHeader(group)
-          }
-        }
-      }
-      // Q5: "One collapsed 'Folders' disclosure" — `FolderTreeSection` IS that one disclosure
-      // (its own DisclosureGroup titled "Folders"), so this Section carries no header of its own
-      // (avoiding a redundant second "Folders" label). It stays BELOW the readiness sections on
-      // both idioms: the queue is the launch surface and the tree is the secondary way in, never
-      // a competitor to it.
+      // The tree IS the home (IMGMGR-350). The Section carries no header of its own: there is
+      // nothing above it to distinguish it from, and the tier rows are their own labels.
       Section { treeSection }
     }
-    .refreshable { await queueStore.refresh() }
+    .refreshable {
+      await QueueHomeRefresh.run(summaries: { await queueStore.refresh() }, tree: onRefreshTree)
+    }
     .overlay(alignment: .top) {
-      // Q3 "refresh over data": a small activity indicator, cards/expansion/scroll/selection
-      // all retained underneath — never the centered first-load spinner.
+      // Q3 "refresh over data": a small activity indicator, rows/expansion/scroll/selection all
+      // retained underneath — never the centered first-load spinner.
       if queueStore.isRefreshing {
         ProgressView()
           .padding(6)
@@ -99,28 +70,6 @@ struct QueueView: View {
           .padding(.top, 4)
       }
     }
-  }
-
-  private func sectionHeader(_ group: QueueSort.Section) -> some View {
-    Button {
-      if expandedSections.contains(group.section) {
-        expandedSections.remove(group.section)
-      } else {
-        expandedSections.insert(group.section)
-      }
-    } label: {
-      HStack {
-        Text(group.section.title)
-        Spacer()
-        Text("\(group.items.count)")
-          .foregroundStyle(.secondary)
-        Image(
-          systemName: expandedSections.contains(group.section) ? "chevron.down" : "chevron.right"
-        )
-        .font(.caption)
-      }
-    }
-    .buttonStyle(.plain)
   }
 
   private var unreachableFullSurface: some View {
@@ -135,7 +84,7 @@ struct QueueView: View {
   }
 
   /// Two lines, never one: the adjudicated degraded copy, and — whenever the list underneath is
-  /// a replayed answer rather than a live one — how old that answer is (IMGMGR-198). Cards stay
+  /// a replayed answer rather than a live one — how old that answer is (IMGMGR-198). Rows stay
   /// tappable in this phase exactly as before; the grid has its own unreachable state.
   private var unreachableBanner: some View {
     HStack(alignment: .firstTextBaseline) {
@@ -155,9 +104,36 @@ struct QueueView: View {
   }
 }
 
+/// What ONE pull-to-refresh on the home runs: the summaries AND the tree.
+///
+/// A value rather than two statements inside `.refreshable`, because the second half is the part
+/// that used to be missing and nothing could say so. Before IMGMGR-350 the gesture refreshed the
+/// summaries only; the tree had no refresh path at all beyond its own "Retry" button
+/// (`FolderTreeSection`), which was survivable while it was a collapsed secondary disclosure and
+/// is the HOME's staleness now.
+///
+/// What it can and cannot pin, stated plainly: the tree's load is SwiftUI view state, so this
+/// hands the gesture on as a token bump (`FolderTreeSection.reloadToken`) and returns without
+/// awaiting the fetch — the tree renders its own progress. The wiring itself (that `QueueView`
+/// calls this at all) is not reachable from a unit test; `TierHomeUITests` walks the surface.
+@MainActor
+enum QueueHomeRefresh {
+  static func run(summaries: () async -> Void, tree: () -> Void) async {
+    await summaries()
+    tree()
+  }
+}
+
 /// One queue card: hero thumbnail, shoot name, last-touched date (omitted when null), counts,
 /// fidelity badge, sync signal, and the derived review signal — every field read straight off
 /// `Components.Schemas.FolderSummary`, never a client-side recomputation.
+///
+/// IMGMGR-350 removed the surface that rendered it: the home is the folder tree, and readiness
+/// becomes a per-row badge on the tree's own shoot rows (P3). The type is left standing for this
+/// package rather than deleted with the sections, because deleting it also orphans
+/// `QueueCardDestination` — which `RootView`'s restore path, `ShootSceneValue` and
+/// `GridSourceTier`'s own file-boundary note all cite — and that disposal is its own decision,
+/// not a side effect of moving the home. Nothing instantiates it today.
 struct QueueCardRow: View {
   let summary: Components.Schemas.FolderSummary
   let heroLoader: HeroThumbnailLoader

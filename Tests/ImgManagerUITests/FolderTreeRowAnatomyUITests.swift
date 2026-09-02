@@ -16,10 +16,10 @@ import XCTest
 /// on both idioms since P6 (IMGMGR-216).
 ///
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`, never in a Release
-/// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the queue. That fixture's
-/// Local tier is a root shoot `2026-08-27 — Stub Shoot` (id 1, `descendant_image_count` 12)
-/// beside the container `2026` (id 2, kind `other`), whose own subtree holds the nested shoot
-/// id 3 and the container id 4.
+/// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the home (IMGMGR-350: the tree
+/// IS the home, and the tier is Incoming). That fixture's incoming tier is a root shoot
+/// `2026-08-27 — Stub Shoot` (id 1, `descendant_image_count` 12) beside the container `2026`
+/// (id 2, kind `other`), whose own subtree holds the nested shoots id 3 and 5.
 final class FolderTreeRowAnatomyUITests: OrientationPinnedUITestCase {
 
   func testShootRowsCarryACoverAndSublineAndContainerRowsCarryNeither() throws {
@@ -27,13 +27,8 @@ final class FolderTreeRowAnatomyUITests: OrientationPinnedUITestCase {
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
 
-    let disclosure = app.descendants(matching: .any)["foldersDisclosure"].firstMatch
-    XCTAssertTrue(reveal(disclosure, in: app), "The Folders disclosure never became reachable.")
-    let localTier = app.descendants(matching: .any)["folderTreeTier-Local"].firstMatch
-    if !localTier.exists {
-      disclosure.tap()
-    }
-    XCTAssertTrue(reveal(localTier, in: app), "The Local tier branch never appeared.")
+    let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
+    XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
     localTier.tap()
 
     // The shoot row itself first: everything below is an assertion ABOUT this row, so its
@@ -41,7 +36,7 @@ final class FolderTreeRowAnatomyUITests: OrientationPinnedUITestCase {
     let shootRow = app.descendants(matching: .any)["folderRow-1"].firstMatch
     XCTAssertTrue(
       reveal(shootRow, in: app),
-      "The fixture's root shoot row never appeared under the Local tier branch.")
+      "The fixture's root shoot row never appeared under the Incoming tier branch.")
 
     let cover = app.descendants(matching: .any)["folderRowThumbnail-1"].firstMatch
     XCTAssertTrue(
@@ -77,12 +72,11 @@ final class FolderTreeRowAnatomyUITests: OrientationPinnedUITestCase {
     attach(named: "P5-tree-container-row-unchanged")
   }
 
-  /// Scrolls the queue list until `element` is on screen, in BOTH directions: the Folders
-  /// disclosure sits below the readiness sections, but its own search field sits above the rows,
-  /// so an up-only scan walks past what it is looking for and never comes back (observed in gate
-  /// run 1cfa3f4). Deliberately a copy of the sibling folder-tree tests' helper rather than a
-  /// shared extraction — extracting it would edit two shipped UI-test files this phase is not
-  /// otherwise touching.
+  /// Scrolls the home list until `element` is on screen, in BOTH directions: the search field
+  /// sits above the rows, so an up-only scan walks past what it is looking for and never comes
+  /// back (observed in gate run 1cfa3f4). Deliberately a copy of the sibling folder-tree tests'
+  /// helper rather than a shared extraction — extracting it would edit two shipped UI-test files
+  /// this phase is not otherwise touching.
   private func reveal(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 8) -> Bool {
     if element.waitForExistence(timeout: 15), element.isHittable { return true }
     // SwiftUI's `List` is a collection view; the queue is the first one on both idioms. Falling

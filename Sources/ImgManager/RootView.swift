@@ -50,6 +50,10 @@ struct RootView: View {
   @State private var queueStore: QueueStore
   private let heroLoader: HeroThumbnailLoader
   @State private var selectedFolderID: Int?
+  /// IMGMGR-350 P2: bumped by the home's pull-to-refresh so the folder tree re-loads with the
+  /// summaries. It lives here because `RootView` builds both halves — the `QueueView` the gesture
+  /// is on and the `FolderTreeSection` that holds the load — and neither can reach the other.
+  @State private var treeReloadToken = 0
   @State private var showInspector = false
   /// WP16 P2 (IMGMGR-298), design record [/link/3332] decision 4 "both panels collapsible":
   /// whether Regular-3's inspector COLUMN is rendered. Its own flag rather than a second use of
@@ -410,16 +414,20 @@ struct RootView: View {
     }
   }
 
-  /// WP8 P7 (advisory 1 / Q's launch-surface change): this IS the queue now — Compact's launch
-  /// surface (a full-screen list) and Regular's persistent sidebar column, with the pre-P7
-  /// shoot-tree List folded into `FolderTreeSection` as a secondary disclosure below it. P6
-  /// (IMGMGR-216) deleted the `layoutMode == .compact ? nil` ternary that used to sit on
-  /// `treeSection` and gave the phone no browse surface: the tree ships on both idioms, from one
-  /// component, and the only mode-dependent thing left about it — whether the disclosure starts
-  /// open — is decided in `FolderTreePresentation`. The row-navigation discipline this replaces
-  /// (selection-bound List + `.simultaneousGesture`, never a bare `Button`, never `onChange`) is
-  /// preserved verbatim inside `QueueView`/`FolderTreeSection` themselves — see their own doc
-  /// comments.
+  /// Compact's launch surface (a full-screen list) and Regular's persistent sidebar column.
+  ///
+  /// IMGMGR-350: its content is the tier-grouped FOLDER TREE — the tree `FolderTreeSection`
+  /// already carried, promoted from a collapsed disclosure below the readiness sections to the
+  /// home itself. `QueueView` stays mounted around it for the degraded/loading machine
+  /// (IMGMGR-198) and for the summaries P3's row badge reads; it no longer arranges anything.
+  /// P6 (IMGMGR-216) deleted the `layoutMode == .compact ? nil` ternary that used to sit on
+  /// `treeSection` and gave the phone no browse surface: one component, both idioms. The
+  /// row-navigation discipline (selection-bound List + `.simultaneousGesture`, never a bare
+  /// `Button`, never `onChange`) is preserved verbatim inside `FolderTreeSection` itself — see
+  /// its own doc comment.
+  ///
+  /// IMGMGR-342 (sidebar composition) is open: the tree is this column's sole content, with no
+  /// pinned section above it. That is a minimal assumption this story does not decide.
   private var sidebar: some View {
     Group {
       // Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides
@@ -431,15 +439,13 @@ struct RootView: View {
         ProgressView()
       case .queue:
         QueueView(
-          queueStore: queueStore, heroLoader: heroLoader, selectedFolderID: $selectedFolderID,
-          onSelect: { folderID, sourceTier in
-            selectedFolderID = folderID
-            Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
-          },
+          queueStore: queueStore, selectedFolderID: $selectedFolderID,
+          onRefreshTree: { treeReloadToken += 1 },
           treeSection: FolderTreeSection(
-            // The SAME loader instance the queue cards above take (WP16 P5): one cache, one
-            // concurrency gate for every cover in this column.
+            // The same loader the rest of the app's covers come through (WP16 P5): one cache,
+            // one concurrency gate for every cover in this column.
             gridService: gridService, heroLoader: heroLoader, layoutMode: layoutMode,
+            reloadToken: treeReloadToken,
             selectedFolderID: $selectedFolderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
