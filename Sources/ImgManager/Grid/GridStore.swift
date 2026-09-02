@@ -1456,6 +1456,11 @@ final class GridStore {
   /// through the store.
   var isSceneMergePickerPresented = false
 
+  /// The absorb's own target sheet (IMGMGR-347). A second flag rather than a mode on the first,
+  /// because the two are raised from rows with different subjects and SwiftUI presents a sheet
+  /// off a boolean binding: one flag with a mode beside it can be set inconsistently, two cannot.
+  var isSceneAbsorbPickerPresented = false
+
   /// The subject of every scene-edit action, derived once (plan Decision 2).
   var sceneEditSubject: SceneEditSubject? {
     guard displayMode == .scene else { return nil }
@@ -1478,6 +1483,61 @@ final class GridStore {
   }
 
   var canMergeFocusedScene: Bool { !sceneMergeTargets.isEmpty && !isSceneEditInFlight }
+
+  // MARK: - Absorbing a loose photograph (IMGMGR-347, the client half of IMGMGR-289)
+
+  /// The absorb's subject: the focused photograph when the stream is serving it LOOSE. Nil for
+  /// every state the other three rows are offered in, and they are nil for this one — the two
+  /// subjects are mutually exclusive by construction, since a scene member is never an `.image`
+  /// row of the stream.
+  var sceneAbsorbSubject: SceneAbsorbSubject? {
+    guard displayMode == .scene else { return nil }
+    return SceneEditPlanner.absorbSubject(rows: sceneRows, focusedImageID: focusedImageID)
+  }
+
+  /// The scenes the focused loose photograph may join: its own folder's loaded scenes.
+  var sceneAbsorbTargets: [SceneMergeTarget] {
+    guard let subject = sceneAbsorbSubject else { return [] }
+    return SceneEditPlanner.absorbTargets(rows: sceneRows, folderID: subject.folderID)
+  }
+
+  /// Why the absorb cannot run, or nil when it can — the ONE derivation the row's enablement and
+  /// the row's words both read (P11's single-predicate discipline), so a row that says "focus a
+  /// loose photograph" while being tappable is not a state this store can be in.
+  var sceneAbsorbUnavailability: SceneAbsorbUnavailability? {
+    guard sceneAbsorbSubject != nil else { return .noLoosePhotographFocused }
+    guard !sceneAbsorbTargets.isEmpty else { return .noSceneInTheSameFolderLoaded }
+    guard !isSceneEditInFlight else { return .anotherEditIsRunning }
+    return nil
+  }
+
+  var canAbsorbFocusedPhoto: Bool { sceneAbsorbUnavailability == nil }
+
+  func presentSceneAbsorbPicker() {
+    guard canAbsorbFocusedPhoto else { return }
+    isSceneAbsorbPickerPresented = true
+  }
+
+  /// Put the focused loose photograph into the scene the reader picked.
+  ///
+  /// EXACTLY the focused photograph, never the selection: the selection is a membership concept
+  /// this lane does not touch (ADR-0005 / ADR-0008 leave it alone), and the row's enablement is
+  /// derived from the focus alone — so sending anything else would mean the control's subject and
+  /// the request's subject were two different things. Absorbing several at once is the server's
+  /// capability (`image_ids` is a list) and stays available for a later ticket to arm.
+  ///
+  /// The target is re-derived through the SAME list the sheet was built from, so a scene that has
+  /// left the window while the sheet stood open is a no-op rather than a request — the merge
+  /// picker's own rule.
+  func absorbFocusedPhoto(into targetStackID: Int) async {
+    guard let subject = sceneAbsorbSubject,
+      sceneAbsorbTargets.contains(where: { $0.stackID == targetStackID })
+    else { return }
+    isSceneAbsorbPickerPresented = false
+    await runSceneEdit(
+      .absorb(
+        stackID: targetStackID, imageIDs: [subject.imageID], focusedImageID: subject.imageID))
+  }
 
   /// A split BEFORE the first member would leave a memberless half, which the server refuses as
   /// `empty_split_side`. The first member is on the first membership page by construction, so this
@@ -1572,6 +1632,9 @@ final class GridStore {
       case .refused:
         pendingSceneEdit = nil
         sceneEditError = .refused
+      case .vanished:
+        pendingSceneEdit = nil
+        sceneEditError = .vanished
       case .unreachable:
         pendingSceneEdit = nil
         sceneEditError = .unreachable
@@ -1592,6 +1655,8 @@ final class GridStore {
       return try await service.splitStack(stackID: stackID, atImageID: atImageID)
     case .extract(let stackID, let imageIDs, _):
       return try await service.extractFromStack(stackID: stackID, imageIDs: imageIDs)
+    case .absorb(let stackID, let imageIDs, _):
+      return try await service.absorbIntoStack(stackID: stackID, imageIDs: imageIDs)
     }
   }
 

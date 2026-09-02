@@ -345,6 +345,11 @@ actor GridStubTransport: ClientTransport {
     case refusedCodedDetail(code: String)
     /// 503 `stack_edit_busy`, with the `Retry-After` the contract declares beside it.
     case busy(retryAfterSeconds: Int?)
+    /// 404 with the absorb's own coded detail (IMGMGR-347): the scene, or a photograph the
+    /// request named, is not there. Declared with NO content schema in the contract, so the body
+    /// here is the server's real one and the client may not decode it — which is exactly the
+    /// point of pinning the mapping with a test.
+    case vanished(code: String)
   }
 
   /// One recorded scene-edit request, with its body EXACTLY as it went on the wire — which is what
@@ -440,6 +445,8 @@ actor GridStubTransport: ClientTransport {
     case .refusedCodedDetail(let code):
       return jsonBytes(
         .unprocessableContent, #"{"detail": {"code": "\#(code)", "message": "refused"}}"#)
+    case .vanished(let code):
+      return jsonBytes(.notFound, #"{"detail": {"code": "\#(code)", "message": "not here"}}"#)
     case .busy(let seconds):
       var response = HTTPResponse(status: .serviceUnavailable)
       response.headerFields[.contentType] = "application/json"
@@ -863,7 +870,10 @@ actor GridStubTransport: ClientTransport {
     // outcome is resolved, so a test can compare two attempts' bodies whatever either answered.
     case Operations.MergeStacksApiStacksMergePost.id,
       Operations.SplitStackApiStacksStackIdSplitPost.id,
-      Operations.ExtractFromStackApiStacksStackIdExtractPost.id:
+      Operations.ExtractFromStackApiStacksStackIdExtractPost.id,
+      // IMGMGR-347: the absorb takes the SAME shape, so it joins the same case rather than a
+      // second copy of it — and its body is recorded on the wire like its siblings'.
+      Operations.AbsorbIntoStackApiStacksStackIdAbsorbPost.id:
       try await recordStackEdit(request, body, operationID)
       await holdStackEditIfArmed()
       return try stackEditResponse(nextStackEditOutcome())

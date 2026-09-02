@@ -337,6 +337,49 @@ struct GridService: Sendable {
     }
   }
 
+  /// `POST /api/stacks/{id}/absorb` — take LOOSE photographs into an existing scene (IMGMGR-347,
+  /// the client half of IMGMGR-289's verb).
+  ///
+  /// The one editor whose subject is not a membership, and the only one that answers 404: the
+  /// scene may be gone, or a photograph this request named may not be in the library at all
+  /// (`unknown_image`). That is mapped to its own `.vanished` rather than folded into `.refused`,
+  /// because it is not the edit that was wrong. The 409 pair is the extraction's own
+  /// (`StackExtractConflictError`), which the contract widened to this route for the same two
+  /// reasons from the other direction — a loose photograph of another folder, or a photograph
+  /// that stopped being loose between the check and the write.
+  func absorbIntoStack(stackID: Int, imageIDs: [Int]) async throws
+    -> Components.Schemas.StackEditResult
+  {
+    let output: Operations.AbsorbIntoStackApiStacksStackIdAbsorbPost.Output
+    do {
+      output = try await client.absorbIntoStackApiStacksStackIdAbsorbPost(
+        .init(
+          path: .init(stackId: stackID),
+          body: .json(Components.Schemas.StackAbsorbRequest(imageIds: imageIDs))))
+    } catch {
+      throw StackEditError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let result = try? ok.body.json else { throw StackEditError.unreachable }
+      return result
+    case .notFound:
+      throw StackEditError.vanished
+    case .conflict(let conflict):
+      guard let body = try? conflict.body.json else { throw StackEditError.unreachable }
+      switch body.detail.code {
+      case .foreignFolderMember: throw StackEditError.conflict(.foreignFolderMember)
+      case .membershipChanged: throw StackEditError.conflict(.membershipChanged)
+      }
+    case .unprocessableContent:
+      throw StackEditError.refused
+    case .serviceUnavailable(let busy):
+      throw StackEditError.busy(retryAfterSeconds: busy.headers.retryAfter)
+    case .undocumented:
+      throw StackEditError.unreachable
+    }
+  }
+
   // MARK: - Facets (Stats tab filter rows)
 
   func facets(_ query: GridImagesQuery) async throws -> Components.Schemas.ImageFacets {
@@ -576,6 +619,9 @@ enum StackEditError: Error, Sendable, Equatable {
   /// are also unreachable from this app by construction — the cross-folder merge is filtered out
   /// of the target list, and an empty-side extraction is never offered.
   case refused
+  /// 404 — the absorb alone (IMGMGR-347): the scene is gone, or a photograph the request named is
+  /// not in the library. Kept apart from `.refused` because the reader is told a different thing.
+  case vanished
   case unreachable
 }
 

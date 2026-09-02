@@ -92,6 +92,17 @@
         return try jsonResponse(.ok, Self.fixtureStackMemberPage())
       case Operations.GetStackApiStacksStackIdGet.id:
         return try jsonResponse(.ok, Self.fixtureStackRow())
+      // IMGMGR-347: the absorb the More menu's new row drives. Counted BEFORE the answer goes
+      // back, through the same probe the facets fetch uses, so a UI test observes the REQUEST
+      // rather than the sheet closing. The result names the fixture's own scene, which is what
+      // the topology coordinator then reopens and completes.
+      case Operations.AbsorbIntoStackApiStacksStackIdAbsorbPost.id:
+        let absorbProbe = self.probe
+        await MainActor.run { (absorbProbe ?? .shared).absorbRequests += 1 }
+        return try jsonResponse(
+          .ok,
+          Components.Schemas.StackEditResult(
+            dissolvedStackIds: [], loosenedImageIds: [], stackIds: [Self.fixtureStackID]))
       case Operations.SetMarkStateApiMarksStatePost.id:
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))

@@ -30,5 +30,11 @@
 
     /// How many `/api/facets` requests the fixture transport has served this launch.
     var facetsRequests = 0
+
+    /// IMGMGR-347: how many absorb writes the fixture transport has served this launch. Published
+    /// for the same reason the counter above is — the transport is an `actor`, so a UI test that
+    /// drove the absorb has no other way to observe that the request was really made rather than
+    /// that a sheet was dismissed.
+    var absorbRequests = 0
   }
 #endif

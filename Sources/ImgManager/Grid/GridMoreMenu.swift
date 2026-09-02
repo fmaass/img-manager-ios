@@ -93,7 +93,9 @@ enum GridMoreMenu {
       entries: [status, openInNewWindow]),
     GridMoreMenuSection(
       id: "more.section.scene", title: "Scene",
-      entries: [mergeScene, splitScene, extractScene]),
+      // IMGMGR-347 APPENDED the absorb, in the same spirit the two rows before it were appended:
+      // the decided set and its order are untouched, and a topology action stays chrome.
+      entries: [mergeScene, splitScene, extractScene, absorbScene]),
   ]
 
   /// DERIVED, never declared: the menu has one inventory and this is a view onto it. Every
@@ -291,6 +293,25 @@ enum GridMoreMenu {
     surface: .action { store in
       Task { await store.extractSelectionFromFocusedScene() }
     })
+
+  /// IMGMGR-347: the row for the photograph that is in no scene — the gesture the family was
+  /// missing, and the one the owner went looking for on the device ("i dont think this works im
+  /// missing a menu basically to do so", TestFlight 0.11.0 (14)).
+  ///
+  /// Its subject is the one the other three cannot have, so it is enabled exactly where they are
+  /// disabled, and vice versa. The TITLE is a function of the same derivation as the enablement
+  /// (`sceneAbsorbUnavailability`): while it cannot act it says which thing is missing, because a
+  /// row that only greys out is what sent the owner looking in the first place — and because this
+  /// menu's idiom is present-and-disabled, a row's title is the only surface a reason can appear
+  /// on.
+  static let absorbScene = GridMoreMenuEntry(
+    id: "more.absorbScene",
+    accessibilityIdentifier: "gridMoreMenu.more.absorbScene",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "rectangle.stack.badge.plus",
+    title: { SceneAbsorbCopy.title(for: $0.sceneAbsorbUnavailability) },
+    isEnabled: { $0.canAbsorbFocusedPhoto },
+    surface: .action { store in store.presentSceneAbsorbPicker() })
 }
 
 /// The menu's rendered body: EXACTLY `GridMoreMenu.sections`, in order, with no second list —
