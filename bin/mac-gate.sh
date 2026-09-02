@@ -46,10 +46,10 @@
 # background; the controller polls a done-marker over short ssh calls every 20 s, prints every
 # remote step exit line that appeared since the previous poll, and fetches the run log at the
 # end. The wall-clock budget is MAC_GATE_REMOTE_CAP; a Mac unreachable for 15 consecutive polls
-# ends the wait the same way. On either stop the remote process tree is killed (by parent pid,
-# never by a command-line literal) and the run records remote-run=124; if the kill cannot be
-# confirmed, both locks are deliberately LEFT IN PLACE (lock-release=1) so no later lane rsyncs
-# over a still-running build.
+# ends the wait the same way. On either stop the remote run's PROCESS GROUP is signalled
+# (SIGTERM, then SIGKILL; never a command-line literal) and the run records remote-run=124; if
+# an empty group cannot be confirmed, both locks are deliberately LEFT IN PLACE
+# (lock-release=1) so no later lane rsyncs over a still-running build.
 #
 # NEW versus the reference gate (WP8 plan round-2 delta, adopted advisory): the gate
 # directory on merkur is a MIRROR with no .git — same as memos-ng-ios's — so this script
@@ -544,29 +544,26 @@ build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
 
 # --- Remote run: launched DETACHED on the Mac and polled over short ssh calls (IMGMGR-203). --
-# stop_remote_run: stop the detached run's process tree — descendants of the recorded subshell
-# pid, found by PARENT pid, never by a command-line literal — with SIGTERM, then SIGKILL for
-# survivors, and CONFIRM by re-walking the tree that nothing is left before the locks may be
-# released. Any survivor freezes both locks (see release_lock): the work dir may still be
-# written to. The body is piped to the Mac as a script (no nested quoting).
+# stop_remote_run: stop the detached run by PROCESS GROUP. The launch runs under job control,
+# so the recorded subshell pid is also its pgid; SIGTERM then SIGKILL go to the whole group,
+# which — unlike a parent-pid tree walk — still reaches a child that was reparented to launchd
+# after its parent died (probed live on merkur 2026-09-02). Confirmation is group membership
+# (`pgrep -g`), never a command-line literal. Anything short of an empty group — a survivor,
+# a missing pid file or gate dir, an unreachable Mac — freezes both locks (see release_lock):
+# the work dir may still be written to. The body is piped to the Mac as a script.
 stop_remote_script=$(cat <<'REMOTESTOP'
 cd "__TARGET__" 2>/dev/null || { echo NO-DIR; exit 0; }
 pid="$(cat .gate-run.pid 2>/dev/null)"
 [ -n "$pid" ] || { echo NO-PID; exit 0; }
-list=""
-walk() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do walk "$c"; done; [ "$1" = "$pid" ] || list="$list $1"; }
-alive() { local a="" p; for p in $list; do kill -0 "$p" 2>/dev/null && a="$a $p"; done; printf '%s' "$a"; }
-walk "$pid"
-for p in $list; do kill -TERM "$p" 2>/dev/null; done
-i=0; while [ "$i" -lt 20 ] && [ -n "$(alive)" ]; do sleep 1; i=$((i + 1)); done
-for p in $(alive); do kill -KILL "$p" 2>/dev/null; done
-i=0; while [ "$i" -lt 10 ] && [ -n "$(alive)" ]; do sleep 1; i=$((i + 1)); done
-left="$(alive)"
+# The run was launched under job control, so the subshell leads its own process group
+# (pgid == pid). Group membership survives reparenting; a tree walk does not.
+members() { pgrep -g "$pid" 2>/dev/null | tr '\n' ' '; }
+kill -TERM -- -"$pid" 2>/dev/null
+i=0; while [ "$i" -lt 20 ] && [ -n "$(members)" ]; do sleep 1; i=$((i + 1)); done
+[ -z "$(members)" ] || kill -KILL -- -"$pid" 2>/dev/null
+i=0; while [ "$i" -lt 10 ] && [ -n "$(members)" ]; do sleep 1; i=$((i + 1)); done
+left="$(members)"
 [ -z "$left" ] || { echo "STILL-RUNNING pids=$left"; exit 0; }
-# a second walk catches children spawned after the first list was taken
-list=""; walk "$pid"; left="$(alive)"
-[ -z "$left" ] || { echo "STILL-RUNNING pids=$left"; exit 0; }
-i=0; while [ "$i" -lt 15 ] && [ ! -f .gate-run.done ]; do sleep 1; i=$((i + 1)); done
 if [ -f .gate-run.done ]; then echo "STOPPED code=$(cat .gate-run.done)"; else echo "STOPPED code=none"; fi
 REMOTESTOP
 )
@@ -575,7 +572,7 @@ stop_remote_run() {
   script="${stop_remote_script//__TARGET__/$target_dir}"
   out="$(printf '%s\n' "$script" | timeout 90 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' 2>&1)"
   case "$out" in
-    STOPPED*|NO-DIR|NO-PID) say "remote run  : $out" ;;
+    STOPPED*) say "remote run  : $out" ;;
     *) locks_frozen=1; say "remote run  : could not confirm the remote run stopped (${out:-no reply}) — locks frozen" ;;
   esac
 }
@@ -587,8 +584,10 @@ launch_out="$(printf '%s\n' "$build_script" | timeout 60 ssh -o BatchMode=yes -o
   cd \"$target_dir\"
   cat > .gate-run.sh
   rm -f .gate-run.done .gate-run.log .gate-run.pid
+  set -m
   ( nohup bash .gate-run.sh </dev/null >.gate-run.log 2>&1; echo \$? >.gate-run.done ) >/dev/null 2>&1 </dev/null &
   echo \$! > .gate-run.pid
+  set +m
   echo \"LAUNCHED pid=\$(cat .gate-run.pid)\"
 " 2>&1)"
 launch_rc=$?
