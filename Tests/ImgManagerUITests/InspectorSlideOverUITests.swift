@@ -193,13 +193,15 @@ final class InspectorSlideOverUITests: XCTestCase {
       "Regular-3 must reach the inspector from the SAME persistent chrome control the other two "
         + "widths use (decision 4). If this fails while the inspector is visibly on screen, "
         + "check for an `OverflowBarButtonItem` — the Info item is the fifth `.primaryAction` "
-        + "on a content column measured at ~315 pt, and a folded item is not a reachable "
-        + "control.")
+        + "on a content column the gate measured at ~209 pt, and a folded item is not a "
+        + "reachable control.")
     XCTAssertTrue(
       inspectorAlreadyOnScreen,
       "Regular-3 must still LAUNCH with the inspector shown — a launch that hides it is a "
         + "capability loss, not a collapse.")
     XCTAssertTrue(dislike.isHittable, "The grid stays interactive beside the column.")
+
+    recordTheRegular3SidebarProbe(app: app, orientationName: orientationName, state: "shown")
 
     let barBeforeCollapse = dislike.frame.midX
     chromeInfo.tap()
@@ -219,10 +221,25 @@ final class InspectorSlideOverUITests: XCTestCase {
     XCTAssertGreaterThan(
       barAfterCollapse, barBeforeCollapse,
       "The inspector left the screen but the grid pane did not grow (action bar mid-x unmoved at "
-        + "\(barAfterCollapse)). That is the plan's Known unknown: the 3-column split view is "
-        + "still reserving a pane for the collapsed `EmptyView` detail column, so the reader "
-        + "traded a useful inspector for a blank pane. Pivot: render the Regular-3 branch with "
-        + "the 2-column initializer while the inspector is hidden.")
+        + "\(barAfterCollapse)) — the reader traded the inspector for a blank pane, which is "
+        + "not what decision 4 asked for. This is the measured failure of the first attempt "
+        + "(before=104.5 after=104.5 at a 1376 pt window), where the collapsed state still "
+        + "rendered a three-column `NavigationSplitView` with an `EmptyView` third column: the "
+        + "column is reserved by the initializer's arity, not by its content. The collapsed "
+        + "workspace must render the two-column shape and ask for `.detailOnly` — see "
+        + "`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`.")
+
+    // ...and the width it reclaimed went to the GRID, not to the queue. Decision 4 asked for a
+    // collapsible inspector; it did not ask for the sidebar, which [/link/3220] keeps off at
+    // this width. `dislike.isHittable` just above is this 0-hit reading's positive control.
+    let queueCard = app.staticTexts
+      .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
+    XCTAssertFalse(
+      queueCard.exists,
+      "Collapsing the inspector revealed the queue sidebar. The freed pane must go to the grid "
+        + "— check the visibility the collapsed shape asks for "
+        + "(`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`).")
+    recordTheRegular3SidebarProbe(app: app, orientationName: orientationName, state: "collapsed")
 
     // Leg (iii): and it comes back.
     chromeInfo.tap()
@@ -230,8 +247,6 @@ final class InspectorSlideOverUITests: XCTestCase {
       statsSegment.waitForExistence(timeout: 10),
       "The inspector never came back after a second tap — a hide that cannot be undone is not a "
         + "collapse.")
-
-    recordTheRegular3SidebarProbe(app: app, orientationName: orientationName)
   }
 
   /// The plan's mandatory FIRST-ACTION probe, carried here because the lane that wrote this
@@ -244,19 +259,35 @@ final class InspectorSlideOverUITests: XCTestCase {
   /// half turns on them: if the sidebar cannot be revealed at Regular-3 under
   /// `.prominentDetail`, NO control ships and the half is a declared deviation. A probe that
   /// asserted an answer would be pinning whichever behaviour the OS happened to have.
-  private func recordTheRegular3SidebarProbe(app: XCUIApplication, orientationName: String) {
+  ///
+  /// Taken in BOTH states, because they are different compositions and the first gate run showed
+  /// they answer differently. `state: "shown"` is the three-column workspace, whose reading at
+  /// 1376 pt was `sidebarToggleExists=true sidebarToggleHittable=false` with the toggle listed
+  /// TWICE (one leading control per rendered column — the same composition that ships at
+  /// 4753450, since nothing in this phase adds a toolbar item to the inspector's own bar).
+  /// `state: "collapsed"` is the two-column shape the fix round introduced, which renders one
+  /// pane and should therefore offer exactly one toggle.
+  ///
+  /// The full `navBarButtons` list is printed rather than summarised because it is also the only
+  /// reading of what the content column's bar can hold: at 1376 pt that column measures ~209 pt,
+  /// and the first run showed Zoom and Shortcut-help already folded behind `More`. Comparing the
+  /// two states says whether that is the bar being too narrow (the collapsed list, at the full
+  /// window width, carries all of them) rather than anything this phase decided.
+  private func recordTheRegular3SidebarProbe(
+    app: XCUIApplication, orientationName: String, state: String
+  ) {
     let queueCard = app.staticTexts
       .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
     let sidebarToggle = app.buttons
       .matching(NSPredicate(format: "label CONTAINS[c] 'sidebar'")).firstMatch
     let navBarButtonLabels = app.navigationBars.buttons.allElementsBoundByIndex.map { $0.label }
     print(
-      "WP16P2-SIDEBAR-PROBE \(orientationName): window=\(app.frame.size) "
+      "WP16P2-SIDEBAR-PROBE \(orientationName) \(state): window=\(app.frame.size) "
         + "queueCardOnScreen=\(queueCard.exists) "
         + "sidebarToggleExists=\(sidebarToggle.exists) "
         + "sidebarToggleHittable=\(sidebarToggle.exists && sidebarToggle.isHittable) "
         + "navBarButtons=\(navBarButtonLabels)")
-    attach(app: app, named: "P2-regular3-sidebar-probe")
+    attach(app: app, named: "P2-regular3-sidebar-probe-\(state)")
   }
 
   /// `XCTNSPredicateExpectation` rather than a poll: the collapse is animated

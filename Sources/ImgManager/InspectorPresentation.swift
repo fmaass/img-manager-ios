@@ -52,6 +52,36 @@ enum InspectorPlacement {
     case .regular3: return .permanentColumn
     }
   }
+
+  /// WP16 P2 (IMGMGR-298), the MECHANISM behind decision 4's Regular-3 collapse, learned from
+  /// the gate rather than assumed. The first attempt rendered an `EmptyView` in the third column
+  /// and the measured result was `actionBarMidX before=104.5 after=104.5` at a 1376 pt window:
+  /// the inspector left the screen and the grid gained nothing, because a column of a
+  /// `NavigationSplitView` is reserved by the INITIALIZER's arity, not by what is put in it —
+  /// the same finding `RootView`'s own 2-column comment already recorded for Regular-2.
+  ///
+  /// Reclaiming the width therefore means not asking for that column at all, and on the shipped
+  /// three-column mapping (sidebar = queue, content = grid, detail = inspector) no visibility
+  /// value expresses "grid alone": `.all` and `.doubleColumn` both keep the detail pane, and
+  /// `.detailOnly` would show the INSPECTOR alone. So the collapsed state renders the
+  /// two-column initializer — the shape Compact and Regular-2 already ship — with the grid as
+  /// its detail, and this function is what keeps the sidebar out of the space that frees up:
+  /// `.detailOnly` on that two-column view is one rendered pane, the grid, at the full window
+  /// width. Decision 4 asked for a collapsible inspector, not for the queue to appear in its
+  /// place, and [/link/3220] keeps the sidebar off at Regular-3.
+  ///
+  /// A pure function beside `presentation(for:)`, not a branch inside `RootView`: the launch
+  /// path (`applyWidth`) and the toggle path both need the same answer, and a rule computed
+  /// twice is a rule that can disagree with itself. `LayoutResolver` is deliberately NOT changed
+  /// — it answers for the workspace's layout mode, which the collapse does not alter.
+  static func columnVisibility(
+    for mode: LayoutMode, regular3InspectorShown: Bool
+  ) -> NavigationSplitViewVisibility {
+    guard mode == .regular3, !regular3InspectorShown else {
+      return LayoutResolver.columnVisibility(for: mode)
+    }
+    return .detailOnly
+  }
 }
 
 /// The slide-over's own geometry. Capped in points AND as a fraction of the pane it overlays: a

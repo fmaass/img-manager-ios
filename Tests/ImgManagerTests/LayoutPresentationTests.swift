@@ -97,6 +97,36 @@ struct LayoutPresentationTests {
         == "Info, 2 filters active")
   }
 
+  /// WP16 P2 (IMGMGR-298): the collapse MECHANISM, pinned as a value because the gate proved the
+  /// obvious implementation is a no-op. Rendering an `EmptyView` into the third column left the
+  /// grid exactly where it was (`actionBarMidX before=104.5 after=104.5`, 1376 pt window): a
+  /// `NavigationSplitView` reserves its columns by initializer arity, so the collapsed state has
+  /// to render the two-column shape instead — and then the sidebar would take the freed pane
+  /// unless the visibility says otherwise. That "unless" is this function, and these are the
+  /// four answers `RootView` depends on.
+  @Test("Collapsing the Regular-3 inspector asks for one pane, and it is not the sidebar")
+  func theCollapsedRegular3WorkspaceAsksForTheDetailPaneOnly() {
+    // Shown: unchanged from what ships — the three-column request.
+    #expect(
+      InspectorPlacement.columnVisibility(for: .regular3, regular3InspectorShown: true) == .all)
+    // Collapsed: ONE pane. `.doubleColumn` here would put the queue beside the grid, which
+    // decision 4 did not ask for; `.all` is what the no-op EmptyView build was still asking for.
+    #expect(
+      InspectorPlacement.columnVisibility(for: .regular3, regular3InspectorShown: false)
+        == .detailOnly)
+    // The flag is a REGULAR-3 fact only: it must not reach a width whose inspector is a sheet or
+    // a slide-over, where the sidebar carries the queue and hiding it would cost the launch
+    // surface. Both values, so a rule written as "collapsed -> detailOnly" everywhere fails here.
+    for shown in [true, false] {
+      #expect(
+        InspectorPlacement.columnVisibility(for: .compact, regular3InspectorShown: shown)
+          == LayoutResolver.columnVisibility(for: .compact))
+      #expect(
+        InspectorPlacement.columnVisibility(for: .regular2, regular3InspectorShown: shown)
+          == LayoutResolver.columnVisibility(for: .regular2))
+    }
+  }
+
   @Test("The Regular-3 width pin matches the literal the UI test classifies layouts with")
   func theRegular3WidthPinMatchesTheUITestLiteral() {
     // `InspectorSlideOverUITests` classifies the layout from the measured window width — an
