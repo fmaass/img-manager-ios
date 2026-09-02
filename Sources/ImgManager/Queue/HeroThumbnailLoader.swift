@@ -22,6 +22,11 @@ actor HeroThumbnailLoader {
   private let service: GridService
   private let maxConcurrent: Int
   private var cache: [String: Data] = [:]
+  /// One in-flight fetch per cache key (IMGMGR-332). Two readers of the SAME key are the shipped
+  /// case, not a corner one: the Queue card and the Folders-tree shoot row show one shoot. `hero`
+  /// used to check the cache and then suspend on the concurrency gate leaving nothing behind for
+  /// the second reader to join, so both fetched the limit-1 page and the proxy.
+  private var inFlight: [String: Task<FetchResult, Never>] = [:]
   private var active = 0
   private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -30,24 +35,51 @@ actor HeroThumbnailLoader {
     self.maxConcurrent = maxConcurrent
   }
 
-  /// One card's hero fetch, cached per (folderID, sourceTier) for the loader's lifetime. A
-  /// SwiftUI `.task(id:)` per visible card is what gives this "cancellation on scroll-away" —
-  /// this method additionally checks `Task.isCancelled` at both await boundaries so a scrolled-
-  /// away card's fetch never starts its SECOND network step (the proxy fetch) once the caller's
-  /// task has already been cancelled, and never occupies a concurrency slot pointlessly.
+  /// One card's hero fetch, cached per (folderID, sourceTier) for the loader's lifetime and
+  /// SINGLE-FLIGHT per that same key: a second reader of a key already being fetched awaits the
+  /// running fetch instead of starting its own (IMGMGR-332).
+  ///
+  /// A SwiftUI `.task(id:)` per visible card is what gives this "cancellation on scroll-away",
+  /// and the CALLER's cancellation is still honoured at both of this method's own boundaries —
+  /// before anything is started, and on the way out. What it no longer does is abandon the fetch
+  /// MID-FLIGHT: the fetch is now shared, so cancelling it on one reader's behalf would cancel
+  /// it for the other reader too, which is exactly what a coalesced fetch must never do. A fetch
+  /// that has started therefore runs to completion and fills the cache; the reader that went
+  /// away simply does not use the answer.
   func hero(folderID: Int, sourceTier: GridSourceTier?) async -> FetchResult {
     let key = cacheKey(folderID: folderID, sourceTier: sourceTier)
     if let cached = cache[key] { return .image(cached) }
     guard !Task.isCancelled else { return .failure }
+
+    if let joined = inFlight[key] {
+      let result = await joined.value
+      return Task.isCancelled ? .failure : result
+    }
+
+    // `Task {}` inherits this actor's isolation, but NOT the caller's cancellation — which is
+    // what makes a scrolled-away waiter unable to cancel the fetch its neighbour is waiting on.
+    let fetch = Task { await self.runFetch(key: key, folderID: folderID, sourceTier: sourceTier) }
+    inFlight[key] = fetch
+    let result = await fetch.value
+    // Cleared by the INITIATOR, on every outcome — bytes, `.empty` or `.failure`. `runFetch`
+    // neither throws nor cancels, so this line is always reached: an entry that outlived its
+    // fetch would wedge every later reader of the key behind a task that will never finish.
+    inFlight[key] = nil
+    return Task.isCancelled ? .failure : result
+  }
+
+  /// The two-step fetch itself, run by exactly one task per key. It holds the concurrency slot
+  /// for its whole duration, as the inline version did.
+  private func runFetch(key: String, folderID: Int, sourceTier: GridSourceTier?) async
+    -> FetchResult
+  {
     await acquire()
     defer { release() }
-    guard !Task.isCancelled else { return .failure }
     do {
       var query = GridImagesQuery(folderID: folderID)
       query.sourceTier = sourceTier
       let page = try await service.images(query, cursor: nil, limit: 1)
       guard let first = page.items.first else { return .empty }
-      guard !Task.isCancelled else { return .failure }
       let token = ProxyIdentity.token(
         from: first.proxies.additionalProperties[ProxyTier.grid.rawValue]?.url)
       switch try await service.proxy(imageID: first.id, tier: .grid, v: token) {

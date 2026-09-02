@@ -90,6 +90,39 @@ struct HeroThumbnailLoaderTests {
   }
 
   @Test(
+    "Single flight: two concurrent hero() calls for ONE key make one fetch and both get the image"
+  )
+  func concurrentCallsForOneKeyShareASingleFetch() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 1, nextCursor: nil))
+    let bytes = Data([0xFF, 0xD8, 0xFF, 0xD9])
+    await transport.setProxyOutcome(.ok(bytes))
+    await transport.holdNextListImagesRequest()
+
+    let first = Task { await loader.hero(folderID: 1, sourceTier: .local) }
+    await transport.waitUntilListImagesStarted()
+
+    // The SAME key while the first fetch is suspended inside the transport — the shipped pair
+    // this is about is the Queue card and the Folders-tree shoot row showing one shoot
+    // (IMGMGR-332). The concurrency gate cannot be what stops the second fetch here: four slots,
+    // one taken.
+    let second = Task { await loader.hero(folderID: 1, sourceTier: .local) }
+    // A real chance to start its own fetch: the transport's hold is single-slot and
+    // self-disarming, so a second fetch would run straight through to a second call rather than
+    // suspend beside the first.
+    try await Task.sleep(nanoseconds: 30_000_000)
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+
+    await transport.releaseListImages()
+    let firstResult = await first.value
+    let secondResult = await second.value
+    #expect(firstResult == .image(bytes))
+    #expect(secondResult == .image(bytes))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+  }
+
+  @Test(
     "Bounded concurrency: a second hero() call waits for a free slot before starting its OWN network call"
   )
   func boundedConcurrency() async throws {
