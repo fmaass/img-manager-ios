@@ -96,6 +96,7 @@ struct GridView: View {
 
   private var stack: some View {
     VStack(spacing: 0) {
+      debugProbeElement
       chromeRows
       scrollArea
         .onGeometryChange(for: CGFloat.self) {
@@ -115,6 +116,35 @@ struct GridView: View {
       ActionBarView(store: store, openShootWindow: openShootWindow)
     }
   }
+
+  /// EVIDENCE, fixture-only, WP16 P2 (IMGMGR-298): how many `/api/facets` requests this launch
+  /// has served, published where a UI test can read it. The counter has to reach the SCREEN,
+  /// because `DebugStubTransport` is an `actor` and an accessibility value is read synchronously
+  /// — and it has to re-publish on change, which is what reading an `@Observable` property inside
+  /// a view body buys: the dependency is registered, so SwiftUI re-renders this element when the
+  /// count moves. Without it the phase's observation (the facets fetch runs while the inspector
+  /// has NEVER been on screen) has no mechanism at all.
+  ///
+  /// Two DECLARATIONS rather than one `#if` inside the builder, so no conditional compilation
+  /// sits inside a result builder: in Release the property is an `EmptyView` and `DebugProbe`
+  /// does not exist. Even in Debug it renders only under the fixture launch argument, exactly
+  /// like `tierProbeValue` and `sceneCardProbeValue`, which are empty outside it. It takes no
+  /// hits, so it cannot intercept a tap meant for the grid.
+  #if DEBUG
+    @ViewBuilder private var debugProbeElement: some View {
+      if DebugStubLaunch.isActive {
+        Text("debugProbe")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe")
+          .accessibilityValue("facetsRequests=\(DebugProbe.shared.facetsRequests)")
+      }
+    }
+  #else
+    private var debugProbeElement: some View { EmptyView() }
+  #endif
 
   /// WP13 P4 (IMGMGR-215): on Regular the view-option controls are PRIMARY toolbar items. They
   /// used to be `ToolbarItem(placement: .secondaryAction)`, which collapses into the nav bar's
@@ -145,6 +175,25 @@ struct GridView: View {
         GridShortcutHelpControl(store: store)
       }
     }
+  }
+
+  /// The scroll position, translated between what `ScrollView` deals in (a row id) and what
+  /// survives the collapse (a photograph) — `GridScrollAnchor` carries the argument for why those
+  /// are not the same thing. SwiftUI owns the ordering of the read and the write, which is why
+  /// this is a binding rather than a restore fired from `.task` or `.onAppear`: those race the
+  /// first preference pass, which would overwrite the anchor with the top of the fresh view
+  /// before anything could act on it.
+  ///
+  /// Hand-built rather than `@Bindable`'s `$store.gridScrollAnchor` for a second reason: the
+  /// anchor is `@ObservationIgnored` (it is written on every scroll tick), and a binding that
+  /// does not depend on the observation machinery is what keeps that true.
+  private var scrollAnchorBinding: Binding<GridRenderRowID?> {
+    Binding(
+      get: { GridScrollAnchor.row(containing: store.gridScrollAnchor, in: renderRows) },
+      set: { rowID in
+        guard let displayID = GridScrollAnchor.displayID(of: rowID) else { return }
+        store.gridScrollAnchor = displayID
+      })
   }
 
   /// The scrollable justified grid, with the live pointer-drag gesture attached through
@@ -191,8 +240,13 @@ struct GridView: View {
             }
           }
         }
+        .scrollTargetLayout()
         .padding(2)
       }
+      // WP16 P2 (IMGMGR-298): the offset is bound to STORE-owned state, so it survives this
+      // view being rebuilt when the Regular-3 collapse swaps the split view's shape — see
+      // `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
+      .scrollPosition(id: scrollAnchorBinding)
       .coordinateSpace(name: "gridSpace")
       .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
     )

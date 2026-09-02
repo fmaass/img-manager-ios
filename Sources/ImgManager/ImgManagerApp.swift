@@ -21,7 +21,10 @@ struct ImgManagerApp: App {
           // composition for retained screenshot evidence — never reachable without BOTH the
           // Debug build configuration AND this explicit launch argument, and stripped entirely
           // from a Release/TestFlight archive.
-          RootView(transport: DebugStubTransport())
+          // WP16 P2 (IMGMGR-298): the probe is passed — and therefore RETAINED for the app's
+          // lifetime through `DebugProbe.shared` — so the counter the transport increments is the
+          // one `GridView` observes. Constructed inline as before otherwise.
+          RootView(transport: DebugStubTransport(probe: .shared))
         } else {
           RootView(shoot: value)
         }

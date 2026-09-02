@@ -454,6 +454,11 @@ final class GridStore {
     focusedImageID = nil
     undo.clear()
     conflictRecovery = nil
+    // The rendered sequence is rebuilt outright — a different shoot, or the flat/scene swap that
+    // changes every row id — so an anchor into the old one means nothing. Retired at EVERY site
+    // that rebuilds the sequence, `applyFilterChange` included; see its own note for why the
+    // exception this line once carried was wrong.
+    gridScrollAnchor = nil
     await reloadFirstPage()
   }
 
@@ -466,6 +471,16 @@ final class GridStore {
     selection.reset(.queryGenerationChange)
     focusedImageID = nil
     conflictRecovery = nil
+    // WP16 P2 (IMGMGR-298), Codex round-3 blocker — a retraction, stated as one. This site
+    // deliberately did NOT retire the anchor, on the argument that a filter narrows the same
+    // shoot so a surviving row is still the reader's row. The argument is wrong, and the path
+    // that shows it is concrete: scroll deep, apply a filter that matches nothing, clear it
+    // again. The anchored photograph is still set while no rows exist to resolve it against, so
+    // the moment rows come back the position jumps deep into the repopulated grid instead of
+    // landing at the top, which is where every filter change has always left the reader
+    // (`reloadFirstPage` below). A filter change rebuilds the result sequence, and the anchor is
+    // retired wherever that happens — no exceptions, which is also one less rule to reason about.
+    gridScrollAnchor = nil
     await reloadFirstPage()
   }
 
@@ -515,6 +530,11 @@ final class GridStore {
     focusedImageID = nil
     undo.clear()
     conflictRecovery = nil
+    // The rendered sequence is rebuilt outright — a different shoot, or the flat/scene swap that
+    // changes every row id — so an anchor into the old one means nothing. Retired at EVERY site
+    // that rebuilds the sequence, `applyFilterChange` included; see its own note for why the
+    // exception this line once carried was wrong.
+    gridScrollAnchor = nil
     await reloadFirstPage()
   }
 
@@ -626,6 +646,30 @@ final class GridStore {
     }
   }
 
+  // MARK: - Grid scroll anchor (WP16 P2)
+
+  /// Where the contact sheet is scrolled to, as the id of its top-most rendered row.
+  ///
+  /// View state living in the store, deliberately, and only because the view cannot keep it.
+  /// Decision 4's Regular-3 collapse (IMGMGR-298) swaps the workspace between the three-column
+  /// and two-column `NavigationSplitView` shapes — the only shape change that reclaims the
+  /// inspector's width, since a column is reserved by the initializer's arity — and that moves
+  /// `GridView` from the `content` slot to the `detail` slot. A different position in the view
+  /// tree is a different STRUCTURAL IDENTITY, so SwiftUI tears the subtree down and builds a
+  /// fresh one: this store keeps the page, the selection and the focus, but the `ScrollView`'s
+  /// own offset belongs to the view and goes with it. A reader deep inside a shoot who hides the
+  /// inspector would land back at the top. Parked here, it outlives the rebuild.
+  ///
+  /// `@ObservationIgnored` on purpose: this is written on every scroll tick, and an observable
+  /// write there would invalidate every view reading this store while the reader is dragging
+  /// through a contact sheet. Nothing needs to REACT to it — the value only has to survive, and
+  /// the rebuilt `ScrollView` reads it through `GridView.scrollAnchorBinding`.
+  ///
+  /// A PHOTOGRAPH, never the row id `ScrollView` itself reports: the collapse changes the pane
+  /// width, which repacks every justified row, so a remembered row id names a row that no longer
+  /// exists. `GridScrollAnchor` is the translation in both directions, and owns that argument.
+  @ObservationIgnored var gridScrollAnchor: GridDisplayID?
+
   // MARK: - Stats facets (WP12: the Compact filter surface)
 
   /// The counts the Stats tab renders. They live HERE, not in the inspector view's own `@State`,
@@ -636,20 +680,21 @@ final class GridStore {
   private(set) var facets: Components.Schemas.ImageFacets?
 
   /// The query the published `facets` describes. `refreshFacets` is a no-op while it already
-  /// matches, so the inspector's `.task(id: queryIdentity)` re-firing right after a tap that
-  /// already refreshed does not fetch the same counts a second time.
+  /// matches, so the workspace's `.task(id: queryIdentity)` (WP16 P2's `FacetsRefreshInstaller`,
+  /// formerly the inspector's own) re-firing right after a tap that already refreshed does not
+  /// fetch the same counts a second time.
   private(set) var facetsIdentity: GridImagesQuery?
 
   /// The refresh currently in flight, recorded SYNCHRONOUSLY — before this method's first
   /// suspension — so a second caller for the SAME query joins it instead of issuing a duplicate
   /// request. This is the reentrancy the MainActor does not prevent: `applyFacetFilter` sets
-  /// `query` and then suspends inside `reloadFirstPage`, and the inspector's
+  /// `query` and then suspends inside `reloadFirstPage`, and the workspace's
   /// `.task(id: queryIdentity)` fires for the NEW identity inside that window. With the identity
   /// only written after the network await, both calls passed the guard below and whichever
   /// response came home last won.
   private var facetsRefresh: (identity: GridImagesQuery, task: Task<Void, Never>)?
 
-  /// Idempotent per query: the inspector's `.task(id:)` calls this on appearance and on every
+  /// Idempotent per query: the workspace's `.task(id:)` calls this on appearance and on every
   /// query-identity change, and the tap handlers below call it after they mutate the filter.
   /// A response that arrives after the query moved on is discarded (same discipline as the
   /// paging generation fence), and a failed fetch leaves the last good counts standing rather

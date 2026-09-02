@@ -35,14 +35,40 @@ struct LayoutPresentationTests {
     #expect(presentation.usesChromeControl)
   }
 
-  @Test("Regular-3 still presents the permanent column")
+  /// WP16 P2 (IMGMGR-298, design record [/link/3332] decision 4) REVERSES this test's third
+  /// assertion, and only that one. Regular-3 keeps the permanent-column PRESENTATION — the
+  /// inspector is still a real third column and still non-modal — but it stops being permanent
+  /// in the sense of unavoidable: the reader hides and restores it from the same persistent
+  /// chrome control Compact and Regular-2 already use, so `usesChromeControl` is now true at
+  /// every width. The old `== false` was the pinned contract at 4753450 and is the RED this
+  /// phase observed first (its UI twin is `InspectorSlideOverUITests`' `.regular3` branch).
+  @Test("Regular-3 keeps the permanent column, and now reaches it from chrome too")
   func regular3StillPresentsThePermanentColumn() {
     let presentation = InspectorPlacement.presentation(for: .regular3)
     #expect(presentation == .permanentColumn)
     #expect(presentation.isModal == false)
-    // No chrome control at Regular-3: the inspector is never absent, so there is nothing to
-    // open. This is the condition `RootView`'s toolbar reads.
-    #expect(presentation.usesChromeControl == false)
+    // Decision 4: the column is collapsible here as well, so there IS something for a chrome
+    // control to do — this is the condition `RootView`'s toolbar reads (`RootView.swift:422`).
+    #expect(presentation.usesChromeControl)
+  }
+
+  /// The other half of the reversal, stated as its own pin: decision 4 changes Regular-3 and
+  /// NOTHING else. A change that also flipped Compact's modality or Regular-2's placement would
+  /// pass the test above and fail here, which is why the two are separate.
+  @Test("Decision 4 changes Regular-3 only — Compact's sheet and Regular-2's slide-over stand")
+  func decisionFourLeavesTheOtherTwoPresentationsAlone() {
+    #expect(InspectorPlacement.presentation(for: .compact) == .sheet)
+    #expect(InspectorPlacement.presentation(for: .compact).isModal)
+    #expect(InspectorPlacement.presentation(for: .regular2) == .slideOver)
+    #expect(InspectorPlacement.presentation(for: .regular2).isModal == false)
+    // And the resolver still answers three different presentations — a `usesChromeControl` that
+    // is now true everywhere must not have been "simplified" by collapsing the enum itself.
+    #expect(
+      InspectorPlacement.presentation(for: .compact)
+        != InspectorPlacement.presentation(for: .regular2))
+    #expect(
+      InspectorPlacement.presentation(for: .regular2)
+        != InspectorPlacement.presentation(for: .regular3))
   }
 
   /// Scope, stated because a diff-gate round-1 finding was that this test's name overclaimed:
@@ -69,6 +95,36 @@ struct LayoutPresentationTests {
     #expect(
       InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: 2)
         == "Info, 2 filters active")
+  }
+
+  /// WP16 P2 (IMGMGR-298): the collapse MECHANISM, pinned as a value because the gate proved the
+  /// obvious implementation is a no-op. Rendering an `EmptyView` into the third column left the
+  /// grid exactly where it was (`actionBarMidX before=104.5 after=104.5`, 1376 pt window): a
+  /// `NavigationSplitView` reserves its columns by initializer arity, so the collapsed state has
+  /// to render the two-column shape instead — and then the sidebar would take the freed pane
+  /// unless the visibility says otherwise. That "unless" is this function, and these are the
+  /// four answers `RootView` depends on.
+  @Test("Collapsing the Regular-3 inspector asks for one pane, and it is not the sidebar")
+  func theCollapsedRegular3WorkspaceAsksForTheDetailPaneOnly() {
+    // Shown: unchanged from what ships — the three-column request.
+    #expect(
+      InspectorPlacement.columnVisibility(for: .regular3, regular3InspectorShown: true) == .all)
+    // Collapsed: ONE pane. `.doubleColumn` here would put the queue beside the grid, which
+    // decision 4 did not ask for; `.all` is what the no-op EmptyView build was still asking for.
+    #expect(
+      InspectorPlacement.columnVisibility(for: .regular3, regular3InspectorShown: false)
+        == .detailOnly)
+    // The flag is a REGULAR-3 fact only: it must not reach a width whose inspector is a sheet or
+    // a slide-over, where the sidebar carries the queue and hiding it would cost the launch
+    // surface. Both values, so a rule written as "collapsed -> detailOnly" everywhere fails here.
+    for shown in [true, false] {
+      #expect(
+        InspectorPlacement.columnVisibility(for: .compact, regular3InspectorShown: shown)
+          == LayoutResolver.columnVisibility(for: .compact))
+      #expect(
+        InspectorPlacement.columnVisibility(for: .regular2, regular3InspectorShown: shown)
+          == LayoutResolver.columnVisibility(for: .regular2))
+    }
   }
 
   @Test("The Regular-3 width pin matches the literal the UI test classifies layouts with")
