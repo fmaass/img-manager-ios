@@ -48,6 +48,16 @@ final class GridMoreMenuUITests: XCTestCase {
     more.tap()
   }
 
+  /// How many elements on screen carry `title` as their own words, counted the two ways the
+  /// accessibility tree can expose a menu section header — as static text and as an element
+  /// whose identifier defaults to its label. Either is proof the header rendered; a header that
+  /// SwiftUI dropped is 0 both ways.
+  private func headerCount(_ title: String, in app: XCUIApplication) -> Int {
+    let byLabel = app.staticTexts.matching(NSPredicate(format: "label == %@", title)).count
+    let byIdentifier = app.descendants(matching: .any).matching(identifier: title).count
+    return byLabel + byIdentifier
+  }
+
   /// A plate element, however the accessibility tree happens to expose it: as its own element
   /// with the shipped identifier, or — if SwiftUI folded it into the tile — as the filename's
   /// own static text. Either is proof the plate rendered; neither existing is proof it did not.
@@ -224,6 +234,57 @@ final class GridMoreMenuUITests: XCTestCase {
     XCTContext.runActivity(
       named: "Status sheet read-only · \(zoneRows) zone-labelled elements · captured "
         + "\(screenshot.image.size)"
+    ) { _ in }
+  }
+
+  /// WP16 P4 (IMGMGR-297, p3332 decision 3): the eleven decided entries read as LABELLED groups.
+  /// The unit suite proves the partition and that `entries` is derived from it
+  /// (`GridMoreMenuSectionsTests`); this proves the labels reach the menu a reader opens, which a
+  /// correct declaration the body never renders would not.
+  ///
+  /// "Marks" is asserted rather than any of the four because it is the one section title that is
+  /// not a word this app already puts on screen ("Scene" is a grouping row title,
+  /// `GridView.rowTitle(for:)`), so the before/after pair below attributes the hit to THIS menu.
+  ///
+  /// If SwiftUI presents a `Menu`'s `Section` headers headerless on an idiom, this fails there.
+  /// That failure is the phase's declared-deviation pivot (plan §Phase 4 "Known unknown"), to be
+  /// named in the report and ticketed — never relaxed here, and never faked with a disabled row.
+  func testMoreMenuGroupsItsEntriesUnderSectionHeaders() throws {
+    let app = launchedApp()
+    let header = "Marks"
+
+    XCTAssertEqual(
+      headerCount(header, in: app), 0,
+      "'\(header)' is already on screen before the More menu opened, so the hit below would not "
+        + "be attributable to the menu's own section header.")
+
+    openMoreMenu(app)
+
+    // Positive control for the header assertion: the menu really did present its rows, so a
+    // headerless result below is about the HEADERS and not about a menu that never opened.
+    let known = app.descendants(matching: .any)["gridMoreMenu.more.status"]
+    XCTAssertTrue(
+      known.waitForExistence(timeout: 5),
+      "The More menu did not present its Status row, so the section-header check would be "
+        + "vacuous.")
+
+    let observed = ["Marks", "View", "Shoot", "Scene"]
+      .map { "\($0)=\(headerCount($0, in: app))" }
+      .joined(separator: ", ")
+    XCTAssertGreaterThan(
+      headerCount(header, in: app), 0,
+      "The opened More menu renders no '\(header)' section header (observed: \(observed)). "
+        + "SwiftUI presented the sections headerless on this idiom — the phase's declared "
+        + "deviation, not a test to relax.")
+
+    let screenshot = XCUIScreen.main.screenshot()
+    let attachment = XCTAttachment(screenshot: screenshot)
+    attachment.name = "more-menu-sections"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+
+    XCTContext.runActivity(
+      named: "More menu section headers · \(observed) · captured \(screenshot.image.size)"
     ) { _ in }
   }
 }

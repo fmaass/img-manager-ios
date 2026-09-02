@@ -48,6 +48,30 @@ struct ShootWindowOpener: Sendable {
   }
 }
 
+/// The ONE path a shoot window is opened by. WP16 P4 (IMGMGR-297), the plan's B8 fold.
+///
+/// Before this, the app's two "Open in New Window" entry points — the grid's More row and the
+/// menu bar's View entry — each carried their own `guard let value … opener.open(value)`, so they
+/// did not share a call path and "the menu-bar twin still fires" could only be asserted about a
+/// hand-built command rather than about the shipped wiring. Both now delegate here: the guard,
+/// the value and the opener call exist ONCE, and deleting this call from either site turns that
+/// site's own test RED.
+///
+/// Nothing about what either entry point DOES changed with the extraction — the shoot opened, the
+/// enablement rule and the titles are byte-identical to the behaviour that shipped in P11.
+enum ShootWindowAction {
+  /// Whether a window was asked for. `false` exactly when there is no shoot in scope — the same
+  /// condition `ShootSceneValue.from(query:)` decides and both entry points render as their
+  /// disabled state, so a disabled control that somehow fired is a no-op rather than a trap.
+  @MainActor
+  @discardableResult
+  static func open(_ value: ShootSceneValue?, using opener: ShootWindowOpener) -> Bool {
+    guard let value else { return false }
+    opener.open(value)
+    return true
+  }
+}
+
 /// A restored scene's initial shoot, applied through the SAME entry point a queue tap uses.
 ///
 /// Pulled out of `RootView`'s `.task` as its own function for the reason every other routing
@@ -86,10 +110,11 @@ struct ShootWindowCommand {
 
   var isEnabled: Bool { value != nil }
 
+  /// Routed through `ShootWindowAction.open` — the shared path the grid's More row takes — so
+  /// the two entry points cannot open different things or disagree about the nil case.
   @MainActor
   func run() {
-    guard let value else { return }
-    opener.open(value)
+    ShootWindowAction.open(value, using: opener)
   }
 }
 

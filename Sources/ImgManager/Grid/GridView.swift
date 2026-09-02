@@ -200,6 +200,25 @@ struct GridView: View {
     }
   }
 
+  /// The scroll position, translated between what `ScrollView` deals in (a row id) and what
+  /// survives the collapse (a photograph) — `GridScrollAnchor` carries the argument for why those
+  /// are not the same thing. SwiftUI owns the ordering of the read and the write, which is why
+  /// this is a binding rather than a restore fired from `.task` or `.onAppear`: those race the
+  /// first preference pass, which would overwrite the anchor with the top of the fresh view
+  /// before anything could act on it.
+  ///
+  /// Hand-built rather than `@Bindable`'s `$store.gridScrollAnchor` for a second reason: the
+  /// anchor is `@ObservationIgnored` (it is written on every scroll tick), and a binding that
+  /// does not depend on the observation machinery is what keeps that true.
+  private var scrollAnchorBinding: Binding<GridRenderRowID?> {
+    Binding(
+      get: { GridScrollAnchor.row(containing: store.gridScrollAnchor, in: renderRows) },
+      set: { rowID in
+        guard let displayID = GridScrollAnchor.displayID(of: rowID) else { return }
+        store.gridScrollAnchor = displayID
+      })
+  }
+
   /// The scrollable justified grid, with the live pointer-drag gesture attached through
   /// `pointerGestureInstaller` rather than a bare `.gesture(...)` call — see that property's doc
   /// comment.
@@ -244,8 +263,13 @@ struct GridView: View {
             }
           }
         }
+        .scrollTargetLayout()
         .padding(2)
       }
+      // WP16 P2 (IMGMGR-298): the offset is bound to STORE-owned state, so it survives this
+      // view being rebuilt when the Regular-3 collapse swaps the split view's shape — see
+      // `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
+      .scrollPosition(id: scrollAnchorBinding)
       .coordinateSpace(name: "gridSpace")
       .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
     )

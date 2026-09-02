@@ -231,7 +231,13 @@ struct RootView: View {
 
   private var workspaceChrome: some View {
     Group {
-      if layoutMode == .regular3 {
+      // WP16 P2 (IMGMGR-298): the THIRD COLUMN IS ASKED FOR ONLY WHILE IT IS WANTED. Rendering
+      // an `EmptyView` into it instead was measured at the gate and does not collapse anything
+      // — `actionBarMidX before=104.5 after=104.5` at a 1376 pt window — because the column is
+      // reserved by this initializer's arity, not by its content. See
+      // `InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`, which is what keeps
+      // the queue out of the width that frees up.
+      if layoutMode == .regular3 && showRegular3Inspector {
         NavigationSplitView(columnVisibility: $columnVisibility) {
           sidebar
         } content: {
@@ -241,7 +247,9 @@ struct RootView: View {
         }
         .navigationSplitViewStyle(.prominentDetail)
       } else {
-        // Compact and Regular-2 (diff-gate round 3, blocker 3): a genuine 2-column split
+        // Compact, Regular-2, and (WP16 P2) Regular-3 with the inspector collapsed — the same
+        // shape, for the same reason, which is why the collapse reuses it rather than inventing
+        // one: a genuine 2-column split
         // (sidebar | grid) — GridView owns the FULL workspace pane, matching fold item 7's
         // "no permanent inspector column outside Regular-3" pin. Reusing the 3-column
         // initializer with an EMPTY `detailColumn` (as this view did before this fix) still
@@ -366,7 +374,11 @@ struct RootView: View {
     let mode = LayoutResolver.resolve(width: width, horizontalSizeClass: horizontalSizeClass)
     guard mode != layoutMode else { return }
     layoutMode = mode
-    columnVisibility = LayoutResolver.columnVisibility(for: mode)
+    // WP16 P2 (IMGMGR-298): through `InspectorPlacement`, not `LayoutResolver` directly, so a
+    // launch that starts collapsed (`-UITestInspectorHidden`) reaches Regular-3 already asking
+    // for the one-pane visibility the collapsed shape needs — the same answer the toggle gives.
+    columnVisibility = InspectorPlacement.columnVisibility(
+      for: mode, regular3InspectorShown: showRegular3Inspector)
   }
 
   /// IMGMGR-255: the account item, declared ONCE and attached to the split view's own COLUMNS.
@@ -419,7 +431,9 @@ struct RootView: View {
             Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
           },
           treeSection: FolderTreeSection(
-            gridService: gridService, layoutMode: layoutMode,
+            // The SAME loader instance the queue cards above take (WP16 P5): one cache, one
+            // concurrency gate for every cover in this column.
+            gridService: gridService, heroLoader: heroLoader, layoutMode: layoutMode,
             selectedFolderID: $selectedFolderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
@@ -510,7 +524,19 @@ struct RootView: View {
   /// disagreeing about which one a tap moved. Reading the presentation here is what makes that
   /// structurally impossible rather than a rule three call sites have to remember.
   private var inspectorVisibilityBinding: Binding<Bool> {
-    inspectorPresentation == .permanentColumn ? $showRegular3Inspector : $showInspector
+    guard inspectorPresentation == .permanentColumn else { return $showInspector }
+    // The Regular-3 collapse is TWO facts that must move together: whether the inspector column
+    // is asked for, and what the split view is asked to show. Written in one setter — and the
+    // visibility computed from the incoming value rather than read back from the state just
+    // written — so no ordering between two `@State` writes can leave the pane count and the
+    // visibility describing different workspaces.
+    return Binding(
+      get: { showRegular3Inspector },
+      set: { shown in
+        showRegular3Inspector = shown
+        columnVisibility = InspectorPlacement.columnVisibility(
+          for: .regular3, regular3InspectorShown: shown)
+      })
   }
 
   /// [/link/3220] §2.2's side panel: anchored to the trailing edge of the grid pane,
