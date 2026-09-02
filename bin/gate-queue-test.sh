@@ -10,6 +10,11 @@
 # shape that killed the caller. Case 1 asserts pgrep would have matched (positive control)
 # and that gate-queue.sh's argv parser refuses anyway.
 #
+# It also covers the round-2 proofs: a flock parent of ANOTHER queue lock, a recycled pid (a
+# record whose start time no longer matches the live process), a spec that turns `running`
+# while the drop waits for the per-record lock, that lock still being held at --lock-wait, and
+# two concurrent enqueues racing for one label.
+#
 # Needs no Mac: bin/mac-gate.sh is stubbed inside a throwaway git worktree and
 # GATE_QUEUE_{LOCK,STATE,SUMMARY} point into a temp dir, so the real queue is never touched.
 set -u
@@ -19,6 +24,7 @@ self_label=drop-self-decoy
 here="$(cd "$(dirname "$0")" && pwd)"
 qs="$here/gate-queue.sh"
 tmp="$(mktemp -d)"
+tmp="$(cd "$tmp" && pwd -P)"
 export GATE_QUEUE_LOCK="$tmp/gate.lock"
 export GATE_QUEUE_STATE="$tmp/state"
 export GATE_QUEUE_SUMMARY="$tmp/summary"
@@ -35,6 +41,10 @@ waitfor() { # SECONDS CMD… — poll CMD every 100 ms
   local n=$1 i=0; shift
   while [ "$i" -lt $((n * 10)) ]; do "$@" && return 0; sleep 0.1; i=$((i + 1)); done
   return 1
+}
+proc_start() { # PID — /proc/PID/stat field 22, the way gate-queue.sh reads it
+  local rest; rest="$(cat "/proc/$1/stat")"; rest="${rest##*) }"
+  set -f; set -- $rest; set +f; printf '%s\n' "${20}"
 }
 state_is() { [ "$(field "$1" state)" = "$2" ]; }
 has_pid()  { case "$(field "$1" flock_pid)" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
@@ -71,6 +81,7 @@ worktree=$wt
 ref=$sha
 label=$self_label
 log=$tmp/never.log
+lock=$GATE_QUEUE_LOCK
 enqueue_pid=$$
 flock_pid=$$
 run_pid=
@@ -169,9 +180,31 @@ else
 fi
 
 # ------------------------------------------- 3/4: a genuinely waiting spec, dry-run then kill
-flock -w 60 "$GATE_QUEUE_LOCK" sleep 45 &
+flock -w 120 "$GATE_QUEUE_LOCK" sleep 120 &
 holder=$!; strays="$strays $holder"
 sleep 0.5
+
+# F4: two enqueues race for one label; the record is created with O_EXCL so exactly one wins.
+( "$qs" enqueue "$wt:$sha:dup-demo" > "$tmp/d1.out" 2>&1; echo $? > "$tmp/d1.rc" ) &
+dup1=$!; strays="$strays $dup1"
+( "$qs" enqueue "$wt:$sha:dup-demo" > "$tmp/d2.out" 2>&1; echo $? > "$tmp/d2.rc" ) &
+dup2=$!; strays="$strays $dup2"
+waitfor 20 test -s "$tmp/d1.rc" -o -s "$tmp/d2.rc"
+sleep 0.5
+losers=0; loser_rc=""; loser_out=""
+for n in 1 2; do
+  if [ -s "$tmp/d$n.rc" ]; then losers=$((losers + 1)); loser_rc="$(cat "$tmp/d$n.rc")"; loser_out="$(cat "$tmp/d$n.out")"; fi
+done
+if [ "$losers" -eq 1 ] && [ "$loser_rc" = 2 ] && state_is dup-demo waiting    && printf '%s' "$loser_out" | grep -q "dup-demo"; then
+  ok F4-dup "one enqueue of dup-demo was admitted, the other exited 2: ${loser_out##*: }"
+else
+  bad F4-dup "losers=$losers rc=$loser_rc state=$(field dup-demo state): $loser_out"
+fi
+out="$("$qs" drop dup-demo 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok F4-cleanup "the admitted dup-demo spec was dropped (rc=0)" \
+                || bad F4-cleanup "drop dup-demo rc=$rc: $out"
+wait "$dup1" "$dup2" 2>/dev/null
+
 STUB_GATE_SLEEP=1 "$qs" enqueue "$wt:$sha:waiting-demo" > "$tmp/enq2.out" 2>&1 &
 enq2=$!; strays="$strays $enq2"
 if waitfor 20 has_pid waiting-demo && state_is waiting-demo waiting; then
@@ -180,6 +213,73 @@ else
   bad 3-setup "state=$(field waiting-demo state) flock_pid=$(field waiting-demo flock_pid)"
 fi
 wpid="$(field waiting-demo flock_pid)"
+rec="$GATE_QUEUE_STATE/waiting-demo.spec"
+
+# F2: a record whose start time no longer matches the live pid is a recycled pid.
+true_start="$(field waiting-demo flock_start)"
+sed -i "s/^flock_start=.*/flock_start=$((true_start + 7))/" "$rec"
+out="$("$qs" drop waiting-demo 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && alive "$wpid" && printf '%s' "$out" | grep -q "recycled pid"; then
+  ok F2-starttime "drop refused a pid whose start time does not match the record (rc=$rc)"
+else
+  bad F2-starttime "rc=$rc alive=$(alive "$wpid" && echo yes || echo no): $out"
+fi
+sed -i "s/^flock_start=.*/flock_start=$true_start/" "$rec"
+
+# F3a: the per-record lock is held; drop waits and then names the reason.
+flock "$GATE_QUEUE_STATE/waiting-demo.lock" sleep 6 &
+reclock=$!; strays="$strays $reclock"
+sleep 0.3
+out="$("$qs" drop waiting-demo --lock-wait 1 2>&1)"; rc=$?
+if [ "$rc" -eq 6 ] && alive "$wpid" && printf '%s' "$out" | grep -q "per-record lock"; then
+  ok F3a-lockwait "drop timed out on the per-record lock and signalled nothing (rc=6)"
+else
+  bad F3a-lockwait "rc=$rc: $out"
+fi
+kill "$reclock" 2>/dev/null; wait "$reclock" 2>/dev/null
+
+# F3b: the spec turns `running` while the drop is waiting for that same lock.
+flock "$GATE_QUEUE_STATE/waiting-demo.lock" \
+  bash -c 'sleep 2; sed -i "s/^state=waiting/state=running/" "$1"' _ "$rec" &
+flipper=$!; strays="$strays $flipper"
+sleep 0.3
+out="$("$qs" drop waiting-demo --lock-wait 15 2>&1)"; rc=$?
+if [ "$rc" -eq 3 ] && alive "$wpid" && printf '%s' "$out" | grep -q "RUNNING"; then
+  ok F3b-transition "a spec that turned running while drop waited was refused (rc=3)"
+else
+  bad F3b-transition "rc=$rc alive=$(alive "$wpid" && echo yes || echo no): $out"
+fi
+wait "$flipper" 2>/dev/null
+sed -i "s/^state=running/state=waiting/" "$rec"
+
+# F1: a real flock parent with this script's __run argv for the same label — but on ANOTHER
+# lock. Only the lock operand differs, so only the argv lock binding can refuse it.
+other="$tmp/other.lock"
+flock -w 60 "$other" sleep 30 &
+olholder=$!; strays="$strays $olholder"
+sleep 0.3
+flock -w 60 "$other" "$qs" __run "$wt" "$sha" otherlock-demo "$tmp/never.log" &
+opid=$!; strays="$strays $opid"
+sleep 0.5
+sed -e "s/^label=.*/label=otherlock-demo/" -e "s/^flock_pid=.*/flock_pid=$opid/" \
+    -e "s|^flock_start=.*|flock_start=$(proc_start "$opid")|" \
+    "$rec" > "$GATE_QUEUE_STATE/otherlock-demo.spec"
+out="$("$qs" drop otherlock-demo 2>&1)"; rc=$?
+if [ "$rc" -eq 5 ] && alive "$opid" && printf '%s' "$out" | grep -q "flock operand"; then
+  ok F1-argvlock "drop refused a flock parent of another queue lock (rc=5)"
+else
+  bad F1-argvlock "rc=$rc alive=$(alive "$opid" && echo yes || echo no): $out"
+fi
+sed -i "s|^lock=.*|lock=$other|" "$GATE_QUEUE_STATE/otherlock-demo.spec"
+out="$("$qs" drop otherlock-demo 2>&1)"; rc=$?
+if [ "$rc" -eq 5 ] && alive "$opid" && printf '%s' "$out" | grep -q "belongs to queue lock"; then
+  ok F1-reclock "drop refused a record written for another queue lock (rc=5)"
+else
+  bad F1-reclock "rc=$rc: $out"
+fi
+kill "$opid" 2>/dev/null; wait "$opid" 2>/dev/null
+kill "$olholder" 2>/dev/null; wait "$olholder" 2>/dev/null
+rm -f "$GATE_QUEUE_STATE/otherlock-demo.spec"
 out="$("$qs" drop waiting-demo --dry-run 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "$wpid" && alive "$wpid" \
    && [ "$(field waiting-demo state)" = waiting ]; then
@@ -221,6 +321,29 @@ else
   bad 4-done "expected a refusal for the finished spec, got rc=$rc"
 fi
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+
+# 4b: the last window F3 leaves — a run that forks between the children check and the signal.
+# The drop's marker is written under the per-record lock exactly as drop writes it; the run
+# then acquires the queue lock, finds the marker and exits 99 without touching the worktree.
+flock -w 30 "$GATE_QUEUE_LOCK" sleep 3 &
+holder2=$!; strays="$strays $holder2"
+sleep 0.3
+"$qs" enqueue "$wt:$sha:abort-demo" > "$tmp/enq3.out" 2>&1 &
+enq3=$!; strays="$strays $enq3"
+if waitfor 15 has_pid abort-demo; then
+  flock "$GATE_QUEUE_STATE/abort-demo.lock" \
+    bash -c 'printf "drop_requested=%s\n" "$(date)" >> "$1"' _ "$GATE_QUEUE_STATE/abort-demo.spec"
+  wait "$enq3" 2>/dev/null
+  if [ "$(field abort-demo rc)" = 99 ] && grep -q DROPPED-BEFORE-START "$(field abort-demo log)" \
+     && [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = lane ]; then
+    ok 4b-abort "a run that found a drop request exited 99 without starting the gate"
+  else
+    bad 4b-abort "rc=$(field abort-demo rc) log=$(cat "$(field abort-demo log)" 2>&1)"
+  fi
+else
+  bad 4b-abort "spec abort-demo never reached the queue"
+fi
+kill "$holder2" 2>/dev/null; wait "$holder2" 2>/dev/null
 
 # ------------------------------------------------------------------------------- 5: list
 out="$("$qs" list 2>&1)"; rc=$?
