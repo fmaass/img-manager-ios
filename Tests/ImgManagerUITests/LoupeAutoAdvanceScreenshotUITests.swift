@@ -70,18 +70,23 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
     XCTAssertEqual(
       toggle.value as? String, "Off", "Could not park the cadence for a same-frame reading.")
 
-    // BY LABEL WITHIN THE BAR, not by an identifier of its own. The 23:26 gate run dumped the
-    // reason: `.accessibilityIdentifier("loupeMarkBar")` on the enclosing HStack propagates DOWN
-    // and overrides every child's, so all four controls report `identifier: 'loupeMarkBar'` —
-    // including `loupeClearButton`, which has carried a per-button identifier since P5 and has
-    // never surfaced either. Matching the container id AND the label is therefore both precise
-    // and the only thing that resolves one control.
-    let pick = app.buttons
-      .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Pick'"))
-      .firstMatch
+    // BY IDENTIFIER (IMGMGR-280). These queries used to match the CONTAINER's identifier plus the
+    // button's label, because `.accessibilityIdentifier("loupeMarkBar")` on the enclosing HStack
+    // propagated DOWN and overrode every child's: the 23:26 gate run dumped all four controls
+    // reporting `identifier: 'loupeMarkBar'`, `loupeClearButton` — which has carried its own
+    // identifier since P5 — included. The bar is an `.accessibilityElement(children: .contain)`
+    // now, so each control answers to its own name, and THAT is what these three lines assert:
+    // put the identifier back on the bare HStack and they stop resolving.
+    let pick = app.buttons["loupePickButton"]
     XCTAssertTrue(
       pick.waitForExistence(timeout: 10),
       "The loupe mark bar has no Pick control (IMGMGR-275).")
+
+    let clear = app.buttons["loupeClearButton"]
+    XCTAssertTrue(
+      clear.waitForExistence(timeout: 10),
+      "`loupeClearButton` does not resolve by its own identifier — the mark bar's container "
+        + "identifier is shadowing its children again (IMGMGR-280).")
 
     // STATE-INDEPENDENT, like every test in this file. Which frame the coordinate probe lands on
     // differs by idiom and the DEBUG fixture ships some photographs already marked — the 00:30
@@ -92,10 +97,6 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
     XCTContext.runActivity(named: "Pick reads \(pick.value as? String ?? "nil") on arrival") { _ in
     }
     if (pick.value as? String) != "Not picked" {
-      let clear = app.buttons
-        .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Clear'"))
-        .firstMatch
-      XCTAssertTrue(clear.waitForExistence(timeout: 10), "The loupe mark bar has no Clear control.")
       clear.tap()
       let cleared = expectation(
         for: NSPredicate(format: "value == 'Not picked'"), evaluatedWith: pick)
@@ -114,9 +115,7 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
     attach(name: "loupe-mark-bar-picked")
 
     // Undo takes the verdict back, and the control's own reading with it.
-    let undo = app.buttons
-      .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Undo'"))
-      .firstMatch
+    let undo = app.buttons["loupeUndoButton"]
     XCTAssertTrue(undo.waitForExistence(timeout: 10), "The loupe mark bar has no Undo control.")
     undo.tap()
     let backToPlain = expectation(

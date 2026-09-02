@@ -346,11 +346,19 @@ struct LoupeMarkBar: View {
       .buttonStyle(.bordered)
       .disabled(!store.undo.canUndo || store.isMutatingMark)
       .frame(minWidth: 44, minHeight: 44)
+      .accessibilityIdentifier("loupeUndoButton")
     }
     .labelStyle(.iconOnly)
     .font(.title3)
     .padding()
     .background(.bar)
+    // IMGMGR-280: `.contain` FIRST, then the bar's own identifier. Without it this HStack is not
+    // an accessibility element of its own, so an identifier put on it propagates DOWN and
+    // overrides every child's — the 23:26 gate run dumped all four controls reporting
+    // `loupeMarkBar`, `loupeClearButton` included, and a per-button identifier that never
+    // surfaces is a lie no test could catch. As a container the bar keeps its own identifier and
+    // the four buttons keep theirs.
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("loupeMarkBar")
   }
 
@@ -376,11 +384,7 @@ struct LoupeMarkBar: View {
     .tint(isActive ? MarkPalette.color(for: control.markRole) : nil)
     .disabled(store.focusedImageID == nil || store.isMutatingMark)
     .frame(minWidth: 44, minHeight: 44)
-    // No per-button `accessibilityIdentifier` here: this bar's own identifier is set on the
-    // enclosing HStack and PROPAGATES down over every child's (gate run 23:26 dumped all four
-    // controls reporting `identifier: 'loupeMarkBar'`, `loupeClearButton` included). One that
-    // never surfaces would be a lie a test could not catch, so the controls are resolved by
-    // label within the bar instead.
+    .accessibilityIdentifier(control.accessibilityIdentifier)
     .accessibilityValue(LoupeMarkPresentation.accessibilityValue(for: control, state: state))
     .accessibilityAddTraits(isActive ? [.isSelected] : [])
   }
@@ -394,6 +398,16 @@ enum LoupeMarkPresentation {
   enum Control: Sendable, Equatable, CaseIterable {
     case pick
     case dislike
+
+    /// IMGMGR-280: each control's OWN identifier, so a test resolves it by identity rather than
+    /// by matching the bar's identifier and the button's label together — which is what the
+    /// controls were reduced to while the container's identifier shadowed theirs.
+    var accessibilityIdentifier: String {
+      switch self {
+      case .pick: return "loupePickButton"
+      case .dislike: return "loupeDislikeButton"
+      }
+    }
 
     var title: String {
       switch self {
