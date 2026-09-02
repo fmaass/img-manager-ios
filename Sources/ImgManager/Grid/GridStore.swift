@@ -454,6 +454,11 @@ final class GridStore {
     focusedImageID = nil
     undo.clear()
     conflictRecovery = nil
+    // Both callers rebuild the rendered sequence outright — a different shoot, or the flat/scene
+    // swap that changes every row id — so an anchor into the old sequence means nothing. NOT
+    // cleared in `applyFilterChange`: a filter narrows the same shoot, and a row that survives
+    // it is still the row the reader was looking at.
+    gridScrollAnchor = nil
     await reloadFirstPage()
   }
 
@@ -515,6 +520,11 @@ final class GridStore {
     focusedImageID = nil
     undo.clear()
     conflictRecovery = nil
+    // Both callers rebuild the rendered sequence outright — a different shoot, or the flat/scene
+    // swap that changes every row id — so an anchor into the old sequence means nothing. NOT
+    // cleared in `applyFilterChange`: a filter narrows the same shoot, and a row that survives
+    // it is still the row the reader was looking at.
+    gridScrollAnchor = nil
     await reloadFirstPage()
   }
 
@@ -625,6 +635,30 @@ final class GridStore {
       await applyFlatPresentation { $0.groupBy = choice.groupByKey?.rawValue }
     }
   }
+
+  // MARK: - Grid scroll anchor (WP16 P2)
+
+  /// Where the contact sheet is scrolled to, as the id of its top-most rendered row.
+  ///
+  /// View state living in the store, deliberately, and only because the view cannot keep it.
+  /// Decision 4's Regular-3 collapse (IMGMGR-298) swaps the workspace between the three-column
+  /// and two-column `NavigationSplitView` shapes — the only shape change that reclaims the
+  /// inspector's width, since a column is reserved by the initializer's arity — and that moves
+  /// `GridView` from the `content` slot to the `detail` slot. A different position in the view
+  /// tree is a different STRUCTURAL IDENTITY, so SwiftUI tears the subtree down and builds a
+  /// fresh one: this store keeps the page, the selection and the focus, but the `ScrollView`'s
+  /// own offset belongs to the view and goes with it. A reader deep inside a shoot who hides the
+  /// inspector would land back at the top. Parked here, it outlives the rebuild.
+  ///
+  /// `@ObservationIgnored` on purpose: this is written on every scroll tick, and an observable
+  /// write there would invalidate every view reading this store while the reader is dragging
+  /// through a contact sheet. Nothing needs to REACT to it — the value only has to survive, and
+  /// the rebuilt `ScrollView` reads it through `GridView.scrollAnchorBinding`.
+  ///
+  /// A PHOTOGRAPH, never the row id `ScrollView` itself reports: the collapse changes the pane
+  /// width, which repacks every justified row, so a remembered row id names a row that no longer
+  /// exists. `GridScrollAnchor` is the translation in both directions, and owns that argument.
+  @ObservationIgnored var gridScrollAnchor: GridDisplayID?
 
   // MARK: - Stats facets (WP12: the Compact filter surface)
 

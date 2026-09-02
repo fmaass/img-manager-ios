@@ -163,6 +163,105 @@ final class InspectorSlideOverUITests: XCTestCase {
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-inspectorShown")
   }
 
+  /// WP16 P2 (IMGMGR-298), the Codex delta blocker: the collapse that reclaims the inspector's
+  /// width does it by swapping the workspace between the three-column and two-column
+  /// `NavigationSplitView` shapes, which moves `GridView` to a different slot — a new structural
+  /// identity, so SwiftUI builds a fresh `ScrollView` at offset zero. `GridStore` keeps the page,
+  /// the selection and the focus; the scroll offset had no preservation path at all, so a reader
+  /// deep inside a shoot who hid the inspector landed back at the top.
+  ///
+  /// **The EXPAND leg is the falsifier, and this says so rather than letting three legs look
+  /// equally load-bearing.** Collapsed, the grid is the whole 1376 pt window and the fixture's
+  /// twelve tiles may well all fit, so "tile 12 is still on screen" can pass there for the wrong
+  /// reason. Re-expanded, the grid is the ~209 pt column again — where tile 12 shows ONLY if the
+  /// offset was restored, and where a lost offset puts tile 1 back on screen. Those two
+  /// readings are asserted as a pair, so neither a blank screen nor an all-tiles-visible layout
+  /// can satisfy them together.
+  ///
+  /// Against `0b04220` both expand-leg assertions fail: nothing carried the offset across the
+  /// rebuild, so the re-expanded grid is at the top with tile 1 showing and tile 12 far below.
+  func testRegular3CollapsePreservesTheGridScrollPosition() {
+    XCUIDevice.shared.orientation = .landscapeLeft
+
+    let app = XCUIApplication()
+    app.launchArguments = ["-UITestStubGrid"]
+    app.launch()
+
+    let dislike = app.buttons["Dislike"]
+    XCTAssertTrue(
+      dislike.waitForExistence(timeout: 30),
+      "Action bar (Dislike) never appeared within 30s — expected the DEBUG fixture "
+        + "composition's populated grid, got something else.")
+    Thread.sleep(forTimeInterval: 2.0)
+
+    // Width, never an idiom: the iPhone destination has no Regular-3 to collapse, and a test that
+    // asserted one there would be asserting a layout the device cannot resolve. Recorded, not
+    // silently skipped.
+    guard app.frame.size.width >= Self.regular3WidthThreshold else {
+      print(
+        "WP16P2-SCROLL \(app.frame.size): below the Regular-3 pin "
+          + "(\(Self.regular3WidthThreshold)) — no third column here to collapse")
+      return
+    }
+
+    let chromeInfo = app.navigationBars.buttons
+      .matching(NSPredicate(format: "label BEGINSWITH 'Info'")).firstMatch
+    let firstTile = app.descendants(matching: .any)["gridTile-1"]
+    let lastTile = app.descendants(matching: .any)["gridTile-12"]
+    let gridScroll = app.scrollViews.containing(.any, identifier: "gridTile-1").firstMatch
+    XCTAssertTrue(
+      gridScroll.waitForExistence(timeout: 10),
+      "No scrollable grid containing the fixture's tiles — the twelve `gridTile-<id>` elements "
+        + "are what this test scrolls through.")
+
+    var swipes = 0
+    while !lastTile.isHittable && swipes < 12 {
+      gridScroll.swipeUp()
+      swipes += 1
+    }
+    XCTAssertTrue(
+      lastTile.isHittable,
+      "Could not scroll the last fixture tile into view after \(swipes) swipes — the rest of "
+        + "this test has no deep position to preserve.")
+    // Positive control for the whole test: we really did travel. If the grid never scrolled, tile
+    // 1 would still be on screen and every "position preserved" reading below would be vacuous.
+    XCTAssertFalse(
+      firstTile.isHittable,
+      "The grid did not actually scroll — tile 1 is still on screen beside tile 12, so nothing "
+        + "below distinguishes a preserved position from an unmoved one.")
+    print("WP16P2-SCROLL scrolled: window=\(app.frame.size) swipes=\(swipes)")
+    attach(app: app, named: "P2-scroll-deep-before-collapse")
+
+    // Collapse. Weak on its own (see the note above) — asserted anyway, because a crash or a
+    // blanked grid here should fail as itself rather than as the expand leg.
+    chromeInfo.tap()
+    XCTAssertTrue(
+      waitForNonExistence(of: app.buttons["Stats"], timeout: 10),
+      "The inspector did not collapse, so this test never reached the rebuild it is about.")
+    XCTAssertTrue(
+      lastTile.isHittable,
+      "The collapsed grid lost the photograph the reader was looking at.")
+    attach(app: app, named: "P2-scroll-deep-collapsed")
+
+    // Expand — THE falsifier.
+    chromeInfo.tap()
+    XCTAssertTrue(
+      app.buttons["Stats"].waitForExistence(timeout: 10),
+      "The inspector did not come back, so the expand leg never ran.")
+    attach(app: app, named: "P2-scroll-deep-after-expand")
+    XCTAssertTrue(
+      lastTile.isHittable,
+      "Collapsing and re-expanding the inspector threw the reader back to the top of the shoot. "
+        + "The grid is rebuilt in a different split-view slot, so its ScrollView starts at zero "
+        + "unless the position is carried in store-owned state — see "
+        + "`GridStore.gridScrollAnchor` and `GridScrollAnchor`, which also explains why the "
+        + "anchor cannot be a row id.")
+    XCTAssertFalse(
+      firstTile.isHittable,
+      "Tile 1 is back on screen after the round trip — the restored position is the top of the "
+        + "grid, not the place the reader was.")
+  }
+
   /// WP16 P2 (IMGMGR-298), design record [/link/3332] decision 4: **both panels collapsible.**
   ///
   /// This branch REVERSES a pinned, tested contract. At `4753450` it read
