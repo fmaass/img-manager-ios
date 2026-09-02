@@ -183,6 +183,22 @@ enum ShareExportPlan {
     seamAvailable && hasEdit == true
   }
 
+  /// WHICH FILE A SHARE HANDS OVER — the one rule, in one place (IMGMGR-348).
+  ///
+  /// Owner decision of 2026-09-02, verbatim: "we should always share the highest possible
+  /// quality", and on RAW: "on the ipad we shouldnt share raw's - they are unedited masters -
+  /// makes no sense". So: the edited master when the photograph has one, otherwise the highest
+  /// quality this client serves, which is the `preview` proxy — and never a RAW original, which
+  /// `ShareVariant` cannot even name (IMGMGR-196's invariant, preserved by construction).
+  ///
+  /// It is derived from `offersMaster` rather than restating it, so the seam and the edit check
+  /// are asked exactly once and cannot drift apart.
+  static func variant(hasEdit: Bool?, seamAvailable: Bool = ShareMasterSeam.isAvailable)
+    -> ShareVariant
+  {
+    offersMaster(hasEdit: hasEdit, seamAvailable: seamAvailable) ? .master : .preview
+  }
+
   /// The download endpoint's declared refusals, mapped to app-owned copy.
   ///
   /// A `403` is a POLICY answer only when `X-Img-Policy` is present; the schema says so in as

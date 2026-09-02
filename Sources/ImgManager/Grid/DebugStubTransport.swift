@@ -103,6 +103,18 @@
           .ok,
           Components.Schemas.StackEditResult(
             dissolvedStackIds: [], loosenedImageIds: [], stackIds: [Self.fixtureStackID]))
+      // IMGMGR-348: the one-tap share's master lane needs bytes in the fixture composition —
+      // `fixtureImages()` marks every third stub image `hasEdit`, and those are exactly the ones
+      // whose share takes the master path, so without this the UI test would be measuring a
+      // refusal. Served as the preview proxy's own bytes under a server-authored name, which is
+      // the shape the real endpoint answers with.
+      case Operations.DownloadImageApiImagesImageIdDownloadGet.id:
+        var response = HTTPResponse(status: .ok)
+        response.headerFields[.contentType] = "image/jpeg"
+        if let name = HTTPField.Name("Content-Disposition") {
+          response.headerFields[name] = "attachment; filename=\"STUB-master.jpg\""
+        }
+        return (response, HTTPBody(Self.fixtureProxy(tier: "preview")))
       case Operations.SetMarkStateApiMarksStatePost.id:
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))

@@ -115,6 +115,27 @@ struct ShareExportPlanTests {
     #expect(ShareExportPlan.masterFilename(imageID: 9, contentType: .data) == "photo-9.dat")
   }
 
+  /// IMGMGR-348's ONE rule, and the RAW invariant that survives it: the master when there is
+  /// one, the preview otherwise, and no input of any kind produces a third answer.
+  @Test("The share rule: the edited master when there is one, the best proxy otherwise")
+  func shareVariantIsMasterWhenThereIsAnEdit() {
+    #expect(ShareExportPlan.variant(hasEdit: true, seamAvailable: true) == .master)
+    #expect(ShareExportPlan.variant(hasEdit: false, seamAvailable: true) == .preview)
+    #expect(ShareExportPlan.variant(hasEdit: nil, seamAvailable: true) == .preview)
+    // With the seam stood down there is no master lane at all, so the rule answers the only
+    // thing the client can actually serve rather than an entry that would refuse.
+    #expect(ShareExportPlan.variant(hasEdit: true, seamAvailable: false) == .preview)
+  }
+
+  @Test("The shipped rule, at the seam's own default, still cannot name a RAW original")
+  func shippedShareRuleNeverNamesARawOriginal() {
+    let edits: [Bool?] = [true, false, nil]
+    for hasEdit in edits {
+      let variant = ShareExportPlan.variant(hasEdit: hasEdit)
+      #expect(variant == .master || variant == .preview)
+    }
+  }
+
   @Test("No share variant can name a RAW original — the request is unrepresentable")
   func noOriginalVariantExists() {
     #expect(ShareVariant.allCases.map(\.rawValue).sorted() == ["master", "preview"])
