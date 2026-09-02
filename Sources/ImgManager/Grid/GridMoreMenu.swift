@@ -40,6 +40,23 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
   let surface: Surface
 }
 
+/// One labelled run of the More menu. WP16 P4 (IMGMGR-297, p3332 decision 3 — "the Lightroom
+/// overflow-menu grouping applied to the existing decided entry set: organization only, no new
+/// entries").
+///
+/// Sections are the menu's SINGLE inventory: `GridMoreMenu.entries` is DERIVED from them, so a
+/// grouping cannot drift from the set it groups — there is no second list to drift from. The
+/// partition is CONTIGUOUS over the owner's decided order, so grouping reorders nothing.
+struct GridMoreMenuSection: Identifiable, Sendable {
+  /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
+  let id: String
+  /// The words the group reads under. Never empty: a `Section` with no title is grouping WITHOUT
+  /// labels, which is a DECLARED DEVIATION from decision 3 rather than something that may ship
+  /// quietly, and `GridMoreMenuSectionsTests` fails on one.
+  let title: String
+  let entries: [GridMoreMenuEntry]
+}
+
 /// WP13 P5a (IMGMGR-221): the More menu's decided set — **Select · Clear mark ·
 /// Copy for Lightroom · Filename plates · Density · Status** (owner decision 2, 2026-08-30
 /// kickoff, epic comment 2106).
@@ -53,16 +70,36 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
 /// requires an observable effect — so a deleted entry and a no-oped entry both turn it RED.
 enum GridMoreMenu {
 
-  /// WP13 P11 (IMGMGR-220) APPENDS "Open in New Window"; it does not reorder the owner's decided
-  /// set. The six rows above it, and their order, are still decision 2 verbatim.
-  /// WP14 P4 (IMGMGR-277) APPENDS the three scene-edit actions, in the plan's own order — Merge
-  /// into…, Split here, Extract selected. They are appended for the same reason P11's row was:
-  /// the owner's decided set and its order are untouched, and a topology action is chrome by
+  /// WP16 P4 (IMGMGR-297): the four labelled groups, and the menu's ONE inventory.
+  ///
+  /// WP13 P11 (IMGMGR-220) APPENDED "Open in New Window"; it did not reorder the owner's decided
+  /// set. WP14 P4 (IMGMGR-277) APPENDED the three scene-edit actions, in the plan's own order —
+  /// Merge into…, Split here, Extract selected. They were appended for the same reason P11's row
+  /// was: the owner's decided set and its order are untouched, and a topology action is chrome by
   /// decision ("no new gestures", plan Decision 2).
-  static let entries: [GridMoreMenuEntry] = [
-    select, clearMark, copyForLightroom, filenamePlates, picksInGroups, density, status,
-    openInNewWindow, mergeScene, splitScene, extractScene,
+  ///
+  /// Grouping keeps that promise structurally rather than by care: each section is a CONTIGUOUS
+  /// run of the shipped order, so flattening them reproduces it exactly — which is what
+  /// `entries` below does, and what `GridMoreMenuSectionsTests` asserts element-wise.
+  static let sections: [GridMoreMenuSection] = [
+    GridMoreMenuSection(
+      id: "more.section.marks", title: "Marks",
+      entries: [select, clearMark, copyForLightroom]),
+    GridMoreMenuSection(
+      id: "more.section.view", title: "View",
+      entries: [filenamePlates, picksInGroups, density]),
+    GridMoreMenuSection(
+      id: "more.section.shoot", title: "Shoot",
+      entries: [status, openInNewWindow]),
+    GridMoreMenuSection(
+      id: "more.section.scene", title: "Scene",
+      entries: [mergeScene, splitScene, extractScene]),
   ]
+
+  /// DERIVED, never declared: the menu has one inventory and this is a view onto it. Every
+  /// existing reader (`GridMoreMenuContent`, `GridMoreMenuTests`, `ScenePicksInGroupsTests`,
+  /// `ShootSceneValueTests`) keeps working because the shape and the order are unchanged.
+  static let entries: [GridMoreMenuEntry] = sections.flatMap(\.entries)
 
   /// Already shipped as the menu's one item; unchanged, and now declared beside its five
   /// siblings rather than written inline in `ActionBarView`.
@@ -209,11 +246,12 @@ enum GridMoreMenu {
     title: { _ in ShootWindowCopy.title },
     isEnabled: { ShootSceneValue.from(query: $0.query) != nil },
     surface: .sceneWindow { store, opener in
-      // The SAME function the enabled state is derived from, called again — never a second
-      // check, never a force-unwrap. A disabled row cannot be activated; if one ever were, this
-      // guard makes it a no-op rather than a trap.
-      guard let value = ShootSceneValue.from(query: store.query) else { return }
-      opener.open(value)
+      // The SAME function the enabled state is derived from, handed to the SAME opening path the
+      // menu-bar twin uses (WP16 P4 / IMGMGR-297 B8) — never a second check, never a second call
+      // site, never a force-unwrap. `ShootWindowAction.open` owns the guard, so a disabled row
+      // that somehow fired is a no-op rather than a trap.
+      let value = ShootSceneValue.from(query: store.query)
+      ShootWindowAction.open(value, using: opener)
     })
 
   /// WP14 P4 (IMGMGR-277). All three rows follow P11's single-predicate discipline: the
@@ -255,7 +293,8 @@ enum GridMoreMenu {
     })
 }
 
-/// The menu's rendered body: EXACTLY `GridMoreMenu.entries`, in order, with no second list.
+/// The menu's rendered body: EXACTLY `GridMoreMenu.sections`, in order, with no second list —
+/// and therefore exactly `GridMoreMenu.entries`, which is those sections flattened.
 struct GridMoreMenuContent: View {
   let store: GridStore
   /// From `ActionBarLayout.foldsClearIntoMore` (WP13 P1) — the ONE thing about the menu that
@@ -267,10 +306,14 @@ struct GridMoreMenuContent: View {
   let openShootWindow: ShootWindowOpener
 
   var body: some View {
-    ForEach(GridMoreMenu.entries) { entry in
-      GridMoreMenuItem(
-        entry: entry, store: store, foldsClearIntoMore: foldsClearIntoMore,
-        openShootWindow: openShootWindow)
+    ForEach(GridMoreMenu.sections) { section in
+      Section(section.title) {
+        ForEach(section.entries) { entry in
+          GridMoreMenuItem(
+            entry: entry, store: store, foldsClearIntoMore: foldsClearIntoMore,
+            openShootWindow: openShootWindow)
+        }
+      }
     }
   }
 }
