@@ -28,6 +28,26 @@
 # lock) but less convenient than the reference gate's self-healing behaviour. Porting the
 # full reaping logic is future work if orphaned locks turn out to recur in practice.
 #
+# HOST-WIDE LOCK (IMGMGR-203, 2026-09-02): the per-branch lock above only stops two runs of
+# the SAME branch; on 2026-08-29 five lanes gated at once and drove merkur to load 40. A second
+# lock, `<gate root>/.host.lock`, admits ONE gate per Mac. It is acquired controller-side with
+# short ssh calls (never one long ssh), WAITED for (up to MAC_GATE_LOCK_WAIT seconds, polled
+# every 30 s) rather than refused, written with the same owner token + read-back as the branch
+# lock, released with the same owner compare, and recorded as its own `lock-wait` leg
+# (0 = taken, 3 = still busy at the wait cap, 2 = read-back mismatch). A stale host lock
+# (holder gone) is cleared by a human exactly like a stale branch lock:
+# `ssh <host> rm -rf '<gate root>/.host.lock'`; the LOCKED line prints the holder and its
+# start time so the age is visible.
+#
+# DETACHED REMOTE RUN (IMGMGR-203, 2026-09-02): the remote build+test script used to run inside
+# ONE `timeout 1800 ssh`, so every full run that outlived 30 min was killed mid-test while
+# xcodebuild finished on the Mac (14+ recurrences across three sessions; the legs were then
+# re-run by hand). The script is now copied to the gate dir and launched with nohup in the
+# background; the controller polls a done-marker over short ssh calls every 20 s, prints each
+# remote step's exit line as it lands, and fetches the run log at the end. The wall-clock budget
+# is MAC_GATE_REMOTE_CAP; a Mac unreachable for 15 consecutive polls ends the wait as
+# remote-run=124 as well.
+#
 # NEW versus the reference gate (WP8 plan round-2 delta, adopted advisory): the gate
 # directory on merkur is a MIRROR with no .git — same as memos-ng-ios's — so this script
 # cannot report a remote SHA or `git status`. Instead it computes a CONTENT MANIFEST (git
@@ -48,11 +68,16 @@
 #   MAC_GATE_IPAD_TYPE      simctl device type identifier for the iPad destination
 #                            (default: com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB)
 #   MAC_GATE_ARTIFACTS      local directory for copied-back logs (default: .gate-artifacts/)
+#   MAC_GATE_REMOTE_CAP     wall-clock budget in seconds for the detached remote run
+#                            (default: 7200); exceeding it records remote-run=124 and leaves
+#                            the remote process running (its pid is in <gate dir>/.gate-run.pid)
+#   MAC_GATE_LOCK_WAIT      seconds to wait for the host-wide gate lock (default: 21600);
+#                            exceeding it records lock-wait=3 and the run ends
 #
 # Exit codes: 2 = refusal (unsafe/unusable inputs, nothing was copied or run);
 #             3 = another run of this branch holds the gate lock;
 #             otherwise the exit code of the first failing step (which now includes
-#             `copyback` and `lock-release` — see the leg list below).
+#             `copyback`, `lock-release`, `lock-wait` and `remote-run` — see the leg list below).
 #
 # WP21 P2 (IMGMGR-336) added the `ui-orientation-base-grep` leg: every UI test class must inherit
 # `OrientationPinnedUITestCase`, because device orientation is simulator-global and a class that
@@ -118,30 +143,51 @@ step_summary=""
 # in the printed summary) and via the EXIT trap as a safety net for early-refusal paths
 # that never reach summary_and_exit at all.
 lock_held=0
+host_lock_held=0
 lock_released=0
 lock_owner=""
 target_dir=""
 
 release_lock() {
-  [ "$lock_held" = 1 ] || return 0
+  [ "$lock_held" = 1 ] || [ "$host_lock_held" = 1 ] || return 0
   [ "$lock_released" = 1 ] && return 0
   lock_released=1
-  local out rc
-  out="$(timeout 20 ssh -o BatchMode=yes "$host" "
-    lockdir='$target_dir/.lock'
-    if [ ! -d \"\$lockdir\" ]; then echo 'ALREADY-GONE'; exit 0; fi
-    owner=\"\$(cat \"\$lockdir/holder\" 2>/dev/null)\"
-    if [ \"\$owner\" != '$lock_owner' ]; then
-      echo \"OWNER-MISMATCH wrote=$lock_owner found=\$owner\"; exit 1
-    fi
-    rm -rf \"\$lockdir\"
-    if [ -d \"\$lockdir\" ]; then echo 'REMOVE-FAILED'; exit 1; fi
-    echo 'RELEASED'
-  " 2>&1)"
-  rc=$?
-  printf '%s\n' "$out" >> "$log" 2>/dev/null || true
-  [ "$rc" -eq 0 ] || say "LOCK RELEASE WARNING (recorded as lock-release leg): $out"
-  record lock-release "$rc"
+  local out rc worst=0
+  if [ "$lock_held" = 1 ]; then
+    out="$(timeout 20 ssh -o BatchMode=yes "$host" "
+      lockdir='$target_dir/.lock'
+      if [ ! -d \"\$lockdir\" ]; then echo 'ALREADY-GONE'; exit 0; fi
+      owner=\"\$(cat \"\$lockdir/holder\" 2>/dev/null)\"
+      if [ \"\$owner\" != '$lock_owner' ]; then
+        echo \"OWNER-MISMATCH wrote=$lock_owner found=\$owner\"; exit 1
+      fi
+      rm -rf \"\$lockdir\"
+      if [ -d \"\$lockdir\" ]; then echo 'REMOVE-FAILED'; exit 1; fi
+      echo 'RELEASED'
+    " 2>&1)"
+    rc=$?
+    printf 'branch lock: %s\n' "$out" >> "$log" 2>/dev/null || true
+    [ "$rc" -eq 0 ] || say "LOCK RELEASE WARNING (branch lock, recorded as lock-release leg): $out"
+    [ "$rc" -le "$worst" ] || worst=$rc
+  fi
+  if [ "$host_lock_held" = 1 ]; then
+    out="$(timeout 20 ssh -o BatchMode=yes "$host" "
+      lockdir=\"$GATE_ROOT_REMOTE/.host.lock\"
+      if [ ! -d \"\$lockdir\" ]; then echo 'ALREADY-GONE'; exit 0; fi
+      owner=\"\$(cat \"\$lockdir/holder\" 2>/dev/null)\"
+      if [ \"\$owner\" != '$lock_owner' ]; then
+        echo \"OWNER-MISMATCH wrote=$lock_owner found=\$owner\"; exit 1
+      fi
+      rm -rf \"\$lockdir\"
+      if [ -d \"\$lockdir\" ]; then echo 'REMOVE-FAILED'; exit 1; fi
+      echo 'RELEASED'
+    " 2>&1)"
+    rc=$?
+    printf 'host lock: %s\n' "$out" >> "$log" 2>/dev/null || true
+    [ "$rc" -eq 0 ] || say "LOCK RELEASE WARNING (host lock, recorded as lock-release leg): $out"
+    [ "$rc" -le "$worst" ] || worst=$rc
+  fi
+  record lock-release "$worst"
 }
 trap release_lock EXIT
 
@@ -161,6 +207,49 @@ say "controller manifest: $manifest_count tracked files at HEAD $head_sha, worki
 say "--- step: rsync ---"
 lock_owner="ctrl-$$-$(date -u +%s)-$RANDOM"
 esc_owner="$(esc "$lock_owner")"
+
+# --- Host-wide gate lock: ONE gate per Mac (IMGMGR-203, see header). --------------------
+lock_wait_cap="${MAC_GATE_LOCK_WAIT:-21600}"
+lock_wait_started=$SECONDS
+while :; do
+  hl_out="$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
+    lockdir=\"$GATE_ROOT_REMOTE/.host.lock\"
+    mkdir -p \"$GATE_ROOT_REMOTE\"
+    if mkdir \"\$lockdir\" 2>/dev/null; then
+      printf '%s\n' '$esc_owner' > \"\$lockdir/holder\"
+      date -u +%Y-%m-%dT%H:%M:%SZ > \"\$lockdir/since\"
+      rb=\"\$(cat \"\$lockdir/holder\" 2>/dev/null)\"
+      if [ \"\$rb\" = '$esc_owner' ]; then echo TAKEN; else echo MISMATCH; rm -rf \"\$lockdir\"; fi
+    else
+      printf 'HELD by %s since %s\n' \"\$(cat \"\$lockdir/holder\" 2>/dev/null || echo unknown)\" \"\$(cat \"\$lockdir/since\" 2>/dev/null || echo unknown)\"
+    fi
+  " 2>&1)"
+  hl_rc=$?
+  case "$hl_out" in
+    TAKEN) host_lock_held=1; break ;;
+    HELD*) ;;
+    MISMATCH)
+      echo "mac-gate: host lock read-back mismatch — not taken" >&2
+      record lock-wait 2
+      summary_and_exit ;;
+    *)
+      if [ "$hl_rc" -eq 0 ]; then
+        echo "mac-gate: unexpected host-lock reply: $hl_out" >&2
+        record lock-wait 2
+        summary_and_exit
+      fi ;;   # nonzero rc with no reply = transient ssh failure: retry below
+  esac
+  waited=$((SECONDS - lock_wait_started))
+  if [ "$waited" -ge "$lock_wait_cap" ]; then
+    echo "mac-gate: host lock still busy after ${waited}s (${hl_out:-no reply}) — giving up (MAC_GATE_LOCK_WAIT=$lock_wait_cap)" >&2
+    record lock-wait 3
+    summary_and_exit
+  fi
+  say "host lock   : ${hl_out:-merkur unreachable} — waited ${waited}s, retry in 30s"
+  sleep 30
+done
+record lock-wait 0
+say "host lock   : taken after $((SECONDS - lock_wait_started))s (owner=$lock_owner)"
 remote_prep_script=$(cat <<EOF
 set -e
 target="$GATE_ROOT_REMOTE/$esc_branch"
@@ -223,6 +312,7 @@ say "--- step: content manifest (mirror side) ---"
 # (observed 2026-08-30: 129s real / 0.4s cpu over 9k files while a Plex transcode owned the
 # disk), and the per-file `git hash-object` fork added 139 more spawns. Pruned traversal +
 # one batched hash-object spawn keeps the same file set and fits the cap on a busy disk.
+manifest_t0=$SECONDS
 remote_manifest="$(timeout 180 ssh -o BatchMode=yes "$host" "
   cd '$target_dir/work'
   tmp=\$(mktemp -d)
@@ -234,6 +324,7 @@ remote_manifest="$(timeout 180 ssh -o BatchMode=yes "$host" "
   rm -rf \"\$tmp\"
 " 2>&1)"
 remote_rc=$?
+say "mirror manifest walk: $((SECONDS - manifest_t0))s (cap 180 s)"
 if [ $remote_rc -ne 0 ]; then
   echo "$remote_manifest" >&2
   record manifest "$remote_rc"
@@ -459,16 +550,78 @@ build_script="${build_script//__WORK__/$target_dir/work}"
 build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
 
-remote_out="$(printf '%s\n' "$build_script" | timeout 1800 ssh -o BatchMode=yes "$host" 'bash -s' 2>&1 | tee -a "$log")"
-remote_line="$(printf '%s\n' "$remote_out" | grep '^MAC_GATE_REMOTE_SUMMARY:' | tail -1)"
-if [ -z "$remote_line" ]; then
+# --- Remote run: launched DETACHED on the Mac and polled over short ssh calls (IMGMGR-203). --
+remote_cap="${MAC_GATE_REMOTE_CAP:-7200}"
+launch_out="$(printf '%s\n' "$build_script" | timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
+  set -e
+  cd \"$target_dir\"
+  cat > .gate-run.sh
+  rm -f .gate-run.done .gate-run.log .gate-run.pid
+  ( nohup bash .gate-run.sh </dev/null >.gate-run.log 2>&1; echo \$? >.gate-run.done ) >/dev/null 2>&1 </dev/null &
+  echo \$! > .gate-run.pid
+  echo \"LAUNCHED pid=\$(cat .gate-run.pid)\"
+" 2>&1)"
+launch_rc=$?
+remote_out=""
+if [ "$launch_rc" -ne 0 ] || ! printf '%s\n' "$launch_out" | grep -q '^LAUNCHED pid='; then
+  printf 'remote launch failed (rc=%s): %s\n' "$launch_rc" "$launch_out" | tee -a "$log" >&2
   record remote-run 1
 else
-  for pair in ${remote_line#MAC_GATE_REMOTE_SUMMARY:}; do
-    name="${pair%%=*}"; code="${pair##*=}"
-    [ "$code" = "skipped" ] && continue
-    record "$name" "$code"
+  say "remote run  : $launch_out — detached, cap ${remote_cap}s (MAC_GATE_REMOTE_CAP), polling every 20s"
+  poll_started=$SECONDS
+  unreachable=0
+  done_code=""
+  last_step=""
+  while :; do
+    poll_out="$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
+      cd \"$target_dir\" 2>/dev/null || { echo GONE; exit 0; }
+      if [ -f .gate-run.done ]; then echo \"DONE-\$(cat .gate-run.done)\"; else echo RUNNING; fi
+      grep -o '^--- [a-z-]* exit=[0-9]*' .gate-run.log 2>/dev/null | tail -1
+    " 2>&1)"
+    poll_rc=$?
+    if [ "$poll_rc" -ne 0 ]; then
+      unreachable=$((unreachable + 1))
+      if [ "$unreachable" -ge 15 ]; then
+        say "remote run  : $host unreachable for $unreachable consecutive polls — giving up on this run (last reply: $poll_out)"
+        break
+      fi
+      sleep 20
+      continue
+    fi
+    unreachable=0
+    state="$(printf '%s\n' "$poll_out" | sed -n '1p')"
+    step_line="$(printf '%s\n' "$poll_out" | sed -n '2p')"
+    if [ -n "$step_line" ] && [ "$step_line" != "$last_step" ]; then
+      say "remote run  : $step_line (t=$((SECONDS - poll_started))s)"
+      last_step="$step_line"
+    fi
+    case "$state" in
+      DONE-*) done_code="${state#DONE-}"; break ;;
+      GONE) say "remote run  : gate dir vanished on $host"; break ;;
+    esac
+    if [ $((SECONDS - poll_started)) -ge "$remote_cap" ]; then
+      say "remote run  : still running after ${remote_cap}s (MAC_GATE_REMOTE_CAP) — recorded as remote-run=124; the remote process keeps running, pid in $target_dir/.gate-run.pid"
+      break
+    fi
+    sleep 20
   done
+  remote_out="$(timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "cd \"$target_dir\" && { cp -f .gate-run.log work/.gate-artifacts/remote-run.log 2>/dev/null || true; }; cat \"$target_dir/.gate-run.log\" 2>/dev/null" 2>&1 | tee -a "$log")"
+  remote_line="$(printf '%s\n' "$remote_out" | grep '^MAC_GATE_REMOTE_SUMMARY:' | tail -1)"
+  if [ -z "$done_code" ]; then
+    record remote-run 124
+  elif [ -z "$remote_line" ]; then
+    case "$done_code" in
+      0|'') record remote-run 1 ;;
+      *) record remote-run "$done_code" ;;
+    esac
+  else
+    say "remote run  : finished in $((SECONDS - poll_started))s (script exit $done_code)"
+    for pair in ${remote_line#MAC_GATE_REMOTE_SUMMARY:}; do
+      name="${pair%%=*}"; code="${pair##*=}"
+      [ "$code" = "skipped" ] && continue
+      record "$name" "$code"
+    done
+  fi
 fi
 
 # Copyback: previously `|| true`-swallowed, so a failed copy still produced a green
