@@ -38,6 +38,17 @@ final class QueueStore {
   /// When the currently displayed `summaries` were fetched FROM THE SERVER — the timestamp the
   /// stale banner labels a replayed cache with. Never a "cache was read" time.
   private(set) var lastFetchedAt: Date?
+  /// IMGMGR-350 P4: the FOLDER TREE's last answer, replayed for the home the way the summaries
+  /// already are. It lives here rather than beside the view's own `FolderTreeLoad` because the
+  /// lifetime is this store's: the subject that keyed it, the server it came from, the generation
+  /// that fences a dead session's answer, and the erase hook that destroys it on sign-out.
+  private(set) var cachedTree: CachedTree?
+
+  /// One replayed tree: the rows per browse tier, and when the server said them.
+  struct CachedTree: Equatable, Sendable {
+    var foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]]
+    var fetchedAt: Date
+  }
 
   private let service: QueueService
   private let snapshotStore: any QueueSnapshotPersisting
@@ -151,6 +162,9 @@ final class QueueStore {
     debounceTask = nil
     summaries = []
     lastFetchedAt = nil
+    // P4: BOTH sections go. A sign-out that took the summaries and left the folder names of the
+    // account that just left would be the same leak, one screen over.
+    cachedTree = nil
     phase = .initialLoading
     isRefreshing = false
     hasLoadedSuccessfullyOnce = false
@@ -167,12 +181,62 @@ final class QueueStore {
     let generation = loadGeneration
     guard let snapshot = await snapshotStore.load() else { return }
     guard generation == loadGeneration, !hasLoadedSuccessfullyOnce else { return }
-    guard snapshot.subject == activeSubject, snapshot.baseURL == baseURL,
-      !snapshot.summaries.isEmpty
-    else { return }
-    summaries = snapshot.summaries
-    lastFetchedAt = snapshot.fetchedAt
-    phase = .unreachableStale
+    // The two guards that make a replay legitimate at all — same account, same server — apply to
+    // the WHOLE file; emptiness is then asked per section, so a snapshot with a tree and no
+    // summaries replays the tree without claiming a stale queue nobody cached.
+    guard snapshot.subject == activeSubject, snapshot.baseURL == baseURL else { return }
+    if !snapshot.summaries.isEmpty {
+      summaries = snapshot.summaries
+      lastFetchedAt = snapshot.fetchedAt
+      phase = .unreachableStale
+    }
+    if let tree = snapshot.tree {
+      cachedTree = CachedTree(
+        foldersByTier: QueueStore.tiers(from: tree.foldersByTier), fetchedAt: tree.fetchedAt)
+    }
+  }
+
+  /// P4: remember the tree's latest live answer. Written as ONE whole snapshot through the single
+  /// `save` — never a read-modify-write inside the actor — so a tree write cannot drop a
+  /// just-written summaries section, and the actor serializes the writes themselves.
+  func rememberTree(_ foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]]) async {
+    guard let activeSubject else { return }
+    let fetchedAt = now()
+    let generation = loadGeneration
+    cachedTree = CachedTree(foldersByTier: foldersByTier, fetchedAt: fetchedAt)
+    await snapshotStore.save(
+      QueueSnapshot(
+        summaries: summaries, fetchedAt: lastFetchedAt ?? fetchedAt, baseURL: baseURL,
+        subject: activeSubject, tree: currentTreeSection()))
+    // The write is a suspension point, exactly as the summaries' own is: an erasure landing
+    // inside it would leave this store having resurrected the file the sign-out removed.
+    if generation != loadGeneration || self.activeSubject != activeSubject
+      || subject() != activeSubject
+    {
+      await snapshotStore.clear()
+    }
+  }
+
+  /// The persisted shape of whatever tree this store currently holds.
+  private func currentTreeSection() -> QueueSnapshot.TreeSection? {
+    guard let cachedTree else { return nil }
+    return QueueSnapshot.TreeSection(
+      foldersByTier: Dictionary(
+        cachedTree.foldersByTier.map { ($0.key.rawValue, $0.value) },
+        uniquingKeysWith: { _, latest in latest }),
+      fetchedAt: cachedTree.fetchedAt)
+  }
+
+  /// The stored keys back as tiers, dropping any this build does not know.
+  private static func tiers(
+    from stored: [String: [Components.Schemas.FolderNode]]
+  ) -> [FolderTreeTier: [Components.Schemas.FolderNode]] {
+    var result: [FolderTreeTier: [Components.Schemas.FolderNode]] = [:]
+    for (key, value) in stored {
+      guard let tier = FolderTreeTier(rawValue: key) else { continue }
+      result[tier] = value
+    }
+    return result
   }
 
   private func performLoad() async {
@@ -207,7 +271,10 @@ final class QueueStore {
       if let activeSubject {
         await snapshotStore.save(
           QueueSnapshot(
-            summaries: result, fetchedAt: fetchedAt, baseURL: baseURL, subject: activeSubject))
+            summaries: result, fetchedAt: fetchedAt, baseURL: baseURL, subject: activeSubject,
+            // P4, the other direction of the same rule: the summaries' own write carries the tree
+            // section forward, so neither of the home's two answers can drop the other.
+            tree: currentTreeSection()))
         // The write is itself a suspension point, so the guard above cannot be the last word: an
         // erasure landing between it and the write completing would leave this store having just
         // resurrected the file the sign-out removed. Re-read the fence AFTER the write — the

@@ -53,6 +53,11 @@ struct FolderTreeSection: View {
   /// a VALUE the composition root hands over, not a store this view observes: the tree renders
   /// without it (checkpoint-2 finding B1), and an empty join is simply a tree with no badges.
   let summariesByFolderID: [Int: Components.Schemas.FolderSummary]
+  /// P4: whatever tree `QueueStore` has remembered for this account and server, replayed when a
+  /// live load reaches nothing at all. The view keeps no persistence of its own.
+  let cachedTree: QueueStore.CachedTree?
+  /// P4: hands a live answer back to the store, which owns when and whether it is written.
+  let rememberTree: ([FolderTreeTier: [Components.Schemas.FolderNode]]) async -> Void
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
@@ -100,7 +105,11 @@ struct FolderTreeSection: View {
     // `reloadToken` carries (`QueueHomeRefresh`). `.task(id:)` also runs it once on mount, so
     // there is exactly one fetch path here and it is still the one a retry drives.
     .task(id: reloadToken) {
-      load = await FolderTreeLoad.perform(using: gridService)
+      let fresh = await FolderTreeLoad.perform(using: gridService)
+      load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
+      // Only a clean answer is worth remembering: a partial one would persist a tier's absence as
+      // if it were its content, and the next launch would replay that as the library.
+      if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier) }
     }
   }
 
@@ -126,7 +135,9 @@ struct FolderTreeSection: View {
         Button("Retry") {
           Task {
             load = .loading
-            load = await FolderTreeLoad.perform(using: gridService)
+            let fresh = await FolderTreeLoad.perform(using: gridService)
+            load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
+            if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier) }
           }
         }
         .buttonStyle(.borderless)
@@ -265,6 +276,9 @@ struct FolderTreeLoad: Equatable, Sendable {
     /// browse tiers are three and any one or two of them can fail on their own.
     case partiallyFailed([FolderTreeTier])
     case failed
+    /// IMGMGR-350 P4: nothing answered and there is a remembered answer to show instead, carrying
+    /// the moment the server said it. The same trade IMGMGR-198 already makes for the summaries.
+    case stale(Date)
   }
 
   var phase: Phase = .loading
@@ -289,6 +303,18 @@ struct FolderTreeLoad: Equatable, Sendable {
 
   /// The pre-fetch value the view starts from, and the one a retry returns to.
   static let loading = FolderTreeLoad()
+
+  /// What the tree RENDERS after one attempt, given whatever the store remembered (P4).
+  ///
+  /// A total failure with a cache replays it, labelled stale. A PARTIAL failure keeps the live
+  /// result: some tiers answered, and mixing a live tier with a remembered one would put two
+  /// different moments on one screen with nothing on it saying which is which.
+  static func resolve(fresh: FolderTreeLoad, cached: QueueStore.CachedTree?) -> FolderTreeLoad {
+    guard case .failed = fresh.phase, let cached, !cached.foldersByTier.isEmpty else {
+      return fresh
+    }
+    return FolderTreeLoad(phase: .stale(cached.fetchedAt), foldersByTier: cached.foldersByTier)
+  }
 
   /// Both tier fetches, and the one place their outcomes become a rendered state. A throw is
   /// RECORDED rather than swallowed (IMGMGR-174): `GridService.folders` throws only
@@ -320,7 +346,9 @@ enum FolderTreeLoadPresentation {
   static func isFailure(_ phase: FolderTreeLoad.Phase) -> Bool {
     switch phase {
     case .failed, .partiallyFailed: return true
-    case .loading, .loaded: return false
+    // A replayed answer is not a failure: there are real rows on screen, older than now. It says
+    // so in its own words (`message(for:)`) rather than through the failure vocabulary.
+    case .loading, .loaded, .stale: return false
     }
   }
 
@@ -349,6 +377,11 @@ enum FolderTreeLoadPresentation {
       // join never has a third term to punctuate.
       let named = tiers.map(\.label).joined(separator: " and ")
       return "\(named) folders could not be loaded."
+    case .stale(let fetchedAt):
+      // P4: the SAME degraded vocabulary the queue's own replay uses (IMGMGR-198), from the one
+      // place that owns it — a second wording for the same state is a second state to the reader.
+      return "\(DegradedStateCopy.notConnected) "
+        + DegradedStateCopy.showingCached(since: fetchedAt)
     }
   }
 }

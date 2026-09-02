@@ -453,6 +453,10 @@ struct RootView: View {
             // P3: read here in the body, so a summaries load that lands later re-renders the
             // rows — `queueStore` is observed, the tree section is a value.
             summariesByFolderID: FolderTreeRowPresentation.index(queueStore.summaries),
+            // P4: one store owns both of the home's answers — the tree's replay and its write
+            // travel through the same subject, generation and erase path as the summaries'.
+            cachedTree: queueStore.cachedTree,
+            rememberTree: { await queueStore.rememberTree($0) },
             selectedFolderID: $selectedFolderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
