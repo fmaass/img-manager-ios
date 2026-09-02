@@ -70,10 +70,12 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     // The rotation's own layout pass, then the resolver's `.onGeometryChange` reaction to it.
     Thread.sleep(forTimeInterval: 2.0)
 
-    // A queue card from the stub's own fixture ("40 photos · 10 picked"). P6 does not touch
-    // queue cards, so this survives the wave that retires the Folders-based split.
-    let queueCard = app.staticTexts
-      .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
+    // The sidebar column's own first row. It used to be a queue card from the stub's fixture
+    // ("40 photos · 10 picked"); IMGMGR-350 made the home the tier tree, so no card is rendered
+    // on any width and that predicate now matches nothing anywhere — which would classify every
+    // width below the Regular-3 pin as Compact. The tier row asks the same question of the same
+    // column: is the sidebar on screen beside the grid?
+    let sidebarRow = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     let statsSegment = app.buttons["Stats"]
     let chromeInfo = app.navigationBars.buttons
       .matching(NSPredicate(format: "label BEGINSWITH 'Info'")).firstMatch
@@ -82,14 +84,14 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
 
     // The grid is on screen in EVERY layout, so it is the one input whose absence would make the
     // sidebar reading below meaningless rather than informative. Asserted first, so that
-    // `queueIsBesideTheGrid` is unambiguously a statement about the QUEUE.
+    // `sidebarIsBesideTheGrid` is unambiguously a statement about the SIDEBAR.
     XCTAssertTrue(
       dislike.isHittable,
       "The grid must be reachable in every layout — a pane reading taken while the grid itself "
         + "is missing classifies nothing.")
 
-    // Is the QUEUE on screen beside the grid? True only at Regular-2.
-    let queueIsBesideTheGrid = queueCard.isHittable && dislike.isHittable
+    // Is the SIDEBAR on screen beside the grid? True only at Regular-2.
+    let sidebarIsBesideTheGrid = sidebarRow.isHittable && dislike.isHittable
     // Read, but NEVER used to classify — asserted per branch below instead.
     let inspectorAlreadyOnScreen = statsSegment.exists
     let hasChromeInfo = chromeInfo.exists
@@ -106,13 +108,13 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     let resolved: ResolvedLayout =
       width >= Self.regular3WidthThreshold
       ? .regular3
-      : (queueIsBesideTheGrid ? .regular2 : .compact)
+      : (sidebarIsBesideTheGrid ? .regular2 : .compact)
 
     // The probe's record. `print` (not only an activity) because the gate copies back the
     // xcodebuild log, which is where this has to be readable afterwards.
     print(
       "P10-PROBE \(orientationName): window=\(app.frame.size) "
-        + "queueBesideGrid=\(queueIsBesideTheGrid) "
+        + "sidebarBesideGrid=\(sidebarIsBesideTheGrid) "
         + "inspectorAtLaunch=\(inspectorAlreadyOnScreen) chromeInfo=\(hasChromeInfo) "
         + "resolvedLayout=\(resolved.rawValue)")
     attach(app: app, named: "P10-\(orientationName)-\(resolved.rawValue)-atLaunch")
@@ -328,14 +330,15 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
         + "workspace must render the two-column shape and ask for `.detailOnly` — see "
         + "`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`.")
 
-    // ...and the width it reclaimed went to the GRID, not to the queue. Decision 4 asked for a
+    // ...and the width it reclaimed went to the GRID, not to the sidebar. Decision 4 asked for a
     // collapsible inspector; it did not ask for the sidebar, which [/link/3220] keeps off at
     // this width. `dislike.isHittable` just above is this 0-hit reading's positive control.
-    let queueCard = app.staticTexts
-      .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
+    // Read as the sidebar's own tier row since IMGMGR-350: the queue card this looked for is not
+    // rendered on any width any more, so the reading would have been vacuously true.
+    let sidebarRow = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertFalse(
-      queueCard.exists,
-      "Collapsing the inspector revealed the queue sidebar. The freed pane must go to the grid "
+      sidebarRow.exists,
+      "Collapsing the inspector revealed the sidebar. The freed pane must go to the grid "
         + "— check the visibility the collapsed shape asks for "
         + "(`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`).")
     recordTheRegular3SidebarProbe(app: app, orientationName: orientationName, state: "collapsed")
@@ -351,7 +354,7 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
   /// The plan's mandatory FIRST-ACTION probe, carried here because the lane that wrote this
   /// runs on Linux and has no simulator: the gate itself is the only surface that can answer it.
   ///
-  /// Deliberately ASSERTS NOTHING. Its three readings are (a) whether the queue column is on
+  /// Deliberately ASSERTS NOTHING. Its three readings are (a) whether the sidebar column is on
   /// screen at Regular-3, (b) whether a system `NavigationSplitView` sidebar toggle is in the
   /// hierarchy at all, and (c) whether it is hittable. (a) is already recorded as false by this
   /// file's own classification note; (b)/(c) had no recorded answer, and decision 4's sidebar
@@ -375,14 +378,13 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
   private func recordTheRegular3SidebarProbe(
     app: XCUIApplication, orientationName: String, state: String
   ) {
-    let queueCard = app.staticTexts
-      .matching(NSPredicate(format: "label CONTAINS ' photos · '")).firstMatch
+    let sidebarRow = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     let sidebarToggle = app.buttons
       .matching(NSPredicate(format: "label CONTAINS[c] 'sidebar'")).firstMatch
     let navBarButtonLabels = app.navigationBars.buttons.allElementsBoundByIndex.map { $0.label }
     print(
       "WP16P2-SIDEBAR-PROBE \(orientationName) \(state): window=\(app.frame.size) "
-        + "queueCardOnScreen=\(queueCard.exists) "
+        + "sidebarRowOnScreen=\(sidebarRow.exists) "
         + "sidebarToggleExists=\(sidebarToggle.exists) "
         + "sidebarToggleHittable=\(sidebarToggle.exists && sidebarToggle.isHittable) "
         + "navBarButtons=\(navBarButtonLabels)")
