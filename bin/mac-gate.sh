@@ -72,9 +72,11 @@
 #                            (default: com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB)
 #   MAC_GATE_ARTIFACTS      local directory for copied-back logs (default: .gate-artifacts/)
 #   MAC_GATE_REMOTE_CAP     wall-clock budget in seconds for the detached remote run
-#                            (default: 7200); exceeding it records remote-run=124 and leaves
-#                            the remote process running (its pid is in <gate dir>/.gate-run.pid)
-#   MAC_GATE_LOCK_WAIT      seconds to wait for the host-wide gate lock (default: 21600);
+#                            (default: 7200, at most 7 digits); exceeding it records
+#                            remote-run=124 and stops the remote process tree (SIGTERM, then
+#                            SIGKILL); if that cannot be confirmed both locks stay in place
+#   MAC_GATE_LOCK_WAIT      seconds to wait for the host-wide gate lock (default: 21600, at
+#                            most 7 digits);
 #                            exceeding it records lock-wait=3 and the run ends
 #
 # Exit codes: 2 = refusal (unsafe/unusable inputs, nothing was copied or run);
@@ -224,6 +226,7 @@ esc_owner="$(esc "$lock_owner")"
 # --- Host-wide gate lock: ONE gate per Mac (IMGMGR-203, see header). --------------------
 lock_wait_cap="${MAC_GATE_LOCK_WAIT:-21600}"
 case "$lock_wait_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_LOCK_WAIT must be a whole number of seconds (got '$lock_wait_cap')" ;; esac
+[ "${#lock_wait_cap}" -le 7 ] || die_refuse "MAC_GATE_LOCK_WAIT must be at most 7 digits (got '$lock_wait_cap')"
 lock_wait_started=$SECONDS
 while :; do
   hl_out="$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
@@ -541,29 +544,44 @@ build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
 
 # --- Remote run: launched DETACHED on the Mac and polled over short ssh calls (IMGMGR-203). --
-# stop_remote_run: kill the detached run's process tree (descendants of the recorded subshell
-# pid, found by PARENT pid — never by a command-line literal) and wait for the subshell to write
-# .gate-run.done. If that cannot be confirmed within 45 s, the locks are frozen (see release_lock)
-# because the work dir may still be written to.
+# stop_remote_run: stop the detached run's process tree — descendants of the recorded subshell
+# pid, found by PARENT pid, never by a command-line literal — with SIGTERM, then SIGKILL for
+# survivors, and CONFIRM by re-walking the tree that nothing is left before the locks may be
+# released. Any survivor freezes both locks (see release_lock): the work dir may still be
+# written to. The body is piped to the Mac as a script (no nested quoting).
+stop_remote_script=$(cat <<'REMOTESTOP'
+cd "__TARGET__" 2>/dev/null || { echo NO-DIR; exit 0; }
+pid="$(cat .gate-run.pid 2>/dev/null)"
+[ -n "$pid" ] || { echo NO-PID; exit 0; }
+list=""
+walk() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do walk "$c"; done; [ "$1" = "$pid" ] || list="$list $1"; }
+alive() { local a="" p; for p in $list; do kill -0 "$p" 2>/dev/null && a="$a $p"; done; printf '%s' "$a"; }
+walk "$pid"
+for p in $list; do kill -TERM "$p" 2>/dev/null; done
+i=0; while [ "$i" -lt 20 ] && [ -n "$(alive)" ]; do sleep 1; i=$((i + 1)); done
+for p in $(alive); do kill -KILL "$p" 2>/dev/null; done
+i=0; while [ "$i" -lt 10 ] && [ -n "$(alive)" ]; do sleep 1; i=$((i + 1)); done
+left="$(alive)"
+[ -z "$left" ] || { echo "STILL-RUNNING pids=$left"; exit 0; }
+# a second walk catches children spawned after the first list was taken
+list=""; walk "$pid"; left="$(alive)"
+[ -z "$left" ] || { echo "STILL-RUNNING pids=$left"; exit 0; }
+i=0; while [ "$i" -lt 15 ] && [ ! -f .gate-run.done ]; do sleep 1; i=$((i + 1)); done
+if [ -f .gate-run.done ]; then echo "STOPPED code=$(cat .gate-run.done)"; else echo "STOPPED code=none"; fi
+REMOTESTOP
+)
 stop_remote_run() {
-  local out
-  out="$(timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
-    cd \"$target_dir\" 2>/dev/null || { echo NO-DIR; exit 0; }
-    pid=\$(cat .gate-run.pid 2>/dev/null)
-    [ -n \"\$pid\" ] || { echo NO-PID; exit 0; }
-    kill_tree() { local c; for c in \$(pgrep -P \"\$1\" 2>/dev/null); do kill_tree \"\$c\"; done; [ \"\$1\" = \"\$pid\" ] || kill \"\$1\" 2>/dev/null; }
-    kill_tree \"\$pid\"
-    i=0
-    while [ \$i -lt 45 ] && [ ! -f .gate-run.done ]; do sleep 1; i=\$((i+1)); done
-    if [ -f .gate-run.done ]; then echo \"STOPPED code=\$(cat .gate-run.done)\"; else echo STILL-RUNNING; fi
-  " 2>&1)"
+  local out script
+  script="${stop_remote_script//__TARGET__/$target_dir}"
+  out="$(printf '%s\n' "$script" | timeout 90 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' 2>&1)"
   case "$out" in
     STOPPED*|NO-DIR|NO-PID) say "remote run  : $out" ;;
-    *) locks_frozen=1; say "remote run  : could not confirm the remote run stopped ($out) — locks frozen" ;;
+    *) locks_frozen=1; say "remote run  : could not confirm the remote run stopped (${out:-no reply}) — locks frozen" ;;
   esac
 }
 remote_cap="${MAC_GATE_REMOTE_CAP:-7200}"
 case "$remote_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_REMOTE_CAP must be a whole number of seconds (got '$remote_cap')" ;; esac
+[ "${#remote_cap}" -le 7 ] || die_refuse "MAC_GATE_REMOTE_CAP must be at most 7 digits (got '$remote_cap')"
 launch_out="$(printf '%s\n' "$build_script" | timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
   set -e
   cd \"$target_dir\"
