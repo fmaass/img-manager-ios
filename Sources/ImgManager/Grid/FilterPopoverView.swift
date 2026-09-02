@@ -87,37 +87,73 @@ struct FilterPopoverView: View {
     InspectorFacetFilters.activeCount(store.currentQuery)
   }
 
+  /// A `ScrollView` over an EAGER `VStack`, deliberately, and never a `List` (nor a `LazyVStack`).
+  ///
+  /// The gate's iPhone leg proved why. `List` is UICollectionView-backed and lazy: on the compact
+  /// sheet this popover adapts to, it realised only the four rows that fit the viewport —
+  /// `rating-3/4/5` and `mark-pick`, each with a correct identifier, label and count — and simply
+  /// never built `mark-none`, `mark-dislike`, `hasMaster-true` or the Type rows. They were absent
+  /// from the accessibility tree, not merely off screen ("Vertical scroll bar, 3 pages", 0%).
+  ///
+  /// That is a B2 violation on the real surface, not a test problem. Decision 1 NAMES these rows,
+  /// and the whole point of rendering an absent dimension as a live 0 is that the reader can see
+  /// the row is there and empty. A row that does not exist until it is scrolled into being is, for
+  /// every purpose the decision cares about, omitted — and no identifier can fix a view that was
+  /// never built. Virtualisation buys nothing here anyway: the row set is FIXED and small (three
+  /// rating, three mark, one Edited, plus however many file types the response holds), so building
+  /// all of it costs one pass and makes "every declared row is addressable" structurally true.
   var body: some View {
-    List {
-      // Outside the sections, and present only while something is filtered — the same rule the
-      // Stats tab's own Clear row follows.
-      if activeCount > 0 {
-        Section {
-          Button {
-            Task { await store.clearFacetFilters() }
-            dismiss()
-          } label: {
-            HStack {
-              Label("Clear filters", systemImage: "xmark.circle")
-              Spacer()
-              Text("\(activeCount)").foregroundStyle(.secondary).monospacedDigit()
-            }
-          }
-          .frame(minHeight: 44)
-          .accessibilityIdentifier("filterPopoverClearFilters")
+    ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
+        // Outside the sections, and present only while something is filtered — the same rule the
+        // Stats tab's own Clear row follows.
+        if activeCount > 0 {
+          clearFiltersRow
+          Divider()
         }
-      }
 
-      ForEach(FilterPopoverModel.rows(store.facets, store.currentQuery)) { section in
-        Section(section.title) {
+        ForEach(FilterPopoverModel.rows(store.facets, store.currentQuery)) { section in
+          sectionHeader(section.title)
           ForEach(section.rows) { row in
             rowView(row)
           }
         }
       }
+      .padding(.vertical, 8)
     }
-    .listStyle(.plain)
     .frame(idealWidth: 340, idealHeight: 460)
+  }
+
+  @ViewBuilder
+  private var clearFiltersRow: some View {
+    Button {
+      Task { await store.clearFacetFilters() }
+      dismiss()
+    } label: {
+      HStack {
+        Label("Clear filters", systemImage: "xmark.circle")
+        Spacer()
+        Text("\(activeCount)").foregroundStyle(.secondary).monospacedDigit()
+      }
+      .padding(.horizontal, 16)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("filterPopoverClearFilters")
+  }
+
+  /// The section caption, in the inspector's own idiom (`InspectorView.section`): uppercased
+  /// caption2 in secondary. Carries no identifier — an identifier on a container OVERRIDES its
+  /// descendants', which is how a sibling lane lost a row's own name.
+  private func sectionHeader(_ title: String) -> some View {
+    Text(title.uppercased())
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, 16)
+      .padding(.top, 12)
+      .padding(.bottom, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   @ViewBuilder
@@ -140,8 +176,14 @@ struct FilterPopoverView: View {
         Spacer()
         Text("\(row.count)").foregroundStyle(.secondary).monospacedDigit()
       }
+      .padding(.horizontal, 16)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      // The whole row takes the tap, not just the glyph and the words in it.
+      .contentShape(Rectangle())
     }
-    .frame(minHeight: 44)
+    // Plain, so the row keeps its own layout and its disabled state reads as dimmed text rather
+    // than a tinted control — and so `.disabled` still reports through to `isEnabled`.
+    .buttonStyle(.plain)
     // A 0-count row is not reachable — applying it would empty the grid — unless it is the value
     // in force, which `FilterPopoverRow.isEnabled` keeps enabled so it can always be cleared.
     .disabled(!row.isEnabled)

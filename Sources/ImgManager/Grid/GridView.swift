@@ -158,6 +158,9 @@ struct GridView: View {
   @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
     if layoutMode != .compact {
       ToolbarItem(placement: .primaryAction) {
+        GridFilterControl(store: store)
+      }
+      ToolbarItem(placement: .primaryAction) {
         GridSortControl(store: store)
       }
       ToolbarItem(placement: .primaryAction) {
@@ -170,27 +173,30 @@ struct GridView: View {
       // help button because filtering is what a reader reaches for in the same breath as sort
       // and group.
       //
-      // COUNT THE COMPOSED BAR, not this builder (diff-gate round 1, A1). These are the fifth
-      // and last `.primaryAction` declared here, but `RootView` adds `inspectorChromeButton` to
-      // the same grid-pane bar, and WP16 P2 made `InspectorPresentation.usesChromeControl`
-      // return true at EVERY width — including Regular-3, where it used to be absent. So on
-      // Regular the bar now carries SIX primary items: Info, Sort, Group, Zoom, Filter, help.
-      // That is this phase's named risk, and it is a gate question rather than a code one:
-      // `FilterPopoverUITests` asserts no overflow chevron appeared, with a positive control,
-      // the shape `SortGroupScreenshotUITests` used when Sort became the fourth. If the chevron
-      // does appear, the plan's pre-decided pivot moves the shortcut-help control — the one item
-      // with three other routes — out of the Regular toolbar and keeps the funnel.
-      ToolbarItem(placement: .primaryAction) {
-        GridFilterControl(store: store)
-      }
-      // Regular's route into the shortcut help sheet. The gate's UI leg proved the other two
-      // routes are not drivable there — ⌘/ never reached the app on the iPad simulator
-      // (no attached hardware keyboard) and the system menu bar is not a surface a UI test
-      // can open — so without this the sheet had no chrome path and no rendered evidence on
-      // Regular at all. Compact carries the same control in its options row.
-      ToolbarItem(placement: .primaryAction) {
-        GridShortcutHelpControl(store: store)
-      }
+      // The chevron risk this phase named DID materialise, and the plan's pre-decided pivot is
+      // taken here. Measured on the iPad leg of the 5e2e9d4 gate (Regular-3 landscape, three
+      // columns): the composed bar held `Show Sidebar | Info | Sort: Date ↑ | Group: None |
+      // OverflowBarButtonItem`, i.e. THREE of six `.primaryAction` items, with Zoom, Filter and
+      // the shortcut help all folded into the system overflow. `RootView` contributes Info, and
+      // WP16 P2 made `usesChromeControl` true at every width, so this bar carries six. Portrait
+      // Regular-2 (two columns) fits all six with no chevron, so the binding constraint is the
+      // grid pane's WIDTH under the three-column composition, not the item count alone — the two
+      // value-bearing labels consume most of it.
+      //
+      // The pivot: the shortcut-help control leaves the REGULAR toolbar. It is the one item with
+      // three other routes (`?`, ⌘/, and the menu-bar View menu), which is exactly why the plan
+      // pre-decided it; the parity table records it as "moved, decision 1". Compact's copy stays
+      // in `GridOptionsRow`, untouched, because that row is not width-contended.
+      //
+      // The funnel is declared BEFORE the remaining view options deliberately: the OS folds from
+      // the trailing end, so declaration order is what decides which control survives a narrow
+      // pane, and decision 1's control must not be the first casualty.
+      //
+      // NOT claimed as sufficient: five items against a measured capacity of three still folds
+      // something. The lane reported that to the orchestrator rather than reordering shipped
+      // controls or growing chrome to force it — WP16 P2's own fix changes the Regular-3
+      // composition to two columns, the shape portrait already proves fits, and that is the
+      // dependency this placement is waiting on.
     }
   }
 

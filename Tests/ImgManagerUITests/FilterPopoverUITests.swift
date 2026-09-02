@@ -83,13 +83,20 @@ final class FilterPopoverUITests: XCTestCase {
         + "grid's own chrome.")
     XCTAssertTrue(filter.isHittable, "The funnel exists but cannot be tapped where it is.")
 
-    // The named risk of this phase: the funnel is a FIFTH `.primaryAction` item on Regular and a
-    // fifth control on Compact's options row. Both failure modes are one assertion each.
-    XCTAssertTrue(
-      app.descendants(matching: .any)["gridShortcutHelpControl"].isHittable,
-      "The shortcut-help control is no longer hittable once the funnel joined its surface — on "
-        + "Compact the options row overflowed, on Regular the toolbar collapsed. Either way a "
-        + "shipped control was displaced by decision 1, which the parity table forbids.")
+    // The shortcut-help control, WHERE IT IS STILL RENDERED. The plan's pre-decided pivot moved
+    // it off the REGULAR toolbar after the 5e2e9d4 gate measured that bar folding three of six
+    // primary items into the overflow; it keeps its Compact home in `GridOptionsRow`, and its
+    // three other routes (`?`, ⌘/, the menu-bar View menu) are unchanged on both. So the contract
+    // asserted here is "wherever it renders, it is reachable" — on Compact that IS the "the
+    // options row did not overflow" check the plan asks for, and on Regular its absence is the
+    // recorded relocation rather than a displacement. Conditional on existence, not on an idiom.
+    let help = app.descendants(matching: .any)["gridShortcutHelpControl"]
+    if help.exists {
+      XCTAssertTrue(
+        help.isHittable,
+        "The shortcut-help control is rendered but no longer reachable once the funnel joined "
+          + "its surface — the row or bar it shares overflowed, which the parity table forbids.")
+    }
 
     // Positive control in the same check (LSN-0033), so the 0-hit assertion below cannot pass
     // vacuously on a blank or crashed screen.
@@ -127,6 +134,25 @@ final class FilterPopoverUITests: XCTestCase {
     XCTAssertTrue(
       rating4.waitForExistence(timeout: 10),
       "The open popover has no '>= 4' rating row — decision 1's '>=stars' rows are missing.")
+    // REGRESSION GUARD, from the gate run on 5e2e9d4: every DECLARED row must be an ADDRESSABLE
+    // element, not one that would appear after a scroll. That run realised only the four rows
+    // fitting the compact sheet — the popover used a `List`, which built nothing below the fold —
+    // so `mark-none`, `mark-dislike`, `hasMaster-true` and both Type rows were absent from the
+    // accessibility tree entirely, while the four it did build carried perfect identifiers.
+    // Enumerated in ONE place, so the whole class fails here naming exactly which rows vanished
+    // rather than one assertion at a time further down.
+    let declared = [
+      "filterPopoverRow-rating-3", "filterPopoverRow-rating-4", "filterPopoverRow-rating-5",
+      "filterPopoverRow-mark-pick", "filterPopoverRow-mark-none", "filterPopoverRow-mark-dislike",
+      "filterPopoverRow-hasMaster-true", "filterPopoverRow-ext-jpg", "filterPopoverRow-ext-arw",
+    ]
+    let missing = declared.filter { !app.descendants(matching: .any)[$0].exists }
+    XCTAssertTrue(
+      missing.isEmpty,
+      "Declared rows absent from the popover's accessibility tree: \(missing). A row that only "
+        + "exists once scrolled into being is omitted as far as decision 1 is concerned — check "
+        + "the popover is not rendering its rows lazily.")
+
     XCTAssertEqual(
       rating4.label, "≥ 4",
       "The rating row is not labelled with the '>=' it actually applies (`rating_min`).")
