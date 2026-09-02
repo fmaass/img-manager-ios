@@ -10,5 +10,5 @@ Durable records for this project live in the img-manager book (the two clients s
 - Session Reviews chapter: chapter:2795
 - Lessons Learned: page:2930
 - Decisions (ADRs) chapter: chapter:3073 (ADR-0004 is page:3232)
-- Design records (WP21): page:3376 (review-done from sibling edits, ADR-0004 Amendment 1), page:3386 (RAW+JPEG capture pairs)
+- Design records (WP21): page:3376 (review-done from sibling edits, ADR-0004 Amendment 1), page:3386 (RAW+JPEG capture pairs), page:3396 (tree-grouped folder home, IMGMGR-350), page:3401 (offline folders, IMGMGR-331/-262)
 - Product specification: page:3213
