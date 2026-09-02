@@ -141,6 +141,14 @@ final class FilterPopoverUITests: XCTestCase {
     // accessibility tree entirely, while the four it did build carried perfect identifiers.
     // Enumerated in ONE place, so the whole class fails here naming exactly which rows vanished
     // rather than one assertion at a time further down.
+    //
+    // Spelled out rather than derived from `FilterPopoverModel.sections`, and not for convenience:
+    // XCUITest runs OUT OF PROCESS against an installed app, so this target links no app module —
+    // every file in it imports only XCTest/Foundation/UIKit, and pulling an app target into a UI
+    // test bundle to share a declaration is not a small change. The literals are the price of
+    // that boundary; `FilterPopoverModelTests` holds the model's own copy, and the two meeting is
+    // what this assertion checks. A cheaper future link would be a DEBUG probe element carrying
+    // the declared row count, the idiom `debugProbe` already uses.
     let declared = [
       "filterPopoverRow-rating-3", "filterPopoverRow-rating-4", "filterPopoverRow-rating-5",
       "filterPopoverRow-mark-pick", "filterPopoverRow-mark-none", "filterPopoverRow-mark-dislike",

@@ -834,11 +834,17 @@ struct GridOptionsRow: View {
   }
 }
 
-/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: the chrome path INTO the shortcut help sheet,
-/// rendered on both layouts — Compact's options row and Regular's `.primaryAction` toolbar.
-/// Every other route the plan names — the menu-bar View menu, `?`, ⌘/ — needs a hardware
-/// keyboard or the menu bar, neither of which exists on a phone and neither of which the gate's
-/// simulators supplied, so without this the sheet was unreachable and had no rendered evidence.
+/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: the chrome path INTO the shortcut help sheet.
+///
+/// Rendered on COMPACT's options row only. WP16 P3 took the plan's pre-decided pivot and dropped
+/// the REGULAR `.primaryAction` copy this comment used to claim: the 5e2e9d4 gate measured that
+/// bar folding three of six primary items into the system overflow at Regular-3, and this is the
+/// one item with three other routes, which is exactly why the plan named it as the one to move.
+/// The parity table records it as "moved, decision 1".
+///
+/// Those other routes — the menu-bar View menu, `?`, ⌘/ — need a hardware keyboard or the menu
+/// bar, neither of which exists on a phone and neither of which the gate's simulators supplied,
+/// so on COMPACT this control is still the only reachable path and must stay on that row.
 /// Deliberately NOT a fourth entry in the More menu: that menu's contents are P5a's decided set
 /// (IMGMGR-221) and this phase does not get to pre-empt them.
 ///
