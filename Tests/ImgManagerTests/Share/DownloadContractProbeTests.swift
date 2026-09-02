@@ -13,9 +13,9 @@ import Testing
 /// `Output.Ok` was generated as an empty struct and the master export's BYTES were unreachable
 /// through the generated client — the master half of this lane stopping at `ShareMasterSeam`
 /// with no hand-built request standing in for the missing declaration. The operation now
-/// declares binary content, so the tripwire that suite carried has fired exactly as written:
-/// `masterBytesAreReachableAtThisContract` below records the new position, and the seam stays
-/// off because its steps 3 and 4 are unbuilt, not because the bytes cannot be had.
+/// declares binary content, so the tripwire that suite carried fired exactly as written:
+/// `masterBytesAreReachableAtThisContract` below records the new position, and IMGMGR-279 built
+/// the downloader that consumes it.
 ///
 /// The 403 half, by contrast, IS fully expressed by the generated types — including the
 /// `X-Img-Policy` header — so the refusal the whole feature exists to respect is already
@@ -90,16 +90,18 @@ struct DownloadContractProbeTests {
   /// img-manager `74203992` is that day: the operation now declares binary content, so `Ok`
   /// carries a `Body`.
   ///
-  /// What that changes is the CONTRACT, which is steps 1 and 2 of `ShareMasterSeam`'s own
+  /// What that changed was the CONTRACT, which is steps 1 and 2 of `ShareMasterSeam`'s own
   /// activation list. Steps 3 and 4 — a `MasterDownloading` conformance on `GridService`, then
-  /// flipping `isAvailable` — are a feature decision with its own lane, so this suite records the
-  /// new position rather than taking it: the body exists, and the seam is still off ON PURPOSE.
+  /// flipping `isAvailable` — were a feature decision with its own lane, and IMGMGR-279 took it:
+  /// the body exists and it is now consumed.
   @Test("The 200 now DECLARES a body, so the master seam's parked premise no longer holds")
   func masterBytesAreReachableAtThisContract() async throws {
     let transport = GridStubTransport()
     let bytes = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0xD9])
     await transport.setDownloadOutcome(
-      .ok(bytes, contentDisposition: "attachment; filename=\"DSC_1234-2.jpg\""))
+      .ok(
+        bytes, contentType: "image/jpeg",
+        contentDisposition: "attachment; filename=\"DSC_1234-2.jpg\""))
     let output = try await download(makeClient(transport))
 
     guard case .ok(let ok) = output else {
@@ -118,9 +120,8 @@ struct DownloadContractProbeTests {
       > = \.body
     _ = bodyKeyPath
     _ = ok
-    // Still OFF, and now by decision rather than by impossibility: steps 3 and 4 of
-    // `ShareMasterSeam`'s activation list are unbuilt, and flipping this without them would
-    // route the loupe's master entry at a downloader that does not exist.
-    #expect(ShareMasterSeam.isAvailable == false)
+    // And now consumed: IMGMGR-279 built steps 3 and 4 on top of this body, so the seam is open
+    // and `GridService.downloadMaster` is what reads it (`MasterDownloadTests`).
+    #expect(ShareMasterSeam.isAvailable == true)
   }
 }

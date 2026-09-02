@@ -65,7 +65,6 @@ struct LoupeZoomStateTests {
       proxyPixels: Self.proxy, viewport: CGSize(width: 1032, height: 1376), displayScale: 2)
     #expect(upscaled.oneToOneScale < 1)
     #expect(upscaled.isZoomAvailable == false)
-    #expect(LoupeZoomControlModel(upscaled).isAvailable == false)
 
     upscaled.toggle()
     #expect(upscaled.scale == 1)
@@ -78,7 +77,6 @@ struct LoupeZoomStateTests {
     // not passing because every state reports unavailable.
     let phone = phoneState()
     #expect(phone.isZoomAvailable)
-    #expect(LoupeZoomControlModel(phone).isAvailable)
   }
 
   @Test("pan is clamped so the image never detaches from the viewport")
@@ -164,8 +162,8 @@ struct LoupeZoomStateTests {
 
     state.toggle()
     #expect(state.accessibilityValue == "zoom 100 %, pan 0, 0")
-    #expect(LoupeZoomControlModel(state).title == "Fit")
-    // Both surfaces name the SAME end state, so "100 %" cannot mean two things.
+    // The photograph's spoken value is now the ONLY surface that names the zoom (IMGMGR-348
+    // removed the chrome twin), so this is where "100 %" has to keep meaning 1:1 on the proxy.
     #expect(state.accessibilityValue.contains(LoupeZoomState.name(.oneToOne)))
 
     state.pan(to: CGSize(width: -1_000, height: 0))

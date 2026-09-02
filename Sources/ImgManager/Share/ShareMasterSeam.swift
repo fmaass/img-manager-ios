@@ -15,43 +15,46 @@ import OpenAPIRuntime
 /// (`Packages/ImgManagerAPI/Package.swift`). `DownloadContractProbeTests` records the position
 /// as a passing test rather than a comment, and moved with the contract.
 ///
-/// What IS built and tested today are the PIECES a real downloader will assemble, each on its
+/// The pieces the downloader assembles were built and tested before it existed, each on its
 /// own: streaming-with-a-cap (`ShareStreamWriter`), server-authored naming
 /// (`ShareExportPlan.filename(fromContentDisposition:)`), refusal mapping
 /// (`ShareExportPlan.refusal(status:policyHeader:)`), and the pre-flight state machine and
-/// temp-file lifecycle around them (`ShareExportStore`, exercised end to end against a
-/// substituted downloader).
+/// temp-file lifecycle around them (`ShareExportStore`). IMGMGR-279 added the one thing that was
+/// missing — the request itself — as `GridService.downloadMaster`, which issues it, reads the
+/// response's `Content-Disposition`, types the body through `ShareExportPlan.contentType(for:)`
+/// and pulls `X-Img-Policy` off a 403. `MasterDownloadTests` drives all of that through the real
+/// generated client over a stub transport.
 ///
-/// What is NOT built is the downloader itself: nothing yet issues the request, reads the
-/// response's `Content-Disposition`, or pulls `X-Img-Policy` off a real 403 — those three reads
-/// are written for the first time in step 3 below, and only the contract probe currently touches
-/// that operation at all. Treat this as assembled parts, not a finished lane behind a switch.
-///
-/// TO ACTIVATE, in this order:
+/// ACTIVATION, in this order — ALL FOUR DONE (IMGMGR-279, 2026-09-02):
 ///  1. DONE (img-manager `74203992`): the operation declares binary `200` content.
 ///  2. DONE (WP14 lane A re-vendor): `DownloadContractProbeTests` asserts the body's presence
 ///     instead of recording its absence.
-///  3. One `MasterDownloading` conformance lands on `GridService` — a single added method that
+///  3. DONE (IMGMGR-279): `GridService` conforms to `MasterDownloading` — one added method that
 ///     streams the generated `HTTPBody` through `ShareStreamWriter` with `masterByteCap`, names
-///     the file from the response's `Content-Disposition`, and maps 403-with-`X-Img-Policy`,
-///     404 and everything else through `ShareExportPlan.refusal(status:policyHeader:)`.
-///  4. `isAvailable` becomes `true`, and `ShareExportStore` is constructed with that
-///     conformance instead of `UnavailableMasterDownloader`.
+///     the file from the response's `Content-Disposition`, types it from the served body through
+///     `ShareExportPlan.contentType(for:)`, and maps 403-with-`X-Img-Policy`, 404 and everything
+///     else through `ShareExportPlan.refusal(status:policyHeader:)`.
+///  4. DONE (IMGMGR-279): `isAvailable` is `true`, and `RootView` constructs `ShareExportStore`
+///     with that conformance instead of `UnavailableMasterDownloader`.
 ///
-/// Step 4 is the ONLY behavioural switch: the loupe's master entry, the streaming, the naming
-/// and the refusal copy are already the paths the preview half runs through today.
+/// Step 4 was the ONLY behavioural switch: the loupe's master entry, the streaming, the naming
+/// and the refusal copy were already the paths the preview half ran through.
 enum ShareMasterSeam {
-  /// OFF, and since the re-vendor that is a DECISION rather than an impossibility: the contract
-  /// carries a body now, but steps 3 and 4 above are unbuilt, and flipping this without them
-  /// points the loupe's master entry at a downloader that does not exist. `ShareMasterSeamTests`
-  /// is the named test that turns RED the moment this is flipped, so activation cannot happen as
-  /// a side effect of an unrelated edit.
-  static let isAvailable = false
+  /// ON since IMGMGR-279: the contract carries a body, `GridService.downloadMaster` issues the
+  /// request, and `RootView` hands that conformance to the store. Owner decision of 2026-09-02,
+  /// verbatim — "we should always share the highest possible quality" — which is what made
+  /// finishing the seam the requirement rather than retiring the flag.
+  ///
+  /// It stays a named constant rather than disappearing into the call sites: `ShareExportStore`
+  /// still guards every master export behind it, so one edit turns the master lane off again if
+  /// the endpoint ever has to be stood down, and `ShareMasterSeamTests` still pins what this
+  /// build ships.
+  static let isAvailable = true
 }
 
-/// The master lane's byte source, factored out so the whole pipeline above it is real and
-/// tested while only this one call is parked. Conformances live wherever the generated client
-/// does (`GridService`), never here.
+/// The master lane's byte source, factored out so the pipeline above it can be tested against a
+/// substituted downloader instead of the network. Conformances live wherever the generated
+/// client does (`GridService`), never here.
 protocol MasterDownloading: Sendable {
   func downloadMaster(imageID: Int, into directory: URL) async -> MasterDownloadOutcome
 }
@@ -61,9 +64,10 @@ enum MasterDownloadOutcome: Sendable, Equatable {
   case refused(ShareRefusal)
 }
 
-/// The seam's standing implementation while `ShareMasterSeam.isAvailable` is false: it refuses
-/// in the same shape a real downloader would, so the state machine above it runs the identical
-/// path either way.
+/// The refusing implementation for a build with the seam CLOSED — the store's default, and what
+/// the master lane falls back to if `isAvailable` is ever set false again. It refuses in the
+/// same shape the real downloader would, so the state machine above it runs the identical path
+/// either way.
 struct UnavailableMasterDownloader: MasterDownloading {
   func downloadMaster(imageID: Int, into directory: URL) async -> MasterDownloadOutcome {
     .refused(.masterContractUnavailable)
@@ -75,9 +79,7 @@ struct UnavailableMasterDownloader: MasterDownloading {
 /// whatever the server sends has no bound at all. Past `cap` the partial file is deleted and the
 /// write refuses, so an over-cap response costs a bounded amount of disk and nothing is shared.
 ///
-/// Written and tested NOW even though its only production caller arrives with the re-vendored
-/// contract: the cap and the delete-on-abort are the parts that must not be improvised later,
-/// under time pressure, against a live endpoint.
+/// Its production caller is `GridService.downloadMaster` (step 3 above).
 enum ShareStreamWriter {
   enum Failure: Error, Equatable {
     case tooLarge

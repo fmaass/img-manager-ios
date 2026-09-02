@@ -53,22 +53,21 @@ final class CompactFilmstripScreenshotUITests: OrientationPinnedUITestCase {
       "The strip is eating the image area rather than accompanying it.")
 
     // Zoomed (P3's interaction): the strip stays put — zoom magnifies the frame, it does not
-    // take the context away.
-    let zoomToggle = app.buttons["loupeZoomToggle"]
-    XCTAssertTrue(zoomToggle.waitForExistence(timeout: 10))
-    XCTAssertEqual(zoomToggle.value as? String, "100 %")
-    zoomToggle.tap()
+    // take the context away. Driven by the DOUBLE-TAP and read from the photograph's own value:
+    // IMGMGR-348 removed the "100 %" chrome twin this section used to tap.
+    XCTAssertEqual(image.value as? String, "zoom fit, pan 0, 0")
+    image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
     Thread.sleep(forTimeInterval: 1.0)
-    XCTAssertEqual(
-      zoomToggle.value as? String, "Fit",
-      "Tapping the zoom chrome twin did not change the zoom state.")
+    let zoomed = image.value as? String ?? ""
+    XCTAssertTrue(
+      zoomed.hasPrefix("zoom 100 %"), "The double-tap did not zoom the frame (\(zoomed)).")
     XCTAssertTrue(strip.exists, "The thumb bar disappeared when the frame was zoomed.")
     attach(name: "compact-loupe-thumb-bar-zoomed")
 
     // Leave the loupe at fit for whatever runs next in this simulator.
-    zoomToggle.tap()
+    image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
     Thread.sleep(forTimeInterval: 0.6)
-    XCTAssertEqual(zoomToggle.value as? String, "100 %")
+    XCTAssertEqual(image.value as? String, "zoom fit, pan 0, 0")
   }
 
   // MARK: - IMGMGR-268: the strip's thumbnails are CONTROLS, not a bare gesture

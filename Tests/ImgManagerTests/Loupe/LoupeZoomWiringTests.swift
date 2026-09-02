@@ -63,17 +63,10 @@ final class FrameChangeSpy {
 /// Captures what each zoom SURFACE was handed by `body`.
 @MainActor
 final class LoupeZoomControlsSpy {
-  var controlToggle: (() -> Void)?
   var handlers: LoupeZoomGestureHandlers?
-  var controlModels: [LoupeZoomControlModel] = []
 
   var controls: LoupeZoomControls {
     LoupeZoomControls(
-      makeToggleControl: { model, onToggle in
-        self.controlModels.append(model)
-        self.controlToggle = onToggle
-        return AnyView(EmptyView())
-      },
       attachGestures: { content, handlers in
         self.handlers = handlers
         return content
@@ -122,7 +115,7 @@ struct LoupeZoomWiringTests {
     view.zoomControls = spy.controls
 
     _ = view.body
-    spy.controlToggle?()
+    spy.handlers?.onToggle()
     #expect(model.state.scale > 1)
 
     store.loupeFocus(on: 2)
@@ -136,8 +129,13 @@ struct LoupeZoomWiringTests {
 @MainActor
 @Suite("LoupeView — zoom surfaces, drag arbitration and the preview-only tier")
 struct LoupeViewTests {
-  @Test("the double-tap and the chrome control invoke the same toggle")
-  func doubleTapAndTheChromeControlInvokeTheSameToggle() async {
+  /// IMGMGR-348 removed the chrome twin this test used to pair the double-tap against, so what
+  /// is pinned now is the half that survived: the double-tap really is attached, and it really
+  /// does zoom. Deleting `attachGestures`' `onTapGesture(count: 2)` makes this RED — which is
+  /// exactly the coverage the removed control must not have taken with it, because the gesture
+  /// is now the only way to zoom.
+  @Test("the double-tap is attached and reaches 1:1 — the gesture is the whole surface now")
+  func theDoubleTapIsAttachedAndZooms() async {
     let (store, transport) = await LoupeZoomFixtures.loadedStore()
     let model = LoupeZoomModel()
     LoupeZoomFixtures.phoneGeometry(model)
@@ -148,25 +146,16 @@ struct LoupeViewTests {
     view.zoomControls = spy.controls
 
     _ = view.body
-    #expect(spy.controlToggle != nil)
     #expect(spy.handlers != nil)
-    // The chrome twin is built in every layout mode, Compact included.
-    #expect(spy.controlModels.isEmpty == false)
-    #expect(spy.controlModels.allSatisfy { $0.isAvailable })
 
     let start = model.state
-    spy.controlToggle?()
-    let afterControl = model.state
-
-    model.state = start
     spy.handlers?.onToggle()
     let afterDoubleTap = model.state
 
-    #expect(afterControl == afterDoubleTap)
-    // Positive control: they are not two no-ops agreeing with each other.
-    #expect(afterControl != start)
-    #expect(afterControl.scale > 1)
-    #expect(abs(afterControl.scale - afterControl.oneToOneScale) < 0.001)
+    // Positive control: not a no-op agreeing with itself.
+    #expect(afterDoubleTap != start)
+    #expect(afterDoubleTap.scale > 1)
+    #expect(abs(afterDoubleTap.scale - afterDoubleTap.oneToOneScale) < 0.001)
   }
 
   @Test("a horizontal drag advances at fit and pans when zoomed")
@@ -193,7 +182,7 @@ struct LoupeViewTests {
     #expect(model.state.offset == .zero)
 
     // Zoomed: the same drag PANS and must not move the frame.
-    spy.controlToggle?()
+    spy.handlers?.onToggle()
     #expect(model.state.scale > 1)
     spy.handlers?.onDragEnded(CGSize(width: -100, height: 0))
     #expect(model.state.offset.width < 0)
@@ -214,7 +203,7 @@ struct LoupeViewTests {
     _ = view.body
 
     await view.loadMainImage()
-    spy.controlToggle?()
+    spy.handlers?.onToggle()
     #expect(model.state.scale > 1)
     store.loupeFocus(on: 2)
     await view.loadMainImage()

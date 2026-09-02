@@ -505,7 +505,11 @@ actor GridStubTransport: ClientTransport {
   /// the stub genuinely sends — which is the point: the probe proves the generated `Output.Ok`
   /// cannot reach either of them at this contract version.
   enum DownloadOutcome: Sendable {
-    case ok(Data, contentDisposition: String?)
+    /// `contentType` is the wire `Content-Type` the response carries: the download `200`
+    /// declares SEVEN of them, and which one arrives decides the `UTType` the share sheet
+    /// registers the item under — so a test that could only ever produce one of the seven
+    /// could not tell a real mapping from a hard-coded `.jpeg`.
+    case ok(Data, contentType: String, contentDisposition: String?)
     /// 403 WITH `X-Img-Policy: raw-original` — the application's own policy answer.
     case rawOriginalPolicy
     /// 403 WITHOUT the header — a proxy/session refusal, which is a different thing entirely.
@@ -515,6 +519,14 @@ actor GridStubTransport: ClientTransport {
 
   var downloadOutcome: DownloadOutcome = .notFound
   func setDownloadOutcome(_ outcome: DownloadOutcome) { downloadOutcome = outcome }
+  /// Self-disarming one-shot, the same discipline as `proxyShouldFail`: models the download
+  /// endpoint being unreachable, which is a different outcome from any status it can answer.
+  var downloadShouldFail = false
+  func setDownloadShouldFail(_ fail: Bool) { downloadShouldFail = fail }
+  /// The query string of the LAST download request, read off the URL the REAL generated
+  /// `Client` built — so "this client never asks for a rendition and always asks for the
+  /// master" is provable from the wire rather than from the call site.
+  private(set) var lastDownloadQuery: String?
 
   private(set) var lastMarkStateRequest: Components.Schemas.MarkStateRequest?
   private(set) var lastTagsRequest: Components.Schemas.MarkTagsRequest?
@@ -820,10 +832,15 @@ actor GridStubTransport: ClientTransport {
       }
 
     case Operations.DownloadImageApiImagesImageIdDownloadGet.id:
+      lastDownloadQuery = request.path.flatMap(URLComponents.init(string:))?.query
+      if downloadShouldFail {
+        downloadShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced download failure")
+      }
       switch downloadOutcome {
-      case .ok(let data, let contentDisposition):
+      case .ok(let data, let contentType, let contentDisposition):
         var response = HTTPResponse(status: .ok)
-        response.headerFields[.contentType] = "application/octet-stream"
+        response.headerFields[.contentType] = contentType
         if let contentDisposition, let name = HTTPField.Name("Content-Disposition") {
           response.headerFields[name] = contentDisposition
         }

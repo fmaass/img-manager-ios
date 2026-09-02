@@ -106,9 +106,10 @@ struct RootView: View {
     _gridStore = State(initialValue: GridStore(service: gridService))
     // One share pre-flight for the whole app: the docked and full-screen loupes are two
     // presentations of the same thing, and a prepared export (and its temp file) belongs to
-    // neither of them alone. `UnavailableMasterDownloader` is the parked master seam — see
-    // `Share/ShareMasterSeam.swift` for what replaces it.
-    _shareExport = State(initialValue: ShareExportStore(service: gridService))
+    // neither of them alone. The SAME `GridService` is the master lane's byte source
+    // (IMGMGR-279, step 4 of `Share/ShareMasterSeam.swift`) — one client, one service, no
+    // second transport for the share lane.
+    _shareExport = State(initialValue: ShareExportStore(service: gridService, master: gridService))
     let queueService = QueueService(client: client)
     // IMGMGR-198: the queue's cached last answer. The session gets the erase hook (a credential
     // that is genuinely gone takes the answers fetched under it with it), and the store gets a
@@ -286,6 +287,11 @@ struct RootView: View {
         }
       }
       #if DEBUG
+        if DebugStubLaunch.isActive && DebugStubLaunch.noAutoAdvance {
+          // IMGMGR-348: the fixture's own way to park the cadence, now that the loupe header
+          // control a UI test used to drive is gone.
+          gridStore.preferences.autoAdvanceOnMark = false
+        }
         if DebugStubLaunch.isActive && !DebugStubLaunch.skipAutoSelect {
           // Auto-select the fixture shoot so the grid is already populated for screenshots —
           // no manual navigation step in the fixture harness. Sets `selectedFolderID` too (not
@@ -333,14 +339,14 @@ struct RootView: View {
     .sheet(isPresented: $showAccountSheet) {
       AccountSheetView(auth: auth, preferences: gridStore.preferences)
     }
-    // P5: full-screen loupe takeover — unconditionally on Compact (the loupe is ALWAYS
-    // full-screen there), and on Regular-2/3 only once the explicit toggle is on. The docked
-    // Regular-2/3 presentation (the common case there) lives in `contentColumn` instead, never
-    // here — this cover and that in-place swap are mutually exclusive by construction (see
-    // `contentColumn`'s own condition), so the loupe is never rendered twice at once.
+    // P5: full-screen loupe takeover — Compact only, where the loupe is ALWAYS full-screen.
+    // The docked Regular-2/3 presentation lives in `contentColumn` instead, never here — this
+    // cover and that in-place swap are mutually exclusive by construction (see `contentColumn`'s
+    // own condition), so the loupe is never rendered twice at once. The Regular-2/3 opt-in that
+    // used to widen this condition went with its header control (IMGMGR-348).
     .fullScreenCover(
       isPresented: Binding(
-        get: { gridStore.isLoupeOpen && (layoutMode == .compact || gridStore.isLoupeFullScreen) },
+        get: { gridStore.isLoupeOpen && layoutMode == .compact },
         set: { presented in
           if !presented { gridStore.closeLoupe() }
         })
@@ -450,12 +456,11 @@ struct RootView: View {
 
   private var contentColumn: some View {
     Group {
-      // P5: Regular-2/3's DEFAULT loupe presentation — docked in place of the grid, never a
-      // takeover (spec: "not a full-screen takeover by default... the detail pane, with the
-      // grid retained as a filmstrip"). Compact never takes this branch (its loupe is always
-      // the full-screen cover above); once `isLoupeFullScreen` is toggled on, this falls back
-      // to the plain grid branch below so the cover above is the only thing showing the loupe.
-      if gridStore.isLoupeOpen && layoutMode != .compact && !gridStore.isLoupeFullScreen {
+      // P5: Regular-2/3's loupe presentation — docked in place of the grid, never a takeover
+      // (spec: "not a full-screen takeover by default... the detail pane, with the grid retained
+      // as a filmstrip"). Compact never takes this branch (its loupe is always the full-screen
+      // cover above).
+      if gridStore.isLoupeOpen && layoutMode != .compact {
         LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
       } else {
         GridView(store: gridStore, layoutMode: layoutMode)

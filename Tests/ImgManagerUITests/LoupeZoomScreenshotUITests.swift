@@ -7,6 +7,12 @@ import XCTest
 /// app and read the state back from accessibility, so deleting the live `MagnifyGesture` or
 /// `DragGesture` attachment turns this leg RED.
 ///
+/// IMGMGR-348 (owner device pass 2026-09-02) removed the loupe's "100 %" chrome twin, so the
+/// zoom state is read where it still lives: `loupeImage`'s own accessibility value, the surface
+/// the photograph has always spoken it through. The chrome-twin test that led this file went
+/// with the control; the gesture coverage below is now the ONLY coverage zoom has, which is
+/// exactly why it stays.
+///
 /// The zoom assertions are geometry-derived, never idiom-derived: the DEBUG fixture serves a
 /// 1600x1067 proxy (production `preview` geometry), which on both gate destinations fits well
 /// below 1600 device pixels, so 1:1 sits above fit and the control must be enabled on both. If a
@@ -14,67 +20,48 @@ import XCTest
 /// that tells us — which is the honest outcome, not a hidden branch.
 final class LoupeZoomScreenshotUITests: OrientationPinnedUITestCase {
 
-  // MARK: - The chrome twin, the double-tap, and the retained screenshots
+  // MARK: - The double-tap, and the retained screenshots
 
-  func testLoupeZoomFitAndOneToOne() throws {
+  func testDoubleTapZoomsAndReturnsToFit() throws {
     let app = launchAndOpenLoupe()
-    let zoomToggle = app.buttons["loupeZoomToggle"]
-    XCTAssertTrue(
-      zoomToggle.waitForExistence(timeout: 10),
-      "The zoom chrome twin is missing — zoom must never be gesture-only.")
-
-    attach(name: "loupe-fit")
-
-    XCTAssertTrue(
-      zoomToggle.isEnabled,
-      "Zoom reported unavailable against a 1600x1067 fixture proxy: the fitted extent must be "
-        + "wider than 1600 device pixels on this destination for that to be correct.")
-    XCTAssertEqual(zoomToggle.value as? String, "100 %")
-
-    zoomToggle.tap()
-    Thread.sleep(forTimeInterval: 1.0)
-    XCTAssertEqual(
-      zoomToggle.value as? String, "Fit",
-      "Tapping the chrome twin did not change the zoom state — the live control is not wired.")
-    attach(name: "loupe-zoomed-via-chrome")
-
-    zoomToggle.tap()
-    Thread.sleep(forTimeInterval: 0.6)
-    XCTAssertEqual(zoomToggle.value as? String, "100 %")
-
     let image = loupeImage(app)
     XCTAssertTrue(image.waitForExistence(timeout: 10))
-    XCTContext.runActivity(named: "loupeImage frame: \(image.frame)") { _ in }
+    XCTAssertEqual(image.value as? String, "zoom fit, pan 0, 0", "the loupe must open at fit")
+    attach(name: "loupe-fit")
+
     // Coordinate-based so the double-tap does not depend on the container element being
     // reported hittable by the accessibility tree.
     image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
     Thread.sleep(forTimeInterval: 1.0)
-    XCTAssertEqual(
-      zoomToggle.value as? String, "Fit",
-      "A double-tap did not produce the SAME state the chrome control does — the two surfaces "
-        + "have drifted apart, or the live gesture is not attached.")
+    let zoomed = image.value as? String ?? ""
+    XCTAssertTrue(
+      zoomed.hasPrefix("zoom 100 %"),
+      "A double-tap did not put the photograph at 1:1 (\(zoomed)) — the live gesture is not "
+        + "attached, and with the chrome twin gone there is no other way to zoom.")
     attach(name: "loupe-zoomed-via-double-tap")
+
+    image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
+    Thread.sleep(forTimeInterval: 1.0)
+    XCTAssertEqual(
+      image.value as? String, "zoom fit, pan 0, 0",
+      "A second double-tap did not return the photograph to fit.")
   }
 
   // MARK: - The production MagnifyGesture
 
   func testPinchZoomsAndClampsBetweenFitAndOneToOne() throws {
     let app = launchAndOpenLoupe()
-    let zoomToggle = app.buttons["loupeZoomToggle"]
-    XCTAssertTrue(zoomToggle.waitForExistence(timeout: 10))
-    XCTAssertEqual(zoomToggle.value as? String, "100 %", "the loupe must open at fit")
-
     let image = loupeImage(app)
     XCTAssertTrue(image.waitForExistence(timeout: 10))
-    XCTAssertEqual(image.value as? String, "zoom fit, pan 0, 0")
+    XCTAssertEqual(image.value as? String, "zoom fit, pan 0, 0", "the loupe must open at fit")
 
     image.pinch(withScale: 3, velocity: 3)
     Thread.sleep(forTimeInterval: 1.0)
-    XCTAssertEqual(
-      zoomToggle.value as? String, "Fit",
+    let zoomed = image.value as? String ?? ""
+    XCTAssertFalse(
+      zoomed.hasPrefix("zoom fit"),
       "A real pinch did not zoom the photograph — LoupeZoomControls.live is not attaching "
         + "MagnifyGesture.")
-    let zoomed = image.value as? String ?? ""
     XCTAssertFalse(
       zoomed.hasPrefix("zoom fit"),
       "The pinch left the magnification at fit (\(zoomed)).")
@@ -90,9 +77,6 @@ final class LoupeZoomScreenshotUITests: OrientationPinnedUITestCase {
     image.pinch(withScale: 0.1, velocity: -3)
     Thread.sleep(forTimeInterval: 1.0)
     XCTAssertEqual(
-      zoomToggle.value as? String, "100 %",
-      "Pinching back in did not return the photograph to fit.")
-    XCTAssertEqual(
       image.value as? String, "zoom fit, pan 0, 0",
       "Pinching below fit was not clamped to fit.")
   }
@@ -101,17 +85,15 @@ final class LoupeZoomScreenshotUITests: OrientationPinnedUITestCase {
 
   func testDragPansTheZoomedPhotograph() throws {
     let app = launchAndOpenLoupe()
-    let zoomToggle = app.buttons["loupeZoomToggle"]
-    XCTAssertTrue(zoomToggle.waitForExistence(timeout: 10))
     let image = loupeImage(app)
     XCTAssertTrue(image.waitForExistence(timeout: 10))
 
-    zoomToggle.tap()
+    image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
     Thread.sleep(forTimeInterval: 1.0)
     let centred = image.value as? String ?? ""
     XCTAssertEqual(
       centred, "zoom 100 %, pan 0, 0",
-      "the chrome twin should put the photograph at 1:1, centred (\(centred))")
+      "the double-tap should put the photograph at 1:1, centred (\(centred))")
 
     let start = image.coordinate(withNormalizedOffset: CGVector(dx: 0.78, dy: 0.5))
     let end = image.coordinate(withNormalizedOffset: CGVector(dx: 0.22, dy: 0.5))
@@ -125,9 +107,9 @@ final class LoupeZoomScreenshotUITests: OrientationPinnedUITestCase {
       "A real drag did not pan the zoomed photograph — LoupeZoomControls.live is not attaching "
         + "DragGesture, or the drag was arbitrated as a frame advance while zoomed.")
     XCTAssertFalse(panned.hasSuffix("pan 0, 0"), "the pan did not move off centre (\(panned))")
-    XCTAssertEqual(
-      zoomToggle.value as? String, "Fit",
-      "The drag must PAN while zoomed, never drop the magnification.")
+    XCTAssertTrue(
+      panned.hasPrefix("zoom 100 %"),
+      "The drag must PAN while zoomed, never drop the magnification (\(panned)).")
     attach(name: "loupe-panned")
   }
 

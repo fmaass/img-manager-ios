@@ -71,8 +71,9 @@ struct ShareExportPlanTests {
     #expect(ShareExportPlan.offersMaster(hasEdit: nil, seamAvailable: true) == false)
     #expect(ShareExportPlan.offersMaster(hasEdit: false, seamAvailable: true) == false)
     #expect(ShareExportPlan.offersMaster(hasEdit: true, seamAvailable: true) == true)
-    // And at the shipping seam, an edited photo still offers nothing.
-    #expect(ShareExportPlan.offersMaster(hasEdit: true) == false)
+    // And at the shipping seam (IMGMGR-279 opened it), an edited photo offers the master.
+    #expect(ShareExportPlan.offersMaster(hasEdit: true) == true)
+    #expect(ShareExportPlan.offersMaster(hasEdit: false) == false)
   }
 
   @Test("Both byte caps are named, and the master's is the larger one")
@@ -80,6 +81,59 @@ struct ShareExportPlanTests {
     // Mirrors GridService.proxy's own 30 MB cap (Grid/GridService.swift:163).
     #expect(ShareExportPlan.previewByteCap == 30 * 1024 * 1024)
     #expect(ShareExportPlan.masterByteCap > ShareExportPlan.previewByteCap)
+  }
+
+  /// The `200`'s SEVEN declared bodies, mapped to the type the share sheet registers the item
+  /// under. Named constants, never `UTType(mimeType:)`: the system's mime table is not this
+  /// app's contract, and a lookup that silently changed under an OS update would change what a
+  /// receiving app is told it is being handed.
+  @Test(
+    "Every content type the download 200 declares maps to its own UTType",
+    arguments: [
+      ("application/octet-stream", UTType.data),
+      ("image/heic", UTType.heic),
+      ("image/heif", UTType.heif),
+      ("image/jpeg", UTType.jpeg),
+      ("image/png", UTType.png),
+      ("image/tiff", UTType.tiff),
+      ("image/webp", UTType.webP),
+    ])
+  func contentTypeCoversEveryDeclaredBody(mimeType: String, expected: UTType) {
+    #expect(ShareExportPlan.contentType(for: mimeType) == expected)
+  }
+
+  @Test("An undeclared content type is opaque data — never guessed into an image type")
+  func unknownContentTypeIsData() {
+    #expect(ShareExportPlan.contentType(for: "application/pdf") == .data)
+    #expect(ShareExportPlan.contentType(for: "") == .data)
+  }
+
+  @Test("A master with no server name still gets a real, typed, per-image filename")
+  func masterFallbackFilenameIsTypedAndSpecific() {
+    #expect(ShareExportPlan.masterFilename(imageID: 42, contentType: .png) == "photo-42.png")
+    #expect(ShareExportPlan.masterFilename(imageID: 1, contentType: .jpeg) == "photo-1.jpeg")
+    #expect(ShareExportPlan.masterFilename(imageID: 9, contentType: .data) == "photo-9.dat")
+  }
+
+  /// IMGMGR-348's ONE rule, and the RAW invariant that survives it: the master when there is
+  /// one, the preview otherwise, and no input of any kind produces a third answer.
+  @Test("The share rule: the edited master when there is one, the best proxy otherwise")
+  func shareVariantIsMasterWhenThereIsAnEdit() {
+    #expect(ShareExportPlan.variant(hasEdit: true, seamAvailable: true) == .master)
+    #expect(ShareExportPlan.variant(hasEdit: false, seamAvailable: true) == .preview)
+    #expect(ShareExportPlan.variant(hasEdit: nil, seamAvailable: true) == .preview)
+    // With the seam stood down there is no master lane at all, so the rule answers the only
+    // thing the client can actually serve rather than an entry that would refuse.
+    #expect(ShareExportPlan.variant(hasEdit: true, seamAvailable: false) == .preview)
+  }
+
+  @Test("The shipped rule, at the seam's own default, still cannot name a RAW original")
+  func shippedShareRuleNeverNamesARawOriginal() {
+    let edits: [Bool?] = [true, false, nil]
+    for hasEdit in edits {
+      let variant = ShareExportPlan.variant(hasEdit: hasEdit)
+      #expect(variant == .master || variant == .preview)
+    }
   }
 
   @Test("No share variant can name a RAW original — the request is unrepresentable")

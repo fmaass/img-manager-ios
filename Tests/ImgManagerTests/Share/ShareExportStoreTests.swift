@@ -88,47 +88,49 @@ struct ShareExportStoreTests {
     #expect(store.state == .refused(.noPreview))
   }
 
-  @Test("THE SEAM, at its production default: the guard alone stops a real network attempt")
-  func productionDefaultSeamIsOffAndMakesNoRequest() async {
+  @Test("THE SEAM, at its production default (IMGMGR-279: open): the master request is issued")
+  func productionDefaultSeamIsOpenAndReachesTheWire() async {
     let directory = scratchDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let transport = GridStubTransport()
     let client = ImgManagerAPIClient.make(transport: transport)
-    // A downloader that genuinely WOULD reach the transport — so `calls == 0` below is evidence
-    // about the seam guard, not about a stub that never tries. `masterAvailable` is not passed:
-    // it takes `ShareMasterSeam.isAvailable` exactly as the app ships it.
+    await transport.setDownloadOutcome(.notFound)
+    // `masterAvailable` is not passed: this takes `ShareMasterSeam.isAvailable` exactly as the
+    // app ships it, so standing the seam back down without also standing down the loupe's
+    // master rule fails here rather than in a device pass.
     let store = ShareExportStore(
       service: GridService(client: client),
       master: TransportTouchingMasterDownloader(client: client), directory: directory)
 
     await store.prepare(.master, for: image(hasEdit: true))
 
-    #expect(store.state == .refused(.masterContractUnavailable))
     let calls = await transport.callCount(
       Operations.DownloadImageApiImagesImageIdDownloadGet.id)
-    #expect(calls == 0)
+    #expect(calls == 1)
+    #expect(store.state == .refused(.noMaster))
   }
 
-  @Test("The control for that guard: with the seam OPEN the same downloader does reach the wire")
-  func seamOpenLetsTheSameDownloaderThrough() async {
+  @Test("The control for that: with the seam CLOSED the same downloader never reaches the wire")
+  func closedSeamStopsTheSameDownloader() async {
     let directory = scratchDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let transport = GridStubTransport()
     let client = ImgManagerAPIClient.make(transport: transport)
-    await transport.setDownloadOutcome(.notFound)
+    // A downloader that genuinely WOULD reach the transport — so `calls == 0` below is evidence
+    // about the seam guard, not about a stub that never tries.
     let store = ShareExportStore(
       service: GridService(client: client),
-      master: TransportTouchingMasterDownloader(client: client), masterAvailable: true,
+      master: TransportTouchingMasterDownloader(client: client), masterAvailable: false,
       directory: directory)
 
     await store.prepare(.master, for: image(hasEdit: true))
 
     // Same store, same downloader, same image — the ONLY difference from the test above is the
-    // guard, so deleting the guard makes that test fail rather than silently still pass.
+    // guard, so deleting the guard makes this test fail rather than silently still pass.
+    #expect(store.state == .refused(.masterContractUnavailable))
     let calls = await transport.callCount(
       Operations.DownloadImageApiImagesImageIdDownloadGet.id)
-    #expect(calls == 1)
-    #expect(store.state == .refused(.noMaster))
+    #expect(calls == 0)
   }
 
   @Test("A stale export never lands: focus moves mid-fetch, so the result is dropped and deleted")
@@ -152,6 +154,49 @@ struct ShareExportStoreTests {
     // A's whole generation directory is gone, so nothing of A is left anywhere under the root.
     let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory.path())) ?? []
     #expect(entries.isEmpty)
+  }
+
+  /// The reader closes the loupe while the fetch is still in flight (diff-gate BLOCKING,
+  /// IMGMGR-348): the view that asked for the export is gone, so nothing can ever present it and
+  /// nothing will ever dismiss it — no sheet completion, no `onDismiss`, no `finish(_:)`. Before
+  /// the fix the prepared bytes simply stayed on disk until some unrelated later supersede
+  /// happened to clear them.
+  ///
+  /// Cancellation is therefore an ENDING, and it runs the same single path an ended share always
+  /// ran: `finish(_:)` with the export's own token.
+  @Test("A cancelled prepare leaves no file and no .ready — closing the loupe ends the export")
+  func aCancelledPrepareLeavesNothingBehind() async throws {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = GridStubTransport()
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8, 0xAB, 0xCD])))
+    await transport.holdProxyRequests(true)
+    let store = makeStore(transport, directory: directory)
+
+    // Exactly what the view does: the prepare runs in a task the view owns, and disappearing
+    // cancels it.
+    let inFlight = Task { await store.prepare(.preview, for: image()) }
+    await transport.waitUntilProxyStarted()
+    inFlight.cancel()
+    // The bytes still arrive — a cancelled URLSession task is not the only way this ends, and
+    // the dangerous case is precisely the one where the fetch SUCCEEDS after the view is gone.
+    await transport.releaseProxy()
+    await inFlight.value
+
+    #expect(store.state == .idle)
+    let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory.path())) ?? []
+    #expect(entries.isEmpty)
+
+    // POSITIVE CONTROL, same store and same transport: an UNcancelled prepare does produce the
+    // file, so the assertions above are about cancellation and not about a stub that never
+    // delivers.
+    await transport.holdProxyRequests(false)
+    await store.prepare(.preview, for: image())
+    guard case .ready(let file) = store.state else {
+      Issue.record("expected .ready for the uncancelled control, got \(store.state)")
+      return
+    }
+    #expect(FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)))
   }
 
   @Test("A delayed finish from an abandoned share cannot wipe the export that replaced it")
@@ -354,9 +399,9 @@ struct ShareExportStoreTests {
   }
 }
 
-/// Deliberately reaches the transport, exactly as the real conformance will once the contract
-/// carries a body. Its whole purpose is to make "no request was made" a claim about the seam
-/// guard: with a downloader that never tries, that assertion passes with or without the guard.
+/// Deliberately reaches the transport, exactly as the real conformance does. Its whole purpose
+/// is to make "no request was made" a claim about the seam guard: with a downloader that never
+/// tries, that assertion passes with or without the guard.
 private struct TransportTouchingMasterDownloader: MasterDownloading {
   let client: any APIProtocol
 
@@ -368,8 +413,9 @@ private struct TransportTouchingMasterDownloader: MasterDownloading {
   }
 }
 
-/// Stands in for the `GridService` conformance that lands with the re-vendored contract, so the
-/// state machine, the naming and the refusal copy above it all run for real today.
+/// Stands in for the real `GridService` conformance (`MasterDownloadTests` covers that one), so
+/// the state machine, the naming and the refusal copy above it can be driven to any outcome
+/// without a transport.
 private struct StubMasterDownloader: MasterDownloading {
   let outcome: MasterDownloadOutcome
   var bytes: Data?

@@ -28,115 +28,110 @@ import UIKit
 struct ShareControl: View {
   @Bindable var share: ShareExportStore
   let image: Components.Schemas.ImageSummary?
-
-  var body: some View {
-    Group {
-      if share.isPreparing {
-        ProgressView()
-          .controlSize(.small)
-      } else {
-        Menu {
-          Button("Share preview") {
-            guard let image else { return }
-            Task { await share.prepare(.preview, for: image) }
-          }
-          // The rule itself lives in `ShareExportPlan.offersMaster` — see its doc comment — so
-          // it is one testable decision rather than a condition restated in a view.
-          if ShareExportPlan.offersMaster(hasEdit: image?.hasEdit) {
-            Button("Share edited master") {
-              guard let image else { return }
-              Task { await share.prepare(.master, for: image) }
-            }
-          }
-        } label: {
-          Label("Share", systemImage: "square.and.arrow.up")
-        }
-        .disabled(image == nil)
-      }
-    }
-    .labelStyle(.iconOnly)
-    .frame(minWidth: 44, minHeight: 44)
-    .accessibilityIdentifier("loupeShare")
-  }
-}
-
-/// The share lane's inline, non-modal status row, directly under the loupe header — the same
-/// posture `ConflictRecoveryBanner` already uses for the 409 lane: no alerts, no server text, no
-/// modality anywhere in this flow.
-///
-/// The share control lives HERE rather than in the header because it exists only once the file
-/// does: reaching `.ready` means the bytes are already on disk under their final name, so the
-/// system sheet resolves instantly and cannot fail half-presented (gate correction 3).
-///
-/// It presents `ShareSheet` rather than a `ShareLink` for one reason: `ShareLink` never reports
-/// its own dismissal. With it, the prepared file and the `.ready` state survived until something
-/// unrelated happened to clear them — the user pressing Done, or focus moving — so a cancelled
-/// share left bytes on disk indefinitely. `.sheet(onDismiss:)` plus the activity controller's own
-/// `completionWithItemsHandler` between them cover every way the sheet can go away, and both end
-/// at `finish(_:)` — carrying the token captured at PRESENTATION time, so a late callback ends
-/// the export it actually belongs to instead of whatever is current when it lands.
-struct ShareStatusBar: View {
-  @Bindable var share: ShareExportStore
-  @State private var isSharePresented = false
   /// Captured when the sheet is presented, not when it is dismissed: dismissal can arrive long
   /// after the export it belongs to stopped being the current one, and this is what lets the
   /// store tell those apart (see `ShareExportStore.finish`).
   @State private var presentedToken: ShareExportToken?
+  @State private var isSharePresented = false
+  /// The in-flight prepare, held so the VIEW owns its lifetime. A share belongs to the loupe
+  /// that asked for it: if this control goes away mid-fetch there is nothing left that could
+  /// present the result or dismiss it, so the task is cancelled and the store ends the export
+  /// through its own `finish(_:)` path (diff-gate BLOCKING, IMGMGR-348).
+  @State private var prepareTask: Task<Void, Never>?
 
   var body: some View {
-    content
-      .sheet(
-        isPresented: $isSharePresented,
-        onDismiss: {
-          if let presentedToken { share.finish(presentedToken) }
-        },
-        content: {
-          // Re-read from state rather than capturing: by presentation time this is still the
-          // same `.ready` file, and if anything superseded it there is nothing to present.
-          if case .ready(let file) = share.state, let presentedToken {
-            ShareSheet(file: file, share: share, token: presentedToken)
-          }
-        })
+    // A STACK, not a `Group`, and that distinction is the whole of a diff-gate regression: a
+    // `Group`'s modifiers are applied to each CHILD, so when `isPreparing` flipped and the
+    // button branch was replaced by the spinner, the button's own `onDisappear` fired and
+    // cancelled the very prepare it had just started — an ordinary share that took longer than
+    // one render never opened its sheet. A stack is one view that outlives the branch switch, so
+    // the lifetime modifiers below are about THIS CONTROL leaving the loupe, which is what they
+    // were always meant to mean.
+    ZStack {
+      if share.isPreparing {
+        // The whole of the feedback, in the control the user just touched: no status row, no
+        // second surface to read, and nothing that needs dismissing if the export refuses.
+        ProgressView()
+          .controlSize(.small)
+          .accessibilityIdentifier("loupeSharePreparing")
+      } else {
+        Button {
+          guard let image else { return }
+          prepareTask?.cancel()
+          prepareTask = Task { await presentShare(for: image) }
+        } label: {
+          Label("Share", systemImage: "square.and.arrow.up")
+        }
+        .disabled(image == nil)
+        .accessibilityIdentifier("loupeShare")
+      }
+    }
+    .labelStyle(.iconOnly)
+    .frame(minWidth: 44, minHeight: 44)
+    .onDisappear {
+      // Closing the loupe mid-prepare is the case this exists for, and on the STACK it is the
+      // only case it fires for: cancelling here is what makes the store's cancellation path run
+      // at all, so no prepared bytes outlive a share that can no longer be presented.
+      prepareTask?.cancel()
+      prepareTask = nil
+    }
+    .sheet(
+      isPresented: $isSharePresented,
+      onDismiss: {
+        if let presentedToken { share.finish(presentedToken) }
+      },
+      content: {
+        // Re-read from state rather than capturing: by presentation time this is still the
+        // same `.ready` file, and if anything superseded it there is nothing to present.
+        if case .ready(let file) = share.state, let presentedToken {
+          ShareSheet(file: file, share: share, token: presentedToken)
+        }
+      })
   }
 
-  @ViewBuilder
-  private var content: some View {
-    switch share.state {
-    case .idle:
-      EmptyView()
-    case .preparing:
-      HStack(spacing: 8) {
-        ProgressView().controlSize(.small)
-        Text("Preparing the export…")
-          .font(.footnote)
-      }
-      .padding(.horizontal)
-      .padding(.vertical, 6)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(.thinMaterial)
-      .accessibilityIdentifier("sharePreparing")
-    case .ready(let file):
-      HStack(spacing: 12) {
-        Button {
-          presentedToken = share.currentToken
-          isSharePresented = true
-        } label: {
-          Label(file.filename, systemImage: "square.and.arrow.up")
-        }
-        .font(.footnote)
-        .buttonStyle(.borderedProminent)
-        .frame(minHeight: 44)
-        .accessibilityIdentifier("shareReadyLink")
-        Spacer()
-        Button("Done") { share.finish(share.currentToken) }
-          .font(.footnote)
-          .frame(minHeight: 44)
-      }
-      .padding(.horizontal)
-      .padding(.vertical, 6)
-      .background(.thinMaterial)
-      .accessibilityIdentifier("shareReady")
-    case .refused(let refusal):
+  /// ONE TAP (IMGMGR-348). Owner device pass on 0.11.0 (14), verbatim: "the sharing is weird: on
+  /// a single picture screen, the sharing button should immediatly open the native share
+  /// functionality and share that picture". So the menu, the inline "Preparing…"/filename row and
+  /// the second tap are gone: this prepares and then presents, in one gesture.
+  ///
+  /// PREPARE-THEN-PRESENT, not a lazily-resolving `NSItemProvider`, and the reason is the
+  /// contract rather than convenience: the item is registered under the EXPORT's own `UTType`
+  /// (see `ShareSheet`), and a master's type is the SERVER's — the download `200` declares seven
+  /// content types and `ShareExportPlan.contentType(for:)` maps whichever one arrives. A provider
+  /// registered before the response exists would have to declare a type it does not yet know,
+  /// i.e. tell the receiving app something that may be false. The measured cost of preparing
+  /// first is in the phase's evidence (`LoupeShareOneTapUITests` logs it per destination).
+  ///
+  /// A refusal is NOT presented: nothing is on disk, so there is nothing to hand to a sheet, and
+  /// `ShareStatusBar` renders the refusal inline exactly as it always did.
+  private func presentShare(for image: Components.Schemas.ImageSummary) async {
+    await share.prepare(ShareExportPlan.variant(hasEdit: image.hasEdit), for: image)
+    // A prepare that finishes AFTER this control is gone must not present anything. The store
+    // has already ended that export (its cancellation path), so `.ready` is not reachable here
+    // either — this is the second half of the same statement, said where the presentation
+    // actually happens rather than inferred from the store's state.
+    guard !Task.isCancelled else { return }
+    guard case .ready = share.state else { return }
+    presentedToken = share.currentToken
+    isSharePresented = true
+  }
+}
+
+/// The share lane's inline, non-modal REFUSAL row, directly under the loupe header — the same
+/// posture `ConflictRecoveryBanner` already uses for the 409 lane: no alerts, no server text, no
+/// modality anywhere in this flow.
+///
+/// It renders one state and one only (IMGMGR-348). The "Preparing the export…" row and the
+/// ready-filename button it used to draw were the second and third interactions the owner did
+/// not want, and both are gone: preparation shows in the share control itself, and a prepared
+/// export presents its sheet without being asked again. What remains is the one thing a share
+/// can still need to say — that it could not happen, and why — which no system sheet can say for
+/// this app.
+struct ShareStatusBar: View {
+  @Bindable var share: ShareExportStore
+
+  var body: some View {
+    if case .refused(let refusal) = share.state {
       HStack(spacing: 12) {
         Label(refusal.copy, systemImage: "exclamationmark.triangle")
           .font(.footnote)
@@ -175,8 +170,16 @@ struct ShareSheet: UIViewControllerRepresentable {
   /// THIS export and not whatever happens to be current when it lands.
   let token: ShareExportToken
 
+  /// The identifier a UI test waits for. A presented `UIActivityViewController` draws its
+  /// contents out of process, so its rows are not reliably in this app's accessibility tree —
+  /// but the container view it presents IS ours, and naming it is what lets
+  /// `LoupeShareOneTapUITests` prove the sheet actually opened rather than that a tap happened.
+  static let presentedIdentifier = "loupeShareSheet"
+
   func makeUIViewController(context: Context) -> UIActivityViewController {
-    Self.makeController(file: file, share: share, token: token)
+    let controller = Self.makeController(file: file, share: share, token: token)
+    controller.view.accessibilityIdentifier = Self.presentedIdentifier
+    return controller
   }
 
   func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}

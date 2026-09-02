@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// WP13 P8 (IMGMGR-214) makes it the app's settings surface as well as its account one: this is
 /// where a persisted preference is reachable WITHOUT being in the loupe, which is the second
-/// half of the persistent-chrome rule for advance-on-mark (the loupe header carries the first).
+/// chrome for advance-on-mark since IMGMGR-348 removed the loupe header's own toggle.
 /// It takes `GridPreferences` rather than reaching for a global, so the sheet a test builds owns
 /// its own suite exactly like every other consumer of that type.
 struct AccountSheetView: View {

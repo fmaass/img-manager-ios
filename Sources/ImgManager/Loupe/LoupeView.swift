@@ -115,7 +115,7 @@ struct LoupeView: View {
   var body: some View {
     let zoomToggle = zoomToggleAction
     return VStack(spacing: 0) {
-      header(zoomToggle: zoomToggle)
+      header()
       ShareStatusBar(share: share)
       mainImageArea(zoomToggle: zoomToggle)
       filmstrip.make(store)
@@ -137,7 +137,13 @@ struct LoupeView: View {
     }
   }
 
-  private func header(zoomToggle: @escaping () -> Void) -> some View {
+  /// IMGMGR-348, owner device pass 2026-09-02: the zoom ("100 %"), auto-advance ("play") and
+  /// full-screen ("expand") controls that used to sit here are gone, verbatim — "i think we can
+  /// get rid of those altogether … its not necessary". What is left is what the loupe is for:
+  /// close, the fidelity label, and share. Zoom itself is UNCHANGED as a gesture (pinch and
+  /// double-tap, `mainImageArea`); advance-after-marking keeps its keyboard form (`A`/⌘⇧A) and
+  /// its account-sheet row; the full-screen MODE had no other way in and went with its control.
+  private func header() -> some View {
     HStack {
       Button {
         store.closeLoupe()
@@ -159,46 +165,10 @@ struct LoupeView: View {
 
       Spacer()
 
-      // The chrome twin for zoom (persistent-chrome rule: zero gesture-only actions). Present in
-      // EVERY layout mode, including Compact where the header is at its tightest — the rule is
-      // not conditional on there being room.
-      zoomControls.makeToggleControl(LoupeZoomControlModel(resolvedZoom), zoomToggle)
-
-      // WP13 P8 (IMGMGR-214): the advance-on-mark cadence, on or off, HERE — where the culling
-      // happens — and not only in the account sheet. The persistent-chrome rule is that no
-      // behaviour is reachable solely as a hidden preference or a bare key equivalent; `A`/⌘⇧A
-      // are the accelerator forms of this control, never its only surface. Same accessibility
-      // shape as the zoom twin beside it (identifier + label + value), so a UI test can read the
-      // state back rather than infer it from a glyph.
-      Button {
-        store.preferences.autoAdvanceOnMark.toggle()
-      } label: {
-        Image(
-          systemName: store.preferences.autoAdvanceOnMark
-            ? "forward.end.circle.fill" : "forward.end.circle")
-      }
-      .frame(minWidth: 44, minHeight: 44)
-      .accessibilityIdentifier("loupeAutoAdvanceToggle")
-      .accessibilityLabel("Advance After Marking")
-      .accessibilityValue(store.preferences.autoAdvanceOnMark ? "On" : "Off")
-      .accessibilityHint("Move to the next photograph after each mark")
-
       // Both idioms — on Compact this is the only trailing control, which is exactly the point:
       // sharing is reachable from persistent chrome on the phone too, not just where there is
       // room for a toolbar full of things.
       ShareControl(share: share, image: focusedImage)
-
-      if layoutMode != .compact {
-        Button {
-          store.toggleLoupeFullScreen()
-        } label: {
-          Image(
-            systemName: store.isLoupeFullScreen
-              ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-        }
-        .frame(minWidth: 44, minHeight: 44)
-        .accessibilityIdentifier("loupeFullScreenToggle")
-      }
     }
     .padding(.horizontal)
   }

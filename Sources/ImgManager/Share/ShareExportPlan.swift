@@ -73,10 +73,11 @@ struct ShareExportToken: Sendable, Equatable {
   let generation: Int
 }
 
-/// The share lane's pure decisions — naming, caps, refusal mapping — deliberately free of
-/// SwiftUI, `GridService` and the generated client so every one of them is unit-testable on
-/// its own, including the parts of the master lane whose BYTES are still parked (see
-/// `ShareMasterSeam`).
+/// The share lane's pure decisions — naming, caps, typing, refusal mapping — deliberately free
+/// of SwiftUI, `GridService` and the generated client so every one of them is unit-testable on
+/// its own. That is also why `contentType(for:)` takes the wire type as a STRING: the switch
+/// over the generated body enum lives with the request (`GridService.downloadMaster`), and this
+/// type stays something a test can call with no client at all.
 enum ShareExportPlan {
   /// Mirrors `GridService.proxy`'s own cap (`Grid/GridService.swift:163`) so a share never
   /// buffers more than rendering the same image already would.
@@ -139,6 +140,37 @@ enum ShareExportPlan {
     return sanitize(lastPathComponent(of: chosen))
   }
 
+  /// The type the share sheet registers the item under, for each of the SEVEN bodies the
+  /// download `200` declares (`application/octet-stream` plus six image types).
+  ///
+  /// A NAMED table, never `UTType(mimeType:)`: what a receiving app is told it is being handed
+  /// is this app's contract with it, and a system mime table that changed under an OS update
+  /// would change that silently. Anything undeclared is opaque `data` — the honest answer for
+  /// bytes whose type this client does not recognise, and never a guess at an image type the
+  /// receiver would then try to decode.
+  static func contentType(for mimeType: String) -> UTType {
+    switch mimeType.lowercased() {
+    case "image/jpeg": return .jpeg
+    case "image/png": return .png
+    case "image/heic": return .heic
+    case "image/heif": return .heif
+    case "image/tiff": return .tiff
+    case "image/webp": return .webP
+    case "application/octet-stream": return .data
+    default: return .data
+    }
+  }
+
+  /// The master export's name when the server sent no usable `Content-Disposition`.
+  ///
+  /// The image's OWN filename is deliberately not reachable here: `MasterDownloading` is handed
+  /// an id and a directory, and borrowing the RAW's stem is exactly the mislabelling
+  /// `previewFilename(for:)` exists to avoid. So the fallback names the photograph by id and
+  /// takes its extension from the type the server actually declared.
+  static func masterFilename(imageID: Int, contentType: UTType) -> String {
+    "photo-\(imageID).\(contentType.preferredFilenameExtension ?? "dat")"
+  }
+
   /// Whether the loupe offers the edited-master entry at all — the ONE place that rule lives,
   /// called by the menu itself rather than restated there.
   ///
@@ -149,6 +181,22 @@ enum ShareExportPlan {
     -> Bool
   {
     seamAvailable && hasEdit == true
+  }
+
+  /// WHICH FILE A SHARE HANDS OVER — the one rule, in one place (IMGMGR-348).
+  ///
+  /// Owner decision of 2026-09-02, verbatim: "we should always share the highest possible
+  /// quality", and on RAW: "on the ipad we shouldnt share raw's - they are unedited masters -
+  /// makes no sense". So: the edited master when the photograph has one, otherwise the highest
+  /// quality this client serves, which is the `preview` proxy — and never a RAW original, which
+  /// `ShareVariant` cannot even name (IMGMGR-196's invariant, preserved by construction).
+  ///
+  /// It is derived from `offersMaster` rather than restating it, so the seam and the edit check
+  /// are asked exactly once and cannot drift apart.
+  static func variant(hasEdit: Bool?, seamAvailable: Bool = ShareMasterSeam.isAvailable)
+    -> ShareVariant
+  {
+    offersMaster(hasEdit: hasEdit, seamAvailable: seamAvailable) ? .master : .preview
   }
 
   /// The download endpoint's declared refusals, mapped to app-owned copy.
