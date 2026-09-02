@@ -1690,6 +1690,25 @@
         "title": "SidecarPresence",
         "type": "string"
       },
+      "StackAbsorbRequest": {
+        "description": "Take these LOOSE photographs into the scene \u2014 the eject's inverse (IMGMGR-289).\n\nEvery other editor starts from a membership and merge starts from two scenes, so a\nphotograph belonging to no scene could never join one. This starts from the stream.\n\nThe ids are exact PHYSICAL ``Image.id``s, the same identity every other topology verb\nnames, and nothing on this route resolves a canonical twin: an archive photograph's local\nmirror is a different row here, as it is to merge, eject, split and extract.\n\nA duplicate id names ONE photograph. The set is deduplicated before anything is checked or\nwritten, and the DEDUPED count is the number the write's rowcount is held against \u2014 so a\nbody that named the same photograph twice is not read as an edit that half-failed.",
+        "properties": {
+          "image_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Image Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "image_ids"
+        ],
+        "title": "StackAbsorbRequest",
+        "type": "object"
+      },
       "StackBrowseImageRow": {
         "description": "A loose photo in the stack-mode stream: one image, exactly as flat browse renders it.",
         "properties": {
@@ -1883,7 +1902,7 @@
         "type": "object"
       },
       "StackExtractConflict": {
-        "description": "Why an extraction refused because the scene is not in the state it was asked about.\n\nBoth codes describe the same class of trouble and both mean ZERO writes: a named member\ndoes not sit in the folder this request locked (``foreign_folder_member`` \u2014 nothing ties a\nphotograph's folder to its stack's, so the row exists but may not be moved from here), or\nthe write moved a different number of rows than the request named and the whole transaction\nwent back (``membership_changed``).",
+        "description": "Why an extraction refused because the scene is not in the state it was asked about.\n\nBoth codes describe the same class of trouble and both mean ZERO writes: a named member\ndoes not sit in the folder this request locked (``foreign_folder_member`` \u2014 nothing ties a\nphotograph's folder to its stack's, so the row exists but may not be moved from here), or\nthe write moved a different number of rows than the request named and the whole transaction\nwent back (``membership_changed``).\n\nThe absorb answers both for the same two reasons, from the other direction (IMGMGR-289): a\nLOOSE photograph of another folder may not be moved into this scene, and a photograph that\nstopped being loose between the check and the write takes the whole absorb back with it.",
         "properties": {
           "code": {
             "enum": [
@@ -1906,7 +1925,7 @@
         "type": "object"
       },
       "StackExtractConflictError": {
-        "description": "The extraction's 409 body as it goes on the wire (IMGMGR-278).\n\nDeclared on ``POST /api/stacks/{id}/extract`` alone, because it is the only editor that\nanswers 409 at all \u2014 a status code declared on a route that never emits it would be as\nwrong as an emitted one nobody declared.",
+        "description": "The 409 body as it goes on the wire (IMGMGR-278).\n\nDeclared on ``POST /api/stacks/{id}/extract`` and, since IMGMGR-289, on\n``POST /api/stacks/{id}/absorb`` \u2014 the two editors that answer a 409 at all, about the same\ntwo conditions and in the same shape. Every other editor declares none, because a status\ncode declared on a route that never emits it would be as wrong as an emitted one nobody\ndeclared. The name is the extraction's because that is where the shape was first published,\nand renaming a component a generated client already types would be a contract break for a\nbody that has not changed.",
         "properties": {
           "detail": {
             "$ref": "#/components/schemas/StackExtractConflict"
@@ -2232,7 +2251,7 @@
   },
   "info": {
     "title": "img-manager",
-    "version": "0.14.0"
+    "version": "0.18.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6158,6 +6177,90 @@
           }
         },
         "summary": "Get Stack",
+        "tags": [
+          "stacks"
+        ]
+      }
+    },
+    "/api/stacks/{stack_id}/absorb": {
+      "post": {
+        "description": "Take LOOSE photographs into an existing scene \u2014 the eject's inverse (IMGMGR-289).\n\nThe gesture the family was missing. Merge joins two SCENES, and every other editor starts\nfrom a membership, so a photograph that belonged to no scene had no way into one: eject had\nno inverse. This starts from the stream instead, and it is the ONLY editor whose subject is\na photograph that is not already a member.\n\n**The ids are physical.** Exactly the identity merge, eject, split and extract name \u2014 an\n``Image.id``, resolved to no canonical twin anywhere on this route. An archive photograph's\nlocal mirror is a different row here, and the reader who pointed at one of them gets that\none. Duplicates are removed first, so a body naming the same photograph twice asks for one\nrow to move; the deduped count is what the rowcount fence below is held against.\n\n**Loose means loose, the target included.** A member of ANY scene is refused \u2014 moving a\nphotograph between scenes is a different operation, and doing it silently would take it out\nof one the reader never named. Refusing the target's OWN members is what makes the request\nidempotent in the only way it can be: absorbing the same photograph twice is refused the\nsecond time. A tombstone is refused under its own code: it satisfies ``stack_id IS NULL``\nlike any loose row, and absorbed it would join a scene it cannot be seen in.\n\n**Nothing is written about order or cover.** There is no position column and no cover\ncolumn: the membership is served in capture order and the cover is resolved from the\nmembers' current state on every read (``app.stacks.representative``). So a photograph\nabsorbed from before the scene's first frame takes its chronological place in the band, and\n\u2014 an unpicked scene being covered by its earliest member \u2014 may take the card with it,\nwithout this handler electing anything. What it does write is the anchor, because that IS a\nstored column and the browse orders on it.\n\n``_drop_stale_override`` is deliberately not called: an absorb only ADDS members, so a cover\nchoice that pointed at a member of this scene still points at a member of this scene.",
+        "operationId": "absorb_into_stack_api_stacks__stack_id__absorb_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "stack_id",
+            "required": true,
+            "schema": {
+              "title": "Stack Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StackAbsorbRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StackEditResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "no such scene \u2014 a plain string detail, the same one every editor answers \u2014 or a photograph this request named that the library does not have, as a coded object detail with code unknown_image. Nothing was changed either way"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StackExtractConflictError"
+                }
+              }
+            },
+            "description": "the scene is not in the state this request was written against; nothing was changed \u2014 codes foreign_folder_member, membership_changed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error. these refusals arrive as 422 with a coded object detail \u2014 {\"detail\": {\"code\": \u2026, \"message\": \u2026}} \u2014 and change nothing. codes: not_loose, tombstoned_image"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StackEditBusyError"
+                }
+              }
+            },
+            "description": "a maintenance lane holds this folder's lock; nothing was changed \u2014 code stack_edit_busy, Retry-After names when to try again",
+            "headers": {
+              "Retry-After": {
+                "description": "seconds to wait before retrying this edit",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Absorb Into Stack",
         "tags": [
           "stacks"
         ]
