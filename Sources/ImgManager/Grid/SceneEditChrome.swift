@@ -160,7 +160,9 @@ extension View {
           .accessibilityIdentifier(action.id)
       }
     } message: { failure in
-      Text(SceneEditCopy.message(for: failure))
+      // Keyed on the edit that was refused: one 409 code means two different things depending on
+      // it (`SceneEditCopy.message`), and the reader is owed the one that happened to them.
+      Text(SceneEditCopy.message(for: failure, of: store.sceneEditErrorKind))
     }
   }
 }

@@ -237,12 +237,29 @@ struct GridStoreAbsorbTests {
   @Test("A target that left the window while the sheet stood open is a no-op, not a request")
   func aTargetThatLeftTheWindowIsANoOp() async {
     let (store, transport) = await loadedAbsorbStore()
+    // The sheet is built from THIS list, scene 6 included, and it stands while the window moves.
+    #expect(store.sceneAbsorbTargets.map(\.stackID) == [5, 6])
     store.presentSceneAbsorbPicker()
 
-    await store.absorbFocusedPhoto(into: 999)
+    // The window is re-read and scene 6 is no longer in it — dissolved by another client, or
+    // simply no longer on the page the reader is holding.
+    await transport.setBrowseStacksPage(
+      page([
+        stackItem(
+          makeStackRow(id: 5, memberCount: 3, anchor: anchorT0, representative: makeImage(id: 1))),
+        imageItem(makeImage(id: 20)),
+      ]))
+    await store.selectShoot(folderID: 1)
+    store.focusedImageID = 20
+    // Doubles as the control that the reload really happened in the Scene window: a lost scene
+    // mode would leave NO targets at all, not this one.
+    #expect(store.sceneAbsorbTargets.map(\.stackID) == [5])
+
+    // The reader taps the row their sheet is still showing.
+    await store.absorbFocusedPhoto(into: 6)
     #expect(await transport.recordedStackEdits.isEmpty)
 
-    // Positive control on the same store: a target that IS in the window goes out.
+    // Positive control on the same store: the target that IS still in the window goes out.
     await transport.setStackEditOutcome(.success(editResult(stacks: [5])))
     await store.absorbFocusedPhoto(into: 5)
     #expect(await transport.recordedStackEdits.count == 1)
@@ -325,6 +342,41 @@ struct GridStoreAbsorbTests {
     // Nothing was changed server-side, so nothing is re-read.
     #expect(
       await transport.callCount(Operations.BrowseStacksApiBrowseStacksGet.id) == reloadsBefore)
+  }
+
+  /// The contract gives `membership_changed` TWO causes (openapi.json, `StackExtractConflict`):
+  /// for merge, split and extract the SCENE moved under the request; for an absorb the target
+  /// scene may be untouched and it is the PHOTOGRAPH that "stopped being loose between the check
+  /// and the write". The extraction's sentence sends the reader to look at the wrong thing, so
+  /// the absorb has its own — keyed on the edit, pinned here.
+  @Test("The absorb's membership conflict names the photograph, never the target scene")
+  func theAbsorbsMembershipConflictNamesThePhotographNotTheScene() async {
+    let (store, transport) = await loadedAbsorbStore()
+    await transport.setStackEditOutcome(.conflict(.membershipChanged))
+
+    await store.absorbFocusedPhoto(into: 6)
+
+    #expect(store.sceneEditError == .conflict(.membershipChanged))
+    #expect(store.sceneEditErrorKind == .absorb, "the refusal lost the edit it belongs to")
+
+    let absorbed = SceneEditCopy.message(for: .conflict(.membershipChanged), of: .absorb)
+    let extracted = SceneEditCopy.message(for: .conflict(.membershipChanged), of: .extract)
+    #expect(absorbed != extracted, "the absorb repeats the extraction's sentence")
+    #expect(absorbed.hasPrefix("That photograph"), "the absorb's message: '\(absorbed)'")
+    #expect(absorbed.contains("stopped being loose"))
+    #expect(absorbed.contains("This scene changed") == false)
+    // The specialisation does not rewrite the family: the three membership edits keep their
+    // sentence, and a caller with no edit in hand still gets it.
+    #expect(
+      extracted == "This scene changed while the edit was being prepared. Nothing was changed.")
+    #expect(SceneEditCopy.message(for: .conflict(.membershipChanged)) == extracted)
+    #expect(SceneEditCopy.message(for: .conflict(.membershipChanged), of: .merge) == extracted)
+    // The retry rule is untouched: a conflict asks a DIFFERENT question, whichever edit got it.
+    #expect(SceneEditCopy.offersRetry(.conflict(.membershipChanged)) == false)
+    #expect(store.pendingSceneEdit == nil)
+
+    store.dismissSceneEditError()
+    #expect(store.sceneEditErrorKind == nil, "the kind outlived the refusal it described")
   }
 
   @Test("A 409 on the absorb surfaces the typed reason and reloads nothing")

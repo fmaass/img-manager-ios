@@ -1451,6 +1451,12 @@ final class GridStore {
   /// `SceneEditAlert`.
   private(set) var pendingSceneEdit: SceneEditRequest?
 
+  /// WHICH edit the standing refusal belongs to. Kept beside the failure rather than read off
+  /// `pendingSceneEdit`, because that payload is dropped for every refusal except the busy one —
+  /// so a conflict, which is exactly the case whose wording depends on the edit, would have no
+  /// kind left to key on (codex gate, blocker).
+  private(set) var sceneEditErrorKind: SceneEditKind?
+
   /// The merge-target sheet. A plain `var` like `isTagEntryPresented`/`isStatusPresented`, for the
   /// same reason: the menu entry that raises it is declared as data and reaches this screen only
   /// through the store.
@@ -1598,12 +1604,14 @@ final class GridStore {
   /// read that cleared value and sent nothing (codex gate, blocker 1; RED-proven).
   func replaySceneEdit(_ request: SceneEditRequest) async {
     sceneEditError = nil
+    sceneEditErrorKind = nil
     pendingSceneEdit = nil
     await runSceneEdit(request)
   }
 
   func dismissSceneEditError() {
     sceneEditError = nil
+    sceneEditErrorKind = nil
     pendingSceneEdit = nil
   }
 
@@ -1617,9 +1625,13 @@ final class GridStore {
     do {
       let result = try await performSceneEdit(request)
       sceneEditError = nil
+      sceneEditErrorKind = nil
       pendingSceneEdit = nil
       await reloadAfterTopologyEdit(result, request: request)
     } catch let error as StackEditError {
+      // Whatever the refusal is, it belongs to THIS edit — set once, beside the failure, rather
+      // than in each branch below.
+      sceneEditErrorKind = request.kind
       switch error {
       case .busy(let seconds):
         // The ONLY branch that keeps the payload: "ask again, unchanged" is what a busy folder
@@ -1640,6 +1652,7 @@ final class GridStore {
         sceneEditError = .unreachable
       }
     } catch {
+      sceneEditErrorKind = request.kind
       pendingSceneEdit = nil
       sceneEditError = .unreachable
     }

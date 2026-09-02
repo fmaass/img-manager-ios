@@ -67,6 +67,19 @@ enum SceneEditRequest: Equatable, Sendable {
   /// siblings, so the busy retry asks the same question.
   case absorb(stackID: Int, imageIDs: [Int], focusedImageID: Int)
 
+  /// WHICH edit this is, as a value the refusal copy can be keyed on — the same 409 code means a
+  /// different thing depending on the edit that got it, and the reader is owed the difference
+  /// (codex gate, blocker: the absorb's `membership_changed` is about the PHOTOGRAPH, not the
+  /// target scene). Derived from the request rather than stored beside it, so it cannot drift.
+  var kind: SceneEditKind {
+    switch self {
+    case .merge: return .merge
+    case .split: return .split
+    case .extract: return .extract
+    case .absorb: return .absorb
+    }
+  }
+
   /// The photograph the reader was on when they asked — where the coordinator tries to put focus
   /// back. For a split it is the cut itself, which is the first member of the new scene.
   var anchorImageID: Int {
@@ -77,6 +90,16 @@ enum SceneEditRequest: Equatable, Sendable {
     case .absorb(_, _, let focused): return focused
     }
   }
+}
+
+/// The four edits, named so a refusal can say what was refused. Not a second copy of
+/// `SceneEditRequest` — it is that value's own `kind`, carried past the point where the payload
+/// has been dropped (the alert stands after the request is gone).
+enum SceneEditKind: Equatable, Sendable {
+  case merge
+  case split
+  case extract
+  case absorb
 }
 
 /// Why a scene edit did not happen. Opaque by construction, exactly like `GridServiceError`: every
@@ -114,7 +137,10 @@ enum SceneEditConflictReason: Equatable, Sendable {
 enum SceneEditCopy {
   static let title = "The scene was not changed"
 
-  static func message(for failure: SceneEditFailure) -> String {
+  /// `kind` is optional because most of these sentences are the family's, not one edit's: only
+  /// `membership_changed` describes a DIFFERENT cause per edit, and a nil kind (a caller that has
+  /// no edit in hand) gets the wording the three membership-based edits share.
+  static func message(for failure: SceneEditFailure, of kind: SceneEditKind? = nil) -> String {
     switch failure {
     case .busy(let seconds):
       let wait =
@@ -124,6 +150,16 @@ enum SceneEditCopy {
     case .conflict(.foreignFolderMember):
       return "One of the chosen photographs is no longer in this folder. Nothing was changed."
     case .conflict(.membershipChanged):
+      // The contract gives this code two different causes. For merge, split and extract the
+      // SCENE moved under the request. For an absorb the target scene may be untouched: the
+      // photograph "stopped being loose between the check and the write" (openapi.json,
+      // StackExtractConflict), i.e. something else put it in a scene first — so naming the scene
+      // here would tell the reader to look at the wrong thing. Neither offers a Retry: both mean
+      // the reader must ask a different question, which is `offersRetry`'s existing rule.
+      if kind == .absorb {
+        return "That photograph stopped being loose while the edit was being prepared —"
+          + " something else put it in a scene. Nothing was changed."
+      }
       return "This scene changed while the edit was being prepared. Nothing was changed."
     case .refused:
       return "This edit cannot be made to this scene. Nothing was changed."
