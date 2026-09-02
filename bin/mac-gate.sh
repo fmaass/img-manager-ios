@@ -43,10 +43,13 @@
 # ONE `timeout 1800 ssh`, so every full run that outlived 30 min was killed mid-test while
 # xcodebuild finished on the Mac (14+ recurrences across three sessions; the legs were then
 # re-run by hand). The script is now copied to the gate dir and launched with nohup in the
-# background; the controller polls a done-marker over short ssh calls every 20 s, prints each
-# remote step's exit line as it lands, and fetches the run log at the end. The wall-clock budget
-# is MAC_GATE_REMOTE_CAP; a Mac unreachable for 15 consecutive polls ends the wait as
-# remote-run=124 as well.
+# background; the controller polls a done-marker over short ssh calls every 20 s, prints every
+# remote step exit line that appeared since the previous poll, and fetches the run log at the
+# end. The wall-clock budget is MAC_GATE_REMOTE_CAP; a Mac unreachable for 15 consecutive polls
+# ends the wait the same way. On either stop the remote process tree is killed (by parent pid,
+# never by a command-line literal) and the run records remote-run=124; if the kill cannot be
+# confirmed, both locks are deliberately LEFT IN PLACE (lock-release=1) so no later lane rsyncs
+# over a still-running build.
 #
 # NEW versus the reference gate (WP8 plan round-2 delta, adopted advisory): the gate
 # directory on merkur is a MIRROR with no .git — same as memos-ng-ios's — so this script
@@ -144,6 +147,7 @@ step_summary=""
 # that never reach summary_and_exit at all.
 lock_held=0
 host_lock_held=0
+locks_frozen=0
 lock_released=0
 lock_owner=""
 target_dir=""
@@ -152,6 +156,15 @@ release_lock() {
   [ "$lock_held" = 1 ] || [ "$host_lock_held" = 1 ] || return 0
   [ "$lock_released" = 1 ] && return 0
   lock_released=1
+  if [ "$locks_frozen" = 1 ]; then
+    # A remote run may still be writing into the work dir (cap hit or the Mac unreachable, and
+    # the kill could not be confirmed). Releasing now would let the next lane rsync --delete
+    # over a live build — the exact overlap the host lock exists to prevent. A human clears
+    # both once the Mac is quiet: ssh <host> rm -rf '<gate root>/.host.lock' '<branch dir>/.lock'
+    say "LOCKS LEFT IN PLACE: the remote run could not be confirmed stopped (pid file $target_dir/.gate-run.pid); clear the host and branch locks by hand once it is"
+    record lock-release 1
+    return 0
+  fi
   local out rc worst=0
   if [ "$lock_held" = 1 ]; then
     out="$(timeout 20 ssh -o BatchMode=yes "$host" "
@@ -210,6 +223,7 @@ esc_owner="$(esc "$lock_owner")"
 
 # --- Host-wide gate lock: ONE gate per Mac (IMGMGR-203, see header). --------------------
 lock_wait_cap="${MAC_GATE_LOCK_WAIT:-21600}"
+case "$lock_wait_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_LOCK_WAIT must be a whole number of seconds (got '$lock_wait_cap')" ;; esac
 lock_wait_started=$SECONDS
 while :; do
   hl_out="$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
@@ -219,7 +233,7 @@ while :; do
       printf '%s\n' '$esc_owner' > \"\$lockdir/holder\"
       date -u +%Y-%m-%dT%H:%M:%SZ > \"\$lockdir/since\"
       rb=\"\$(cat \"\$lockdir/holder\" 2>/dev/null)\"
-      if [ \"\$rb\" = '$esc_owner' ]; then echo TAKEN; else echo MISMATCH; rm -rf \"\$lockdir\"; fi
+      if [ \"\$rb\" = '$esc_owner' ]; then echo TAKEN; else echo \"MISMATCH holder=\$rb\"; fi
     else
       printf 'HELD by %s since %s\n' \"\$(cat \"\$lockdir/holder\" 2>/dev/null || echo unknown)\" \"\$(cat \"\$lockdir/since\" 2>/dev/null || echo unknown)\"
     fi
@@ -228,8 +242,10 @@ while :; do
   case "$hl_out" in
     TAKEN) host_lock_held=1; break ;;
     HELD*) ;;
-    MISMATCH)
-      echo "mac-gate: host lock read-back mismatch — not taken" >&2
+    MISMATCH*)
+      # The dir was ours a moment ago and now names another holder: a human cleared a stale lock
+      # and another gate re-acquired it in between. Leave it — it is theirs now — and stop.
+      echo "mac-gate: host lock read-back mismatch ($hl_out) — left in place, not ours" >&2
       record lock-wait 2
       summary_and_exit ;;
     *)
@@ -525,7 +541,29 @@ build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
 
 # --- Remote run: launched DETACHED on the Mac and polled over short ssh calls (IMGMGR-203). --
+# stop_remote_run: kill the detached run's process tree (descendants of the recorded subshell
+# pid, found by PARENT pid — never by a command-line literal) and wait for the subshell to write
+# .gate-run.done. If that cannot be confirmed within 45 s, the locks are frozen (see release_lock)
+# because the work dir may still be written to.
+stop_remote_run() {
+  local out
+  out="$(timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
+    cd \"$target_dir\" 2>/dev/null || { echo NO-DIR; exit 0; }
+    pid=\$(cat .gate-run.pid 2>/dev/null)
+    [ -n \"\$pid\" ] || { echo NO-PID; exit 0; }
+    kill_tree() { local c; for c in \$(pgrep -P \"\$1\" 2>/dev/null); do kill_tree \"\$c\"; done; [ \"\$1\" = \"\$pid\" ] || kill \"\$1\" 2>/dev/null; }
+    kill_tree \"\$pid\"
+    i=0
+    while [ \$i -lt 45 ] && [ ! -f .gate-run.done ]; do sleep 1; i=\$((i+1)); done
+    if [ -f .gate-run.done ]; then echo \"STOPPED code=\$(cat .gate-run.done)\"; else echo STILL-RUNNING; fi
+  " 2>&1)"
+  case "$out" in
+    STOPPED*|NO-DIR|NO-PID) say "remote run  : $out" ;;
+    *) locks_frozen=1; say "remote run  : could not confirm the remote run stopped ($out) — locks frozen" ;;
+  esac
+}
 remote_cap="${MAC_GATE_REMOTE_CAP:-7200}"
+case "$remote_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_REMOTE_CAP must be a whole number of seconds (got '$remote_cap')" ;; esac
 launch_out="$(printf '%s\n' "$build_script" | timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
   set -e
   cd \"$target_dir\"
@@ -545,18 +583,19 @@ else
   poll_started=$SECONDS
   unreachable=0
   done_code=""
-  last_step=""
+  seen_steps=0
   while :; do
     poll_out="$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
       cd \"$target_dir\" 2>/dev/null || { echo GONE; exit 0; }
       if [ -f .gate-run.done ]; then echo \"DONE-\$(cat .gate-run.done)\"; else echo RUNNING; fi
-      grep -o '^--- [a-z-]* exit=[0-9]*' .gate-run.log 2>/dev/null | tail -1
+      grep -E '^(--- )?[a-z-]+ exit=[0-9]+' .gate-run.log 2>/dev/null | sed -n \"$((seen_steps + 1)),\\\$p\"
     " 2>&1)"
     poll_rc=$?
     if [ "$poll_rc" -ne 0 ]; then
       unreachable=$((unreachable + 1))
       if [ "$unreachable" -ge 15 ]; then
         say "remote run  : $host unreachable for $unreachable consecutive polls — giving up on this run (last reply: $poll_out)"
+        stop_remote_run
         break
       fi
       sleep 20
@@ -564,17 +603,20 @@ else
     fi
     unreachable=0
     state="$(printf '%s\n' "$poll_out" | sed -n '1p')"
-    step_line="$(printf '%s\n' "$poll_out" | sed -n '2p')"
-    if [ -n "$step_line" ] && [ "$step_line" != "$last_step" ]; then
-      say "remote run  : $step_line (t=$((SECONDS - poll_started))s)"
-      last_step="$step_line"
+    new_steps="$(printf '%s\n' "$poll_out" | sed -n '2,$p' | sed '/^$/d')"
+    if [ -n "$new_steps" ]; then
+      while IFS= read -r step_line; do
+        say "remote run  : $step_line (t=$((SECONDS - poll_started))s)"
+        seen_steps=$((seen_steps + 1))
+      done <<< "$new_steps"
     fi
     case "$state" in
       DONE-*) done_code="${state#DONE-}"; break ;;
       GONE) say "remote run  : gate dir vanished on $host"; break ;;
     esac
     if [ $((SECONDS - poll_started)) -ge "$remote_cap" ]; then
-      say "remote run  : still running after ${remote_cap}s (MAC_GATE_REMOTE_CAP) — recorded as remote-run=124; the remote process keeps running, pid in $target_dir/.gate-run.pid"
+      say "remote run  : still running after ${remote_cap}s (MAC_GATE_REMOTE_CAP) — recorded as remote-run=124; stopping the remote run"
+      stop_remote_run
       break
     fi
     sleep 20
@@ -590,6 +632,7 @@ else
     esac
   else
     say "remote run  : finished in $((SECONDS - poll_started))s (script exit $done_code)"
+    [ "$done_code" = 0 ] || record remote-run "$done_code"
     for pair in ${remote_line#MAC_GATE_REMOTE_SUMMARY:}; do
       name="${pair%%=*}"; code="${pair##*=}"
       [ "$code" = "skipped" ] && continue
