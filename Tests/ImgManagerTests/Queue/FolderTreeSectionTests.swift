@@ -114,7 +114,7 @@ struct FolderTreeLoadTests {
     .init(id: id, kind: "dated", name: "n\(id)", path: "p\(id)")
   }
 
-  @Test("Both tiers unreachable is a FAILED disclosure, never a silent empty list")
+  @Test("Every tier unreachable is a FAILED disclosure, never a silent empty list")
   func bothTiersFailingIsAVisibleFailure() async {
     let transport = GridStubTransport()
     await transport.setFoldersShouldFail(true, tier: GridSourceTier.local.rawValue)
@@ -123,8 +123,26 @@ struct FolderTreeLoadTests {
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
     #expect(load.phase == .failed)
-    #expect(load.localFolders.isEmpty)
-    #expect(load.archiveFolders.isEmpty)
+    #expect(load.folders(.incoming).isEmpty)
+    #expect(load.folders(.edits).isEmpty)
+    #expect(load.folders(.archive).isEmpty)
+  }
+
+  /// IMGMGR-350 P1's third branch, pinned on the WIRE rather than on a call count: `edits` and
+  /// `incoming` are the same store, so only the `tree` prefix tells the two requests apart
+  /// (img-manager `app/api/folders.py:38`, `:54`). A load that fetched the local tree twice under
+  /// the same query — or that dropped `tree` back to nil, as this method did before 350 — cannot
+  /// pass.
+  @Test("the tree is loaded once per browse tier, each naming its own (source_tier, tree)")
+  func eachBrowseTierIsItsOwnScopedRequest() async {
+    let transport = GridStubTransport()
+
+    _ = await FolderTreeLoad.perform(using: makeService(transport))
+
+    let queries = await transport.recordedFolderQueries
+    #expect(queries.count == 3)
+    #expect(queries.map { $0["source_tier"] } == ["local", "local", "archive"])
+    #expect(queries.map { $0["tree"] } == ["photo_incoming", "photo_edits", nil])
   }
 
   /// Stated positively first, so the assertion above cannot pass by a load that calls everything
@@ -136,7 +154,9 @@ struct FolderTreeLoadTests {
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
     #expect(load.phase == .loaded)
-    #expect(load.localFolders.isEmpty)
+    #expect(load.folders(.incoming).isEmpty)
+    #expect(load.folders(.edits).isEmpty)
+    #expect(load.folders(.archive).isEmpty)
   }
 
   @Test("One tier unreachable still shows the other's rows, flagged as partial")
@@ -147,9 +167,13 @@ struct FolderTreeLoadTests {
 
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
-    #expect(load.phase == .partiallyFailed(.archive))
-    #expect(load.localFolders.map(\.id) == [1, 2])
-    #expect(load.archiveFolders.isEmpty)
+    #expect(load.phase == .partiallyFailed([.archive]))
+    // The stub answers per `source_tier`, so both local-store tiers see the rows it was given —
+    // what this pins is that a tier that ANSWERED keeps its rows while the one that failed is
+    // named, not that the fixture tells incoming and edits apart.
+    #expect(load.folders(.incoming).map(\.id) == [1, 2])
+    #expect(load.folders(.edits).map(\.id) == [1, 2])
+    #expect(load.folders(.archive).isEmpty)
   }
 
   @Test("Retry after a failure re-fetches and recovers")
@@ -168,9 +192,10 @@ struct FolderTreeLoadTests {
     let recovered = await FolderTreeLoad.perform(using: service)
 
     #expect(recovered.phase == .loaded)
-    #expect(recovered.localFolders.map(\.id) == [9])
-    // Four calls: two that failed, two that recovered — the retry really re-fetched.
-    #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 4)
+    #expect(recovered.folders(.incoming).map(\.id) == [9])
+    // Six calls: three that failed, three that recovered — the retry really re-fetched, once per
+    // browse tier (IMGMGR-350 P1 made them three).
+    #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 6)
   }
 
   /// The failure surface is not a state the loader keeps to itself: the section renders an error
@@ -178,15 +203,23 @@ struct FolderTreeLoadTests {
   @Test("A failed phase is what the section renders its error state from")
   func aFailedPhaseIsRenderable() {
     #expect(FolderTreeLoadPresentation.isFailure(.failed))
-    #expect(FolderTreeLoadPresentation.isFailure(.partiallyFailed(.local)))
+    #expect(FolderTreeLoadPresentation.isFailure(.partiallyFailed([.incoming])))
     #expect(!FolderTreeLoadPresentation.isFailure(.loaded))
     #expect(!FolderTreeLoadPresentation.isFailure(.loading))
     #expect(
       FolderTreeLoadPresentation.message(for: .failed)
         == "Folders could not be loaded.")
     #expect(
-      FolderTreeLoadPresentation.message(for: .partiallyFailed(.archive))
+      FolderTreeLoadPresentation.message(for: .partiallyFailed([.archive]))
         == "Archive folders could not be loaded.")
+    // The third branch, and two of three failing — one sentence naming both, never a note that
+    // says "Folders" and leaves the reader to guess which branch is missing.
+    #expect(
+      FolderTreeLoadPresentation.message(for: .partiallyFailed([.incoming]))
+        == "Incoming folders could not be loaded.")
+    #expect(
+      FolderTreeLoadPresentation.message(for: .partiallyFailed([.edits, .archive]))
+        == "Edits and Archive folders could not be loaded.")
     #expect(FolderTreeLoadPresentation.message(for: .loaded) == nil)
   }
 }

@@ -63,4 +63,16 @@ enum FolderTreeRowPresentation {
 
   /// The subline's test handle, on the same terms.
   static func sublineIdentifier(for id: Int) -> String { "folderRowSubline-\(id)" }
+
+  /// A MONTH FOLD's handle — `folderTreeMonth-<parentId>-<yyyy>-<mm>`, e.g.
+  /// `folderTreeMonth-2-2026-09`. Derived here beside the folder-row identifiers above and
+  /// nowhere else, so the walk a UI test drives and the string the view applies cannot drift.
+  ///
+  /// It is deliberately NOT keyed by a folder id, because a fold is no folder
+  /// (`FolderTreeItemID`): the parent year folder plus the `yyyy-mm` it groups is the whole
+  /// identity, which is the web's own synthetic key with `:` spelled as `-` for a legible
+  /// accessibility identifier (`folderTree.ts:41-42`).
+  static func monthIdentifier(for month: FolderTreeMonth) -> String {
+    "folderTreeMonth-\(month.parentID)-\(month.year)-\(month.month)"
+  }
 }

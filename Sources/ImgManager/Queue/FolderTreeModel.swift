@@ -44,6 +44,87 @@ struct FolderTreeOutlineRow: Identifiable {
   var isExpandable: Bool { !node.children.isEmpty }
 }
 
+/// The identity of one RENDERED row: the server's folder id, or a month fold's synthetic key.
+///
+/// Two cases rather than one `Int`, because a month row IS no folder. The web says it plainly —
+/// its `MonthItem` "has no `node` and no id on purpose … it can be expanded and collapsed, never
+/// selected, so nothing downstream can mistake it for a browsable folder"
+/// (img-manager `frontend/src/lib/folderTree.ts:36-37`). Spelling that as a separate case is how
+/// the same promise is carried by the type system here: there is no folder id on a fold to hand
+/// to `GridStore.selectShoot(folderID:sourceTier:)`, so nothing can.
+enum FolderTreeItemID: Hashable, Sendable {
+  case folder(Int)
+  case month(String)
+}
+
+/// A synthetic month row — presentation only, ported from the web's `MonthItem`
+/// (`folderTree.ts:39-47`). It folds the `YYYY-MM-DD…` children of ONE year folder: no folder
+/// identity, never navigable, and no workflow value of any kind. Whether a year or month row may
+/// ever show a readiness roll-up is IMGMGR-342's AC4; this consumes that answer, default none.
+struct FolderTreeMonth: Equatable, Sendable {
+  /// The year folder this fold sits under — what makes `key` unique across the whole tree.
+  let parentID: Int
+  /// `2026` and `09`, exactly as they were read off the member folders' own names.
+  let year: String
+  let month: String
+  /// What the row says; `monthLabel`'s rule, ported verbatim.
+  let label: String
+  /// The sum of its members' SERVER counts (`descendant_image_count`; `folderTree.ts:44-45`,
+  /// `:262`) — display arithmetic over image counts, never over workflow state, and never a
+  /// substitute for a folder row's own served number.
+  let count: Int
+
+  /// `${parentFolderId}:${yyyy}-${mm}` — the web's own synthetic key (`folderTree.ts:41-42`,
+  /// `:254`), unique tree-wide, hence a string identity rather than a number.
+  var key: String { "\(parentID):\(year)-\(month)" }
+}
+
+/// One row of the tree as it RENDERS: a real folder, or a month fold of a year folder's dated
+/// children. The web's `TreeItem` (`folderTree.ts:49`).
+///
+/// A `.folder` case keeps the `FolderTreeNode` the forest built — whose own `children` are the
+/// UNFOLDED taxonomy — beside the children that actually render, because the fold changes that
+/// shape and nothing else about the node. Everything on screen reads the case's `children`
+/// (`visibleRows`, the row view), so there is exactly one answer to "what is under this row".
+enum FolderTreeItem: Identifiable {
+  case folder(FolderTreeNode, children: [FolderTreeItem])
+  case month(FolderTreeMonth, members: [FolderTreeItem])
+
+  var id: FolderTreeItemID {
+    switch self {
+    case .folder(let node, _): return .folder(node.id)
+    case .month(let month, _): return .month(month.key)
+    }
+  }
+
+  /// The rows drawn one level in.
+  var children: [FolderTreeItem] {
+    switch self {
+    case .folder(_, let children): return children
+    case .month(_, let members): return members
+    }
+  }
+
+  /// The folder this row IS, or `nil` on a fold. The single place the "a month is no folder"
+  /// promise is enforced: a caller that needs a folder cannot obtain one from a month row.
+  var node: FolderTreeNode? {
+    switch self {
+    case .folder(let node, _): return node
+    case .month: return nil
+    }
+  }
+}
+
+/// One rendered line of the folded tree: a row and how deep it sits, keyed by the row's own
+/// identity — the `FolderTreeOutlineRow` contract, widened so a fold can carry a line too.
+struct FolderTreeItemRow: Identifiable {
+  let item: FolderTreeItem
+  let depth: Int
+
+  var id: FolderTreeItemID { item.id }
+  var isExpandable: Bool { !item.children.isEmpty }
+}
+
 /// The pure half of the folder tree: flat `[FolderNode]` in, forest out, plus the client-side
 /// filter the search field drives. No view, no fetch, no state — so every property below is
 /// readable by a test.
@@ -171,4 +252,150 @@ enum FolderTreeModel {
   /// server's own default rather than as an unwrap. Taking `Int?` also keeps this one call site
   /// correct whichever way the generator renders a defaulted non-required integer.
   static func wireCount(_ value: Int?) -> Int { value ?? 0 }
+
+  // MARK: - The tier's rendered rows (IMGMGR-350 P1, ported from lib/folderTree.ts)
+
+  /// The rows ONE tier renders, in the web's own composition order (`buildTierItems`,
+  /// `folderTree.ts:277-286`): the forest, then the tier-root hoist, then the month fold.
+  ///
+  /// The web's other step, `pruneMirrored` (`:188-197`), is DELIBERATELY absent. IMGMGR-350 keeps
+  /// every mirrored archive folder visible exactly as today (689 nodes over 14 roots); the
+  /// web-style prune and its persisted toggle are a follow-up ticket under IMGMGR-322.
+  ///
+  /// Takes an already-built forest rather than the wire rows, so the client-side NAME FILTER —
+  /// the native-only step the web has no equivalent of — runs between `forest` and this. That
+  /// order is what keeps a search hit's ancestors visible before anything is folded, and it keeps
+  /// a month row impossible to build over a member the filter dropped.
+  static func tierItems(_ forest: [FolderTreeNode], tier: FolderTreeTier) -> [FolderTreeItem] {
+    groupMonths(hoistTierRoot(forest, tier: tier))
+  }
+
+  /// Drop the tier's own root row when — and only when — the tier IS that root: a single
+  /// top-level node, indexed as a root (`parent_id` null), whose `path` is the tier's canonical
+  /// tree. Ported from `hoistTierRoot` (`folderTree.ts:166-175`).
+  ///
+  /// `archive` is never hoisted: its top level is 14 real trees, not one wrapper. The identity
+  /// check stays as narrow as the web's for the same reason — `forest` also promotes orphans
+  /// whose parent row is simply absent from the response, and a lone orphan is a real folder that
+  /// must keep its row.
+  ///
+  /// This is the one place `path` is read, and it is read as an IDENTITY, never as a hierarchy:
+  /// the forest is still built from `parent_id` and nothing else (this type's own note above).
+  /// The question is "is this row the tier's own root directory", which is exactly what the web
+  /// asks of the same field.
+  ///
+  /// The web additionally returns the hoisted root's id so the tier LABEL can carry that folder's
+  /// selection (`TierItems.hoistedRootId`, `:51-56`). The native tier label is a disclosure
+  /// control and not a navigable row, so there is nothing here to carry it — omitted knowingly,
+  /// not dropped.
+  static func hoistTierRoot(_ forest: [FolderTreeNode], tier: FolderTreeTier) -> [FolderTreeNode] {
+    guard tier != .archive, let prefix = tier.treePrefix else { return forest }
+    guard forest.count == 1, let root = forest.first else { return forest }
+    guard root.folder.parentId == nil, root.folder.path == prefix else { return forest }
+    return root.children
+  }
+
+  /// Group the `YYYY-MM-DD…` children of every YEAR folder into synthetic month rows, ported from
+  /// `groupMonths` (`folderTree.ts:222-229`). Anything else the year holds keeps its place after
+  /// the months (`groupChildrenByMonth`, `:231-266`), so a stray `misc` folder stays visible
+  /// rather than being sorted into a month it is not in.
+  static func groupMonths(_ forest: [FolderTreeNode]) -> [FolderTreeItem] {
+    forest.map { node in
+      let children = groupMonths(node.children)
+      guard isYearName(node.name) else { return .folder(node, children: children) }
+      return .folder(node, children: foldByMonth(parent: node, children: children))
+    }
+  }
+
+  /// One year folder's children, folded. Months first in calendar order (the key is `yyyy-mm`, so
+  /// sorting the keys IS the calendar order — `folderTree.ts:232-233`, `:264`), everything else
+  /// after them in the order it already had.
+  private static func foldByMonth(parent: FolderTreeNode, children: [FolderTreeItem])
+    -> [FolderTreeItem]
+  {
+    var keys: [String] = []
+    var members: [String: [FolderTreeItem]] = [:]
+    var counts: [String: Int] = [:]
+    var stamps: [String: (year: String, month: String)] = [:]
+    var rest: [FolderTreeItem] = []
+    for child in children {
+      // A fold cannot itself be folded, and a name that is not a date is a name: both keep their
+      // place instead of conjuring a month (`folderTree.ts:236-247`).
+      guard let node = child.node, let stamp = monthStamp(of: node.name) else {
+        rest.append(child)
+        continue
+      }
+      let key = "\(stamp.year)-\(stamp.month)"
+      if members[key] == nil {
+        keys.append(key)
+        stamps[key] = stamp
+      }
+      members[key, default: []].append(child)
+      counts[key, default: 0] += node.descendantImageCount
+    }
+    let months: [FolderTreeItem] = keys.sorted().compactMap { key in
+      guard let stamp = stamps[key] else { return nil }
+      let month = FolderTreeMonth(
+        parentID: parent.id, year: stamp.year, month: stamp.month,
+        label: monthLabel(year: stamp.year, month: stamp.month, parentName: parent.name),
+        count: counts[key] ?? 0)
+      return .month(month, members: members[key] ?? [])
+    }
+    return months + rest
+  }
+
+  /// The web's `YEAR_NAME` (`^\d{4}$`, `folderTree.ts:73`): four digits and nothing else.
+  static func isYearName(_ name: String) -> Bool {
+    name.count == 4 && name.allSatisfy { $0.isASCII && $0.isNumber }
+  }
+
+  /// The `YYYY-MM` a folder name STARTS with, or `nil` — the web's `DATE_NAME`
+  /// (`^(\d{4})-(\d{2})-\d{2}`, `folderTree.ts:74`) plus its month-range guard (`:244`: "a
+  /// `2025-13-01` folder is a name, not a month"), written as a prefix walk so the rule is
+  /// legible without a regex engine. The live names carry a title after the date
+  /// (`2026-09-14 — Wandern`), which the regex's unanchored tail ignores and so does this.
+  static func monthStamp(of name: String) -> (year: String, month: String)? {
+    let head = Array(name.prefix(10))
+    guard head.count == 10, head[4] == "-", head[7] == "-" else { return nil }
+    guard [0, 1, 2, 3, 5, 6, 8, 9].allSatisfy({ head[$0].isASCII && head[$0].isNumber }) else {
+      return nil
+    }
+    let month = String(head[5..<7])
+    guard let value = Int(month), (1...12).contains(value) else { return nil }
+    return (String(head[0..<4]), month)
+  }
+
+  /// The fold's own text, ported verbatim (`monthLabel`, `folderTree.ts:212-215`): the lowercase
+  /// English month name, with the year appended only where it differs from the parent folder's
+  /// own name. Deliberately the WEB's wording — the owner's decision is "the same folder view on
+  /// the ios app as on web", and this is the one row in the tree whose text no server supplies.
+  private static func monthLabel(year: String, month: String, parentName: String) -> String {
+    let index = (Int(month) ?? 0) - 1
+    guard monthNames.indices.contains(index) else { return "\(year)-\(month)" }
+    return year == parentName ? monthNames[index] : "\(monthNames[index]) \(year)"
+  }
+
+  private static let monthNames = [
+    "january", "february", "march", "april", "may", "june", "july", "august", "september",
+    "october", "november", "december",
+  ]
+
+  /// The rows actually on screen over the FOLDED tree — the same flat-list contract as the forest
+  /// overload above (see its note on why the tree is flat), keyed by `FolderTreeItemID` so a fold
+  /// opens and closes without ever being confusable with a folder.
+  static func visibleRows(
+    _ items: [FolderTreeItem], isExpanded: (FolderTreeItemID) -> Bool
+  ) -> [FolderTreeItemRow] {
+    var rows: [FolderTreeItemRow] = []
+    func walk(_ items: [FolderTreeItem], depth: Int) {
+      for item in items {
+        rows.append(FolderTreeItemRow(item: item, depth: depth))
+        if !item.children.isEmpty, isExpanded(item.id) {
+          walk(item.children, depth: depth + 1)
+        }
+      }
+    }
+    walk(items, depth: 0)
+    return rows
+  }
 }

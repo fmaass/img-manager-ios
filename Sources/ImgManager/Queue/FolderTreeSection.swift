@@ -54,8 +54,8 @@ struct FolderTreeSection: View {
   @State private var expandedBranches: Set<Int> = []
   @State private var expandedTiers: Set<GridSourceTier> = []
 
-  private var localFolders: [Components.Schemas.FolderNode] { load.localFolders }
-  private var archiveFolders: [Components.Schemas.FolderNode] { load.archiveFolders }
+  private var localFolders: [Components.Schemas.FolderNode] { load.folders(.incoming) }
+  private var archiveFolders: [Components.Schemas.FolderNode] { load.folders(.archive) }
 
   var body: some View {
     DisclosureGroup(isExpanded: expansionBinding) {
@@ -225,21 +225,30 @@ struct FolderTreeSection: View {
 /// library render the identical empty disclosure (found while diagnosing IMGMGR-173, session
 /// review /link/3237).
 struct FolderTreeLoad: Equatable, Sendable {
-  /// Four rendered states. `.loaded` with two empty arrays IS the genuinely-empty library — a
+  /// Four rendered states. `.loaded` with every tier empty IS the genuinely-empty library — a
   /// successful response carrying no rows — which is precisely the state a failure must never be
   /// confused with.
   enum Phase: Equatable, Sendable {
     case loading
     case loaded
-    /// One tier answered and the other did not: the rows that arrived are real and worth showing,
-    /// beside a note that part of the tree is missing.
-    case partiallyFailed(GridSourceTier)
+    /// SOME tiers answered and others did not: the rows that arrived are real and worth showing,
+    /// beside a note naming what is missing. It carries a LIST since IMGMGR-350 P1, because the
+    /// browse tiers are three and any one or two of them can fail on their own.
+    case partiallyFailed([FolderTreeTier])
     case failed
   }
 
   var phase: Phase = .loading
-  var localFolders: [Components.Schemas.FolderNode] = []
-  var archiveFolders: [Components.Schemas.FolderNode] = []
+  /// One entry per tier that answered. Keyed rather than three named arrays because the tiers
+  /// are the `FolderTreeTier` cases and nothing else — adding `edits` must not mean adding a
+  /// third property, a third fetch branch and a third failure case by hand.
+  var foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]] = [:]
+
+  /// What one tier loaded; an empty list where it failed or was genuinely empty — a distinction
+  /// `phase` carries, and this accessor deliberately does not repeat.
+  func folders(_ tier: FolderTreeTier) -> [Components.Schemas.FolderNode] {
+    foldersByTier[tier] ?? []
+  }
 
   /// The pre-fetch value the view starts from, and the one a retry returns to.
   static let loading = FolderTreeLoad()
@@ -251,23 +260,18 @@ struct FolderTreeLoad: Equatable, Sendable {
   /// difference between an empty tree and a broken one.
   static func perform(using service: GridService) async -> FolderTreeLoad {
     var result = FolderTreeLoad()
-    var localFailed = false
-    var archiveFailed = false
-    do {
-      result.localFolders = try await service.folders(sourceTier: .local).items
-    } catch {
-      localFailed = true
+    var failed: [FolderTreeTier] = []
+    for tier in FolderTreeTier.allCases {
+      do {
+        result.foldersByTier[tier] = try await service.folders(tier: tier).items
+      } catch {
+        failed.append(tier)
+      }
     }
-    do {
-      result.archiveFolders = try await service.folders(sourceTier: .archive).items
-    } catch {
-      archiveFailed = true
-    }
-    switch (localFailed, archiveFailed) {
-    case (false, false): result.phase = .loaded
-    case (true, false): result.phase = .partiallyFailed(.local)
-    case (false, true): result.phase = .partiallyFailed(.archive)
-    case (true, true): result.phase = .failed
+    switch failed.count {
+    case 0: result.phase = .loaded
+    case FolderTreeTier.allCases.count: result.phase = .failed
+    default: result.phase = .partiallyFailed(failed)
     }
     return result
   }
@@ -290,11 +294,12 @@ enum FolderTreeLoadPresentation {
     switch phase {
     case .loading, .loaded: return nil
     case .failed: return "Folders could not be loaded."
-    case .partiallyFailed(let tier):
-      switch tier {
-      case .local: return "Local folders could not be loaded."
-      case .archive: return "Archive folders could not be loaded."
-      }
+    case .partiallyFailed(let tiers):
+      // The tier's own label, so the note names the branch the reader can see is missing. Two
+      // tiers read as one sentence rather than two notes; all three is `.failed` above, so the
+      // join never has a third term to punctuate.
+      let named = tiers.map(\.label).joined(separator: " and ")
+      return "\(named) folders could not be loaded."
     }
   }
 }

@@ -39,11 +39,19 @@ struct GridService: Sendable {
   /// branches (`FolderTreeSection`), so the caller now names which tree it wants. Defaulting to
   /// `.local` keeps the one pre-existing call site (`RootView`'s old sidebar `.task`)
   /// byte-for-byte behavior-preserving.
-  func folders(sourceTier: GridSourceTier = .local) async throws -> Components.Schemas.FolderTree {
+  ///
+  /// IMGMGR-350 P1: the parameter becomes `FolderTreeTier`, because the browse tier is the PAIR
+  /// `(source_tier, tree)` and `GridSourceTier` can only say the first half — `edits` is a
+  /// tree-role prefix inside the local store, not a source tier (`app/api/folders.py:38`). The
+  /// `tree: nil` this used to send meant "whatever the server's own `PHOTO_TREE_ORIGINALS` is";
+  /// `.incoming` now names that same prefix explicitly (`photo_incoming`, `app/config.py:113`),
+  /// so the default keeps every pre-existing call site behaviour-preserving while making the
+  /// edits tree expressible at all.
+  func folders(tier: FolderTreeTier = .incoming) async throws -> Components.Schemas.FolderTree {
     let output: Operations.FolderTreeApiFoldersGet.Output
     do {
       output = try await client.folderTreeApiFoldersGet(
-        .init(query: .init(sourceTier: sourceTier.folderTreePayload, tree: nil)))
+        .init(query: .init(sourceTier: tier.sourceTier.folderTreePayload, tree: tier.treePrefix)))
     } catch {
       throw GridServiceError.unreachable
     }

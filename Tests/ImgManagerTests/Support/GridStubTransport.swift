@@ -50,6 +50,11 @@ actor GridStubTransport: ClientTransport {
   /// has to render distinctly, so the stub has to be able to produce it.
   private var folderTrees: [String: [Components.Schemas.FolderNode]] = [:]
   private var foldersFailingTiers: Set<String> = []
+  /// IMGMGR-350: every `GET /api/folders` request's query, in order, read off the URL the REAL
+  /// generated `Client` built — same discipline as `recordedListImagesQueries`. A browse tier is
+  /// the PAIR `(source_tier, tree)`, and `edits` differs from `incoming` in the second half only,
+  /// so a test cannot prove the third branch is its own request from a call COUNT alone.
+  private(set) var recordedFolderQueries: [[String: String]] = []
 
   /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
   var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
@@ -636,6 +641,7 @@ actor GridStubTransport: ClientTransport {
 
     switch operationID {
     case Operations.FolderTreeApiFoldersGet.id:
+      recordedFolderQueries.append(queryParameters(of: request))
       let tier = queryParameters(of: request)["source_tier"] ?? "local"
       if foldersFailingTiers.contains(tier) {
         return (HTTPResponse(status: .internalServerError), nil)
