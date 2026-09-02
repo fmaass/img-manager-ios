@@ -22,17 +22,28 @@ actor HeroThumbnailLoader {
   private let service: GridService
   private let maxConcurrent: Int
   private var cache: [String: Data] = [:]
-  /// One in-flight fetch per cache key (IMGMGR-332). Two readers of the SAME key are the shipped
-  /// case, not a corner one: the Queue card and the Folders-tree shoot row show one shoot. `hero`
-  /// used to check the cache and then suspend on the concurrency gate leaving nothing behind for
-  /// the second reader to join, so both fetched the limit-1 page and the proxy.
-  private var inFlight: [String: Task<FetchResult, Never>] = [:]
-  /// The LIVE readers of each in-flight key, by token — what makes a shared fetch cancellable
-  /// without taking it away from anybody (fix round). A reader that leaves through cancellation
-  /// removes its token; when the last one goes the fetch has nobody left to serve and is
-  /// cancelled. A `Set` is what makes "this reader has left" idempotent: the cancellation handler
-  /// and the normal return can both fire for one call, and only the first of them may count.
-  private var readers: [String: Set<Int>] = [:]
+  /// One in-flight fetch per cache key (IMGMGR-332), carrying its OWN live readers.
+  ///
+  /// Two readers of one key are the shipped case, not a corner one: the Queue card and the
+  /// Folders-tree shoot row show one shoot. `hero` used to check the cache and then suspend on
+  /// the concurrency gate leaving nothing behind for the second reader to join, so both fetched
+  /// the limit-1 page and the proxy.
+  ///
+  /// The readers live INSIDE the fetch rather than beside the key, and that is load-bearing
+  /// (fix round 2). Keyed by key alone, a reader of a COMPLETED fetch that had not resumed yet
+  /// still counted as live: its stale token kept the set non-empty, so the next fetch on that
+  /// key could not be cancelled by its own reader leaving, and then the stale reader emptied the
+  /// set without cancelling — the abandoned-fetch defect again, one generation removed. Scoped
+  /// to the fetch, a departure can only ever speak for the generation it joined.
+  private struct Fetch {
+    let id: Int
+    let task: Task<FetchResult, Never>
+    /// A `Set` is what makes "this reader has left" idempotent: the cancellation handler and the
+    /// normal return can both fire for one call, and only the first of them may count.
+    var readers: Set<Int>
+  }
+  private var inFlight: [String: Fetch] = [:]
+  private var nextFetchID = 0
   private var nextReaderToken = 0
   private var active = 0
   private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -55,60 +66,70 @@ actor HeroThumbnailLoader {
   /// `.failure` for itself and takes nothing away from the readers that remain.
   ///
   /// A cancelled fetch fills no cache and leaves no in-flight entry behind, so the next reader of
-  /// that key starts a clean one.
+  /// that key starts a clean one — `runFetch` re-checks cancellation once more after the proxy
+  /// bytes arrive, so even a fetch abandoned mid-await caches nothing.
   func hero(folderID: Int, sourceTier: GridSourceTier?) async -> FetchResult {
     let key = cacheKey(folderID: folderID, sourceTier: sourceTier)
     if let cached = cache[key] { return .image(cached) }
     guard !Task.isCancelled else { return .failure }
 
-    // `Task {}` inherits this actor's isolation, but NOT the caller's cancellation — a reader
-    // that goes away must not cancel a fetch its neighbour is still waiting on. Who DOES cancel
-    // it is `readerLeft`, once nobody is left.
-    let joined = inFlight[key]
-    let fetch =
-      joined ?? Task { await self.runFetch(key: key, folderID: folderID, sourceTier: sourceTier) }
-    if joined == nil { inFlight[key] = fetch }
-    let token = registerReader(of: key)
-
-    // `await fetch.value` does NOT return when the CALLER is cancelled — the shared task is not
-    // this task — so the departure has to be observed through the handler rather than after it.
-    let result = await withTaskCancellationHandler {
-      await fetch.value
-    } onCancel: {
-      // Nonisolated by contract, so the bookkeeping hops back onto the actor.
-      Task { await self.readerLeft(key, token: token, cancelled: true) }
+    nextReaderToken &+= 1
+    let token = nextReaderToken
+    let generation: Int
+    let task: Task<FetchResult, Never>
+    let isInitiator: Bool
+    if var existing = inFlight[key] {
+      existing.readers.insert(token)
+      inFlight[key] = existing
+      generation = existing.id
+      task = existing.task
+      isInitiator = false
+    } else {
+      nextFetchID &+= 1
+      generation = nextFetchID
+      // `Task {}` inherits this actor's isolation, but NOT the caller's cancellation — a reader
+      // that goes away must not cancel a fetch its neighbour is still waiting on. Who DOES
+      // cancel it is `readerLeft`, once this generation has nobody left.
+      task = Task { await self.runFetch(key: key, folderID: folderID, sourceTier: sourceTier) }
+      inFlight[key] = Fetch(id: generation, task: task, readers: [token])
+      isInitiator = true
     }
 
-    readerLeft(key, token: token, cancelled: false)
+    // `await task.value` does NOT return when the CALLER is cancelled — the shared task is not
+    // this task — so the departure has to be observed through the handler rather than after it.
+    let result = await withTaskCancellationHandler {
+      await task.value
+    } onCancel: {
+      // Nonisolated by contract, so the bookkeeping hops back onto the actor.
+      Task { await self.readerLeft(key, generation: generation, token: token, cancelled: true) }
+    }
+
+    readerLeft(key, generation: generation, token: token, cancelled: false)
     // Cleared by the INITIATOR, on every outcome — bytes, `.empty` or `.failure` — and only while
-    // the entry is still THIS fetch: a cancelled key can already have been cleared and re-started
-    // by a later reader, and clearing that one would hand the next reader a duplicate fetch.
-    if joined == nil, inFlight[key] == fetch { inFlight[key] = nil }
+    // the entry is still THIS generation: a cancelled key can already have been cleared and
+    // re-started by a later reader, and clearing that one would hand it a duplicate fetch.
+    if isInitiator, inFlight[key]?.id == generation { inFlight[key] = nil }
     return Task.isCancelled ? .failure : result
   }
 
-  private func registerReader(of key: String) -> Int {
-    nextReaderToken &+= 1
-    let token = nextReaderToken
-    readers[key, default: []].insert(token)
-    return token
-  }
-
-  /// One reader stops waiting. Idempotent per reader by set membership, because the cancellation
-  /// handler and the normal return can both fire for a single call.
-  private func readerLeft(_ key: String, token: Int, cancelled: Bool) {
-    guard var live = readers[key], live.remove(token) != nil else { return }
-    guard live.isEmpty else {
-      readers[key] = live
+  /// One reader stops waiting on the generation it joined. A departure that names a generation
+  /// which has since completed or been replaced is a no-op — it speaks for nobody.
+  private func readerLeft(_ key: String, generation: Int, token: Int, cancelled: Bool) {
+    guard var current = inFlight[key], current.id == generation else { return }
+    guard current.readers.remove(token) != nil else { return }
+    guard current.readers.isEmpty else {
+      inFlight[key] = current
       return
     }
-    readers[key] = nil
-    guard cancelled else { return }
-    // The LAST reader of this key left through cancellation: there is nobody to hand bytes to, so
-    // the shared fetch must stop taking a concurrency slot and must not run its network steps.
-    // Dropping the entry with it is what lets the next reader of the key start a fresh fetch —
-    // the cancelled one caches nothing.
-    inFlight[key]?.cancel()
+    guard cancelled else {
+      inFlight[key] = current
+      return
+    }
+    // The LAST reader of THIS fetch left through cancellation: there is nobody to hand bytes to,
+    // so it must stop taking a concurrency slot and must not run its network steps. Dropping the
+    // entry with it is what lets the next reader of the key start a fresh fetch — the cancelled
+    // one caches nothing.
+    current.task.cancel()
     inFlight[key] = nil
   }
 
@@ -131,6 +152,10 @@ actor HeroThumbnailLoader {
         from: first.proxies.additionalProperties[ProxyTier.grid.rawValue]?.url)
       switch try await service.proxy(imageID: first.id, tier: .grid, v: token) {
       case .ok(let data):
+        // The third boundary, and the one that keeps "a cancelled fetch fills no cache" literally
+        // true: the last reader can leave DURING the proxy await, and bytes cached by a fetch
+        // nobody read would make the next reader of the key skip a fetch it should make.
+        guard !Task.isCancelled else { return .failure }
         cache[key] = data
         return .image(data)
       case .notModified:
@@ -165,3 +190,22 @@ actor HeroThumbnailLoader {
     waiters.removeFirst().resume()
   }
 }
+
+#if DEBUG
+  /// Test-only observability, never compiled into a Release build — the same posture
+  /// `DebugStubTransport` has.
+  ///
+  /// WHY it exists: a "cancelled while queued at the gate" test has to cancel AFTER the reader
+  /// has really registered and its fetch is really parked in `acquire()`. A fixed sleep there is
+  /// what lets the cancellation land before `hero`'s own preflight guard instead, where even an
+  /// unfixed loader returns `.failure` with no network — a RED that proves nothing. These two
+  /// reads are what the tests wait on instead of a delay.
+  extension HeroThumbnailLoader {
+    func debugIsFetching(folderID: Int, sourceTier: GridSourceTier?) -> Bool {
+      inFlight[cacheKey(folderID: folderID, sourceTier: sourceTier)] != nil
+    }
+
+    /// How many fetches are parked in `acquire()` waiting for a slot.
+    func debugGateWaiterCount() -> Int { waiters.count }
+  }
+#endif

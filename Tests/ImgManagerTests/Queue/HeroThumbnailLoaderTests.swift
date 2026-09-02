@@ -14,6 +14,24 @@ struct HeroThumbnailLoaderTests {
       proxies: .init(additionalProperties: [:]), sourceTier: "local")
   }
 
+  /// Waits for a state the loader can actually be ASKED about, instead of sleeping and hoping.
+  ///
+  /// The cancellation tests below have to cancel a reader at one specific moment — after it has
+  /// registered and its fetch is parked at the concurrency gate. A fixed sleep can land the
+  /// cancellation before `hero`'s own preflight guard instead, where even a loader with no
+  /// coalescing at all returns `.failure` with no network: the test would pass, and prove
+  /// nothing. Returns whether the condition held before the deadline.
+  private func waitUntil(
+    within seconds: Double = 5, _ condition: () async -> Bool
+  ) async -> Bool {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+      if await condition() { return true }
+      try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    return false
+  }
+
   private func makeLoader(maxConcurrent: Int) -> (HeroThumbnailLoader, GridStubTransport) {
     let transport = GridStubTransport()
     let client = ImgManagerAPIClient.make(transport: transport)
@@ -137,13 +155,23 @@ struct HeroThumbnailLoaderTests {
     await transport.waitUntilListImagesStarted()
 
     let lone = Task { await loader.hero(folderID: 7, sourceTier: nil) }
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // DETERMINISTIC, not a sleep: cancel only once this reader has really registered its fetch
+    // AND that fetch is really parked at the gate. Both are read off the loader itself.
+    #expect(
+      await waitUntil {
+        let fetching = await loader.debugIsFetching(folderID: 7, sourceTier: nil)
+        let queued = await loader.debugGateWaiterCount()
+        return fetching && queued == 1
+      }, "the lone reader's fetch never reached the concurrency gate")
     #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
 
     lone.cancel()
-    // The cancellation handler hops back onto the actor to do its bookkeeping; give it that hop
-    // before the slot is handed over.
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // Its departure is processed on the actor, so wait for the observable effect of it rather
+    // than guessing at a delay: the abandoned fetch is dropped, entry and all.
+    #expect(
+      await waitUntil {
+        await loader.debugIsFetching(folderID: 7, sourceTier: nil) == false
+      }, "the abandoned fetch was still registered after its only reader was cancelled")
 
     await transport.releaseListImages()
     _ = await blocker.value
@@ -166,11 +194,17 @@ struct HeroThumbnailLoaderTests {
     let leaver = Task { await loader.hero(folderID: 1, sourceTier: .local) }
     await transport.waitUntilListImagesStarted()
     let survivor = Task { await loader.hero(folderID: 1, sourceTier: .local) }
-    // Long enough for the survivor to have joined the fetch before the other reader goes.
+    // Long enough for the survivor to have joined the running fetch before the other reader
+    // goes. Unlike the queued-at-the-gate test above this one fails SAFE if the timing slips:
+    // a survivor that had not joined yet would start a second fetch, and the call-count
+    // assertion below turns red rather than passing for the wrong reason.
     try await Task.sleep(nanoseconds: 50_000_000)
 
     leaver.cancel()
-    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(
+      await waitUntil {
+        await loader.debugIsFetching(folderID: 1, sourceTier: .local)
+      }, "the shared fetch was dropped even though a reader was still waiting on it")
     await transport.releaseListImages()
 
     // The guard against over-cancelling: "cancel the shared task whenever a reader leaves" would
@@ -192,18 +226,33 @@ struct HeroThumbnailLoaderTests {
     let blocker = Task { await loader.hero(folderID: 99, sourceTier: nil) }
     await transport.waitUntilListImagesStarted()
     let lone = Task { await loader.hero(folderID: 7, sourceTier: nil) }
-    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(
+      await waitUntil {
+        let fetching = await loader.debugIsFetching(folderID: 7, sourceTier: nil)
+        let queued = await loader.debugGateWaiterCount()
+        return fetching && queued == 1
+      }, "the lone reader's fetch never reached the concurrency gate")
     lone.cancel()
-    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(
+      await waitUntil {
+        await loader.debugIsFetching(folderID: 7, sourceTier: nil) == false
+      }, "the abandoned fetch was still registered after its only reader was cancelled")
     await transport.releaseListImages()
     _ = await blocker.value
     #expect(await lone.value == .failure)
 
-    // A fresh reader of the SAME key: it must neither join a dead task nor be served a cached
-    // answer the abandoned fetch never produced.
+    // THE DISCRIMINATION. "It came back with the image" is true whether the fresh reader really
+    // fetched or was served a cache the abandoned fetch had filled behind everyone's back — so
+    // what is asserted is the DELTA: exactly one more images call and exactly one more proxy
+    // call than before this line. A poisoned cache produces neither.
+    let imagesBefore = await transport.callCount(Operations.ListImagesApiImagesGet.id)
+    let proxyBefore = await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id)
     let again = await loader.hero(folderID: 7, sourceTier: nil)
     #expect(again == .image(bytes))
-    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == imagesBefore + 1)
+    #expect(
+      await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id)
+        == proxyBefore + 1)
   }
 
   @Test(
