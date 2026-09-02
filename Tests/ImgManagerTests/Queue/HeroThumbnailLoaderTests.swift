@@ -123,6 +123,90 @@ struct HeroThumbnailLoaderTests {
   }
 
   @Test(
+    "A SOLE reader cancelled while queued at the gate takes its fetch with it — no network, slot freed"
+  )
+  func soleReaderCancelledAtTheGateStartsNoNetwork() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 1)
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 1, nextCursor: nil))
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8])))
+    await transport.holdNextListImagesRequest()
+
+    // Another key owns the single slot, so the reader below is parked in `acquire()` — the exact
+    // position the shipped scroll-away hits.
+    let blocker = Task { await loader.hero(folderID: 99, sourceTier: nil) }
+    await transport.waitUntilListImagesStarted()
+
+    let lone = Task { await loader.hero(folderID: 7, sourceTier: nil) }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+
+    lone.cancel()
+    // The cancellation handler hops back onto the actor to do its bookkeeping; give it that hop
+    // before the slot is handed over.
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    await transport.releaseListImages()
+    _ = await blocker.value
+    #expect(await lone.value == .failure)
+    // THE ASSERTION: the slot came free and the abandoned fetch did NOT use it. Without the
+    // waiter count the shared task is still alive here and runs both of its network calls for a
+    // reader that is gone.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+  }
+
+  @Test("One of TWO readers cancelling leaves the shared fetch intact for the other")
+  func oneReaderLeavingDoesNotCancelTheSharedFetch() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 1, nextCursor: nil))
+    let bytes = Data([0xFF, 0xD8, 0xFF, 0xD9])
+    await transport.setProxyOutcome(.ok(bytes))
+    await transport.holdNextListImagesRequest()
+
+    let leaver = Task { await loader.hero(folderID: 1, sourceTier: .local) }
+    await transport.waitUntilListImagesStarted()
+    let survivor = Task { await loader.hero(folderID: 1, sourceTier: .local) }
+    // Long enough for the survivor to have joined the fetch before the other reader goes.
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    leaver.cancel()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await transport.releaseListImages()
+
+    // The guard against over-cancelling: "cancel the shared task whenever a reader leaves" would
+    // fail exactly here, and the coalescing would take the surviving card's image away with it.
+    #expect(await survivor.value == .image(bytes))
+    #expect(await leaver.value == .failure)
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+  }
+
+  @Test("A key whose fetch was abandoned is not wedged: the next reader fetches it normally")
+  func aCancelledKeyIsFetchableAgain() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 1)
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 1, nextCursor: nil))
+    let bytes = Data([0xFF, 0xD8, 0xFF, 0xD9])
+    await transport.setProxyOutcome(.ok(bytes))
+    await transport.holdNextListImagesRequest()
+
+    let blocker = Task { await loader.hero(folderID: 99, sourceTier: nil) }
+    await transport.waitUntilListImagesStarted()
+    let lone = Task { await loader.hero(folderID: 7, sourceTier: nil) }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    lone.cancel()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await transport.releaseListImages()
+    _ = await blocker.value
+    #expect(await lone.value == .failure)
+
+    // A fresh reader of the SAME key: it must neither join a dead task nor be served a cached
+    // answer the abandoned fetch never produced.
+    let again = await loader.hero(folderID: 7, sourceTier: nil)
+    #expect(again == .image(bytes))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+  }
+
+  @Test(
     "Bounded concurrency: a second hero() call waits for a free slot before starting its OWN network call"
   )
   func boundedConcurrency() async throws {
