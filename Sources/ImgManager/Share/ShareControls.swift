@@ -40,7 +40,14 @@ struct ShareControl: View {
   @State private var prepareTask: Task<Void, Never>?
 
   var body: some View {
-    Group {
+    // A STACK, not a `Group`, and that distinction is the whole of a diff-gate regression: a
+    // `Group`'s modifiers are applied to each CHILD, so when `isPreparing` flipped and the
+    // button branch was replaced by the spinner, the button's own `onDisappear` fired and
+    // cancelled the very prepare it had just started — an ordinary share that took longer than
+    // one render never opened its sheet. A stack is one view that outlives the branch switch, so
+    // the lifetime modifiers below are about THIS CONTROL leaving the loupe, which is what they
+    // were always meant to mean.
+    ZStack {
       if share.isPreparing {
         // The whole of the feedback, in the control the user just touched: no status row, no
         // second surface to read, and nothing that needs dismissing if the export refuses.
@@ -62,9 +69,9 @@ struct ShareControl: View {
     .labelStyle(.iconOnly)
     .frame(minWidth: 44, minHeight: 44)
     .onDisappear {
-      // Closing the loupe mid-prepare is the case this exists for. Cancelling here is what makes
-      // the store's cancellation path run at all, so no prepared bytes outlive a share that can
-      // no longer be presented.
+      // Closing the loupe mid-prepare is the case this exists for, and on the STACK it is the
+      // only case it fires for: cancelling here is what makes the store's cancellation path run
+      // at all, so no prepared bytes outlive a share that can no longer be presented.
       prepareTask?.cancel()
       prepareTask = nil
     }
