@@ -454,10 +454,10 @@ final class GridStore {
     focusedImageID = nil
     undo.clear()
     conflictRecovery = nil
-    // Both callers rebuild the rendered sequence outright — a different shoot, or the flat/scene
-    // swap that changes every row id — so an anchor into the old sequence means nothing. NOT
-    // cleared in `applyFilterChange`: a filter narrows the same shoot, and a row that survives
-    // it is still the row the reader was looking at.
+    // The rendered sequence is rebuilt outright — a different shoot, or the flat/scene swap that
+    // changes every row id — so an anchor into the old one means nothing. Retired at EVERY site
+    // that rebuilds the sequence, `applyFilterChange` included; see its own note for why the
+    // exception this line once carried was wrong.
     gridScrollAnchor = nil
     await reloadFirstPage()
   }
@@ -471,6 +471,16 @@ final class GridStore {
     selection.reset(.queryGenerationChange)
     focusedImageID = nil
     conflictRecovery = nil
+    // WP16 P2 (IMGMGR-298), Codex round-3 blocker — a retraction, stated as one. This site
+    // deliberately did NOT retire the anchor, on the argument that a filter narrows the same
+    // shoot so a surviving row is still the reader's row. The argument is wrong, and the path
+    // that shows it is concrete: scroll deep, apply a filter that matches nothing, clear it
+    // again. The anchored photograph is still set while no rows exist to resolve it against, so
+    // the moment rows come back the position jumps deep into the repopulated grid instead of
+    // landing at the top, which is where every filter change has always left the reader
+    // (`reloadFirstPage` below). A filter change rebuilds the result sequence, and the anchor is
+    // retired wherever that happens — no exceptions, which is also one less rule to reason about.
+    gridScrollAnchor = nil
     await reloadFirstPage()
   }
 
@@ -520,10 +530,10 @@ final class GridStore {
     focusedImageID = nil
     undo.clear()
     conflictRecovery = nil
-    // Both callers rebuild the rendered sequence outright — a different shoot, or the flat/scene
-    // swap that changes every row id — so an anchor into the old sequence means nothing. NOT
-    // cleared in `applyFilterChange`: a filter narrows the same shoot, and a row that survives
-    // it is still the row the reader was looking at.
+    // The rendered sequence is rebuilt outright — a different shoot, or the flat/scene swap that
+    // changes every row id — so an anchor into the old one means nothing. Retired at EVERY site
+    // that rebuilds the sequence, `applyFilterChange` included; see its own note for why the
+    // exception this line once carried was wrong.
     gridScrollAnchor = nil
     await reloadFirstPage()
   }

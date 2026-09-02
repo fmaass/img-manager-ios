@@ -81,3 +81,86 @@ struct GridScrollAnchorTests {
     #expect(GridScrollAnchor.row(containing: .image(2), in: rows) == .tiles(.image(1)))
   }
 }
+
+
+/// WP16 P2 (IMGMGR-298), Codex round-3 blocker. The anchor's LIFETIME, at the store, where the
+/// rule actually lives — `GridScrollAnchorTests` above proves the anchor resolves correctly, and
+/// proved nothing about when it should stop existing.
+///
+/// The path that forced this: scroll deep, apply a filter matching nothing, clear it again. With
+/// the anchor surviving a filter change, it is still set while no rows exist to resolve it
+/// against, so the position jumps deep into the repopulated grid the moment rows return —
+/// instead of the top, where a filter change has always left the reader. RED against `f8acd45`,
+/// which retired the anchor on a shoot change and a display-mode switch but deliberately not
+/// here.
+@MainActor
+@Suite("Grid scroll anchor — retired whenever a query change rebuilds the sequence")
+struct GridScrollAnchorLifecycleTests {
+
+  private func makeStore() -> GridStore {
+    let client = ImgManagerAPIClient.make(transport: GridStubTransport())
+    return GridStore(service: GridService(client: client))
+  }
+
+  @Test("An effective filter change retires the anchor")
+  func anEffectiveFilterChangeRetiresTheAnchor() async {
+    let store = makeStore()
+    store.gridScrollAnchor = .image(42)
+
+    await store.applyFilterChange { $0.ratingMin = 4 }
+
+    #expect(
+      store.gridScrollAnchor == nil,
+      "A filter change rebuilt the result sequence but left the reader anchored to a photograph from the old one — the zero-result-then-cleared path jumps deep into the grid instead of landing at the top."
+    )
+  }
+
+  @Test("A filter change that clears back to nothing also retires the anchor")
+  func clearingAFilterRetiresTheAnchor() async {
+    // The second half of the reported path, driven rather than argued: the anchor must be gone
+    // after the filter is applied AND after it is taken away again.
+    let store = makeStore()
+    await store.applyFilterChange { $0.ratingMin = 5 }
+    store.gridScrollAnchor = .image(7)
+
+    await store.applyFilterChange { $0.ratingMin = nil }
+
+    #expect(store.gridScrollAnchor == nil)
+  }
+
+  @Test("A no-op filter change leaves the reader exactly where they are")
+  func aNoOpFilterChangeLeavesTheAnchorAlone() async {
+    // The guard in `applyFilterChange` returns before anything is rebuilt, so nothing about the
+    // reader's position changed either. Without this, "clear it everywhere" would also clear it
+    // on a tap that did nothing — and this test is what makes the clear specific to a real
+    // rebuild rather than to the function being called.
+    let store = makeStore()
+    store.gridScrollAnchor = .image(42)
+
+    await store.applyFilterChange { _ in }
+
+    #expect(store.gridScrollAnchor == .image(42))
+  }
+
+  @Test("A shoot change retires the anchor")
+  func aShootChangeRetiresTheAnchor() async {
+    let store = makeStore()
+    store.gridScrollAnchor = .image(42)
+
+    await store.selectShoot(folderID: 1)
+
+    #expect(store.gridScrollAnchor == nil)
+  }
+
+  @Test("Entering Scene mode retires the anchor")
+  func aDisplayModeSwitchRetiresTheAnchor() async {
+    // Every row id changes vocabulary across this switch (`.image` to `.stack`), so an anchor
+    // from the flat sequence cannot mean anything in the scene one.
+    let store = makeStore()
+    store.gridScrollAnchor = .image(42)
+
+    await store.setDisplayMode(.scene)
+
+    #expect(store.gridScrollAnchor == nil)
+  }
+}
