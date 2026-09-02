@@ -24,3 +24,6 @@ Support/ImgManagerWidget-Info.plist
 *.p8
 *.p12
 *.mobileprovision
+
+# Session reviews and their evidence are the estate's durable-record inputs (BookStack holds the record); never committed here.
+docs/session-reviews/
