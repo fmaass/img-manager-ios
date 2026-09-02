@@ -12,23 +12,7 @@ import XCTest
 /// Deliberately makes NO device-idiom decision (plan invariant (i)): it asserts the same thing
 /// on both destinations and lets the layout put the controls wherever that layout puts them —
 /// Compact's options row or Regular's `.primaryAction` toolbar.
-final class ViewOptionsScreenshotUITests: XCTestCase {
-
-  /// PORTRAIT, pinned. Device orientation is simulator-global and survives across test
-  /// classes: `RegularThreeScreenshotUITests` rotates to `.landscapeLeft` and sorts before this
-  /// class, so the 21:14 gate run launched the phone leg at 874x402 — landscape — and every
-  /// geometry assumption here (what fits on screen, how far a drag travels) was made against
-  /// somebody else's rotation. Set on the way in AND restored on the way out, so this class
-  /// neither inherits nor exports an orientation.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class ViewOptionsScreenshotUITests: OrientationPinnedUITestCase {
 
   func testGroupAndZoomAreOnAPrimarySurface() throws {
     let app = XCUIApplication()

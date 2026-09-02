@@ -20,7 +20,7 @@ import XCTest
 /// Local tier is a root shoot `2026-08-27 — Stub Shoot` (id 1, `descendant_image_count` 12)
 /// beside the container `2026` (id 2, kind `other`), whose own subtree holds the nested shoot
 /// id 3 and the container id 4.
-final class FolderTreeRowAnatomyUITests: XCTestCase {
+final class FolderTreeRowAnatomyUITests: OrientationPinnedUITestCase {
 
   func testShootRowsCarryACoverAndSublineAndContainerRowsCarryNeither() throws {
     let app = XCUIApplication()

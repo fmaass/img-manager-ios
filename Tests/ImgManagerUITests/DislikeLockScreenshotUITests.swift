@@ -12,15 +12,7 @@ import XCTest
 /// is not addressable by label or identifier on every idiom. The hook calls the very same
 /// `GridStore.lockFromMenu(.dislike)` the shipped "Lock Dislike" command calls, so what is
 /// captured is the shipped state reached through a shipped entry point, not a test-only mode.
-final class DislikeLockScreenshotUITests: XCTestCase {
-
-  /// Orientation is DEVICE state that outlives the class that set it — a landscape screenshot
-  /// class that sorts earlier has already made a sibling suite run every iPad assertion against
-  /// the wrong layout once. Pinned on the way in, reset on the way out.
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class DislikeLockScreenshotUITests: OrientationPinnedUITestCase {
 
   private func launchLatchedOnDislike() -> XCUIApplication {
     XCUIDevice.shared.orientation = .portrait

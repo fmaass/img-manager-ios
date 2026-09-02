@@ -29,29 +29,7 @@ import XCTest
 /// Both `bin/mac-gate.sh` destinations run this file, and each asserts the contract of the mode
 /// it actually resolved — so the iPhone leg pins "Compact still presents the sheet" through the
 /// same code that pins the slide-over on the iPad leg.
-final class InspectorSlideOverUITests: XCTestCase {
-
-  /// Neither inherited nor exported (WP16 P2 fix round 4). Every test here sets the orientation
-  /// it needs as its first action, so the pin below is only about what this class LEAVES BEHIND.
-  ///
-  /// It matters because device orientation is simulator-global and the two `Loupe*UITests`
-  /// classes sort immediately after this one and open the loupe by tapping normalized screen
-  /// coordinates. Until this round the alphabetically-last test here was
-  /// `testInspectorPresentationInPortrait`, so they inherited portrait and were green. Adding
-  /// `testRegular3CollapsePreservesTheGridScrollPosition` — which needs landscape to reach
-  /// Regular-3 at all, and sorts after it — silently handed them landscape instead, where the
-  /// iPad's grid is the ~209 pt content column and every probe point lands on the inspector: all
-  /// seven loupe tests failed on "the loupe never opened from a tile tap". Restoring on the way
-  /// out is what makes that impossible to do again from this class.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
 
   private enum ResolvedLayout: String {
     case compact

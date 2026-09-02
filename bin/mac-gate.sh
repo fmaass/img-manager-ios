@@ -54,6 +54,11 @@
 #             otherwise the exit code of the first failing step (which now includes
 #             `copyback` and `lock-release` — see the leg list below).
 #
+# WP21 P2 (IMGMGR-336) added the `ui-orientation-base-grep` leg: every UI test class must inherit
+# `OrientationPinnedUITestCase`, because device orientation is simulator-global and a class that
+# pins nothing silently runs against the previous class's leftover rotation. A comment in a test
+# file had already failed to stop that recurring, so the rule graduated to a gate leg.
+#
 # WP12 (IMGMGR-199) added the `widget-embed` leg and gave build/test an explicit
 # `-derivedDataPath` inside the mirrored work directory. The leg reads the BUILT app bundle
 # (never project.yml) to assert the widget extension is really embedded, and a deterministic
@@ -403,6 +408,31 @@ if [ -d ImgManager.xcodeproj ]; then
     echo "no-c-shortcut-grep exit=0"; summary="$summary no-c-shortcut-grep=0"
   else
     echo "no-c-shortcut-grep exit=1"; summary="$summary no-c-shortcut-grep=1"
+  fi
+
+  # Every UI test class inherits `OrientationPinnedUITestCase` (IMGMGR-336). Device orientation
+  # is SIMULATOR-GLOBAL and outlives the class that set it, so a class that subclasses
+  # `XCTestCase` directly runs against whatever the previously-sorted class left behind — the
+  # failure this repo has paid two gate cycles for, and the one a comment inside a test file did
+  # not stop. The base class disarms it for the classes that exist; this leg is what keeps the
+  # NEXT one from slipping out. Positive control in the SAME invocation (the idiom-grep shape):
+  # the base's own declaration must be found, so a check pointed at a renamed or empty tree fails
+  # instead of passing quietly.
+  ui_base_hits="$(grep -rnE --include='*.swift' --exclude='OrientationPinnedUITestCase.swift' \
+    'class [A-Za-z0-9_]+: *XCTestCase' Tests/ImgManagerUITests 2>/dev/null || true)"
+  ui_base_control="$(grep -nE 'class OrientationPinnedUITestCase: *XCTestCase' \
+    Tests/ImgManagerUITests/OrientationPinnedUITestCase.swift 2>/dev/null || true)"
+  {
+    echo "UI test classes bypassing the orientation-pinned base (expect 0):"
+    echo "$ui_base_hits"
+    echo "positive control — the base class's own declaration (expect 1 line):"
+    echo "$ui_base_control"
+  } > .gate-artifacts/ui-orientation-base-grep.log
+  if [ -z "$ui_base_hits" ] && [ -n "$ui_base_control" ]; then
+    echo "ui-orientation-base-grep exit=0"; summary="$summary ui-orientation-base-grep=0"
+  else
+    echo "ui-orientation-base-grep exit=1"; summary="$summary ui-orientation-base-grep=1"
+    tail -20 .gate-artifacts/ui-orientation-base-grep.log
   fi
 
   step lint swift format lint --strict --recursive Sources Tests Packages/ImgManagerAPI/Sources Packages/ImgManagerAPI/Tests
