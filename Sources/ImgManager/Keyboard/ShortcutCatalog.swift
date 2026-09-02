@@ -13,7 +13,7 @@ import Foundation
 /// surface is WP13 P8's and a present-and-dead key is exactly what this catalog exists to
 /// prevent". THAT EXCLUSION IS REVERSED, 2026-08-30: the owner decided advance-on-mark ships,
 /// and ships ON by default (epic IMGMGR-211 comment 2106, restated on IMGMGR-214 comment 2107),
-/// and WP13 P8 (IMGMGR-214) ships its chrome — the loupe header's own toggle and the account
+/// and WP13 P8 (IMGMGR-214) ships its chrome — the account
 /// sheet's Culling row — in the very commit `autoAdvance` joins `entries` in. The rule did not
 /// bend for it; the surface arrived.
 ///
@@ -178,10 +178,10 @@ enum OwningPhase: String, Sendable {
   /// Regular and a third menu on Compact's persistent options row — plus the View menu's own
   /// Sort group. The chrome ships in the same commit these entries flip active in.
   case wp13p5b = "WP13 P5b — Sort and group parity (Sort control, View menu Sort group)"
-  /// WP13 P8 (IMGMGR-214): the advance-on-mark cadence. Its chrome is the loupe header's own
-  /// toggle plus the account sheet's Culling row — both ship in the same commit this entry
-  /// flips active in, the type doc comment's own rule.
-  case wp13p8 = "WP13 P8 — Advance on mark (loupe header toggle, account sheet row)"
+  /// WP13 P8 (IMGMGR-214): the advance-on-mark cadence. Its chrome is the account sheet's
+  /// Culling row, which shipped in the same commit this entry flipped active in (the type doc
+  /// comment's own rule); the loupe header's twin went with IMGMGR-348's device-pass removal.
+  case wp13p8 = "WP13 P8 — Advance on mark (account sheet row)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every
@@ -214,8 +214,9 @@ enum ShortcutCatalog {
   /// row, the Regular `.primaryAction` controls and the menu-bar View menu — ships in this same
   /// commit. Nothing here is present-and-dead.
   ///
-  /// WP13 P8 (IMGMGR-214): `autoAdvance` arrives active for the same reason — the loupe header
-  /// toggle and the account sheet's Culling row ship in the same commit as this row.
+  /// WP13 P8 (IMGMGR-214): `autoAdvance` arrives active for the same reason — the account
+  /// sheet's Culling row ships in the same commit as this row. IMGMGR-348 removed the loupe
+  /// header's own toggle (owner device pass), so that row is now the cadence's whole chrome.
   static let entries: [ShortcutCatalogEntry] = [
     ShortcutCatalogEntry(id: .arrowUp, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowDown, owningPhase: .p4, hasChromeSurface: true),

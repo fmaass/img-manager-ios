@@ -459,6 +459,16 @@
       ProcessInfo.processInfo.arguments.contains("-UITestStubSkipAutoSelect")
     }
 
+    /// IMGMGR-348: park the advance-on-mark cadence for one launch. The loupe header control
+    /// that used to do this from a UI test is gone with the owner's device-pass decision, and
+    /// `LoupeAutoAdvanceScreenshotUITests`' mark-bar reading still needs the mark to leave the
+    /// loupe on the SAME frame. Debug-only and fixture-only, like every flag here; it writes the
+    /// preference through the same property a control would, so nothing about how the cadence is
+    /// stored becomes test-special.
+    static var noAutoAdvance: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestStubNoAutoAdvance")
+    }
+
     /// WP13 P1: a FOURTH, independent launch argument. The Select mode row's retained
     /// screenshot needs the app to BE in Select mode, and neither shipped entry is drivable
     /// from XCUITest on every destination — Regular-3 never receives the tile long press (the

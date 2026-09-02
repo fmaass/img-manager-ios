@@ -231,14 +231,13 @@ final class GridStore {
   // MARK: - Loupe (P5)
 
   /// Whether the loupe is the active surface at all. Compact always presents it full-screen;
-  /// Regular-2/3 present it DOCKED in the content column by default (`isLoupeFullScreen ==
-  /// false`) — see `RootView` for the presentation split, which is the one place this flag and
-  /// `isLoupeFullScreen` are read together.
+  /// Regular-2/3 present it DOCKED in the content column — see `RootView` for that split.
+  ///
+  /// The Regular-2/3 "go full-screen" flag that used to sit beside this one is GONE with the
+  /// header control that was its only way in (IMGMGR-348, owner device pass 2026-09-02): a mode
+  /// nothing can reach is not a mode, and leaving the flag would have left `RootView` branching
+  /// on a value that could never change.
   private(set) var isLoupeOpen = false
-  /// Regular-2/3 ONLY: the explicit "go full-screen" toggle (spec: "A full-screen loupe stays
-  /// available as an explicit toggle"). Meaningless on Compact, which is always full-screen
-  /// regardless of this flag's value.
-  private(set) var isLoupeFullScreen = false
   /// Flips true once a forward-neighbour fetch at the loaded tail returned zero new images —
   /// i.e., confirmed nothing more to advance to. Reset on every scope change (`reloadFirstPage`)
   /// so a NEW shoot/filter always starts un-exhausted.
@@ -267,14 +266,6 @@ final class GridStore {
 
   func closeLoupe() {
     isLoupeOpen = false
-    isLoupeFullScreen = false
-  }
-
-  /// Regular-2/3 only; the view disables/hides this control on Compact (always full-screen
-  /// there), but the guard lives here too so a programmatic call is never a no-op silently
-  /// depending on the caller remembering the layout rule.
-  func toggleLoupeFullScreen() {
-    isLoupeFullScreen.toggle()
   }
 
   /// Dedicated flat previous/next (fold advisory: "don't overload row-relative `moveFocus`") —
@@ -864,7 +855,6 @@ final class GridStore {
     // by the callers below, all of which already null `focusedImageID`) and clears the
     // exhaustion flag a NEW scope has not actually earned yet.
     isLoupeOpen = false
-    isLoupeFullScreen = false
     loupeExhausted = false
     // WP12: the whole Scene window dies with the scope for exactly the reason the flat window
     // does — and so does every expansion, which describes a membership OF a result set that is

@@ -83,7 +83,7 @@ extension GridStore {
       showShortcutHelp: { [self] in showShortcutHelp() },
       // Read off the store's OWN preference rather than a copy the menu holds, for the same
       // reason `toggleSceneMode` above does: the focused value is a snapshot, and a stale copy
-      // would flip the wrong way after a change made from either chrome twin.
+      // would flip the wrong way after a change made from the account sheet's row.
       toggleAutoAdvanceOnMark: { [self] in preferences.autoAdvanceOnMark.toggle() }
     )
   }

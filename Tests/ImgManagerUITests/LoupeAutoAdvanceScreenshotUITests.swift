@@ -1,10 +1,12 @@
 import XCTest
 
 /// WP13 P8 (IMGMGR-214): the retained visual evidence this phase's Verification names — the
-/// loupe header with advance-on-mark ON and OFF, and the account sheet's own row — plus the
-/// causal coverage no unit suite can give. The persistent-chrome rule is that the cadence must
-/// never be only a hidden preference, so these tests drive the REAL controls in the running app
-/// and read the state back from accessibility: deleting either chrome twin turns this leg RED.
+/// account sheet's advance-on-mark row — plus the causal coverage no unit suite can give.
+///
+/// IMGMGR-348 (owner device pass 2026-09-02) removed the loupe header's own advance-on-mark
+/// control, so the header test that used to lead this file is gone with it. The cadence is still
+/// reachable — the account sheet's row (proven below) and the `A`/⌘⇧A key equivalents — and the
+/// row is now the surface that must not disappear.
 ///
 /// STATE-INDEPENDENT by construction. `GridPreferences` persists into the app's standard
 /// `UserDefaults`, which outlives a relaunch inside one simulator, so neither test may assume
@@ -13,39 +15,6 @@ import XCTest
 /// `GridStoreTests.autoAdvanceDefaultsToOnWithNoStoredPreference`, which runs against its own
 /// ephemeral defaults suite, where the claim can actually be true.
 final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
-
-  // MARK: - Chrome twin 1: the loupe header
-
-  func testLoupeHeaderCarriesTheAutoAdvanceToggle() throws {
-    let app = launchAndOpenLoupe()
-
-    let toggle = app.buttons["loupeAutoAdvanceToggle"]
-    XCTAssertTrue(
-      toggle.waitForExistence(timeout: 10),
-      "The advance-on-mark chrome twin is missing from the loupe header — the cadence must "
-        + "never be reachable only as a hidden preference.")
-
-    if toggle.value as? String == "Off" {
-      toggle.tap()
-      Thread.sleep(forTimeInterval: 0.8)
-    }
-    XCTAssertEqual(
-      toggle.value as? String, "On",
-      "The loupe header toggle would not go on — the control is not wired to the preference.")
-    attach(name: "loupe-auto-advance-on")
-
-    toggle.tap()
-    Thread.sleep(forTimeInterval: 0.8)
-    XCTAssertEqual(
-      toggle.value as? String, "Off",
-      "Tapping the loupe header toggle did not turn advance-on-mark off.")
-    attach(name: "loupe-auto-advance-off")
-
-    // Leave the shipped default behind for whatever runs next in this simulator.
-    toggle.tap()
-    Thread.sleep(forTimeInterval: 0.8)
-    XCTAssertEqual(toggle.value as? String, "On")
-  }
 
   // MARK: - IMGMGR-275: the mark bar shows the FOCUSED photograph's own verdict
 
@@ -56,19 +25,13 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
   ///
   /// Advance-on-mark is turned OFF for the duration on purpose: with the cadence on, the mark
   /// moves the loupe to the NEXT frame, and a plain-reading bar there is the correct answer to a
-  /// different question. Restored to whatever it was found at, like every test in this file.
+  /// different question. It is parked through the DEFAULTS ARGUMENT DOMAIN rather than through a
+  /// control (IMGMGR-348 removed the header one): `-<key> <value>` launch arguments override the
+  /// persisted value for this launch only, so the test leaves the simulator's stored preference
+  /// exactly as it found it — the state-independence this file has always insisted on, now
+  /// without depending on any chrome to achieve it.
   func testLoupeMarkBarReflectsTheFocusedPhotographsVerdict() throws {
-    let app = launchAndOpenLoupe()
-
-    let toggle = app.buttons["loupeAutoAdvanceToggle"]
-    XCTAssertTrue(toggle.waitForExistence(timeout: 10), "The loupe header toggle is missing.")
-    let wasOn = (toggle.value as? String) == "On"
-    if wasOn {
-      toggle.tap()
-      Thread.sleep(forTimeInterval: 0.8)
-    }
-    XCTAssertEqual(
-      toggle.value as? String, "Off", "Could not park the cadence for a same-frame reading.")
+    let app = launchAndOpenLoupe(autoAdvance: false)
 
     // BY IDENTIFIER (IMGMGR-280). These queries used to match the CONTAINER's identifier plus the
     // button's label, because `.accessibilityIdentifier("loupeMarkBar")` on the enclosing HStack
@@ -121,12 +84,6 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
     let backToPlain = expectation(
       for: NSPredicate(format: "value == 'Not picked'"), evaluatedWith: pick)
     wait(for: [backToPlain], timeout: 10)
-
-    if wasOn {
-      toggle.tap()
-      Thread.sleep(forTimeInterval: 0.8)
-      XCTAssertEqual(toggle.value as? String, "On", "The cadence preference was not restored.")
-    }
   }
 
   // MARK: - Chrome twin 2: the account sheet's row
@@ -248,10 +205,17 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
 
   // MARK: - Shared
 
-  private func launchStubbedApp(skipAutoSelect: Bool = false) -> XCUIApplication {
+  private func launchStubbedApp(skipAutoSelect: Bool = false, autoAdvance: Bool? = nil)
+    -> XCUIApplication
+  {
     let app = XCUIApplication()
-    app.launchArguments =
-      skipAutoSelect ? ["-UITestStubGrid", "-UITestStubSkipAutoSelect"] : ["-UITestStubGrid"]
+    var arguments = ["-UITestStubGrid"]
+    if skipAutoSelect { arguments.append("-UITestStubSkipAutoSelect") }
+    // The fixture's own flag, never a defaults-domain argument: `GridPreferences` is
+    // guard-typed (`stored as? Bool`), so an argument-domain string would be ignored outright
+    // and the test would silently run with the cadence still on.
+    if autoAdvance == false { arguments.append("-UITestStubNoAutoAdvance") }
+    app.launchArguments = arguments
     app.launch()
     return app
   }
@@ -261,8 +225,8 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
   /// it, and for the same reason (IMGMGR-336): the normalized-coordinate probe both classes
   /// used encoded a pane geometry that the simulator-global device orientation, not this class,
   /// decides.
-  private func launchAndOpenLoupe() -> XCUIApplication {
-    let app = launchStubbedApp()
+  private func launchAndOpenLoupe(autoAdvance: Bool? = nil) -> XCUIApplication {
+    let app = launchStubbedApp(autoAdvance: autoAdvance)
 
     let dislike = app.buttons["Dislike"]
     XCTAssertTrue(

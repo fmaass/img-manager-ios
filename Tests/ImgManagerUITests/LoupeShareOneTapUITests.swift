@@ -37,6 +37,15 @@ final class LoupeShareOneTapUITests: OrientationPinnedUITestCase {
     XCTAssertFalse(
       app.otherElements["shareRefusal"].exists,
       "The master share refused against the DEBUG fixture, which serves a master export.")
+
+    // IMGMGR-348, the owner's other sentence: "there is also a 'play button' … and a 100 % zoom
+    // function and an 'expand function' - i think we can get rid of those altogether". They were
+    // ours, and they are gone; this is what keeps them from coming back unnoticed.
+    for identifier in ["loupeZoomToggle", "loupeAutoAdvanceToggle", "loupeFullScreenToggle"] {
+      XCTAssertFalse(
+        app.descendants(matching: .any).matching(identifier: identifier).firstMatch.exists,
+        "The loupe header still carries `\(identifier)` — the owner asked for it to be gone.")
+    }
   }
 
   func testOneTapSharesThePreviewWhenThereIsNoEditedMaster() throws {

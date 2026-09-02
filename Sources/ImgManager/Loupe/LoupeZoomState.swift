@@ -224,31 +224,6 @@ struct LoupeZoomInstaller: Sendable {
   static let live = LoupeZoomInstaller { state, imageID in state.focus(on: imageID) }
 }
 
-/// What the chrome twin needs to render itself, derived from the zoom state — never from a device
-/// idiom and never from a second, independent geometry computation.
-struct LoupeZoomControlModel: Equatable, Sendable {
-  var isAvailable: Bool
-  var isZoomed: Bool
-
-  /// What tapping does NEXT: "Fit" when zoomed, "100 %" when at fit. Both names come from
-  /// `LoupeZoomState.name(_:)`, the single source the photograph's spoken value also uses, so
-  /// "100 %" cannot mean 1:1-against-the-proxy on one surface and something else on the other.
-  var title: String { LoupeZoomState.name(isZoomed ? .fit : .oneToOne) }
-
-  var accessibilityHint: String {
-    isAvailable
-      ? "Toggles between fitting the photograph and viewing it at 100 % of the preview proxy."
-      : "Unavailable: the preview proxy is already enlarged to fill this view, so there is no "
-        + "further detail to show."
-  }
-}
-
-extension LoupeZoomControlModel {
-  init(_ zoom: LoupeZoomState) {
-    self.init(isAvailable: zoom.isZoomAvailable, isZoomed: zoom.isZoomed)
-  }
-}
-
 /// The handlers the loupe's image-area gestures route into. One `onToggle` value is built once in
 /// `LoupeView.body` and handed to BOTH surfaces — this struct and the chrome control — which is
 /// what makes "double-tap and the chrome control are the same action" true by construction rather
@@ -262,33 +237,16 @@ struct LoupeZoomGestureHandlers {
   var onDragEnded: (CGSize) -> Void
 }
 
-/// Injectable factory for the loupe's zoom SURFACES, in the shape of
+/// Injectable factory for the loupe's zoom GESTURES, in the shape of
 /// `GridView.pointerGestureInstaller` (`GridView.swift:18-24`): `.live` is the only one the
 /// running app uses; a test substitutes a spy, evaluates `body`, and captures the closures each
 /// surface was actually handed.
 @MainActor
 struct LoupeZoomControls {
-  /// The chrome twin: a >=44x44 Fit / 100 % button. Zoom is never gesture-only.
-  var makeToggleControl: (LoupeZoomControlModel, @escaping () -> Void) -> AnyView
   /// Pinch + double-tap + the dual-purpose drag, attached to the image area.
   var attachGestures: (AnyView, LoupeZoomGestureHandlers) -> AnyView
 
   static let live = LoupeZoomControls(
-    makeToggleControl: { model, onToggle in
-      AnyView(
-        Button(action: onToggle) {
-          Text(model.title)
-            .font(.caption)
-            .monospacedDigit()
-        }
-        .disabled(!model.isAvailable)
-        .frame(minWidth: 44, minHeight: 44)
-        .accessibilityIdentifier("loupeZoomToggle")
-        .accessibilityLabel("Zoom")
-        .accessibilityValue(model.title)
-        .accessibilityHint(model.accessibilityHint)
-      )
-    },
     attachGestures: { content, handlers in
       AnyView(
         content

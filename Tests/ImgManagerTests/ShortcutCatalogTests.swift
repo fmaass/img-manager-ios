@@ -27,7 +27,7 @@ struct ShortcutCatalogTests {
       // direction toggle as ⌥⌘R.
       .sortKey, .sortDirection,
       // WP13 P8 (IMGMGR-214): `A` was EXCLUDED from the target inventory until its own surface
-      // existed — that surface (the loupe header toggle and the account-sheet row) ships in the
+      // existed — that surface (the account-sheet row) ships in the
       // same commit this entry does, which is the catalog's own rule, not an exception to it.
       .autoAdvance,
     ]

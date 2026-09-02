@@ -1398,19 +1398,6 @@ struct GridStoreTests {
     #expect(store.pickLock.state == .latched(.pick))
   }
 
-  @Test("closeLoupe() also resets the full-screen toggle")
-  func closeLoupeResetsFullScreenToo() {
-    let (store, _) = makeStore()
-    store.openLoupe(on: 1)
-    store.toggleLoupeFullScreen()
-    #expect(store.isLoupeFullScreen)
-
-    store.closeLoupe()
-
-    #expect(!store.isLoupeOpen)
-    #expect(!store.isLoupeFullScreen)
-  }
-
   @Test(
     "Space/Enter (handleOpenShortcut) opens the loupe on the focused image; a no-op with nothing focused"
   )
@@ -1627,7 +1614,6 @@ struct GridStoreTests {
       .init(items: [makeImage(id: 1, revision: "r0")], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
     store.openLoupe(on: 1)
-    store.toggleLoupeFullScreen()
     await transport.setNeighboursPage(.init(items: [], limit: 5, nextCursor: nil))
     await store.loupeNext()
     #expect(store.loupeExhausted)
@@ -1637,7 +1623,6 @@ struct GridStoreTests {
     await store.selectShoot(folderID: 2)
 
     #expect(!store.isLoupeOpen)
-    #expect(!store.isLoupeFullScreen)
     #expect(!store.loupeExhausted)
   }
 
