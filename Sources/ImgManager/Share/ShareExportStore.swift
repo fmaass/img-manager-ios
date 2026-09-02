@@ -34,10 +34,10 @@ final class ShareExportStore {
   /// Increments on every `prepare` and every `finish` — see `prepare` for what it guards.
   private var generation = 0
 
-  /// `masterAvailable` defaults to the seam and is a PARAMETER only so the master pipeline can
-  /// be exercised end-to-end (refusal mapping, naming, `.ready`) while the seam itself stays
-  /// off in production — a parked lane that no test ever runs is a lane that will not work on
-  /// the day it is switched on. `ShareMasterSeamTests` pins the production default separately.
+  /// `masterAvailable` defaults to the seam and is a PARAMETER so a test can pin BOTH sides of
+  /// the guard: that a closed seam makes no request at all, and that the same downloader does
+  /// reach the wire when it is open. `ShareMasterSeamTests` pins the production default
+  /// separately, so the shipped value can never drift as a side effect of a test's needs.
   init(
     service: GridService,
     master: any MasterDownloading = UnavailableMasterDownloader(),

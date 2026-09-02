@@ -541,6 +541,89 @@ struct GridService: Sendable {
   }
 }
 
+/// Step 3 of `ShareMasterSeam`'s activation list: the share lane's byte source, living where
+/// the generated client does rather than in the share lane itself (the seam's own rule —
+/// "conformances live wherever the generated client does (`GridService`), never here").
+///
+/// One request, `content=master`, and NEVER a `rendition`: `ShareVariant` has no case that
+/// could name an original, and this method has no parameter that could carry one, so the
+/// IMGMGR-196 invariant — a RAW original is never asked for, let alone shared — holds by
+/// construction rather than by review. `MasterDownloadTests.masterIsTheOnlyThingEverAskedFor`
+/// reads the query string the generated client actually built, so a future edit that adds one
+/// fails a named test.
+///
+/// The bytes are STREAMED to disk through `ShareStreamWriter` under the master lane's named
+/// cap: an edited export off a 60 MP frame is far larger than any proxy, and past the cap the
+/// partial file is deleted and the export refuses rather than buffering whatever arrives.
+extension GridService: MasterDownloading {
+  func downloadMaster(imageID: Int, into directory: URL) async -> MasterDownloadOutcome {
+    let output: Operations.DownloadImageApiImagesImageIdDownloadGet.Output
+    do {
+      output = try await client.downloadImageApiImagesImageIdDownloadGet(
+        .init(path: .init(imageId: imageID), query: .init(content: .master)))
+    } catch {
+      // Opaque by construction, exactly as `GridServiceError` is: nothing here can carry server
+      // text, a hostname or a transport string into the refusal the user reads.
+      return .refused(.notConnected)
+    }
+    switch output {
+    case .ok(let ok):
+      let (body, mimeType) = Self.masterBody(ok.body)
+      let contentType = ShareExportPlan.contentType(for: mimeType)
+      // The SERVER's name (gate correction 5), and only then the typed fallback — never the
+      // photograph's own filename, which names the RAW.
+      let filename =
+        ShareExportPlan.filename(fromContentDisposition: ok.headers.contentDisposition)
+        ?? ShareExportPlan.masterFilename(imageID: imageID, contentType: contentType)
+      guard
+        (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true))
+          != nil
+      else {
+        return .refused(.couldNotPrepare)
+      }
+      let url = directory.appending(path: filename, directoryHint: .notDirectory)
+      do {
+        try await ShareStreamWriter.write(body, to: url, cap: ShareExportPlan.masterByteCap)
+      } catch ShareStreamWriter.Failure.tooLarge {
+        return .refused(.tooLarge)
+      } catch {
+        return .refused(.couldNotPrepare)
+      }
+      return .ok(ShareExportFile(url: url, filename: filename, contentType: contentType))
+    case .forbidden(let forbidden):
+      // A `403` is the RAW-policy answer ONLY with `X-Img-Policy`; a bare one is the proxy or
+      // the session refusing. The split lives in `ShareExportPlan.refusal`, not here.
+      return .refused(
+        ShareExportPlan.refusal(status: 403, policyHeader: forbidden.headers.xImgPolicy?.rawValue))
+    case .notFound:
+      return .refused(.noMaster)
+    case .badRequest, .unprocessableContent, .undocumented:
+      // `400` is "a rendition and a content choice at once", which this client cannot produce;
+      // it is grouped with the other unexpected answers rather than given copy of its own.
+      return .refused(.notConnected)
+    }
+  }
+
+  /// The `200`'s seven declared bodies, each carrying the same thing — a stream of bytes and the
+  /// wire type that names them. Kept next to the request so the ONE place that has to change
+  /// when the contract grows an eighth content type is the place that already reads the
+  /// contract; `ShareExportPlan` stays free of the generated types, as its own doc comment
+  /// requires.
+  private static func masterBody(
+    _ body: Operations.DownloadImageApiImagesImageIdDownloadGet.Output.Ok.Body
+  ) -> (HTTPBody, String) {
+    switch body {
+    case .binary(let body): return (body, "application/octet-stream")
+    case .imageHeic(let body): return (body, "image/heic")
+    case .imageHeif(let body): return (body, "image/heif")
+    case .jpeg(let body): return (body, "image/jpeg")
+    case .png(let body): return (body, "image/png")
+    case .imageTiff(let body): return (body, "image/tiff")
+    case .imageWebp(let body): return (body, "image/webp")
+    }
+  }
+}
+
 enum MarkTagOperation: Sendable, Equatable { case add, remove }
 
 enum ProxyFetchResult: Equatable, Sendable {

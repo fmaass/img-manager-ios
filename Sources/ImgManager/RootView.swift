@@ -106,9 +106,10 @@ struct RootView: View {
     _gridStore = State(initialValue: GridStore(service: gridService))
     // One share pre-flight for the whole app: the docked and full-screen loupes are two
     // presentations of the same thing, and a prepared export (and its temp file) belongs to
-    // neither of them alone. `UnavailableMasterDownloader` is the parked master seam — see
-    // `Share/ShareMasterSeam.swift` for what replaces it.
-    _shareExport = State(initialValue: ShareExportStore(service: gridService))
+    // neither of them alone. The SAME `GridService` is the master lane's byte source
+    // (IMGMGR-279, step 4 of `Share/ShareMasterSeam.swift`) — one client, one service, no
+    // second transport for the share lane.
+    _shareExport = State(initialValue: ShareExportStore(service: gridService, master: gridService))
     let queueService = QueueService(client: client)
     // IMGMGR-198: the queue's cached last answer. The session gets the erase hook (a credential
     // that is genuinely gone takes the answers fetched under it with it), and the store gets a
