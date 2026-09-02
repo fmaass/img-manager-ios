@@ -579,18 +579,30 @@ stop_remote_run() {
 remote_cap="${MAC_GATE_REMOTE_CAP:-7200}"
 case "$remote_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_REMOTE_CAP must be a whole number of seconds (got '$remote_cap')" ;; esac
 [ "${#remote_cap}" -le 7 ] || die_refuse "MAC_GATE_REMOTE_CAP must be at most 7 digits (got '$remote_cap')"
-launch_out="$(printf '%s\n' "$build_script" | timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
-  set -e
-  cd \"$target_dir\"
-  cat > .gate-run.sh
-  rm -f .gate-run.done .gate-run.log .gate-run.pid
-  set -m
-  ( nohup bash .gate-run.sh </dev/null >.gate-run.log 2>&1; echo \$? >.gate-run.done ) >/dev/null 2>&1 </dev/null &
-  echo \$! > .gate-run.pid
-  set +m
-  echo \"LAUNCHED pid=\$(cat .gate-run.pid)\"
-" 2>&1)"
-launch_rc=$?
+# Two calls on purpose: the script body goes up through the login shell (zsh on macOS, which
+# is fine for a redirection), and the launcher runs under `bash -s` — non-interactive zsh
+# refuses `set -m`, and the process-group stop depends on it.
+upload_out="$(printf '%s\n' "$build_script" | timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "cat > \"$target_dir/.gate-run.sh\"" 2>&1)"
+upload_rc=$?
+if [ "$upload_rc" -ne 0 ]; then
+  launch_out="upload failed (rc=$upload_rc): $upload_out"
+  launch_rc=$upload_rc
+else
+  launch_script=$(cat <<'REMOTELAUNCH'
+set -e
+cd "__TARGET__"
+rm -f .gate-run.done .gate-run.log .gate-run.pid
+set -m
+( nohup bash .gate-run.sh </dev/null >.gate-run.log 2>&1; echo $? >.gate-run.done ) >/dev/null 2>&1 </dev/null &
+echo $! > .gate-run.pid
+set +m
+echo "LAUNCHED pid=$(cat .gate-run.pid)"
+REMOTELAUNCH
+)
+  launch_script="${launch_script//__TARGET__/$target_dir}"
+  launch_out="$(printf '%s\n' "$launch_script" | timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' 2>&1)"
+  launch_rc=$?
+fi
 remote_out=""
 if [ "$launch_rc" -ne 0 ] || ! printf '%s\n' "$launch_out" | grep -q '^LAUNCHED pid='; then
   printf 'remote launch failed (rc=%s): %s\n' "$launch_rc" "$launch_out" | tee -a "$log" >&2
