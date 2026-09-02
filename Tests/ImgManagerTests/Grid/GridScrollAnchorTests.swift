@@ -82,7 +82,6 @@ struct GridScrollAnchorTests {
   }
 }
 
-
 /// WP16 P2 (IMGMGR-298), Codex round-3 blocker. The anchor's LIFETIME, at the store, where the
 /// rule actually lives — `GridScrollAnchorTests` above proves the anchor resolves correctly, and
 /// proved nothing about when it should stop existing.
