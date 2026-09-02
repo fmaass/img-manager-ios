@@ -83,20 +83,21 @@ final class FilterPopoverUITests: XCTestCase {
         + "grid's own chrome.")
     XCTAssertTrue(filter.isHittable, "The funnel exists but cannot be tapped where it is.")
 
-    // The shortcut-help control, WHERE IT IS STILL RENDERED. The plan's pre-decided pivot moved
-    // it off the REGULAR toolbar after the 5e2e9d4 gate measured that bar folding three of six
-    // primary items into the overflow; it keeps its Compact home in `GridOptionsRow`, and its
-    // three other routes (`?`, ⌘/, the menu-bar View menu) are unchanged on both. So the contract
-    // asserted here is "wherever it renders, it is reachable" — on Compact that IS the "the
-    // options row did not overflow" check the plan asks for, and on Regular its absence is the
-    // recorded relocation rather than a displacement. Conditional on existence, not on an idiom.
-    let help = app.descendants(matching: .any)["gridShortcutHelpControl"]
-    if help.exists {
-      XCTAssertTrue(
-        help.isHittable,
-        "The shortcut-help control is rendered but no longer reachable once the funnel joined "
-          + "its surface — the row or bar it shares overflowed, which the parity table forbids.")
-    }
+    // The named risk of this phase, asserted unconditionally again: the funnel joined a surface
+    // that already carried the shortcut-help control — Regular's toolbar and Compact's options
+    // row both — and that shipped control must still be reachable on whichever one this
+    // destination renders. On Compact this IS the "the options row did not overflow" check the
+    // plan asks for; on Regular it is the "nothing was pushed into the chevron" half.
+    //
+    // (WP16 P3 briefly removed the Regular copy as the plan's pre-decided pivot and this
+    // assertion was softened to match. Both are reverted: the pivot cost a shipped control its
+    // only Regular route and failed `ViewOptionsScreenshotUITests`, while WP16 P2's two-column
+    // Regular-3 is what actually gave the bar room.)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["gridShortcutHelpControl"].isHittable,
+      "The shortcut-help control is no longer hittable once the funnel joined its surface — on "
+        + "Compact the options row overflowed, on Regular the toolbar collapsed. Either way a "
+        + "shipped control was displaced by decision 1, which the parity table forbids.")
 
     // Positive control in the same check (LSN-0033), so the 0-hit assertion below cannot pass
     // vacuously on a blank or crashed screen.

@@ -157,6 +157,10 @@ struct GridView: View {
   /// overflow chevron came back as a result.
   @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
     if layoutMode != .compact {
+      // WP16 P3 (IMGMGR-295), decision 1: filtering reaches the grid's own chrome. Declared
+      // FIRST deliberately — the OS folds a crowded bar from the TRAILING end, so declaration
+      // order decides which control survives a narrow pane, and decision 1's control should not
+      // be the first casualty. Every shipped item below keeps its own shipped position.
       ToolbarItem(placement: .primaryAction) {
         GridFilterControl(store: store)
       }
@@ -169,34 +173,24 @@ struct GridView: View {
       ToolbarItem(placement: .primaryAction) {
         GridZoomControl(store: store)
       }
-      // WP16 P3 (IMGMGR-295), decision 1. It sits with the view options rather than after the
-      // help button because filtering is what a reader reaches for in the same breath as sort
-      // and group.
+      // Regular's route into the shortcut help sheet, in its shipped position. The gate's UI leg
+      // proved the other two routes are not drivable there — ⌘/ never reached the app on the iPad
+      // simulator (no attached hardware keyboard) and the system menu bar is not a surface a UI
+      // test can open — so without this the sheet has no chrome path on Regular at all, which is
+      // what `ViewOptionsScreenshotUITests.testShortcutHelpSheetListsEveryActiveShortcut` drives.
+      // Compact carries the same control in its options row.
       //
-      // The chevron risk this phase named DID materialise, and the plan's pre-decided pivot is
-      // taken here. Measured on the iPad leg of the 5e2e9d4 gate (Regular-3 landscape, three
-      // columns): the composed bar held `Show Sidebar | Info | Sort: Date ↑ | Group: None |
-      // OverflowBarButtonItem`, i.e. THREE of six `.primaryAction` items, with Zoom, Filter and
-      // the shortcut help all folded into the system overflow. `RootView` contributes Info, and
-      // WP16 P2 made `usesChromeControl` true at every width, so this bar carries six. Portrait
-      // Regular-2 (two columns) fits all six with no chevron, so the binding constraint is the
-      // grid pane's WIDTH under the three-column composition, not the item count alone — the two
-      // value-bearing labels consume most of it.
-      //
-      // The pivot: the shortcut-help control leaves the REGULAR toolbar. It is the one item with
-      // three other routes (`?`, ⌘/, and the menu-bar View menu), which is exactly why the plan
-      // pre-decided it; the parity table records it as "moved, decision 1". Compact's copy stays
-      // in `GridOptionsRow`, untouched, because that row is not width-contended.
-      //
-      // The funnel is declared BEFORE the remaining view options deliberately: the OS folds from
-      // the trailing end, so declaration order is what decides which control survives a narrow
-      // pane, and decision 1's control must not be the first casualty.
-      //
-      // NOT claimed as sufficient: five items against a measured capacity of three still folds
-      // something. The lane reported that to the orchestrator rather than reordering shipped
-      // controls or growing chrome to force it — WP16 P2's own fix changes the Regular-3
-      // composition to two columns, the shape portrait already proves fits, and that is the
-      // dependency this placement is waiting on.
+      // WP16 P3 briefly removed this item as the plan's pre-decided pivot, to buy the funnel a
+      // slot on a bar the 5e2e9d4 gate had measured folding three of six primary items. Reverted:
+      // the pivot cost a SHIPPED control its only Regular route and failed that shipped test,
+      // while not actually solving the fold (five items into three slots still folds something).
+      // WP16 P2's two-column Regular-3 is what solved it — with the inspector collapsed the bar
+      // has room and the funnel is primary, which the iPad leg now passes on all four popover
+      // tests. The remaining inspector-SHOWN fold is the declared deviation on IMGMGR-293, not
+      // something to pay for with a shipped control.
+      ToolbarItem(placement: .primaryAction) {
+        GridShortcutHelpControl(store: store)
+      }
     }
   }
 
@@ -834,17 +828,11 @@ struct GridOptionsRow: View {
   }
 }
 
-/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: the chrome path INTO the shortcut help sheet.
-///
-/// Rendered on COMPACT's options row only. WP16 P3 took the plan's pre-decided pivot and dropped
-/// the REGULAR `.primaryAction` copy this comment used to claim: the 5e2e9d4 gate measured that
-/// bar folding three of six primary items into the system overflow at Regular-3, and this is the
-/// one item with three other routes, which is exactly why the plan named it as the one to move.
-/// The parity table records it as "moved, decision 1".
-///
-/// Those other routes — the menu-bar View menu, `?`, ⌘/ — need a hardware keyboard or the menu
-/// bar, neither of which exists on a phone and neither of which the gate's simulators supplied,
-/// so on COMPACT this control is still the only reachable path and must stay on that row.
+/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: the chrome path INTO the shortcut help sheet,
+/// rendered on both layouts — Compact's options row and Regular's `.primaryAction` toolbar.
+/// Every other route the plan names — the menu-bar View menu, `?`, ⌘/ — needs a hardware
+/// keyboard or the menu bar, neither of which exists on a phone and neither of which the gate's
+/// simulators supplied, so without this the sheet was unreachable and had no rendered evidence.
 /// Deliberately NOT a fourth entry in the More menu: that menu's contents are P5a's decided set
 /// (IMGMGR-221) and this phase does not get to pre-empt them.
 ///
