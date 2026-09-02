@@ -194,17 +194,23 @@ struct HeroThumbnailLoaderTests {
     let leaver = Task { await loader.hero(folderID: 1, sourceTier: .local) }
     await transport.waitUntilListImagesStarted()
     let survivor = Task { await loader.hero(folderID: 1, sourceTier: .local) }
-    // Long enough for the survivor to have joined the running fetch before the other reader
-    // goes. Unlike the queued-at-the-gate test above this one fails SAFE if the timing slips:
-    // a survivor that had not joined yet would start a second fetch, and the call-count
-    // assertion below turns red rather than passing for the wrong reason.
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // DETERMINISTIC, and on the right observable: the initiator may only leave once the survivor
+    // has really JOINED this fetch. The entry's existence was already true before the survivor
+    // was created, so waiting on that proved nothing — the READER COUNT is what a second reader
+    // changes.
+    #expect(
+      await waitUntil {
+        await loader.debugReaderCount(folderID: 1, sourceTier: .local) == 2
+      }, "the survivor never joined the running fetch")
 
     leaver.cancel()
     #expect(
       await waitUntil {
-        await loader.debugIsFetching(folderID: 1, sourceTier: .local)
-      }, "the shared fetch was dropped even though a reader was still waiting on it")
+        await loader.debugReaderCount(folderID: 1, sourceTier: .local) == 1
+      }, "the leaver's departure was never processed")
+    #expect(
+      await loader.debugIsFetching(folderID: 1, sourceTier: .local),
+      "the shared fetch was dropped even though a reader was still waiting on it")
     await transport.releaseListImages()
 
     // The guard against over-cancelling: "cancel the shared task whenever a reader leaves" would
@@ -213,6 +219,12 @@ struct HeroThumbnailLoaderTests {
     #expect(await leaver.value == .failure)
     #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
     #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+    // Both readers are gone and the fetch is done, so its entry must be gone with them — a fetch
+    // that outlived its readers is the wedge this whole mechanism exists to avoid.
+    #expect(
+      await waitUntil {
+        await loader.debugIsFetching(folderID: 1, sourceTier: .local) == false
+      }, "the completed fetch left its in-flight entry behind")
   }
 
   @Test("A key whose fetch was abandoned is not wedged: the next reader fetches it normally")

@@ -65,9 +65,13 @@ actor HeroThumbnailLoader {
   /// reader leaves, never when one of several does. A reader leaving on its own returns
   /// `.failure` for itself and takes nothing away from the readers that remain.
   ///
-  /// A cancelled fetch fills no cache and leaves no in-flight entry behind, so the next reader of
-  /// that key starts a clean one — `runFetch` re-checks cancellation once more after the proxy
-  /// bytes arrive, so even a fetch abandoned mid-await caches nothing.
+  /// A fetch abandoned by its last reader leaves no in-flight entry behind, so the next reader of
+  /// that key starts a clean one, and once the fetch OBSERVES the cancellation it releases its
+  /// concurrency slot and skips every remaining network step. That is not an airtight fence:
+  /// cancellation reaches the shared task through an actor hop, so a proxy response that resumes
+  /// before the hop lands is still written to the cache. Harmless, and deliberately not raced
+  /// after — those bytes are this key's own image, so the worst case is a cache entry nobody
+  /// asked for rather than a wrong answer.
   func hero(folderID: Int, sourceTier: GridSourceTier?) async -> FetchResult {
     let key = cacheKey(folderID: folderID, sourceTier: sourceTier)
     if let cached = cache[key] { return .image(cached) }
@@ -152,9 +156,10 @@ actor HeroThumbnailLoader {
         from: first.proxies.additionalProperties[ProxyTier.grid.rawValue]?.url)
       switch try await service.proxy(imageID: first.id, tier: .grid, v: token) {
       case .ok(let data):
-        // The third boundary, and the one that keeps "a cancelled fetch fills no cache" literally
-        // true: the last reader can leave DURING the proxy await, and bytes cached by a fetch
-        // nobody read would make the next reader of the key skip a fetch it should make.
+        // The third boundary. It NARROWS the window rather than closing it: the last reader can
+        // leave during the proxy await, and this is the cheapest place to notice — but the
+        // cancellation arrives through an actor hop, so a response that resumes before the hop
+        // lands is cached anyway. Harmless (see `hero`), and not worth racing.
         guard !Task.isCancelled else { return .failure }
         cache[key] = data
         return .image(data)
@@ -207,5 +212,12 @@ actor HeroThumbnailLoader {
 
     /// How many fetches are parked in `acquire()` waiting for a slot.
     func debugGateWaiterCount() -> Int { waiters.count }
+
+    /// How many live readers the key's CURRENT fetch has, and 0 when there is no fetch. What a
+    /// test waits on to know a second reader has really joined the same fetch — the entry's mere
+    /// existence was already true before that reader arrived.
+    func debugReaderCount(folderID: Int, sourceTier: GridSourceTier?) -> Int {
+      inFlight[cacheKey(folderID: folderID, sourceTier: sourceTier)]?.readers.count ?? 0
+    }
   }
 #endif
