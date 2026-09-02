@@ -14,6 +14,32 @@ import XCTest
 /// ephemeral defaults suite, where the claim can actually be true.
 final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
 
+  /// PORTRAIT, pinned on the way in AND restored on the way out.
+  ///
+  /// This class pins nothing until now, and `launchAndOpenLoupe` opens the loupe by tapping
+  /// NORMALIZED SCREEN COORDINATES (dx 0.25...0.85) because a tile carries no identifier. That
+  /// makes every probe point a statement about the pane geometry, and the geometry is decided by
+  /// an orientation this class was INHERITING from whichever suite sorted before it — device
+  /// orientation is simulator-global, the lesson `ViewOptionsScreenshotUITests` already records.
+  ///
+  /// The iPad leg is where that bites, measured on two runs of this branch: in portrait
+  /// (1032x1376) the iPad resolves Regular-2, the grid spans roughly x 320...1032 and every probe
+  /// column lands on a tile — 12 screenshots, all green. In landscape (1376x1032) it resolves
+  /// Regular-3, the grid is the ~209 pt content column (its action bar's mid-x measured at
+  /// 104.5), so dx 0.25 is x 344 and EVERY probe point misses the grid and lands on the inspector
+  /// instead. Nothing opened, and the whole class failed on "the loupe never opened from a tile
+  /// tap". Pinning here makes the geometry this class assumes its own statement rather than a
+  /// neighbour's leftover.
+  override func setUp() {
+    super.setUp()
+    XCUIDevice.shared.orientation = .portrait
+  }
+
+  override func tearDown() {
+    XCUIDevice.shared.orientation = .portrait
+    super.tearDown()
+  }
+
   // MARK: - Chrome twin 1: the loupe header
 
   func testLoupeHeaderCarriesTheAutoAdvanceToggle() throws {
