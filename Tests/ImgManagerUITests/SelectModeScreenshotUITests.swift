@@ -12,16 +12,7 @@ import XCTest
 /// label or by identifier — three gate runs established both. The hook calls the very same
 /// `GridStore.enterSelectExplicitly()` the More menu's command calls, so what is captured is the
 /// shipped state reached through the shipped entry point, not a test-only mode.
-final class SelectModeScreenshotUITests: XCTestCase {
-
-  /// Orientation is DEVICE state that outlives the class that set it. This class was itself the
-  /// victim of that — it inherited `landscapeLeft` from `RegularThreeScreenshotUITests`, which
-  /// sorts before it, and silently ran every iPad assertion against the wrong layout. Ours is
-  /// reset so nothing downstream inherits it in turn.
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class SelectModeScreenshotUITests: OrientationPinnedUITestCase {
 
   private func launchInSelectMode(landscape: Bool) -> XCUIApplication {
     XCUIDevice.shared.orientation = landscape ? .landscapeLeft : .portrait

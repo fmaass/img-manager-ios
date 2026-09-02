@@ -9,19 +9,7 @@ import XCTest
 /// app published (`sceneCard`'s DEBUG probe value) and asserts BOTH branches, rather than
 /// guessing at a destination. That is the same discipline `GridMoreMenuUITests` uses for the
 /// action bar's fold tier.
-final class SceneBandScreenshotUITests: XCTestCase {
-
-  /// PORTRAIT, pinned in and out — device orientation is simulator-global and survives across
-  /// test classes (see `ViewOptionsScreenshotUITests` for the run this rule came from).
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
 
   func testSceneCardBadgesHandleAndBandOnOpen() throws {
     let app = XCUIApplication()

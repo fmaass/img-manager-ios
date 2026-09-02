@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// Diff-gate round 2, item 9(a) follow-up (delta round): the one screenshot a unit test
@@ -12,12 +13,21 @@ import XCTest
 /// into Release), rotates the simulator to landscape, and attaches a real screenshot
 /// REGARDLESS of what is on screen — the point is retained visual evidence either way, so the
 /// wait is logged, not fatal, and never blocks the capture itself.
-final class RegularThreeScreenshotUITests: XCTestCase {
+final class RegularThreeScreenshotUITests: OrientationPinnedUITestCase {
+
+  /// LANDSCAPE: this class exists to capture the Regular-3 layout, which only exists there. It
+  /// is also the class whose leftover rotation used to decide other classes' geometry — the
+  /// base restores portrait after every test here, so it no longer exports anything (IMGMGR-336).
+  override class var pinnedOrientation: UIDeviceOrientation { .landscapeLeft }
+
   func testRegularThreeLandscapeScreenshot() throws {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid"]
     app.launch()
 
+    // Again after launch: `setUp` pins the device before the app exists, and the post-launch
+    // set is the sequence known to take on these destinations (the same one
+    // `SelectModeScreenshotUITests.launchInSelectMode` uses).
     XCUIDevice.shared.orientation = .landscapeLeft
 
     // Diff-gate round 3, blocker 4: a sign-in screen, a blank screen, or a failed stub

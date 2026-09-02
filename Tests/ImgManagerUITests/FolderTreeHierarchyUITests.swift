@@ -18,7 +18,7 @@ import XCTest
 /// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the queue. That fixture's tree
 /// is `2026-08-27 — Stub Shoot` (id 1, a root-level shoot) beside `2026` (id 2, a container) over
 /// `2026-09-14 — Wandern` (id 3) over `template` (id 4).
-final class FolderTreeHierarchyUITests: XCTestCase {
+final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
   func testTheTreeNestsTwoLevelsAndTheSearchFieldFiltersIt() throws {
     let app = XCUIApplication()

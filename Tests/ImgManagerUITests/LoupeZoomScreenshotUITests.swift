@@ -12,33 +12,7 @@ import XCTest
 /// below 1600 device pixels, so 1:1 sits above fit and the control must be enabled on both. If a
 /// future destination fits the proxy at or above its own pixel count, this assertion is the thing
 /// that tells us — which is the honest outcome, not a hidden branch.
-final class LoupeZoomScreenshotUITests: XCTestCase {
-
-  /// PORTRAIT, pinned on the way in AND restored on the way out.
-  ///
-  /// This class pins nothing until now, and `launchAndOpenLoupe` opens the loupe by tapping
-  /// NORMALIZED SCREEN COORDINATES (dx 0.25...0.85) because a tile carries no identifier. That
-  /// makes every probe point a statement about the pane geometry, and the geometry is decided by
-  /// an orientation this class was INHERITING from whichever suite sorted before it — device
-  /// orientation is simulator-global, the lesson `ViewOptionsScreenshotUITests` already records.
-  ///
-  /// The iPad leg is where that bites, measured on two runs of this branch: in portrait
-  /// (1032x1376) the iPad resolves Regular-2, the grid spans roughly x 320...1032 and every probe
-  /// column lands on a tile — 12 screenshots, all green. In landscape (1376x1032) it resolves
-  /// Regular-3, the grid is the ~209 pt content column (its action bar's mid-x measured at
-  /// 104.5), so dx 0.25 is x 344 and EVERY probe point misses the grid and lands on the inspector
-  /// instead. Nothing opened, and the whole class failed on "the loupe never opened from a tile
-  /// tap". Pinning here makes the geometry this class assumes its own statement rather than a
-  /// neighbour's leftover.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class LoupeZoomScreenshotUITests: OrientationPinnedUITestCase {
 
   // MARK: - The chrome twin, the double-tap, and the retained screenshots
 
@@ -163,13 +137,15 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "loupeImage").firstMatch
   }
 
-  /// Launches the DEBUG fixture composition and opens the loupe on a tile.
+  /// Launches the DEBUG fixture composition and opens the loupe on the fixture's FIRST tile,
+  /// addressed by that tile's own identifier (`DebugStubTransport` serves ids 1...12).
   ///
-  /// A tile carries no accessibility identifier, so the loupe is opened by probing the content
-  /// area with taps. The probe is a GRID of points rather than a handful, because the pane the
-  /// tiles occupy differs by layout mode (full width on Compact, the middle pane of three on a
-  /// large iPad) and this test must not encode which — no idiom branching, and no guess about
-  /// pane widths that would silently rot.
+  /// BY IDENTIFIER, never by normalized screen coordinates (IMGMGR-336): a coordinate probe is a
+  /// statement about pane geometry, and the geometry is decided by the device orientation — the
+  /// simulator-global state no class owns. The probe grid this replaces (dx 0.25...0.85) missed
+  /// the grid entirely on a landscape iPad, where the content column is the ~209 pt middle pane
+  /// of three, and the whole class failed on "the loupe never opened from a tile tap". An
+  /// identifier encodes no pane width, so there is nothing left here to rot.
   private func launchAndOpenLoupe() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid"]
@@ -182,13 +158,18 @@ final class LoupeZoomScreenshotUITests: XCTestCase {
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
     let close = app.buttons["loupeClose"]
-    let columns: [CGFloat] = [0.5, 0.4, 0.6, 0.7, 0.3, 0.8, 0.25, 0.85]
-    let rows: [CGFloat] = [0.35, 0.45, 0.55, 0.28]
-    for dy in rows {
-      for dx in columns where !close.exists {
-        app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
-        _ = close.waitForExistence(timeout: 1)
-      }
+    let tile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
+    XCTAssertTrue(
+      tile.waitForExistence(timeout: 15),
+      "The fixture's first tile (`gridTile-1`) never appeared — the grid this test opens the "
+        + "loupe from is not on screen.")
+    // TWO taps, because that is the shipped way in: `GridStore.tapTile` moves focus on a tap on
+    // an unfocused tile and opens the loupe on a tap on the focused one (spec 3220 §2.2), and
+    // which of the two the first tap is depends on where focus already sits.
+    tile.tap()
+    if !close.waitForExistence(timeout: 2) {
+      tile.tap()
+      _ = close.waitForExistence(timeout: 5)
     }
     if !close.exists {
       // Retained so a failure here is diagnosable from the log alone instead of costing another

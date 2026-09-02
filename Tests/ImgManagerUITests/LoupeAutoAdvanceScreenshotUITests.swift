@@ -12,33 +12,7 @@ import XCTest
 /// restores what it found. The "on with nothing stored" claim belongs to
 /// `GridStoreTests.autoAdvanceDefaultsToOnWithNoStoredPreference`, which runs against its own
 /// ephemeral defaults suite, where the claim can actually be true.
-final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
-
-  /// PORTRAIT, pinned on the way in AND restored on the way out.
-  ///
-  /// This class pins nothing until now, and `launchAndOpenLoupe` opens the loupe by tapping
-  /// NORMALIZED SCREEN COORDINATES (dx 0.25...0.85) because a tile carries no identifier. That
-  /// makes every probe point a statement about the pane geometry, and the geometry is decided by
-  /// an orientation this class was INHERITING from whichever suite sorted before it — device
-  /// orientation is simulator-global, the lesson `ViewOptionsScreenshotUITests` already records.
-  ///
-  /// The iPad leg is where that bites, measured on two runs of this branch: in portrait
-  /// (1032x1376) the iPad resolves Regular-2, the grid spans roughly x 320...1032 and every probe
-  /// column lands on a tile — 12 screenshots, all green. In landscape (1376x1032) it resolves
-  /// Regular-3, the grid is the ~209 pt content column (its action bar's mid-x measured at
-  /// 104.5), so dx 0.25 is x 344 and EVERY probe point misses the grid and lands on the inspector
-  /// instead. Nothing opened, and the whole class failed on "the loupe never opened from a tile
-  /// tap". Pinning here makes the geometry this class assumes its own statement rather than a
-  /// neighbour's leftover.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
 
   // MARK: - Chrome twin 1: the loupe header
 
@@ -96,18 +70,23 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     XCTAssertEqual(
       toggle.value as? String, "Off", "Could not park the cadence for a same-frame reading.")
 
-    // BY LABEL WITHIN THE BAR, not by an identifier of its own. The 23:26 gate run dumped the
-    // reason: `.accessibilityIdentifier("loupeMarkBar")` on the enclosing HStack propagates DOWN
-    // and overrides every child's, so all four controls report `identifier: 'loupeMarkBar'` —
-    // including `loupeClearButton`, which has carried a per-button identifier since P5 and has
-    // never surfaced either. Matching the container id AND the label is therefore both precise
-    // and the only thing that resolves one control.
-    let pick = app.buttons
-      .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Pick'"))
-      .firstMatch
+    // BY IDENTIFIER (IMGMGR-280). These queries used to match the CONTAINER's identifier plus the
+    // button's label, because `.accessibilityIdentifier("loupeMarkBar")` on the enclosing HStack
+    // propagated DOWN and overrode every child's: the 23:26 gate run dumped all four controls
+    // reporting `identifier: 'loupeMarkBar'`, `loupeClearButton` — which has carried its own
+    // identifier since P5 — included. The bar is an `.accessibilityElement(children: .contain)`
+    // now, so each control answers to its own name, and THAT is what these three lines assert:
+    // put the identifier back on the bare HStack and they stop resolving.
+    let pick = app.buttons["loupePickButton"]
     XCTAssertTrue(
       pick.waitForExistence(timeout: 10),
       "The loupe mark bar has no Pick control (IMGMGR-275).")
+
+    let clear = app.buttons["loupeClearButton"]
+    XCTAssertTrue(
+      clear.waitForExistence(timeout: 10),
+      "`loupeClearButton` does not resolve by its own identifier — the mark bar's container "
+        + "identifier is shadowing its children again (IMGMGR-280).")
 
     // STATE-INDEPENDENT, like every test in this file. Which frame the coordinate probe lands on
     // differs by idiom and the DEBUG fixture ships some photographs already marked — the 00:30
@@ -118,10 +97,6 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     XCTContext.runActivity(named: "Pick reads \(pick.value as? String ?? "nil") on arrival") { _ in
     }
     if (pick.value as? String) != "Not picked" {
-      let clear = app.buttons
-        .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Clear'"))
-        .firstMatch
-      XCTAssertTrue(clear.waitForExistence(timeout: 10), "The loupe mark bar has no Clear control.")
       clear.tap()
       let cleared = expectation(
         for: NSPredicate(format: "value == 'Not picked'"), evaluatedWith: pick)
@@ -140,9 +115,7 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     attach(name: "loupe-mark-bar-picked")
 
     // Undo takes the verdict back, and the control's own reading with it.
-    let undo = app.buttons
-      .matching(NSPredicate(format: "identifier == 'loupeMarkBar' AND label == 'Undo'"))
-      .firstMatch
+    let undo = app.buttons["loupeUndoButton"]
     XCTAssertTrue(undo.waitForExistence(timeout: 10), "The loupe mark bar has no Undo control.")
     undo.tap()
     let backToPlain = expectation(
@@ -283,10 +256,11 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
     return app
   }
 
-  /// Launches the DEBUG fixture composition and opens the loupe on a tile — the same probe
-  /// `LoupeZoomScreenshotUITests` uses, and for the same reason: a tile carries no
-  /// accessibility identifier, and the pane the tiles occupy differs by layout mode, which
-  /// this test must not encode (no idiom branching, no guessed pane widths).
+  /// Launches the DEBUG fixture composition and opens the loupe on the fixture's FIRST tile,
+  /// addressed by that tile's own identifier — the same way `LoupeZoomScreenshotUITests` does
+  /// it, and for the same reason (IMGMGR-336): the normalized-coordinate probe both classes
+  /// used encoded a pane geometry that the simulator-global device orientation, not this class,
+  /// decides.
   private func launchAndOpenLoupe() -> XCUIApplication {
     let app = launchStubbedApp()
 
@@ -297,13 +271,18 @@ final class LoupeAutoAdvanceScreenshotUITests: XCTestCase {
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
     let close = app.buttons["loupeClose"]
-    let columns: [CGFloat] = [0.5, 0.4, 0.6, 0.7, 0.3, 0.8, 0.25, 0.85]
-    let rows: [CGFloat] = [0.35, 0.45, 0.55, 0.28]
-    for dy in rows {
-      for dx in columns where !close.exists {
-        app.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
-        _ = close.waitForExistence(timeout: 1)
-      }
+    let tile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
+    XCTAssertTrue(
+      tile.waitForExistence(timeout: 15),
+      "The fixture's first tile (`gridTile-1`) never appeared — the grid this test opens the "
+        + "loupe from is not on screen.")
+    // TWO taps, because that is the shipped way in: `GridStore.tapTile` moves focus on a tap on
+    // an unfocused tile and opens the loupe on a tap on the focused one (spec 3220 §2.2), and
+    // which of the two the first tap is depends on where focus already sits.
+    tile.tap()
+    if !close.waitForExistence(timeout: 2) {
+      tile.tap()
+      _ = close.waitForExistence(timeout: 5)
     }
     if !close.exists {
       XCTContext.runActivity(named: "element tree when no tile was hit") { activity in

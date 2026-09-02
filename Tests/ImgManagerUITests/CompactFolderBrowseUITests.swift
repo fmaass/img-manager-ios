@@ -14,7 +14,7 @@ import XCTest
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`, never in a Release
 /// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the queue instead of being
 /// auto-navigated into the grid. The stub's folder tree is one `kind: "dated"` node, id 1.
-final class CompactFolderBrowseUITests: XCTestCase {
+final class CompactFolderBrowseUITests: OrientationPinnedUITestCase {
   private let stubShootRow = "folderRow-1"
 
   func testFolderTreeReachesAShootAndEntersTheGrid() throws {

@@ -21,19 +21,7 @@ import XCTest
 /// persistent options row. The `gridShortcutHelpControl` leg is the "the row did not overflow"
 /// contract on Compact and the "the fifth toolbar item did not push anything into the chevron"
 /// contract on Regular — one assertion, both meanings, no branch.
-final class FilterPopoverUITests: XCTestCase {
-
-  /// Device orientation is simulator-global and survives across test classes (the lesson
-  /// `ViewOptionsScreenshotUITests` records). Pinned on the way in AND restored on the way out.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
   /// Launched with the inspector suppressed on purpose: decision 1 is about filtering WITHOUT the
   /// inspector, and WP16 P2 moved the facets trigger out of it, so the counts these rows state

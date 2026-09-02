@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// WP16 P2 (IMGMGR-298), the half of decision 4 that is not about a panel: **the facet counts
@@ -25,21 +26,11 @@ import XCTest
 /// Makes no device-idiom decision. After the move the trigger is layout-independent, so the same
 /// contract is asserted on both gate destinations: the iPhone leg observes it with the inspector
 /// behind its sheet, the iPad leg with the Regular-3 column collapsed by `-UITestInspectorHidden`.
-final class FacetsWithoutInspectorUITests: XCTestCase {
+final class FacetsWithoutInspectorUITests: OrientationPinnedUITestCase {
 
-  /// LANDSCAPE, pinned on the way in and restored on the way out — device orientation is
-  /// simulator-global and survives across test classes (the lesson `ViewOptionsScreenshotUITests`
-  /// records). Landscape is what puts the iPad destination at Regular-3, the width decision 4
-  /// changes; the iPhone destination is Compact in either orientation.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .landscapeLeft
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+  /// LANDSCAPE: it is what puts the iPad destination at Regular-3, the width decision 4 changes;
+  /// the iPhone destination is Compact in either orientation.
+  override class var pinnedOrientation: UIDeviceOrientation { .landscapeLeft }
 
   func testTheFacetsFetchRunsWhileTheInspectorIsNeverOnScreen() {
     let app = XCUIApplication()

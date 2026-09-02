@@ -15,7 +15,7 @@ import XCTest
 /// leave a usable image area at 402 pt portrait — the gate's iPhone destination IS an
 /// iPhone 17 Pro, so the numbers this test measures and attaches are the answer, and the floor
 /// assertion below is what would trip the pre-decided collapsible-strip pivot.
-final class CompactFilmstripScreenshotUITests: XCTestCase {
+final class CompactFilmstripScreenshotUITests: OrientationPinnedUITestCase {
 
   func testLoupeShowsTheThumbBarAndKeepsAUsableImageArea() throws {
     let app = launchAndOpenLoupe()

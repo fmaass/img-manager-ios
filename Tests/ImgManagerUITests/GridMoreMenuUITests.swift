@@ -11,20 +11,7 @@ import XCTest
 ///
 /// Makes NO device-idiom decision (plan invariant (i)): every step keys off an observed element,
 /// and it asserts the same things on the phone and the iPad destination.
-final class GridMoreMenuUITests: XCTestCase {
-
-  /// PORTRAIT, pinned on the way in AND restored on the way out. Device orientation is
-  /// simulator-global and survives across test classes — a sibling class that rotates to
-  /// landscape and happens to sort earlier would otherwise decide this class's geometry.
-  override func setUp() {
-    super.setUp()
-    XCUIDevice.shared.orientation = .portrait
-  }
-
-  override func tearDown() {
-    XCUIDevice.shared.orientation = .portrait
-    super.tearDown()
-  }
+final class GridMoreMenuUITests: OrientationPinnedUITestCase {
 
   private func launchedApp() -> XCUIApplication {
     let app = XCUIApplication()
