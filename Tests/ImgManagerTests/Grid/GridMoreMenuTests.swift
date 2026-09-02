@@ -416,6 +416,50 @@ struct GridViewMoreMenuTests {
     #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
   }
 
+  /// IMGMGR-347 ACCEPTANCE PROBE, written RED: before the row existed this failed on the first
+  /// expectation, which is the owner's device finding stated as a test — the More menu had
+  /// nothing that acts on a LOOSE photograph.
+  ///
+  /// Both states are asserted from the SAME row, because the AC is about the row never being
+  /// inert: with nothing focused it is present, disabled, and its own words say what is missing;
+  /// with a loose photograph focused in a folder that has a scene, it is offered.
+  @Test("The absorb row is offered on a loose photograph and states its reason otherwise")
+  func theAbsorbRowIsOfferedOnALoosePhotographAndStatesItsReasonOtherwise() async {
+    let (store, transport, _, _) = makeStore()
+
+    let matches = GridMoreMenu.entries.filter {
+      $0.accessibilityIdentifier == "gridMoreMenu.more.absorbScene"
+    }
+    #expect(matches.count == 1, "the More menu carries no absorb row")
+    guard let entry = matches.first else { return }
+
+    #expect(entry.isEnabled(store) == false, "the absorb row is live with nothing focused")
+    #expect(
+      entry.title(store).localizedCaseInsensitiveContains("loose"),
+      "the disabled row does not say what is missing: '\(entry.title(store))'")
+
+    await loadLooseAbsorbFixture(store, transport)
+    #expect(entry.isEnabled(store), "the absorb row is dead with a loose photograph focused")
+    #expect(entry.title(store) == "Add to scene…")
+  }
+
+  /// IMGMGR-347: a Scene window holding one scene and one LOOSE photograph of the same folder,
+  /// with the focus on the loose photograph — the state the absorb is offered in.
+  private func loadLooseAbsorbFixture(_ store: GridStore, _ transport: GridStubTransport) async {
+    let row = Components.Schemas.StackBrowseStackRow(
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      matchedCount: 3, memberCount: 3, pickedCount: 0, representative: makeImage(id: 1),
+      stackId: 5)
+    await transport.setBrowseStacksPage(
+      .init(
+        items: [
+          .init(value1: nil, value2: row),
+          .init(value1: .init(image: makeImage(id: 20), kind: .image), value2: nil),
+        ], limit: 100))
+    await store.setDisplayMode(.scene)
+    store.focusedImageID = 20
+  }
+
   /// WP14 P4: a Scene window with one open scene and the focus on its SECOND member — the state
   /// in which all three scene-edit rows have a subject (plan Decision 2). Built on the store the
   /// enclosing loop already made, so each entry's probe still runs against its own store.
