@@ -10,7 +10,8 @@ enum ForegroundRefresh {
     isSignedIn: () -> Bool,
     hasSelectedShoot: () -> Bool,
     refreshGrid: () async -> Void,
-    refreshQueue: () async -> Void
+    refreshQueue: () async -> Void,
+    refreshTree: () async -> Void
   ) async {
     await renew()
     guard isSignedIn() else { return }
@@ -21,5 +22,11 @@ enum ForegroundRefresh {
     // and never ahead of a lane-ordered grid refresh that just ran (never publishes
     // pre-mutation summary state afterward).
     await refreshQueue()
+    // IMGMGR-350, checkpoint-2 finding B2: the HOME is the folder tree, and it was the one thing
+    // a resume did not re-read — a folder added, moved or removed while the app was backgrounded
+    // stayed on screen until the reader pulled to refresh. Same position as the queue's own
+    // refresh and for the same reason, in the same order the pull-to-refresh gesture uses
+    // (`QueueHomeRefresh`): summaries, then tree.
+    await refreshTree()
   }
 }

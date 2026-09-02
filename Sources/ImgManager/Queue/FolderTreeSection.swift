@@ -74,7 +74,10 @@ struct FolderTreeSection: View {
           Text("No folders match")
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("folderTreeNoMatches")
-        } else if !isSearching, everyTierIsEmpty {
+        } else if !isSearching,
+          FolderTreeLoadPresentation.showsEmptyLibrary(
+            for: load.phase, everyTierIsEmpty: everyTierIsEmpty)
+        {
           // The queue's own empty state, moved with the home it belonged to (IMGMGR-350 P2):
           // "No shoots" used to key off `QueueSort.sections(from:)` being empty in `QueueView`,
           // which no longer renders anything. A genuinely empty library must still say so, and
@@ -184,7 +187,20 @@ struct FolderTreeSection: View {
       FolderTreePresentation.isExpanded(
         id, readerExpanded: expandedBranches, isSearching: isSearching)
     }
-    if !rows.isEmpty {
+    if !load.answered(tier) {
+      // B3: the tier is a top-level PLACE, so its absence is said where it belongs rather than
+      // only in the summary notice at the top — and never by rendering it as an empty branch.
+      Label(
+        FolderTreeLoadPresentation.tierMessage(for: tier), systemImage: "exclamationmark.triangle"
+      )
+      .foregroundStyle(.secondary)
+      // Combined into ONE element before the identifier is applied: a `Label` publishes its icon
+      // and its text as separate children, and the first gate run found the identifier sitting on
+      // the IMAGE — present, and never hittable, so a walk that looks for the row could not
+      // reach it (`TreeHomeDegradedUITests`).
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("folderTreeTierFailed-\(tier.label)")
+    } else if !rows.isEmpty {
       DisclosureGroup(isExpanded: tierBinding(tier)) {
         // One flat ForEach over the OPEN rows, keyed by each row's own identity — the server's
         // folder id, or a fold's synthetic key — never an index (IMGMGR-210), and never a second
@@ -252,10 +268,18 @@ struct FolderTreeLoad: Equatable, Sendable {
   /// third property, a third fetch branch and a third failure case by hand.
   var foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]] = [:]
 
-  /// What one tier loaded; an empty list where it failed or was genuinely empty — a distinction
-  /// `phase` carries, and this accessor deliberately does not repeat.
+  /// What one tier loaded. Empty where it failed AND where it is genuinely empty, which is why
+  /// `answered(_:)` below exists: the two are different facts and only one of them is "there are
+  /// no folders here".
   func folders(_ tier: FolderTreeTier) -> [Components.Schemas.FolderNode] {
     foldersByTier[tier] ?? []
+  }
+
+  /// Whether this tier ANSWERED at all (checkpoint-2 finding B3). An unknown tier is not an empty
+  /// tier: a folder-load failure used to render as "No shoots" — the copy for a library with
+  /// nothing in it — beside a notice saying the opposite.
+  func answered(_ tier: FolderTreeTier) -> Bool {
+    foldersByTier[tier] != nil
   }
 
   /// The pre-fetch value the view starts from, and the one a retry returns to.
@@ -293,6 +317,18 @@ enum FolderTreeLoadPresentation {
     case .failed, .partiallyFailed: return true
     case .loading, .loaded: return false
     }
+  }
+
+  /// One tier's own line, for the row that stands where its branch would have been (B3).
+  static func tierMessage(for tier: FolderTreeTier) -> String {
+    "\(tier.label) folders could not be loaded."
+  }
+
+  /// Whether the EMPTY-LIBRARY copy may render (B3). Only a load in which every tier answered can
+  /// say "No shoots": with any tier unknown, an empty screen is a missing answer, not an empty
+  /// library.
+  static func showsEmptyLibrary(for phase: FolderTreeLoad.Phase, everyTierIsEmpty: Bool) -> Bool {
+    phase == .loaded && everyTierIsEmpty
   }
 
   /// Deliberately says what could not be LOADED, never why — `GridService` collapses a non-ok

@@ -189,6 +189,42 @@ struct FolderTreeLoadTests {
     #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 6)
   }
 
+  /// Checkpoint-2 finding B3. A tier that did not answer had no way to say so: `folders(_:)`
+  /// mapped a missing tier to an empty array, so a folder-load failure rendered as an empty
+  /// branch — and, with every tier empty, as "No shoots", the copy for a library with nothing in
+  /// it, beside a notice saying the opposite.
+  @Test("a tier that did not answer is not an empty tier")
+  func aTierThatDidNotAnswerIsNotAnEmptyTier() async {
+    let transport = GridStubTransport()
+    await transport.setFolderTree([node(1)], tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
+
+    let load = await FolderTreeLoad.perform(using: makeService(transport))
+
+    #expect(load.phase == .partiallyFailed([.archive]))
+    #expect(load.answered(.incoming))
+    #expect(load.answered(.edits))
+    #expect(!load.answered(.archive))
+    // The rows are still empty — that is exactly why emptiness cannot be the question asked.
+    #expect(load.folders(.archive).isEmpty)
+  }
+
+  /// The other half of B3: the empty-library copy may only appear once every tier has answered.
+  @Test("the empty-library copy waits for every tier to have answered")
+  func theEmptyLibraryCopyWaitsForEveryTierToAnswer() {
+    #expect(FolderTreeLoadPresentation.showsEmptyLibrary(for: .loaded, everyTierIsEmpty: true))
+    #expect(!FolderTreeLoadPresentation.showsEmptyLibrary(for: .loaded, everyTierIsEmpty: false))
+    #expect(
+      !FolderTreeLoadPresentation.showsEmptyLibrary(
+        for: .partiallyFailed([.archive]), everyTierIsEmpty: true))
+    #expect(!FolderTreeLoadPresentation.showsEmptyLibrary(for: .failed, everyTierIsEmpty: true))
+    #expect(
+      FolderTreeLoadPresentation.tierMessage(for: .archive)
+        == "Archive folders could not be loaded.")
+    #expect(
+      FolderTreeLoadPresentation.tierMessage(for: .edits) == "Edits folders could not be loaded.")
+  }
+
   /// The failure surface is not a state the loader keeps to itself: the section renders an error
   /// with a retry path, so both halves are named where a test can read them.
   @Test("A failed phase is what the section renders its error state from")

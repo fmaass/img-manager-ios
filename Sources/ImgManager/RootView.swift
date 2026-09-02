@@ -186,7 +186,11 @@ struct RootView: View {
           isSignedIn: { if case .signedIn = auth.status { true } else { false } },
           hasSelectedShoot: { gridStore.query.folderID != nil },
           refreshGrid: { await gridStore.authoritativeRefresh() },
-          refreshQueue: { await queueStore.refresh() }
+          refreshQueue: { await queueStore.refresh() },
+          // Checkpoint-2 finding B2: the home's own data. The tree load is view state, so the
+          // resume reaches it the same way the pull-to-refresh does — by advancing the token
+          // `FolderTreeSection.task(id:)` keys on.
+          refreshTree: { treeReloadToken += 1 }
         )
       }
     }

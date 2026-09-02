@@ -30,15 +30,12 @@ struct QueueView: View {
 
   var body: some View {
     Group {
-      switch queueStore.phase {
-      case .initialLoading:
+      if QueueHomePresentation.showsFirstLoadSpinner(for: queueStore.phase) {
         // Q3: "first load, no cache -> centered 'Loading shoots…' (never a flash of empty
         // queue)" — this branch is the ONLY place that copy renders.
         ProgressView("Loading shoots…")
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-      case .unreachableNoCache:
-        unreachableFullSurface
-      case .reachable, .unreachableStale:
+      } else if QueueHomePresentation.rendersTree(for: queueStore.phase) {
         listContent
       }
     }
@@ -48,7 +45,7 @@ struct QueueView: View {
 
   private var listContent: some View {
     List(selection: $selectedFolderID) {
-      if case .unreachableStale = queueStore.phase {
+      if QueueHomePresentation.showsDegradedBanner(for: queueStore.phase) {
         Section {
           unreachableBanner
         }
@@ -72,17 +69,6 @@ struct QueueView: View {
     }
   }
 
-  private var unreachableFullSurface: some View {
-    VStack(spacing: 12) {
-      Text(DegradedStateCopy.notConnected)
-        .font(.headline)
-        .multilineTextAlignment(.center)
-      Button("Try Again") { Task { await queueStore.refresh() } }
-    }
-    .padding()
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-  }
-
   /// Two lines, never one: the adjudicated degraded copy, and — whenever the list underneath is
   /// a replayed answer rather than a live one — how old that answer is (IMGMGR-198). Rows stay
   /// tappable in this phase exactly as before; the grid has its own unreachable state.
@@ -101,6 +87,36 @@ struct QueueView: View {
       Button("Try Again") { Task { await queueStore.refresh() } }
         .font(.footnote)
     }
+  }
+}
+
+/// What the tree home renders for one SUMMARIES phase — and, since checkpoint-2 finding B1, what
+/// it does NOT let that phase decide.
+///
+/// The summaries stopped being the home's primary data in IMGMGR-350: the folder tree is, and it
+/// has its own load, its own failure state and its own retry (`FolderTreeLoad`). Letting
+/// `QueueStore.phase` choose the whole surface meant a `/api/folder-summaries` outage blanked a
+/// tree whose own fetch had succeeded — a healthy library, unreachable because a DIFFERENT
+/// endpoint was down. The rule here is the fix, and it is a value so a test reads it rather than
+/// a rendered view.
+enum QueueHomePresentation {
+  /// The centered first-load copy, before there is anything at all to show.
+  static func showsFirstLoadSpinner(for phase: QueueStore.Phase) -> Bool {
+    phase == .initialLoading
+  }
+
+  /// Whether the tree renders. It must, whenever the summaries are not still on their FIRST
+  /// load — including when they failed outright, which degrades what summaries feed (the P3
+  /// badge, the widget) and nothing else.
+  static func rendersTree(for phase: QueueStore.Phase) -> Bool {
+    !showsFirstLoadSpinner(for: phase)
+  }
+
+  /// Whether the degraded notice sits above the tree: whenever the summaries are unreachable,
+  /// cached answer or not. `unreachableBanner` states the cached-since line only when there IS a
+  /// cached fetch time, so one banner covers both.
+  static func showsDegradedBanner(for phase: QueueStore.Phase) -> Bool {
+    phase == .unreachableStale || phase == .unreachableNoCache
   }
 }
 

@@ -45,6 +45,13 @@
         return try jsonResponse(.ok, Self.fixtureStatus())
       case Operations.ExportMarksApiMarksExportGet.id:
         return try jsonResponse(.ok, Self.fixtureMarksExport())
+      case Operations.FolderTreeApiFoldersGet.id
+      where DebugStubLaunch.failArchiveFolders
+        && Self.queryParameters(of: request)["source_tier"] == GridSourceTier.archive.rawValue:
+        // IMGMGR-350 checkpoint-2 (B3): ONE tier unreachable while the others answer — the state
+        // a partial folder-load failure has to render, and the one a fixture that always answers
+        // could never produce.
+        return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderTreeApiFoldersGet.id:
         // IMGMGR-350 P2: the fixture answers PER `(source_tier, tree)`, parsed off the request
         // the real generated client built — the same way the proxy branch below reads its tier
@@ -57,6 +64,10 @@
           Components.Schemas.FolderTree(
             items: Self.fixtureFolders(
               sourceTier: folderQuery["source_tier"], tree: folderQuery["tree"])))
+      case Operations.FolderSummariesApiFolderSummariesGet.id where DebugStubLaunch.failSummaries:
+        // IMGMGR-350 checkpoint-2 (B1): the summaries endpoint down while `/api/folders` is
+        // healthy — the exact split that used to blank the tree home.
+        return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderSummariesApiFolderSummariesGet.id:
         return try jsonResponse(
           .ok, Components.Schemas.FolderSummaryList(items: Self.fixtureSummaries()))
@@ -591,6 +602,20 @@
     /// like all of them, because a Release archive strips this whole file.
     static var startsWithInspectorHidden: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestInspectorHidden")
+    }
+
+    /// IMGMGR-350 checkpoint-2 (B1): an EIGHTH, independent launch argument. The tree home must
+    /// survive a `/api/folder-summaries` outage, and no shipped entry point can produce one — the
+    /// fixture answers everything. Debug-only like every flag here.
+    static var failSummaries: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestFailSummaries")
+    }
+
+    /// IMGMGR-350 checkpoint-2 (B3): a NINTH, on the same terms. One tier of `/api/folders`
+    /// unreachable while the other two answer — "an unknown tier is not an empty tier" has no
+    /// other way to be driven through the real UI.
+    static var failArchiveFolders: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestFailArchiveFolders")
     }
   }
 
