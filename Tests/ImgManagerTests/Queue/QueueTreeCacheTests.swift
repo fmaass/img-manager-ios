@@ -180,6 +180,53 @@ struct QueueTreeCacheTests {
     #expect(await snapshotStore.clearCount == 0)
   }
 
+  /// Checkpoint-3 delta on F4, the narrower window the fold missed: the LIVE subject flips A→B
+  /// while the folder request is in flight and NOTHING has called back into the store yet, so
+  /// `activeSubject` and the generation are both still A's — the fence matched, and A's tree was
+  /// accepted into the in-memory cache B then rendered from. Site 1 (`performLoad`) has always
+  /// re-checked the live `subject()` for exactly this window; acceptance here does the same.
+  @Test("a tree is refused when the LIVE subject flips mid-fetch, before any reset has run")
+  func aTreeIsRefusedWhenTheLiveSubjectFlipsBeforeAnyReset() async {
+    let subject = TreeCacheSubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([summary(1)])
+    await store.loadIfNeeded()
+    let fenceA = store.treeFence()
+
+    // B signs in. No store entry point runs, so `resetIfSubjectChanged()` has NOT happened.
+    subject.value = "user-b"
+
+    await store.rememberTree([.incoming: [node(7)]], fence: fenceA)
+
+    #expect(store.cachedTree == nil)
+    #expect(await snapshotStore.stored?.tree == nil)
+    // Refused, never erased — B's file is not this answer's to destroy.
+    #expect(await snapshotStore.clearCount == 0)
+
+    // And once B's own load runs, there are still no A folders anywhere.
+    await transport.setFolderSummariesResult([summary(2)])
+    await store.refresh()
+    #expect(store.cachedTree == nil)
+    #expect(await snapshotStore.stored?.tree == nil)
+  }
+
+  /// The positive control for the test above: the SAME flow with no flip remembers A's tree.
+  /// Without it, "nothing was written" would prove only that something went wrong.
+  @Test("the same flow without a subject flip remembers the tree")
+  func theSameFlowWithoutAFlipRemembersTheTree() async {
+    let subject = TreeCacheSubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([summary(1)])
+    await store.loadIfNeeded()
+    let fenceA = store.treeFence()
+
+    await store.rememberTree([.incoming: [node(7)]], fence: fenceA)
+
+    #expect(store.cachedTree?.foldersByTier[.incoming]?.map(\.id) == [7])
+    #expect(await snapshotStore.stored?.tree?.foldersByTier["incoming"]?.map(\.id) == [7])
+    #expect(await snapshotStore.stored?.subject == "user-a")
+  }
+
   /// Checkpoint-3 finding F5. A tree save that captured generation G and suspended past a
   /// summaries save at G+1 used to call `clear()` on the mismatch — wiping the NEWER combined
   /// snapshot it had just been overtaken by. A stale write is dropped; only a sign-out or an
