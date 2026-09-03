@@ -38,6 +38,58 @@ final class QueueStore {
   /// When the currently displayed `summaries` were fetched FROM THE SERVER — the timestamp the
   /// stale banner labels a replayed cache with. Never a "cache was read" time.
   private(set) var lastFetchedAt: Date?
+  /// IMGMGR-350 P4: the FOLDER TREE's last answer, replayed for the home the way the summaries
+  /// already are. It lives here rather than beside the view's own `FolderTreeLoad` because the
+  /// lifetime is this store's: the subject that keyed it, the server it came from, the generation
+  /// that fences a dead session's answer, and the erase hook that destroys it on sign-out.
+  /// The remembered tree — and only while it still belongs to whoever is signed in NOW. The
+  /// stored value carries the subject it was fetched for, so a session that changed with no store
+  /// entry point having run yet (the window `resetIfSubjectChanged` has not closed) cannot render
+  /// the previous account's folders in the meantime; `resetState` drops it outright.
+  var cachedTree: CachedTree? {
+    guard let treeCache, treeCache.subject == subject() else { return nil }
+    return treeCache
+  }
+
+  private var treeCache: CachedTree?
+
+  /// One replayed tree: the rows per browse tier, and when the server said them.
+  struct CachedTree: Equatable, Sendable {
+    var foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]]
+    var fetchedAt: Date
+    /// The account it was fetched for — the same key the persisted snapshot carries, so the
+    /// in-memory half cannot outlive the file's own rule.
+    var subject: String
+  }
+
+  /// Checkpoint-3 finding F4: what a tree fetch was started under, so what comes back can be
+  /// checked against what is true now. The subject and the server are what make a cache
+  /// legitimate at all; the generation is what a sign-out, an account switch or a newer load
+  /// advances. Captured BEFORE the request leaves — the same discipline `performLoad` already
+  /// applies to the summaries — and refused at save time if any of the three moved.
+  struct TreeFence: Equatable, Sendable {
+    var subject: String?
+    var baseURL: String
+    var generation: Int
+  }
+
+  /// The fence as it stands right now.
+  func treeFence() -> TreeFence {
+    TreeFence(subject: activeSubject, baseURL: baseURL, generation: loadGeneration)
+  }
+
+  /// The ONE acceptance rule for anything coming back from the network, shared by the summaries
+  /// publication and the tree's write so the two cannot drift apart.
+  ///
+  /// The live `subject()` is the load-bearing third term (checkpoint-3 delta): `activeSubject`
+  /// and the generation only move when a store entry point runs, so a session that changed while
+  /// a request was in flight leaves both still matching the OLD fence — and the answer that
+  /// belongs to the account that just left is accepted. Reading the live subject is what closes
+  /// that window; it is the check `performLoad` has always made and `rememberTree` did not.
+  private func accepts(_ fence: TreeFence) -> Bool {
+    fence.generation == loadGeneration && activeSubject == fence.subject
+      && subject() == fence.subject && fence.baseURL == baseURL
+  }
 
   private let service: QueueService
   private let snapshotStore: any QueueSnapshotPersisting
@@ -151,6 +203,9 @@ final class QueueStore {
     debounceTask = nil
     summaries = []
     lastFetchedAt = nil
+    // P4: BOTH sections go. A sign-out that took the summaries and left the folder names of the
+    // account that just left would be the same leak, one screen over.
+    treeCache = nil
     phase = .initialLoading
     isRefreshing = false
     hasLoadedSuccessfullyOnce = false
@@ -167,12 +222,69 @@ final class QueueStore {
     let generation = loadGeneration
     guard let snapshot = await snapshotStore.load() else { return }
     guard generation == loadGeneration, !hasLoadedSuccessfullyOnce else { return }
-    guard snapshot.subject == activeSubject, snapshot.baseURL == baseURL,
-      !snapshot.summaries.isEmpty
-    else { return }
-    summaries = snapshot.summaries
-    lastFetchedAt = snapshot.fetchedAt
-    phase = .unreachableStale
+    // The two guards that make a replay legitimate at all — same account, same server — apply to
+    // the WHOLE file; emptiness is then asked per section, so a snapshot with a tree and no
+    // summaries replays the tree without claiming a stale queue nobody cached.
+    guard snapshot.subject == activeSubject, snapshot.baseURL == baseURL else { return }
+    if !snapshot.summaries.isEmpty {
+      summaries = snapshot.summaries
+      lastFetchedAt = snapshot.fetchedAt
+      phase = .unreachableStale
+    }
+    if let tree = snapshot.tree {
+      treeCache = CachedTree(
+        foldersByTier: QueueStore.tiers(from: tree.foldersByTier), fetchedAt: tree.fetchedAt,
+        subject: snapshot.subject)
+    }
+  }
+
+  /// P4: remember the tree's latest live answer. Written as ONE whole snapshot through the single
+  /// `save` — never a read-modify-write inside the actor — so a tree write cannot drop a
+  /// just-written summaries section, and the actor serializes the writes themselves.
+  func rememberTree(
+    _ foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]], fence: TreeFence
+  ) async {
+    // F4: the fence the FETCH started under, compared with what is true now — the store's own
+    // generation and subject AND the live one, through the same rule site 1 applies. A response
+    // that outlived its session is dropped in silence: never published, never written under
+    // whoever is signed in now, and never used to clear anything either.
+    guard let fenceSubject = fence.subject, accepts(fence) else { return }
+    let fetchedAt = now()
+    treeCache = CachedTree(
+      foldersByTier: foldersByTier, fetchedAt: fetchedAt, subject: fenceSubject)
+    await snapshotStore.save(
+      QueueSnapshot(
+        summaries: summaries, fetchedAt: lastFetchedAt ?? fetchedAt, baseURL: baseURL,
+        subject: fenceSubject, tree: currentTreeSection()))
+    // F5: the write is a suspension point. If the SUBJECT went away or changed while it ran, this
+    // file belongs to a session that is over and clearing it is the erase path's own job, done
+    // here because that window closes after the write. If only the generation moved, a NEWER save
+    // has already landed — clearing would wipe it, so the stale write is simply forgotten.
+    if activeSubject != fenceSubject || subject() != fenceSubject {
+      await snapshotStore.clear()
+    }
+  }
+
+  /// The persisted shape of whatever tree this store currently holds.
+  private func currentTreeSection() -> QueueSnapshot.TreeSection? {
+    guard let cachedTree = treeCache else { return nil }
+    return QueueSnapshot.TreeSection(
+      foldersByTier: Dictionary(
+        cachedTree.foldersByTier.map { ($0.key.rawValue, $0.value) },
+        uniquingKeysWith: { _, latest in latest }),
+      fetchedAt: cachedTree.fetchedAt)
+  }
+
+  /// The stored keys back as tiers, dropping any this build does not know.
+  private static func tiers(
+    from stored: [String: [Components.Schemas.FolderNode]]
+  ) -> [FolderTreeTier: [Components.Schemas.FolderNode]] {
+    var result: [FolderTreeTier: [Components.Schemas.FolderNode]] = [:]
+    for (key, value) in stored {
+      guard let tier = FolderTreeTier(rawValue: key) else { continue }
+      result[tier] = value
+    }
+    return result
   }
 
   private func performLoad() async {
@@ -194,8 +306,9 @@ final class QueueStore {
     let requestSubject = activeSubject
     do {
       let result = try await service.summaries()
-      guard generation == loadGeneration, activeSubject == requestSubject,
-        subject() == requestSubject
+      // The same three-way rule the tree's write applies, from the same place (checkpoint-3
+      // delta): identical by construction rather than by two copies staying in step.
+      guard accepts(TreeFence(subject: requestSubject, baseURL: baseURL, generation: generation))
       else { return }
       let fetchedAt = now()
       summaries = result
@@ -207,14 +320,18 @@ final class QueueStore {
       if let activeSubject {
         await snapshotStore.save(
           QueueSnapshot(
-            summaries: result, fetchedAt: fetchedAt, baseURL: baseURL, subject: activeSubject))
+            summaries: result, fetchedAt: fetchedAt, baseURL: baseURL, subject: activeSubject,
+            // P4, the other direction of the same rule: the summaries' own write carries the tree
+            // section forward, so neither of the home's two answers can drop the other.
+            tree: currentTreeSection()))
         // The write is itself a suspension point, so the guard above cannot be the last word: an
         // erasure landing between it and the write completing would leave this store having just
         // resurrected the file the sign-out removed. Re-read the fence AFTER the write — the
         // first moment that is knowable — and undo it.
-        if generation != loadGeneration || self.activeSubject != requestSubject
-          || subject() != requestSubject
-        {
+        // The same rule as `rememberTree`'s (checkpoint-3 F5, applied to this site of the class):
+        // a subject that changed or vanished is a session whose file must go; a generation that
+        // merely advanced is a newer save that must NOT be wiped by an older one's epilogue.
+        if self.activeSubject != requestSubject || subject() != requestSubject {
           await snapshotStore.clear()
         }
       }
@@ -225,8 +342,7 @@ final class QueueStore {
     } catch {
       // The same fence on the failure path: a dead session's failure is not this session's
       // degraded state either.
-      guard generation == loadGeneration, activeSubject == requestSubject,
-        subject() == requestSubject
+      guard accepts(TreeFence(subject: requestSubject, baseURL: baseURL, generation: generation))
       else { return }
       // "No cache" vs "stale data" (Q3) is read off whether there is anything to retain, not
       // off `hasLoadedSuccessfullyOnce` alone — a successful-but-empty prior fetch has no cards

@@ -45,8 +45,35 @@
         return try jsonResponse(.ok, Self.fixtureStatus())
       case Operations.ExportMarksApiMarksExportGet.id:
         return try jsonResponse(.ok, Self.fixtureMarksExport())
+      case Operations.FolderTreeApiFoldersGet.id
+      where DebugStubLaunch.failArchiveFolders
+        && Self.queryParameters(of: request)["source_tier"] == GridSourceTier.archive.rawValue:
+        // IMGMGR-350 checkpoint-2 (B3): ONE tier unreachable while the others answer — the state
+        // a partial folder-load failure has to render, and the one a fixture that always answers
+        // could never produce.
+        return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderTreeApiFoldersGet.id:
-        return try jsonResponse(.ok, Components.Schemas.FolderTree(items: Self.fixtureFolders()))
+        // IMGMGR-350 P2: the fixture answers PER `(source_tier, tree)`, parsed off the request
+        // the real generated client built — the same way the proxy branch below reads its tier
+        // out of `request.path`. Until this phase it returned ONE taxonomy whatever was asked,
+        // so the three tier branches would have repeated each other and a tier walk could have
+        // passed against a shape the API never returns.
+        let folderQuery = Self.queryParameters(of: request)
+        return try jsonResponse(
+          .ok,
+          Components.Schemas.FolderTree(
+            items: Self.fixtureFolders(
+              sourceTier: folderQuery["source_tier"], tree: folderQuery["tree"])))
+      case Operations.FolderSummariesApiFolderSummariesGet.id where DebugStubLaunch.hangSummaries:
+        // IMGMGR-350 checkpoint-3 (F1): the summaries never answer, so `QueueStore` STAYS in its
+        // first-load phase. That is the state that used to hold the whole home behind a spinner
+        // while the folder tree beside it was loaded and ready.
+        try? await Task.sleep(nanoseconds: 600_000_000_000)
+        return (HTTPResponse(status: .internalServerError), nil)
+      case Operations.FolderSummariesApiFolderSummariesGet.id where DebugStubLaunch.failSummaries:
+        // IMGMGR-350 checkpoint-2 (B1): the summaries endpoint down while `/api/folders` is
+        // healthy — the exact split that used to blank the tree home.
+        return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderSummariesApiFolderSummariesGet.id:
         return try jsonResponse(
           .ok, Components.Schemas.FolderSummaryList(items: Self.fixtureSummaries()))
@@ -124,6 +151,17 @@
       default:
         return (HTTPResponse(status: .notFound), nil)
       }
+    }
+
+    /// The request's query as name → value. `request.path` carries the path AND the query (the
+    /// proxy branch reads the path half of the same string), so one parse answers both.
+    private static func queryParameters(of request: HTTPRequest) -> [String: String] {
+      guard let path = request.path, let items = URLComponents(string: path)?.queryItems else {
+        return [:]
+      }
+      return Dictionary(
+        items.compactMap { item in item.value.map { (item.name, $0) } },
+        uniquingKeysWith: { first, _ in first })
     }
 
     private func jsonResponse<T: Encodable>(
@@ -352,63 +390,120 @@
     /// The counts are deliberately NOT self-consistent sums: `2026` reports 12 descendants while
     /// its visible child reports 9 of its own. A client that rolled the numbers up itself would
     /// show a different figure here, which is the point.
-    private static func fixtureFolders() -> [Components.Schemas.FolderNode] {
-      [
-        .init(
-          descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated",
-          name: "2026-08-27 — Stub Shoot", path: "stub"),
-        .init(
-          descendantImageCount: 12, id: 2, imageCount: 0, kind: "other", name: "2026",
-          path: "2026"),
-        .init(
-          descendantImageCount: 12, id: 3, imageCount: 9, kind: "dated",
-          name: "2026-09-14 — Wandern", parentId: 2, path: "2026/2026-09-14-wandern"),
-        .init(
-          descendantImageCount: 3, id: 4, imageCount: 3, kind: "template", name: "template",
-          parentId: 3, path: "2026/2026-09-14-wandern/template"),
-      ]
+    /// IMGMGR-350 P2: SCOPED like the real endpoint. `/api/folders` answers per
+    /// `(source_tier, tree)` (img-manager `app/api/folders.py:33-59`), and the three browse tiers
+    /// are `(local, photo_incoming)`, `(local, photo_edits)` and `(archive, —)`. Internal rather
+    /// than private so `DebugStubFolderFixtureTests` can read the same three answers the app does.
+    static func fixtureFolders(sourceTier: String?, tree: String?)
+      -> [Components.Schemas.FolderNode]
+    {
+      if sourceTier == GridSourceTier.archive.rawValue { return archiveFixtureFolders }
+      if tree == FolderTreeTier.edits.treePrefix { return editsFixtureFolders }
+      return incomingFixtureFolders
     }
 
-    private static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
+    /// The incoming tier, live-shaped: ONE indexed root row (`photo_incoming`, which the tier-root
+    /// hoist then drops, so the rows on screen are unchanged) over the shape the shipped tree
+    /// tests walk — a root-level shoot (`folderRow-1`) beside the `2026` container whose child
+    /// shoot carries a `template` subfolder. IMGMGR-350 adds the SECOND dated child, so the year
+    /// has two shoots in one month for the fold to fold.
+    private static let incomingFixtureFolders: [Components.Schemas.FolderNode] = [
+      .init(
+        descendantImageCount: 12, id: 9, imageCount: 0, kind: "other", name: "photo_incoming",
+        path: "photo_incoming"),
+      .init(
+        descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated",
+        name: "2026-08-27 — Stub Shoot", parentId: 9, path: "photo_incoming/stub"),
+      .init(
+        descendantImageCount: 12, id: 2, imageCount: 0, kind: "other", name: "2026", parentId: 9,
+        path: "photo_incoming/2026"),
+      .init(
+        descendantImageCount: 12, id: 3, imageCount: 9, kind: "dated",
+        name: "2026-09-14 — Wandern", parentId: 2, path: "photo_incoming/2026/2026-09-14-wandern"),
+      .init(
+        descendantImageCount: 3, id: 4, imageCount: 3, kind: "template", name: "template",
+        parentId: 3, path: "photo_incoming/2026/2026-09-14-wandern/template"),
+      .init(
+        descendantImageCount: 6, id: 5, imageCount: 6, kind: "dated", name: "2026-09-27 — Ufer",
+        parentId: 2, path: "photo_incoming/2026/2026-09-27-ufer"),
+    ]
+
+    /// The edits tier: its own root row and its own shoot, no id shared with any other tier —
+    /// `edits` is the SAME store as incoming, told apart only by the `tree` prefix, so a fixture
+    /// that answered one taxonomy for both would have hidden exactly that.
+    private static let editsFixtureFolders: [Components.Schemas.FolderNode] = [
+      .init(
+        descendantImageCount: 7, id: 10, imageCount: 0, kind: "other", name: "photo_edits",
+        path: "photo_edits"),
+      .init(
+        descendantImageCount: 7, id: 11, imageCount: 7, kind: "dated",
+        name: "2026-08-02 — Edits Pass", parentId: 10, path: "photo_edits/2026-08-02-edits-pass"),
+    ]
+
+    /// The archive tier: one REAL shoot with a nonzero count, beside one MIRRORED folder counting
+    /// zero — the archive's counts drop every image the archive view hides, so a folder fully
+    /// mirrored by the incoming library reports 0 (`app/api/folders.py:49-51`). IMGMGR-350 runs no
+    /// prune, so that row stays visible; it is the control proving so, and the oracle the
+    /// follow-up prune ticket (under IMGMGR-322) will invert.
+    private static let archiveFixtureFolders: [Components.Schemas.FolderNode] = [
+      .init(
+        descendantImageCount: 4, id: 20, imageCount: 0, kind: "other", name: "2025", path: "2025"),
+      .init(
+        descendantImageCount: 4, id: 21, imageCount: 4, kind: "dated",
+        name: "2025-12-24 — Archive Shoot", parentId: 20, path: "2025/2025-12-24-archive-shoot"),
+      .init(
+        descendantImageCount: 0, id: 22, imageCount: 0, kind: "dated",
+        name: "2025-11-01 — Mirrored", parentId: 20, path: "2025/2025-11-01-mirrored"),
+    ]
+
+    /// IMGMGR-350 P3: every row's `folderId` is a folder the TREE renders — ids 1/3/5 (incoming),
+    /// 11 (edits) and 21/22 (archive) — because the badge is a `folder_id` join and a summary for
+    /// a folder that is not on screen renders nothing. They used to be 101-106, which intersected
+    /// the tree nowhere, so the join would have been empty on every row. Readiness values, counts
+    /// and the deliberate contradictions between them are unchanged; `sourceTier` follows the
+    /// folder's own store. Internal, not private, so `DebugStubFolderFixtureTests` can prove the
+    /// join lands.
+    static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
       [
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 25, decided: 12, disliked: 2, edited: 5, folderId: 101,
+          cameraPreviewOnly: 25, decided: 12, disliked: 2, edited: 5, folderId: 1,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_421_712),
-          nothingLeftUnmarked: false, path: "photo_edits/2026/2026-08-13-1", picked: 10,
+          nothingLeftUnmarked: false, path: "photo_incoming/stub", picked: 10,
           previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
           sourceTier: "local", sync: .init(never: 3, refused: 1, stale: 2, synced: 5), total: 40,
           unmarked: 28, withMasters: 15),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 60, decided: 0, disliked: 0, edited: 0, folderId: 102,
+          cameraPreviewOnly: 60, decided: 0, disliked: 0, edited: 0, folderId: 21,
           kind: "dated_split", lastTouched: Date(timeIntervalSince1970: 1_755_508_112),
-          nothingLeftUnmarked: false, path: "photo_edits/2026/2026-08-14-1", picked: 0,
+          nothingLeftUnmarked: false, path: "2025/2025-12-24-archive-shoot", picked: 0,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 3, stale: 0, synced: 0),
           total: 60, unmarked: 60, withMasters: 0),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 12, decided: 5, disliked: 1, edited: 3, folderId: 103, kind: "dated",
-          lastTouched: nil, nothingLeftUnmarked: true, path: "photo_edits/2026/2026-08-15-1",
+          cameraPreviewOnly: 12, decided: 5, disliked: 1, edited: 3, folderId: 3, kind: "dated",
+          lastTouched: nil, nothingLeftUnmarked: true,
+          path: "photo_incoming/2026/2026-09-14-wandern",
           picked: 4, previewOutstanding: 8, readiness: .init(rawValue: "sync_problem")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 7, synced: 0), total: 12,
           unmarked: 7, withMasters: 4),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 0, decided: 32, disliked: 4, edited: 20, folderId: 104,
+          cameraPreviewOnly: 0, decided: 32, disliked: 4, edited: 20, folderId: 11,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_594_512),
-          nothingLeftUnmarked: true, path: "photo_edits/2026/2026-08-16-1", picked: 28,
+          nothingLeftUnmarked: true, path: "photo_edits/2026-08-02-edits-pass", picked: 28,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_for_editing")!,
           sourceTier: "local", sync: .init(never: 32, refused: 0, stale: 0, synced: 0), total: 32,
           unmarked: 0, withMasters: 32),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 255, decided: 0, disliked: 0, edited: 0, folderId: 105,
+          cameraPreviewOnly: 255, decided: 0, disliked: 0, edited: 0, folderId: 22,
           kind: "dated_split", lastTouched: Date(timeIntervalSince1970: 1_755_680_912),
-          nothingLeftUnmarked: false, path: "photo_edits/2026/2026-08-17-1", picked: 0,
+          nothingLeftUnmarked: false, path: "2025/2025-11-01-mirrored", picked: 0,
           previewOutstanding: 255, readiness: .init(rawValue: "needs_previews")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 0, stale: 0, synced: 12),
           total: 255, unmarked: 255, withMasters: 0),
         Components.Schemas.FolderSummary(
-          cameraPreviewOnly: 18, decided: 18, disliked: 3, edited: 10, folderId: 106,
+          cameraPreviewOnly: 18, decided: 18, disliked: 3, edited: 10, folderId: 5,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_767_312),
-          nothingLeftUnmarked: true, path: "photo_edits/2025/2025-12-24-1", picked: 15,
+          nothingLeftUnmarked: true, path: "photo_incoming/2026/2026-09-27-ufer", picked: 15,
           previewOutstanding: 0, readiness: .init(rawValue: "historical_unreviewed")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 0, synced: 0), total: 18,
           unmarked: 0, withMasters: 18),
@@ -521,6 +616,27 @@
     /// like all of them, because a Release archive strips this whole file.
     static var startsWithInspectorHidden: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestInspectorHidden")
+    }
+
+    /// IMGMGR-350 checkpoint-2 (B1): an EIGHTH, independent launch argument. The tree home must
+    /// survive a `/api/folder-summaries` outage, and no shipped entry point can produce one — the
+    /// fixture answers everything. Debug-only like every flag here.
+    static var failSummaries: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestFailSummaries")
+    }
+
+    /// IMGMGR-350 checkpoint-3 (F1): a TENTH, on the same terms — `/api/folder-summaries` that
+    /// never answers, holding the summaries in their first-load phase for as long as the test
+    /// needs. A failing endpoint could not produce this: it answers, and the phase moves on.
+    static var hangSummaries: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestHangSummaries")
+    }
+
+    /// IMGMGR-350 checkpoint-2 (B3): a NINTH, on the same terms. One tier of `/api/folders`
+    /// unreachable while the other two answer — "an unknown tier is not an empty tier" has no
+    /// other way to be driven through the real UI.
+    static var failArchiveFolders: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestFailArchiveFolders")
     }
   }
 

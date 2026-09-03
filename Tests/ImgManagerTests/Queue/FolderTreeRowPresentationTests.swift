@@ -25,6 +25,68 @@ struct FolderTreeRowPresentationTests {
       children: children)
   }
 
+  /// A summary as the server sends one, with the two fields these tests care about spelled at
+  /// the call site: which folder it is about, and what readiness the SERVER put on it.
+  private func summary(
+    folderId: Int, readiness: String, decided: Int = 0, unmarked: Int = 0,
+    previewOutstanding: Int = 0
+  ) -> Components.Schemas.FolderSummary {
+    Components.Schemas.FolderSummary(
+      cameraPreviewOnly: 0, decided: decided, disliked: 0, edited: 0, folderId: folderId,
+      kind: "dated", lastTouched: nil, nothingLeftUnmarked: unmarked == 0, path: "p\(folderId)",
+      picked: 0, previewOutstanding: previewOutstanding,
+      readiness: .init(rawValue: readiness)!, sourceTier: "local", sync: nil,
+      total: decided + unmarked, unmarked: unmarked, withMasters: 0)
+  }
+
+  /// IMGMGR-350 P3. The badge says what the server said, in the one string table the queue
+  /// sections and the widget already share — it derives NOTHING. The fixture below makes the
+  /// counts contradict the served value on purpose: everything decided, nothing left unmarked and
+  /// no previews outstanding, under a served `needs_previews`. A client that recomputed readiness
+  /// from counts would say "Ready for editing" here and fail.
+  @Test("the readiness badge renders the SERVED value, never one derived from the counts")
+  func theReadinessBadgeRendersTheServedValue() {
+    let shoot = node(id: 60, kind: "dated", descendant: 12, own: 12)
+    let index = FolderTreeRowPresentation.index([
+      summary(folderId: 60, readiness: "needs_previews", decided: 12, unmarked: 0)
+    ])
+
+    #expect(
+      FolderTreeRowPresentation.readinessBadge(for: shoot, summaries: index) == "Needs previews")
+  }
+
+  /// The two absences, both of which a badge that invented a default would break: a shoot the
+  /// summaries say nothing about, and a container — which is not a shoot, has no summary row of
+  /// its own, and must not borrow one.
+  @Test("no summary means no badge, and a container never carries one")
+  func aFolderWithoutASummaryCarriesNoBadge() {
+    let unlisted = node(id: 61, kind: "dated", descendant: 3, own: 3)
+    let container = node(id: 2, kind: "other", descendant: 12, own: 0)
+    let index = FolderTreeRowPresentation.index([
+      summary(folderId: 60, readiness: "review_in_progress"),
+      // Even with a row keyed to the CONTAINER's id, a container states nothing: readiness is a
+      // shoot's state, and `ShootListFilter` stays the single definition of which rows are shoots.
+      summary(folderId: 2, readiness: "ready_to_review"),
+    ])
+
+    #expect(FolderTreeRowPresentation.readinessBadge(for: unlisted, summaries: index) == nil)
+    #expect(FolderTreeRowPresentation.readinessBadge(for: container, summaries: index) == nil)
+  }
+
+  /// The join table itself, and the badge's own handle.
+  @Test("the summaries index is keyed by folder_id, and the badge handle by the same id")
+  func theIndexIsKeyedByFolderID() {
+    let index = FolderTreeRowPresentation.index([
+      summary(folderId: 7, readiness: "sync_problem"),
+      summary(folderId: 9, readiness: "historical_unreviewed"),
+    ])
+
+    #expect(Set(index.keys) == [7, 9])
+    #expect(index[7]?.readiness.rawValue == "sync_problem")
+    #expect(FolderTreeRowPresentation.readinessIdentifier(for: 7) == "folderReadiness-7")
+    #expect(FolderTreeRowPresentation.readinessIdentifier(for: 42) == "folderReadiness-42")
+  }
+
   @Test("only shoot rows get a cover and a subline — a container keeps its trailing count")
   func coverAndSublineAreShootOnly() {
     let shoot = node(id: 60, kind: "dated", descendant: 12, own: 12)

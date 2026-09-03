@@ -15,6 +15,22 @@ struct QueueSnapshot: Codable, Equatable, Sendable {
   var fetchedAt: Date
   var baseURL: String
   var subject: String
+  /// IMGMGR-350 P4: the folder TREE's last answer, in the SAME file under the same subject, the
+  /// same server and the same erase path. A sibling store would be a second lifetime to keep in
+  /// step — the sign-out erasure, the generation fence and the subject guard would each have to
+  /// remember both — so the home's two answers are one value.
+  ///
+  /// Optional because a file written before this section existed must still decode: an old
+  /// snapshot replays its summaries and simply has no tree.
+  var tree: TreeSection?
+
+  /// One answer per browse tier, keyed by `FolderTreeTier.rawValue` rather than by the type
+  /// itself — a decode then never depends on a Swift case name, and a key this build does not
+  /// know is a tier it does not render rather than a decode failure that loses the whole file.
+  struct TreeSection: Codable, Equatable, Sendable {
+    var foldersByTier: [String: [Components.Schemas.FolderNode]]
+    var fetchedAt: Date
+  }
 }
 
 /// The persistence seam `QueueStore` depends on. Failures are absorbed here, never surfaced:

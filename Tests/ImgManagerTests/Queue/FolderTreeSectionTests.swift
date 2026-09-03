@@ -46,31 +46,11 @@ struct FolderTreeSectionTests {
     #expect(compact.map(\.id) == regular3.map(\.id))
   }
 
-  @Test("the Folders disclosure opens itself on Compact and stays collapsed on Regular")
-  func foldersDisclosureOpensOnCompactOnly() {
-    #expect(FolderTreePresentation.startsExpanded(in: .compact))
-    #expect(!FolderTreePresentation.startsExpanded(in: .regular2))
-    #expect(!FolderTreePresentation.startsExpanded(in: .regular3))
-  }
-
-  /// Diff-gate round 1, blocker 1. `RootView.layoutMode` is `.compact` until the first
-  /// `.onGeometryChange` pass resolves it (`RootView.swift:28`), and this section mounts before
-  /// that — so an expansion frozen at mount time makes an iPad launch open the secondary tree,
-  /// against D13. The state model must answer from the CURRENT mode until the reader has chosen.
-  @Test("a Regular launch never inherits the transient Compact default")
-  func regularLaunchStaysCollapsedThroughTheUnresolvedCompactDefault() {
-    var expansion = FolderTreeExpansion()
-    #expect(expansion.isExpanded(in: .compact))
-    #expect(!expansion.isExpanded(in: .regular2))
-    #expect(!expansion.isExpanded(in: .regular3))
-
-    // And once the reader has chosen, the choice wins in every mode — a resize must not stomp it.
-    expansion.setExpanded(true)
-    #expect(expansion.isExpanded(in: .regular2))
-    #expect(expansion.isExpanded(in: .regular3))
-    expansion.setExpanded(false)
-    #expect(!expansion.isExpanded(in: .compact))
-  }
+  // IMGMGR-350 removed two pins with the thing they pinned: `FolderTreePresentation
+  // .startsExpanded` and `FolderTreeExpansion` decided whether the "Folders" WRAPPER disclosure
+  // opened (D13: opened on Compact, collapsed on Regular). The wrapper is gone — the tree is the
+  // home on both idioms, so its tier rows are always on screen and there is no mode-dependent
+  // default left to inherit. `TierHomeUITests` is what asserts they are.
 
   /// P7 (IMGMGR-217): the tree now carries the WHOLE folder hierarchy, so the rows that navigate
   /// have to be distinguishable from the rows that merely expand. `ShootListFilter` stays the one
@@ -91,9 +71,20 @@ struct FolderTreeSectionTests {
   /// the only thing that opens a branch.
   @Test("a live search opens the branches it kept, and the reader rules otherwise")
   func searchOpensTheBranchesItKept() {
-    #expect(!FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: false))
-    #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [7], isSearching: false))
-    #expect(FolderTreePresentation.isExpanded(7, readerExpanded: [], isSearching: true))
+    #expect(
+      !FolderTreePresentation.isExpanded(.folder(7), readerExpanded: [], isSearching: false))
+    #expect(
+      FolderTreePresentation.isExpanded(
+        .folder(7), readerExpanded: [.folder(7)], isSearching: false))
+    #expect(FolderTreePresentation.isExpanded(.folder(7), readerExpanded: [], isSearching: true))
+    // A month fold opens on the same rule and by the same reader choice — it is a branch, and
+    // the only thing it is not is selectable.
+    #expect(
+      FolderTreePresentation.isExpanded(
+        .month("2:2026-09"), readerExpanded: [.month("2:2026-09")], isSearching: false))
+    #expect(
+      !FolderTreePresentation.isExpanded(
+        .month("2:2026-09"), readerExpanded: [.folder(2)], isSearching: false))
   }
 }
 
@@ -114,7 +105,7 @@ struct FolderTreeLoadTests {
     .init(id: id, kind: "dated", name: "n\(id)", path: "p\(id)")
   }
 
-  @Test("Both tiers unreachable is a FAILED disclosure, never a silent empty list")
+  @Test("Every tier unreachable is a FAILED disclosure, never a silent empty list")
   func bothTiersFailingIsAVisibleFailure() async {
     let transport = GridStubTransport()
     await transport.setFoldersShouldFail(true, tier: GridSourceTier.local.rawValue)
@@ -123,8 +114,26 @@ struct FolderTreeLoadTests {
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
     #expect(load.phase == .failed)
-    #expect(load.localFolders.isEmpty)
-    #expect(load.archiveFolders.isEmpty)
+    #expect(load.folders(.incoming).isEmpty)
+    #expect(load.folders(.edits).isEmpty)
+    #expect(load.folders(.archive).isEmpty)
+  }
+
+  /// IMGMGR-350 P1's third branch, pinned on the WIRE rather than on a call count: `edits` and
+  /// `incoming` are the same store, so only the `tree` prefix tells the two requests apart
+  /// (img-manager `app/api/folders.py:38`, `:54`). A load that fetched the local tree twice under
+  /// the same query — or that dropped `tree` back to nil, as this method did before 350 — cannot
+  /// pass.
+  @Test("the tree is loaded once per browse tier, each naming its own (source_tier, tree)")
+  func eachBrowseTierIsItsOwnScopedRequest() async {
+    let transport = GridStubTransport()
+
+    _ = await FolderTreeLoad.perform(using: makeService(transport))
+
+    let queries = await transport.recordedFolderQueries
+    #expect(queries.count == 3)
+    #expect(queries.map { $0["source_tier"] } == ["local", "local", "archive"])
+    #expect(queries.map { $0["tree"] } == ["photo_incoming", "photo_edits", nil])
   }
 
   /// Stated positively first, so the assertion above cannot pass by a load that calls everything
@@ -136,7 +145,9 @@ struct FolderTreeLoadTests {
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
     #expect(load.phase == .loaded)
-    #expect(load.localFolders.isEmpty)
+    #expect(load.folders(.incoming).isEmpty)
+    #expect(load.folders(.edits).isEmpty)
+    #expect(load.folders(.archive).isEmpty)
   }
 
   @Test("One tier unreachable still shows the other's rows, flagged as partial")
@@ -147,9 +158,13 @@ struct FolderTreeLoadTests {
 
     let load = await FolderTreeLoad.perform(using: makeService(transport))
 
-    #expect(load.phase == .partiallyFailed(.archive))
-    #expect(load.localFolders.map(\.id) == [1, 2])
-    #expect(load.archiveFolders.isEmpty)
+    #expect(load.phase == .partiallyFailed([.archive]))
+    // The stub answers per `source_tier`, so both local-store tiers see the rows it was given —
+    // what this pins is that a tier that ANSWERED keeps its rows while the one that failed is
+    // named, not that the fixture tells incoming and edits apart.
+    #expect(load.folders(.incoming).map(\.id) == [1, 2])
+    #expect(load.folders(.edits).map(\.id) == [1, 2])
+    #expect(load.folders(.archive).isEmpty)
   }
 
   @Test("Retry after a failure re-fetches and recovers")
@@ -168,9 +183,109 @@ struct FolderTreeLoadTests {
     let recovered = await FolderTreeLoad.perform(using: service)
 
     #expect(recovered.phase == .loaded)
-    #expect(recovered.localFolders.map(\.id) == [9])
-    // Four calls: two that failed, two that recovered — the retry really re-fetched.
-    #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 4)
+    #expect(recovered.folders(.incoming).map(\.id) == [9])
+    // Six calls: three that failed, three that recovered — the retry really re-fetched, once per
+    // browse tier (IMGMGR-350 P1 made them three).
+    #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 6)
+  }
+
+  /// Checkpoint-3 finding F3, the ordering it is about, driven for real: two loads overlap and
+  /// the OLDER one resolves LAST. Both used to be written in the order they landed, so the older
+  /// answer won; the gate drops it because its generation is no longer current.
+  @Test("an older tree load resolving last is dropped, and the newer answer stands")
+  func anOlderTreeLoadResolvingLastIsDropped() async {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    await transport.setFolderTree([node(1)], tier: GridSourceTier.local.rawValue)
+    await transport.holdFolderRequests(true)
+
+    let older = Task { await FolderTreeLoad.perform(using: service) }
+    await transport.waitUntilFolderRequestStarted()
+    // The server's answer changes, and a NEWER load takes it while the older one is still held.
+    await transport.setFolderTree([node(2)], tier: GridSourceTier.local.rawValue)
+    await transport.holdFolderRequests(false)
+    let newer = await FolderTreeLoad.perform(using: service)
+    await transport.releaseFolderRequests()
+    let stale = await older.value
+
+    // Both really carry what they fetched — the older one is not merely late, it is WRONG now.
+    #expect(stale.folders(.incoming).map(\.id) == [1])
+    #expect(newer.folders(.incoming).map(\.id) == [2])
+    #expect(!FolderTreeLoadGate.accepts(stale, generation: 1, current: 2))
+    #expect(FolderTreeLoadGate.accepts(newer, generation: 2, current: 2))
+  }
+
+  /// The other half of F3: a CANCELLED load is neither an answer nor a failure. It used to come
+  /// back as three unreachable tiers — which the view then wrote over a good tree.
+  @Test("a cancelled tree load reports cancellation, not three failed tiers")
+  func aCancelledTreeLoadIsNotAFailure() async {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    await transport.setFolderTree([node(1)], tier: GridSourceTier.local.rawValue)
+    await transport.holdFolderRequests(true)
+
+    let load = Task { await FolderTreeLoad.perform(using: service) }
+    await transport.waitUntilFolderRequestStarted()
+    load.cancel()
+    await transport.holdFolderRequests(false)
+    await transport.releaseFolderRequests()
+    let result = await load.value
+
+    #expect(result.phase == .cancelled)
+    #expect(!FolderTreeLoadPresentation.isFailure(result.phase))
+    #expect(FolderTreeLoadPresentation.message(for: result.phase) == nil)
+    // And nothing may be published from it, whatever the generation says.
+    #expect(!FolderTreeLoadGate.accepts(result, generation: 1, current: 1))
+  }
+
+  /// The gate itself, stated as values: same generation and a real answer, or nothing.
+  @Test("only a current, uncancelled load may publish")
+  func onlyACurrentUncancelledLoadMayPublish() {
+    let loaded = FolderTreeLoad(phase: .loaded, foldersByTier: [.incoming: [node(1)]])
+    #expect(FolderTreeLoadGate.accepts(loaded, generation: 3, current: 3))
+    #expect(!FolderTreeLoadGate.accepts(loaded, generation: 2, current: 3))
+    // A partial failure is a real answer about the tiers that did respond, so it publishes.
+    #expect(
+      FolderTreeLoadGate.accepts(
+        FolderTreeLoad(phase: .partiallyFailed([.archive])), generation: 1, current: 1))
+    #expect(
+      !FolderTreeLoadGate.accepts(FolderTreeLoad(phase: .cancelled), generation: 1, current: 1))
+  }
+
+  /// Checkpoint-2 finding B3. A tier that did not answer had no way to say so: `folders(_:)`
+  /// mapped a missing tier to an empty array, so a folder-load failure rendered as an empty
+  /// branch — and, with every tier empty, as "No shoots", the copy for a library with nothing in
+  /// it, beside a notice saying the opposite.
+  @Test("a tier that did not answer is not an empty tier")
+  func aTierThatDidNotAnswerIsNotAnEmptyTier() async {
+    let transport = GridStubTransport()
+    await transport.setFolderTree([node(1)], tier: GridSourceTier.local.rawValue)
+    await transport.setFoldersShouldFail(true, tier: GridSourceTier.archive.rawValue)
+
+    let load = await FolderTreeLoad.perform(using: makeService(transport))
+
+    #expect(load.phase == .partiallyFailed([.archive]))
+    #expect(load.answered(.incoming))
+    #expect(load.answered(.edits))
+    #expect(!load.answered(.archive))
+    // The rows are still empty — that is exactly why emptiness cannot be the question asked.
+    #expect(load.folders(.archive).isEmpty)
+  }
+
+  /// The other half of B3: the empty-library copy may only appear once every tier has answered.
+  @Test("the empty-library copy waits for every tier to have answered")
+  func theEmptyLibraryCopyWaitsForEveryTierToAnswer() {
+    #expect(FolderTreeLoadPresentation.showsEmptyLibrary(for: .loaded, everyTierIsEmpty: true))
+    #expect(!FolderTreeLoadPresentation.showsEmptyLibrary(for: .loaded, everyTierIsEmpty: false))
+    #expect(
+      !FolderTreeLoadPresentation.showsEmptyLibrary(
+        for: .partiallyFailed([.archive]), everyTierIsEmpty: true))
+    #expect(!FolderTreeLoadPresentation.showsEmptyLibrary(for: .failed, everyTierIsEmpty: true))
+    #expect(
+      FolderTreeLoadPresentation.tierMessage(for: .archive)
+        == "Archive folders could not be loaded.")
+    #expect(
+      FolderTreeLoadPresentation.tierMessage(for: .edits) == "Edits folders could not be loaded.")
   }
 
   /// The failure surface is not a state the loader keeps to itself: the section renders an error
@@ -178,15 +293,23 @@ struct FolderTreeLoadTests {
   @Test("A failed phase is what the section renders its error state from")
   func aFailedPhaseIsRenderable() {
     #expect(FolderTreeLoadPresentation.isFailure(.failed))
-    #expect(FolderTreeLoadPresentation.isFailure(.partiallyFailed(.local)))
+    #expect(FolderTreeLoadPresentation.isFailure(.partiallyFailed([.incoming])))
     #expect(!FolderTreeLoadPresentation.isFailure(.loaded))
     #expect(!FolderTreeLoadPresentation.isFailure(.loading))
     #expect(
       FolderTreeLoadPresentation.message(for: .failed)
         == "Folders could not be loaded.")
     #expect(
-      FolderTreeLoadPresentation.message(for: .partiallyFailed(.archive))
+      FolderTreeLoadPresentation.message(for: .partiallyFailed([.archive]))
         == "Archive folders could not be loaded.")
+    // The third branch, and two of three failing — one sentence naming both, never a note that
+    // says "Folders" and leaves the reader to guess which branch is missing.
+    #expect(
+      FolderTreeLoadPresentation.message(for: .partiallyFailed([.incoming]))
+        == "Incoming folders could not be loaded.")
+    #expect(
+      FolderTreeLoadPresentation.message(for: .partiallyFailed([.edits, .archive]))
+        == "Edits and Archive folders could not be loaded.")
     #expect(FolderTreeLoadPresentation.message(for: .loaded) == nil)
   }
 }
