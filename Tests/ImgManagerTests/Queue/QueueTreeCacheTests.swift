@@ -149,13 +149,76 @@ struct QueueTreeCacheTests {
     #expect(store.cachedTree == nil)
   }
 
+  /// Checkpoint-3 finding F4. The fence was read when the ANSWER came back, not when the request
+  /// left: account A's tree, landing after A signed out and B signed in, was written under B's
+  /// subject. The fence now travels with the fetch and the store refuses a write whose fence has
+  /// moved.
+  @Test("a tree fetched under one account is refused once another is signed in")
+  func aTreeFetchedUnderOneAccountIsRefusedForAnother() async {
+    let subject = TreeCacheSubjectBox("user-a")
+    let (store, transport, snapshotStore) = makeStore(subject: subject)
+    await transport.setFolderSummariesResult([summary(1)])
+    await store.loadIfNeeded()
+
+    // A's fetch starts here.
+    let fenceA = store.treeFence()
+
+    // …and B signs in while it is in flight.
+    subject.value = "user-b"
+    await transport.setFolderSummariesResult([summary(2)])
+    await store.refresh()
+
+    // A's answer lands now.
+    await store.rememberTree([.incoming: [node(7)]], fence: fenceA)
+
+    #expect(store.cachedTree == nil)
+    let stored = await snapshotStore.stored
+    #expect(stored?.subject == "user-b")
+    #expect(stored?.tree == nil)
+    #expect(stored?.summaries.map(\.folderId) == [2])
+    // Refused, never erased: B's own snapshot is untouched by A's late answer.
+    #expect(await snapshotStore.clearCount == 0)
+  }
+
+  /// Checkpoint-3 finding F5. A tree save that captured generation G and suspended past a
+  /// summaries save at G+1 used to call `clear()` on the mismatch — wiping the NEWER combined
+  /// snapshot it had just been overtaken by. A stale write is dropped; only a sign-out or an
+  /// account switch clears.
+  @Test("a stale tree write is dropped, and the newer snapshot survives intact")
+  func aStaleTreeWriteDoesNotWipeTheNewerSnapshot() async {
+    let (store, transport, snapshotStore) = makeStore()
+    await transport.setFolderSummariesResult([summary(1)])
+    await store.loadIfNeeded()
+    let fence = store.treeFence()
+
+    // The tree save enters the store and is held inside the write.
+    await snapshotStore.holdSaves(true)
+    let treeSave = Task { @MainActor in
+      await store.rememberTree([.incoming: [node(7)]], fence: fence)
+    }
+    await snapshotStore.waitUntilSaveStarted()
+
+    // A summaries refresh at the next generation queues its own write behind it.
+    await snapshotStore.holdSaves(false)
+    await transport.setFolderSummariesResult([summary(2)])
+    let summariesRefresh = Task { @MainActor in await store.refresh() }
+    await snapshotStore.releaseSave()
+    await treeSave.value
+    await summariesRefresh.value
+
+    #expect(await snapshotStore.clearCount == 0)
+    let stored = await snapshotStore.stored
+    #expect(stored?.summaries.map(\.folderId) == [2])
+    #expect(stored?.tree?.foldersByTier["incoming"]?.map(\.id) == [7])
+  }
+
   @Test("neither of the home's two answers drops the other when it is written")
   func neitherSectionDropsTheOtherOnWrite() async {
     let (store, transport, snapshotStore) = makeStore()
     await transport.setFolderSummariesResult([summary(1)])
     await store.loadIfNeeded()
 
-    await store.rememberTree([.incoming: [node(7)]])
+    await store.rememberTree([.incoming: [node(7)]], fence: store.treeFence())
 
     let afterTreeWrite = await snapshotStore.stored
     #expect(afterTreeWrite?.summaries.map(\.folderId) == [1])

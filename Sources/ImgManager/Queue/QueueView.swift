@@ -30,12 +30,7 @@ struct QueueView: View {
 
   var body: some View {
     Group {
-      if QueueHomePresentation.showsFirstLoadSpinner(for: queueStore.phase) {
-        // Q3: "first load, no cache -> centered 'Loading shoots…' (never a flash of empty
-        // queue)" — this branch is the ONLY place that copy renders.
-        ProgressView("Loading shoots…")
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else if QueueHomePresentation.rendersTree(for: queueStore.phase) {
+      if QueueHomePresentation.rendersTree(for: queueStore.phase) {
         listContent
       }
     }
@@ -100,16 +95,19 @@ struct QueueView: View {
 /// endpoint was down. The rule here is the fix, and it is a value so a test reads it rather than
 /// a rendered view.
 enum QueueHomePresentation {
-  /// The centered first-load copy, before there is anything at all to show.
-  static func showsFirstLoadSpinner(for phase: QueueStore.Phase) -> Bool {
-    phase == .initialLoading
-  }
-
-  /// Whether the tree renders. It must, whenever the summaries are not still on their FIRST
-  /// load — including when they failed outright, which degrades what summaries feed (the P3
-  /// badge, the widget) and nothing else.
+  /// Whether the tree renders. It always does — including while the summaries are loading, and
+  /// including when they failed outright, which degrades what summaries feed (the P3 badge, the
+  /// widget) and nothing else.
+  ///
+  /// Checkpoint-3 finding F1 is why this takes the phase and ignores it rather than not existing:
+  /// `QueueStore.performLoad` returns to `.initialLoading` whenever it has nothing of its own on
+  /// screen, which a "Try Again" tap after a summaries-only outage does — and a phase-gated home
+  /// replaced a loaded tree with the summaries' centered spinner. The coupling is gone, and this
+  /// is where a future one would be written and where the test would catch it. The home's only
+  /// placeholder is the TREE's own, decided by `FolderTreeLoad.phase` inside `FolderTreeSection`.
   static func rendersTree(for phase: QueueStore.Phase) -> Bool {
-    !showsFirstLoadSpinner(for: phase)
+    _ = phase
+    return true
   }
 
   /// Whether the degraded notice sits above the tree: whenever the summaries are unreachable,

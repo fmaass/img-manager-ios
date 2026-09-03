@@ -55,6 +55,30 @@ actor GridStubTransport: ClientTransport {
   /// the PAIR `(source_tier, tree)`, and `edits` differs from `incoming` in the second half only,
   /// so a test cannot prove the third branch is its own request from a call COUNT alone.
   private(set) var recordedFolderQueries: [[String: String]] = []
+  /// IMGMGR-350 checkpoint-3 (F3): lets a test hold a `/api/folders` request open, so two loads
+  /// can genuinely overlap and the OLDER one can be made to resolve last. Same discipline as the
+  /// summaries hold above: the answer is resolved BEFORE the suspend, so a held read truthfully
+  /// returns what was configured at REQUEST time.
+  private var foldersHoldEnabled = false
+  private var foldersHasStarted = false
+  private var foldersStartedContinuation: CheckedContinuation<Void, Never>?
+  private var foldersReleaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+  func holdFolderRequests(_ hold: Bool) { foldersHoldEnabled = hold }
+
+  func waitUntilFolderRequestStarted() async {
+    if foldersHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.foldersStartedContinuation = continuation
+    }
+  }
+
+  func releaseFolderRequests() {
+    let waiting = foldersReleaseContinuations
+    foldersReleaseContinuations = []
+    foldersHasStarted = false
+    for continuation in waiting { continuation.resume() }
+  }
 
   /// P5: always what a `GET /api/images/{id}/neighbours` call receives.
   var neighboursPage = Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil)
@@ -643,11 +667,20 @@ actor GridStubTransport: ClientTransport {
     case Operations.FolderTreeApiFoldersGet.id:
       recordedFolderQueries.append(queryParameters(of: request))
       let tier = queryParameters(of: request)["source_tier"] ?? "local"
-      if foldersFailingTiers.contains(tier) {
+      let resolvedItems = folderTrees[tier] ?? []
+      let shouldFail = foldersFailingTiers.contains(tier)
+      if foldersHoldEnabled {
+        foldersHasStarted = true
+        foldersStartedContinuation?.resume()
+        foldersStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.foldersReleaseContinuations.append(continuation)
+        }
+      }
+      if shouldFail {
         return (HTTPResponse(status: .internalServerError), nil)
       }
-      return try jsonResponse(
-        .ok, Components.Schemas.FolderTree(items: folderTrees[tier] ?? []))
+      return try jsonResponse(.ok, Components.Schemas.FolderTree(items: resolvedItems))
 
     case Operations.FolderSummariesApiFolderSummariesGet.id:
       // Resolved BEFORE any hold-suspend, same discipline as `listImages` above: a held call

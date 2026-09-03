@@ -12,17 +12,20 @@ import Testing
 @Suite("Queue home presentation — a summaries outage never blanks the tree (B1)")
 struct QueueHomePresentationTests {
 
-  @Test("the tree renders in every phase except the summaries' own first load")
-  func theTreeRendersUnlessTheSummariesAreStillOnTheirFirstLoad() {
-    #expect(QueueHomePresentation.showsFirstLoadSpinner(for: .initialLoading))
-    #expect(!QueueHomePresentation.rendersTree(for: .initialLoading))
-
+  /// Checkpoint-3 finding F1 sharpened B1: the tree renders in EVERY summaries phase, the first
+  /// load included. `QueueStore.performLoad` returns to `.initialLoading` whenever there is
+  /// nothing of its own on screen — which a "Try Again" tap after a summaries-only outage does —
+  /// so a phase-gated home replaced a perfectly good tree with the summaries' centered spinner.
+  /// Only the tree's OWN first load may show the tree's placeholder, and that is
+  /// `FolderTreeLoad.phase`, not this one.
+  @Test("the tree renders in every summaries phase, the first load included")
+  func theTreeRendersInEverySummariesPhase() {
+    #expect(QueueHomePresentation.rendersTree(for: .initialLoading))
     #expect(QueueHomePresentation.rendersTree(for: .reachable))
     #expect(QueueHomePresentation.rendersTree(for: .unreachableStale))
-    // The one this finding is about: no cached summaries AT ALL is still a home with a tree in
-    // it, because the tree never came from the summaries.
+    // The one B1 was about: no cached summaries AT ALL is still a home with a tree in it,
+    // because the tree never came from the summaries.
     #expect(QueueHomePresentation.rendersTree(for: .unreachableNoCache))
-    #expect(!QueueHomePresentation.showsFirstLoadSpinner(for: .unreachableNoCache))
   }
 
   @Test("an unreachable summaries load says so above the tree, cached answer or not")

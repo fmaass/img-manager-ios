@@ -37,6 +37,36 @@ final class TreeHomeDegradedUITests: OrientationPinnedUITestCase {
       "The degraded notice never appeared — a summaries outage must still be stated.")
   }
 
+  /// Checkpoint-3 finding F1: the summaries' own loading states must never hide a tree that is
+  /// already on screen. `QueueStore` sits in its first-load phase for as long as
+  /// `/api/folder-summaries` takes — and a "Try Again" tap after a summaries outage puts it back
+  /// there — so a phase-gated home replaced a loaded tree with a centered spinner.
+  ///
+  /// Driven with a summaries endpoint that NEVER answers, so the state is held rather than
+  /// flashed: the tree must be on screen, and the summaries' copy must not.
+  func testASummariesLoadThatNeverFinishesNeverHidesTheTree() throws {
+    let app = XCUIApplication()
+    app.launchArguments = [
+      "-UITestStubGrid", "-UITestStubSkipAutoSelect", "-UITestHangSummaries",
+    ]
+    app.launch()
+
+    let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
+    XCTAssertTrue(
+      reveal(incoming, in: app),
+      "A summaries load that has not finished hid the whole home. The tree has its own load and "
+        + "its own placeholder; the summaries decide neither.")
+    for tier in ["Edits", "Archive"] {
+      XCTAssertTrue(
+        app.descendants(matching: .any)["folderTreeTier-\(tier)"].firstMatch.exists,
+        "The \(tier) tier is missing while the summaries are still loading.")
+    }
+    XCTAssertFalse(
+      app.staticTexts["Loading shoots…"].firstMatch.exists,
+      "The summaries' centered first-load copy is on screen over the tree.")
+    attach(named: "F1-summaries-still-loading-tree-renders")
+  }
+
   /// B3: one tier of `/api/folders` down. That tier says so where its branch would be, the other
   /// two render, and the empty-library copy — which means "this library has nothing in it" — is
   /// nowhere on screen.

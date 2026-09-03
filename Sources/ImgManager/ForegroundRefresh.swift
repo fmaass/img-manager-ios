@@ -5,28 +5,27 @@
 /// rendered-view test. Mirrors `RootRouting.destination(for:)`'s own "pulled out as a pure
 /// function" posture (that type's own doc comment).
 enum ForegroundRefresh {
+  @MainActor
   static func run(
     renew: () async -> Void,
     isSignedIn: () -> Bool,
     hasSelectedShoot: () -> Bool,
     refreshGrid: () async -> Void,
-    refreshQueue: () async -> Void,
-    refreshTree: () async -> Void
+    refreshQueue: @escaping @MainActor () async -> Void,
+    refreshTree: @escaping @MainActor () async -> Void
   ) async {
     await renew()
     guard isSignedIn() else { return }
     if hasSelectedShoot() {
       await refreshGrid()
     }
-    // Unconditional and LAST: the queue refreshes on foreground even with no shoot selected,
-    // and never ahead of a lane-ordered grid refresh that just ran (never publishes
-    // pre-mutation summary state afterward).
-    await refreshQueue()
-    // IMGMGR-350, checkpoint-2 finding B2: the HOME is the folder tree, and it was the one thing
-    // a resume did not re-read — a folder added, moved or removed while the app was backgrounded
-    // stayed on screen until the reader pulled to refresh. Same position as the queue's own
-    // refresh and for the same reason, in the same order the pull-to-refresh gesture uses
-    // (`QueueHomeRefresh`): summaries, then tree.
-    await refreshTree()
+    // Both unconditional, both AFTER the lane-ordered grid refresh (neither publishes
+    // pre-mutation summary state afterward), and — checkpoint-3 finding F2 — INDEPENDENT of each
+    // other. Sequencing them made the tree's refresh wait on `/api/folder-summaries`, so a
+    // hanging summaries endpoint starved the refresh of the home's own data: the one failure the
+    // tree home is meant to survive. Two child tasks, and this returns when both have.
+    async let summaries: Void = refreshQueue()
+    async let tree: Void = refreshTree()
+    _ = await (summaries, tree)
   }
 }

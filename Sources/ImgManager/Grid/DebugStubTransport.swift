@@ -64,6 +64,12 @@
           Components.Schemas.FolderTree(
             items: Self.fixtureFolders(
               sourceTier: folderQuery["source_tier"], tree: folderQuery["tree"])))
+      case Operations.FolderSummariesApiFolderSummariesGet.id where DebugStubLaunch.hangSummaries:
+        // IMGMGR-350 checkpoint-3 (F1): the summaries never answer, so `QueueStore` STAYS in its
+        // first-load phase. That is the state that used to hold the whole home behind a spinner
+        // while the folder tree beside it was loaded and ready.
+        try? await Task.sleep(nanoseconds: 600_000_000_000)
+        return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderSummariesApiFolderSummariesGet.id where DebugStubLaunch.failSummaries:
         // IMGMGR-350 checkpoint-2 (B1): the summaries endpoint down while `/api/folders` is
         // healthy — the exact split that used to blank the tree home.
@@ -617,6 +623,13 @@
     /// fixture answers everything. Debug-only like every flag here.
     static var failSummaries: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestFailSummaries")
+    }
+
+    /// IMGMGR-350 checkpoint-3 (F1): a TENTH, on the same terms — `/api/folder-summaries` that
+    /// never answers, holding the summaries in their first-load phase for as long as the test
+    /// needs. A failing endpoint could not produce this: it answers, and the phase moves on.
+    static var hangSummaries: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestHangSummaries")
     }
 
     /// IMGMGR-350 checkpoint-2 (B3): a NINTH, on the same terms. One tier of `/api/folders`

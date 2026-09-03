@@ -456,7 +456,10 @@ struct RootView: View {
             // P4: one store owns both of the home's answers — the tree's replay and its write
             // travel through the same subject, generation and erase path as the summaries'.
             cachedTree: queueStore.cachedTree,
-            rememberTree: { await queueStore.rememberTree($0) },
+            rememberTree: { folders, fence in
+              await queueStore.rememberTree(folders, fence: fence)
+            },
+            treeFence: { queueStore.treeFence() },
             selectedFolderID: $selectedFolderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }

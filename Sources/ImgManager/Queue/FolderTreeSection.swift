@@ -56,8 +56,13 @@ struct FolderTreeSection: View {
   /// P4: whatever tree `QueueStore` has remembered for this account and server, replayed when a
   /// live load reaches nothing at all. The view keeps no persistence of its own.
   let cachedTree: QueueStore.CachedTree?
-  /// P4: hands a live answer back to the store, which owns when and whether it is written.
-  let rememberTree: ([FolderTreeTier: [Components.Schemas.FolderNode]]) async -> Void
+  /// P4: hands a live answer back to the store, which owns when and whether it is written. F3/F4:
+  /// the fence the fetch STARTED under travels with it, so a response that outlived its session
+  /// is refused by the store rather than written under whatever is true when it lands.
+  let rememberTree:
+    ([FolderTreeTier: [Components.Schemas.FolderNode]], QueueStore.TreeFence) async -> Void
+  /// The fence as it stands when a load is about to start.
+  let treeFence: () -> QueueStore.TreeFence
   @Binding var selectedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
@@ -67,6 +72,8 @@ struct FolderTreeSection: View {
   /// (`FolderTreeItemID`): a fold opens and closes like a branch and is selectable like nothing.
   @State private var expandedBranches: Set<FolderTreeItemID> = []
   @State private var expandedTiers: Set<FolderTreeTier> = []
+  /// F3: which tree load is the current one. Advanced by every start, checked by every finish.
+  @State private var treeLoadGeneration = 0
 
   var body: some View {
     Group {
@@ -105,12 +112,27 @@ struct FolderTreeSection: View {
     // `reloadToken` carries (`QueueHomeRefresh`). `.task(id:)` also runs it once on mount, so
     // there is exactly one fetch path here and it is still the one a retry drives.
     .task(id: reloadToken) {
-      let fresh = await FolderTreeLoad.perform(using: gridService)
-      load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
-      // Only a clean answer is worth remembering: a partial one would persist a tier's absence as
-      // if it were its content, and the next launch would replay that as the library.
-      if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier) }
+      await runTreeLoad()
     }
+  }
+
+  /// The ONE fetch path (F3): both entries — the `.task(id:)` and Retry — run this, so there is
+  /// no second place where a response could be published under different rules.
+  ///
+  /// The generation and the store's fence are captured BEFORE the request leaves and checked
+  /// after it lands. A load that is no longer current, or that was cancelled, publishes nothing
+  /// and writes nothing — it does not clear, and it does not report itself as a failure.
+  private func runTreeLoad() async {
+    treeLoadGeneration += 1
+    let generation = treeLoadGeneration
+    let fence = treeFence()
+    let fresh = await FolderTreeLoad.perform(using: gridService)
+    guard FolderTreeLoadGate.accepts(fresh, generation: generation, current: treeLoadGeneration)
+    else { return }
+    load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
+    // Only a clean answer is worth remembering: a partial one would persist a tier's absence as
+    // if it were its content, and the next launch would replay that as the library.
+    if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier, fence) }
   }
 
   /// Whether the whole tree — every tier, after whatever the search field kept — is empty. Read
@@ -135,9 +157,7 @@ struct FolderTreeSection: View {
         Button("Retry") {
           Task {
             load = .loading
-            let fresh = await FolderTreeLoad.perform(using: gridService)
-            load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
-            if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier) }
+            await runTreeLoad()
           }
         }
         .buttonStyle(.borderless)
@@ -279,6 +299,11 @@ struct FolderTreeLoad: Equatable, Sendable {
     /// IMGMGR-350 P4: nothing answered and there is a remembered answer to show instead, carrying
     /// the moment the server said it. The same trade IMGMGR-198 already makes for the summaries.
     case stale(Date)
+    /// Checkpoint-3 finding F3: the load was CANCELLED — the view was replaced, or a newer load
+    /// took its place. Not a failure and not an answer: a cancelled load publishes nothing and
+    /// writes nothing, where before it arrived as three unreachable tiers and overwrote the tree
+    /// with an empty one.
+    case cancelled
   }
 
   var phase: Phase = .loading
@@ -328,8 +353,13 @@ struct FolderTreeLoad: Equatable, Sendable {
       do {
         result.foldersByTier[tier] = try await service.folders(tier: tier).items
       } catch {
+        // A cancelled load is not a failed one: `GridService` collapses every error into one
+        // opaque `.unreachable`, so cancellation would otherwise arrive here as a dead tier and
+        // be written over a perfectly good tree.
+        if Task.isCancelled { return FolderTreeLoad(phase: .cancelled) }
         failed.append(tier)
       }
+      if Task.isCancelled { return FolderTreeLoad(phase: .cancelled) }
     }
     switch failed.count {
     case 0: result.phase = .loaded
@@ -337,6 +367,22 @@ struct FolderTreeLoad: Equatable, Sendable {
     default: result.phase = .partiallyFailed(failed)
     }
     return result
+  }
+}
+
+/// Checkpoint-3 finding F3: whether a load that has COME BACK may still be published.
+///
+/// A tree load is started by `.task(id:)` and by Retry, and the reader can advance the token
+/// (pull-to-refresh, a resume) while one is still in flight. Both paths wrote whatever came back,
+/// so an older response landing last overwrote a newer tree — and a cancelled load arrived as
+/// three unreachable tiers and overwrote it with nothing. The generation is captured BEFORE the
+/// fetch and compared after it: same generation and a real answer, or the result is dropped in
+/// silence. Nothing here clears or writes; it only says whether the caller may.
+enum FolderTreeLoadGate {
+  static func accepts(_ load: FolderTreeLoad, generation: Int, current: Int) -> Bool {
+    guard generation == current else { return false }
+    if case .cancelled = load.phase { return false }
+    return true
   }
 }
 
@@ -348,7 +394,7 @@ enum FolderTreeLoadPresentation {
     case .failed, .partiallyFailed: return true
     // A replayed answer is not a failure: there are real rows on screen, older than now. It says
     // so in its own words (`message(for:)`) rather than through the failure vocabulary.
-    case .loading, .loaded, .stale: return false
+    case .loading, .loaded, .stale, .cancelled: return false
     }
   }
 
@@ -369,7 +415,7 @@ enum FolderTreeLoadPresentation {
   /// reason here would be invented rather than reported. `nil` where there is nothing to say.
   static func message(for phase: FolderTreeLoad.Phase) -> String? {
     switch phase {
-    case .loading, .loaded: return nil
+    case .loading, .loaded, .cancelled: return nil
     case .failed: return "Folders could not be loaded."
     case .partiallyFailed(let tiers):
       // The tier's own label, so the note names the branch the reader can see is missing. Two

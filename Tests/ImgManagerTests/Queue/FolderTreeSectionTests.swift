@@ -189,6 +189,69 @@ struct FolderTreeLoadTests {
     #expect(await transport.callCount(Operations.FolderTreeApiFoldersGet.id) == 6)
   }
 
+  /// Checkpoint-3 finding F3, the ordering it is about, driven for real: two loads overlap and
+  /// the OLDER one resolves LAST. Both used to be written in the order they landed, so the older
+  /// answer won; the gate drops it because its generation is no longer current.
+  @Test("an older tree load resolving last is dropped, and the newer answer stands")
+  func anOlderTreeLoadResolvingLastIsDropped() async {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    await transport.setFolderTree([node(1)], tier: GridSourceTier.local.rawValue)
+    await transport.holdFolderRequests(true)
+
+    let older = Task { await FolderTreeLoad.perform(using: service) }
+    await transport.waitUntilFolderRequestStarted()
+    // The server's answer changes, and a NEWER load takes it while the older one is still held.
+    await transport.setFolderTree([node(2)], tier: GridSourceTier.local.rawValue)
+    await transport.holdFolderRequests(false)
+    let newer = await FolderTreeLoad.perform(using: service)
+    await transport.releaseFolderRequests()
+    let stale = await older.value
+
+    // Both really carry what they fetched — the older one is not merely late, it is WRONG now.
+    #expect(stale.folders(.incoming).map(\.id) == [1])
+    #expect(newer.folders(.incoming).map(\.id) == [2])
+    #expect(!FolderTreeLoadGate.accepts(stale, generation: 1, current: 2))
+    #expect(FolderTreeLoadGate.accepts(newer, generation: 2, current: 2))
+  }
+
+  /// The other half of F3: a CANCELLED load is neither an answer nor a failure. It used to come
+  /// back as three unreachable tiers — which the view then wrote over a good tree.
+  @Test("a cancelled tree load reports cancellation, not three failed tiers")
+  func aCancelledTreeLoadIsNotAFailure() async {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    await transport.setFolderTree([node(1)], tier: GridSourceTier.local.rawValue)
+    await transport.holdFolderRequests(true)
+
+    let load = Task { await FolderTreeLoad.perform(using: service) }
+    await transport.waitUntilFolderRequestStarted()
+    load.cancel()
+    await transport.holdFolderRequests(false)
+    await transport.releaseFolderRequests()
+    let result = await load.value
+
+    #expect(result.phase == .cancelled)
+    #expect(!FolderTreeLoadPresentation.isFailure(result.phase))
+    #expect(FolderTreeLoadPresentation.message(for: result.phase) == nil)
+    // And nothing may be published from it, whatever the generation says.
+    #expect(!FolderTreeLoadGate.accepts(result, generation: 1, current: 1))
+  }
+
+  /// The gate itself, stated as values: same generation and a real answer, or nothing.
+  @Test("only a current, uncancelled load may publish")
+  func onlyACurrentUncancelledLoadMayPublish() {
+    let loaded = FolderTreeLoad(phase: .loaded, foldersByTier: [.incoming: [node(1)]])
+    #expect(FolderTreeLoadGate.accepts(loaded, generation: 3, current: 3))
+    #expect(!FolderTreeLoadGate.accepts(loaded, generation: 2, current: 3))
+    // A partial failure is a real answer about the tiers that did respond, so it publishes.
+    #expect(
+      FolderTreeLoadGate.accepts(
+        FolderTreeLoad(phase: .partiallyFailed([.archive])), generation: 1, current: 1))
+    #expect(
+      !FolderTreeLoadGate.accepts(FolderTreeLoad(phase: .cancelled), generation: 1, current: 1))
+  }
+
   /// Checkpoint-2 finding B3. A tier that did not answer had no way to say so: `folders(_:)`
   /// mapped a missing tier to an empty array, so a folder-load failure rendered as an empty
   /// branch — and, with every tier empty, as "No shoots", the copy for a library with nothing in

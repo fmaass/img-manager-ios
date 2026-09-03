@@ -50,6 +50,22 @@ final class QueueStore {
     var fetchedAt: Date
   }
 
+  /// Checkpoint-3 finding F4: what a tree fetch was started under, so what comes back can be
+  /// checked against what is true now. The subject and the server are what make a cache
+  /// legitimate at all; the generation is what a sign-out, an account switch or a newer load
+  /// advances. Captured BEFORE the request leaves — the same discipline `performLoad` already
+  /// applies to the summaries — and refused at save time if any of the three moved.
+  struct TreeFence: Equatable, Sendable {
+    var subject: String?
+    var baseURL: String
+    var generation: Int
+  }
+
+  /// The fence as it stands right now.
+  func treeFence() -> TreeFence {
+    TreeFence(subject: activeSubject, baseURL: baseURL, generation: loadGeneration)
+  }
+
   private let service: QueueService
   private let snapshotStore: any QueueSnapshotPersisting
   /// The signed-in subject, read LIVE rather than passed once at construction: `RootView` keeps
@@ -199,20 +215,24 @@ final class QueueStore {
   /// P4: remember the tree's latest live answer. Written as ONE whole snapshot through the single
   /// `save` — never a read-modify-write inside the actor — so a tree write cannot drop a
   /// just-written summaries section, and the actor serializes the writes themselves.
-  func rememberTree(_ foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]]) async {
-    guard let activeSubject else { return }
+  func rememberTree(
+    _ foldersByTier: [FolderTreeTier: [Components.Schemas.FolderNode]], fence: TreeFence
+  ) async {
+    // F4: the fence the FETCH started under, compared with what is true now. A response that
+    // outlived its session — account A's tree landing after B signed in — is dropped in silence:
+    // never written under whoever is signed in now, and never used to clear anything either.
+    guard let fenceSubject = fence.subject, fence == treeFence() else { return }
     let fetchedAt = now()
-    let generation = loadGeneration
     cachedTree = CachedTree(foldersByTier: foldersByTier, fetchedAt: fetchedAt)
     await snapshotStore.save(
       QueueSnapshot(
         summaries: summaries, fetchedAt: lastFetchedAt ?? fetchedAt, baseURL: baseURL,
-        subject: activeSubject, tree: currentTreeSection()))
-    // The write is a suspension point, exactly as the summaries' own is: an erasure landing
-    // inside it would leave this store having resurrected the file the sign-out removed.
-    if generation != loadGeneration || self.activeSubject != activeSubject
-      || subject() != activeSubject
-    {
+        subject: fenceSubject, tree: currentTreeSection()))
+    // F5: the write is a suspension point. If the SUBJECT went away or changed while it ran, this
+    // file belongs to a session that is over and clearing it is the erase path's own job, done
+    // here because that window closes after the write. If only the generation moved, a NEWER save
+    // has already landed — clearing would wipe it, so the stale write is simply forgotten.
+    if activeSubject != fenceSubject || subject() != fenceSubject {
       await snapshotStore.clear()
     }
   }
@@ -279,9 +299,10 @@ final class QueueStore {
         // erasure landing between it and the write completing would leave this store having just
         // resurrected the file the sign-out removed. Re-read the fence AFTER the write — the
         // first moment that is knowable — and undo it.
-        if generation != loadGeneration || self.activeSubject != requestSubject
-          || subject() != requestSubject
-        {
+        // The same rule as `rememberTree`'s (checkpoint-3 F5, applied to this site of the class):
+        // a subject that changed or vanished is a session whose file must go; a generation that
+        // merely advanced is a newer save that must NOT be wiped by an older one's epilogue.
+        if self.activeSubject != requestSubject || subject() != requestSubject {
           await snapshotStore.clear()
         }
       }
