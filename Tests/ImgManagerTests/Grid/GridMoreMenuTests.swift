@@ -41,7 +41,10 @@ struct GridViewMoreMenuTests {
     #expect(
       GridMoreMenu.entries.map(\.id) == [
         "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-        "more.picksInGroups", "more.density", "more.status", "more.openInNewWindow",
+        "more.picksInGroups", "more.density",
+        // IMGMGR-362 (WP21 P3): the archive prune, APPENDED to the View section's own run — an
+        // insertion between two sections, never a reorder of the decided set.
+        "more.pruneMirroredArchive", "more.status", "more.openInNewWindow",
         // WP14 P4 (IMGMGR-277): the three scene-edit actions, APPENDED — the owner's decided set
         // and its order above are untouched, exactly as P11's row left them.
         "more.mergeScene", "more.splitScene", "more.extractScene",
@@ -53,8 +56,8 @@ struct GridViewMoreMenuTests {
     #expect(
       titles == [
         "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
-        "Density: 200 pt", "Status", "Open in New Window", "Merge into…", "Split here",
-        "Extract selected",
+        "Density: 200 pt", "Hide mirrored archive", "Status", "Open in New Window",
+        "Merge into…", "Split here", "Extract selected",
         // IMGMGR-347: the absorb row's title IS its reason while it cannot act, and this store
         // has nothing focused at all — a plain "Add to scene…" here would be the inert control
         // the ticket exists to remove.
@@ -189,6 +192,19 @@ struct GridViewMoreMenuTests {
         set(store, true)
         #expect(isOn(store), "the picks-in-groups toggle did not turn on")
         #expect(store.preferences.picksInGroups, "the toggle did not reach the preference")
+
+      case "more.pruneMirroredArchive":
+        guard case .toggle(let isOn, let set) = entry.surface else {
+          Issue.record("more.pruneMirroredArchive is not a toggle entry")
+          continue
+        }
+        // IMGMGR-362: default OFF, and the row reaches the ONE persisted property — the tree
+        // reads that same property, so a toggle that wrote anywhere else would hide nothing.
+        #expect(isOn(store) == false)
+        set(store, true)
+        #expect(isOn(store), "the mirrored-archive toggle did not turn on")
+        #expect(
+          store.preferences.pruneMirroredArchive, "the toggle did not reach the preference")
 
       case "more.density":
         guard case .rowHeightSteps(let set, let isCurrent) = entry.surface else {
@@ -529,14 +545,16 @@ struct GridViewMoreMenuTests {
 @Suite("Grid More menu — the grouped sections (WP16 P4)")
 struct GridMoreMenuSectionsTests {
 
-  /// The twelve ids at `4753450`, in the order the owner decided (WP13 kickoff decision 2, epic
-  /// IMGMGR-211 comment 2106; P11, WP14 P4 and IMGMGR-347 APPENDED, never reordered). Grouping is a
+  /// The thirteen ids, in the order the owner decided (WP13 kickoff decision 2, epic
+  /// IMGMGR-211 comment 2106; P11, WP14 P4, IMGMGR-347 and IMGMGR-362 APPENDED — the last of them
+  /// into the View section's own run, which moved no existing pair). Grouping is a
   /// CONTIGUOUS partition over exactly this sequence, so a reorder, a drop or a duplicate fails
   /// element-wise here.
   private let shippedOrder = [
     "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-    "more.picksInGroups", "more.density", "more.status", "more.openInNewWindow",
-    "more.mergeScene", "more.splitScene", "more.extractScene", "more.absorbScene",
+    "more.picksInGroups", "more.density", "more.pruneMirroredArchive", "more.status",
+    "more.openInNewWindow", "more.mergeScene", "more.splitScene", "more.extractScene",
+    "more.absorbScene",
   ]
 
   @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
@@ -547,10 +565,10 @@ struct GridMoreMenuSectionsTests {
     // Positive control for the equalities above: there really are sections and entries to
     // compare, so neither line can pass on two empty arrays.
     #expect(GridMoreMenu.sections.count == 4)
-    #expect(GridMoreMenu.entries.count == 12)
+    #expect(GridMoreMenu.entries.count == 13)
   }
 
-  @Test("Grouping changed nothing about the set: the twelve ids, in the shipped order")
+  @Test("Grouping changed nothing about the set: the thirteen ids, in the shipped order")
   func groupingKeptTheDecidedSetAndItsOrder() {
     #expect(GridMoreMenu.sections.flatMap(\.entries).map(\.id) == shippedOrder)
     #expect(GridMoreMenu.entries.map(\.id) == shippedOrder)
@@ -568,7 +586,10 @@ struct GridMoreMenuSectionsTests {
       ),
       (
         "more.section.view", "View",
-        ["more.filenamePlates", "more.picksInGroups", "more.density"]
+        // IMGMGR-362 (WP21 P3) APPENDED the archive prune INSIDE this run, which is what keeps
+        // the partition contiguous: the row a reader flips to hide mirrored folders is a view
+        // option, so it belongs to the section the other view options are in.
+        ["more.filenamePlates", "more.picksInGroups", "more.density", "more.pruneMirroredArchive"]
       ),
       ("more.section.shoot", "Shoot", ["more.status", "more.openInNewWindow"]),
       (
@@ -619,7 +640,11 @@ struct GridMoreMenuSectionsTests {
       GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
         "gridSelectCommand", "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
-        "gridMoreMenu.more.density", "gridMoreMenu.more.status",
+        "gridMoreMenu.more.density",
+        // IMGMGR-362: the archive prune's own identifier, in the View section's run. The tree
+        // home's View menu renders the SAME entry, so this string is also the handle
+        // `ArchivePruneUITests` drives there — one identifier, two entry points.
+        "gridMoreMenu.more.pruneMirroredArchive", "gridMoreMenu.more.status",
         "gridMoreMenu.more.openInNewWindow", "gridMoreMenu.more.mergeScene",
         "gridMoreMenu.more.splitScene", "gridMoreMenu.more.extractScene",
         "gridMoreMenu.more.absorbScene",
@@ -627,7 +652,7 @@ struct GridMoreMenuSectionsTests {
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
         "checkmark.circle", ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
-        "textformat", "checkmark.square", "square.grid.2x2", "info.circle",
+        "textformat", "checkmark.square", "square.grid.2x2", "eye.slash", "info.circle",
         "macwindow.badge.plus", "arrow.triangle.merge", "scissors", "square.on.square.dashed",
         "rectangle.stack.badge.plus",
       ])
@@ -670,17 +695,44 @@ struct GridPreferencesTests {
 
   @Test("The store owns exactly the keys it declares")
   func theStoreOwnsExactlyTheKeysItDeclares() {
-    // WP13 P8 (IMGMGR-214) added the second key this type owns and IMGMGR-261 the third; the
-    // inventory is asserted exactly, so a fourth arriving silently is a failure here rather than
-    // a surprise later.
+    // WP13 P8 (IMGMGR-214) added the second key this type owns, IMGMGR-261 the third and
+    // IMGMGR-362 the fourth; the inventory is asserted exactly, so a fifth arriving silently is a
+    // failure here rather than a surprise later. The literals are spelled out rather than read
+    // back off the constants they name — a test that asks a constant to describe itself could
+    // not tell a rename from a rewrite, and these strings are what a reader's device already has
+    // on disk.
     let owned = [
       GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey,
-      GridPreferences.picksInGroupsKey,
+      GridPreferences.picksInGroupsKey, GridPreferences.pruneMirroredArchiveKey,
     ]
     #expect(GridPreferences.persistedKeys == owned)
     #expect(GridPreferences.filenamePlatesKey == "grid.filenamePlates")
     #expect(GridPreferences.autoAdvanceOnMarkKey == "loupe.autoAdvanceOnMark")
     #expect(GridPreferences.picksInGroupsKey == "grid.picksInGroups")
+    #expect(GridPreferences.pruneMirroredArchiveKey == "grid.pruneMirroredArchive")
+  }
+
+  /// IMGMGR-362 (WP21 P3): the archive prune is OFF until the reader asks for it (owner decision,
+  /// design note /link/3396 §6 Q6), and the flip survives — the same guard-typed read and the
+  /// same suite-injected `UserDefaults` the three keys before it use, never a second mechanism.
+  @Test("The archive prune is OFF by default and persists once flipped")
+  func theArchivePruneIsOffByDefaultAndPersists() {
+    #expect(GridPreferences.pruneMirroredArchiveDefault == false)
+
+    let defaults = makeEphemeralDefaults()
+    let first = GridPreferences(defaults: defaults)
+    #expect(first.pruneMirroredArchive == false)
+    first.pruneMirroredArchive = true
+    #expect(GridPreferences(defaults: defaults).pruneMirroredArchive == true)
+
+    // Guard-typed, like every other key: a value of the wrong TYPE reads as "no preference" and
+    // takes the declared default rather than silently becoming a real `false`.
+    let poisoned = makeEphemeralDefaults()
+    poisoned.set("definitely", forKey: GridPreferences.pruneMirroredArchiveKey)
+    #expect(GridPreferences(defaults: poisoned).pruneMirroredArchive == false)
+    // Positive control for the line above: this suite CAN observe a stored value here.
+    poisoned.set(true, forKey: GridPreferences.pruneMirroredArchiveKey)
+    #expect(GridPreferences(defaults: poisoned).pruneMirroredArchive == true)
   }
 
 }

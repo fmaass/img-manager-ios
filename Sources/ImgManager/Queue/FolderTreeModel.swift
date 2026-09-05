@@ -8,7 +8,14 @@ import ImgManagerAPI
 /// this row shows is the server's answer, and the only way to keep that true is to never hold a
 /// second copy that could drift. `id` is the server's folder id — the stable identity every
 /// `ForEach` over this tree keys on (IMGMGR-210: no index identity anywhere).
-struct FolderTreeNode: Identifiable {
+/// `Equatable` (IMGMGR-362) is SYNTHESIZED, over the whole wire node and the whole subtree — so
+/// two nodes are equal only when every served field and every descendant agrees. It exists so the
+/// prune's OFF path can be pinned as "the rendered forest is EXACTLY today's", rather than as a
+/// hand-written projection of it that would keep passing while a field it forgot mutated.
+/// `Components.Schemas.FolderNode` already conforms (the generator emits `Codable, Hashable,
+/// Sendable`, which is what lets `FolderTreeLoad`'s own synthesized `Equatable` compile over a
+/// dictionary of them, `FolderTreeSection.swift:304-330`).
+struct FolderTreeNode: Identifiable, Equatable {
   let folder: Components.Schemas.FolderNode
   let children: [FolderTreeNode]
 
@@ -76,7 +83,10 @@ struct FolderTreeMonth: Equatable, Sendable {
 /// UNFOLDED taxonomy — beside the children that actually render, because the fold changes that
 /// shape and nothing else about the node. Everything on screen reads the case's `children`
 /// (`visibleRows`, the row view), so there is exactly one answer to "what is under this row".
-enum FolderTreeItem: Identifiable {
+/// `Equatable` for the reason `FolderTreeNode` states: a whole rendered forest is one comparable
+/// value, folds and unfolded taxonomy included, so a test can assert the OFF path equals today's
+/// tree without inventing a lossy signature of it.
+enum FolderTreeItem: Identifiable, Equatable {
   case folder(FolderTreeNode, children: [FolderTreeItem])
   case month(FolderTreeMonth, members: [FolderTreeItem])
 
@@ -217,18 +227,53 @@ enum FolderTreeModel {
   // MARK: - The tier's rendered rows (IMGMGR-350 P1, ported from lib/folderTree.ts)
 
   /// The rows ONE tier renders, in the web's own composition order (`buildTierItems`,
-  /// `folderTree.ts:277-286`): the forest, then the tier-root hoist, then the month fold.
+  /// `folderTree.ts:277-286`): the archive prune, then the tier-root hoist, then the month fold.
   ///
-  /// The web's other step, `pruneMirrored` (`:188-197`), is DELIBERATELY absent. IMGMGR-350 keeps
-  /// every mirrored archive folder visible exactly as today (689 nodes over 14 roots); the
-  /// web-style prune and its persisted toggle are a follow-up ticket under IMGMGR-322.
+  /// IMGMGR-362 (WP21 P3) added the first of those. `pruneMirroredArchive` is the reader's
+  /// persisted switch (`GridPreferences.pruneMirroredArchive`, default OFF), and it defaults to
+  /// `false` HERE too so that every caller that asks for nothing gets exactly the tree IMGMGR-350
+  /// shipped — the OFF path is not a second code path, it is this one with no prune in it.
+  ///
+  /// The prune is the ARCHIVE's alone (`folderTree.ts:283`): a zero count means "already in the
+  /// incoming library" only on the tier whose counts are dedup-adjusted, so the incoming and
+  /// edits tiers are never pruned however the flag stands.
   ///
   /// Takes an already-built forest rather than the wire rows, so the client-side NAME FILTER —
   /// the native-only step the web has no equivalent of — runs between `forest` and this. That
   /// order is what keeps a search hit's ancestors visible before anything is folded, and it keeps
   /// a month row impossible to build over a member the filter dropped.
-  static func tierItems(_ forest: [FolderTreeNode], tier: FolderTreeTier) -> [FolderTreeItem] {
-    groupMonths(hoistTierRoot(forest, tier: tier))
+  static func tierItems(
+    _ forest: [FolderTreeNode], tier: FolderTreeTier, pruneMirroredArchive: Bool = false
+  ) -> [FolderTreeItem] {
+    let kept = tier == .archive && pruneMirroredArchive ? pruneMirrored(forest) : forest
+    return groupMonths(hoistTierRoot(kept, tier: tier))
+  }
+
+  /// Drop every folder whose dedup-adjusted count is zero — the archive's fully mirrored ones.
+  /// Ported from the web's `pruneMirrored` (`folderTree.ts:188-197`).
+  ///
+  /// Per node, and that is enough: `descendant_image_count` is a ROLLUP (each folder's own
+  /// visible images plus every descendant's, img-manager `app/api/folders.py`), so a folder
+  /// reporting zero has an all-zero subtree and cannot be hiding a child with photographs in it.
+  /// A partially mirrored folder counts its archive-only members, keeps its row, and loses only
+  /// the mirrored children beneath it — which is why this recurses into the SURVIVORS rather than
+  /// filtering a flattened list.
+  ///
+  /// Composed BEFORE the month fold (see `tierItems`), which is what makes an emptied month row
+  /// impossible rather than something to clean up afterwards: a month exists only if a surviving
+  /// date folder asked for it.
+  ///
+  /// No OFF mode of its own, deliberately: the flag is read once, at the composition. A
+  /// `pruneMirrored(forest, enabled:)` that returned its input would put the reader's preference
+  /// in two places, and the OFF path would then be a code path that can drift from the shipped
+  /// tree instead of being it.
+  static func pruneMirrored(_ forest: [FolderTreeNode]) -> [FolderTreeNode] {
+    forest.compactMap { node in
+      // `== 0`, exactly the web's test (`folderTree.ts:191`) and not `> 0`: the rule is "the
+      // server counted nothing here", never a client-side opinion about what a number means.
+      guard node.descendantImageCount != 0 else { return nil }
+      return FolderTreeNode(folder: node.folder, children: pruneMirrored(node.children))
+    }
   }
 
   /// Drop the tier's own root row when — and only when — the tier IS that root: a single

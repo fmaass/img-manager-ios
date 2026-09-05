@@ -28,7 +28,7 @@ final class GridPreferences {
   /// row-height steps are the one density state (`GridRowHeight`), reached from two entry
   /// points (the Zoom control and the More menu), never two properties that can disagree.
   static let persistedKeys: [String] = [
-    filenamePlatesKey, autoAdvanceOnMarkKey, picksInGroupsKey,
+    filenamePlatesKey, autoAdvanceOnMarkKey, picksInGroupsKey, pruneMirroredArchiveKey,
   ]
 
   static let filenamePlatesKey = "grid.filenamePlates"
@@ -45,6 +45,14 @@ final class GridPreferences {
   /// OFF, and here the ticket's own default stands (IMGMGR-261 AC 1): this one ADDS ink to every
   /// collapsed card and costs a membership request per visible scene, so the reader asks for it.
   static let picksInGroupsDefault = false
+
+  static let pruneMirroredArchiveKey = "grid.pruneMirroredArchive"
+  /// OFF, and that is an OWNER decision (design note /link/3396 §6 Q6, WP21): the archive's
+  /// mirrored folders are HIDDEN only when the reader asks, so the tree a reader already knows is
+  /// what the app opens with. The web ships the same switch in the opposite sense
+  /// ("Show mirrored folders"); the KEY here is named for what turning it on does, so the stored
+  /// value and the row's words cannot disagree.
+  static let pruneMirroredArchiveDefault = false
 
   private let defaults: UserDefaults
 
@@ -74,6 +82,16 @@ final class GridPreferences {
     didSet { defaults.set(picksInGroups, forKey: Self.picksInGroupsKey) }
   }
 
+  /// IMGMGR-362 (WP21 P3): hide the archive folders the incoming library already holds — every
+  /// folder whose dedup-adjusted count is zero (`FolderTreeModel.pruneMirrored`, the web's
+  /// `folderTree.ts:188-197`). A VIEW option over the folder tree, so it lives with the app's
+  /// other view options — the More menu's View section — and never in a settings panel of its
+  /// own. This type is the ONE place the switch is stored: the grid's menu and the tree home's
+  /// menu are two entry points onto this property, never two preferences.
+  var pruneMirroredArchive: Bool {
+    didSet { defaults.set(pruneMirroredArchive, forKey: Self.pruneMirroredArchiveKey) }
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     self.filenamePlates = Self.boolPreference(
@@ -85,6 +103,9 @@ final class GridPreferences {
     self.picksInGroups = Self.boolPreference(
       from: defaults.object(forKey: Self.picksInGroupsKey),
       default: Self.picksInGroupsDefault)
+    self.pruneMirroredArchive = Self.boolPreference(
+      from: defaults.object(forKey: Self.pruneMirroredArchiveKey),
+      default: Self.pruneMirroredArchiveDefault)
   }
 
   /// GUARD-TYPED, never `UserDefaults.bool(forKey:)`: that accessor COERCES — it reads a string

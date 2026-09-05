@@ -375,13 +375,19 @@ struct RootView: View {
     .focusedSceneValue(\.shootWindowCommand, shootWindowCommand)
   }
 
-  /// The value's own construction, off the modifier chain: the action is copied into a LOCAL
-  /// before the closure is formed, so nothing captures the view struct itself.
+  /// The value's own construction, off the modifier chain.
   private var shootWindowCommand: ShootWindowCommand {
+    ShootWindowCommand(
+      value: ShootSceneValue.from(query: gridStore.query), opener: shootWindowOpener)
+  }
+
+  /// The opener on its own, so a caller that needs only the seam does not also read
+  /// `gridStore.query` and take an observation dependency it has no use for (IMGMGR-362's tree
+  /// View menu). The action is copied into a LOCAL before the closure is formed, so nothing
+  /// captures the view struct itself.
+  private var shootWindowOpener: ShootWindowOpener {
     let open = openWindow
-    return ShootWindowCommand(
-      value: ShootSceneValue.from(query: gridStore.query),
-      opener: ShootWindowOpener { open(value: $0) })
+    return ShootWindowOpener { open(value: $0) }
   }
 
   private func applyWidth(_ width: CGFloat) {
@@ -448,7 +454,13 @@ struct RootView: View {
           treeSection: FolderTreeSection(
             // The same loader the rest of the app's covers come through (WP16 P5): one cache,
             // one concurrency gate for every cover in this column.
-            gridService: gridService, heroLoader: heroLoader, layoutMode: layoutMode,
+            gridService: gridService, heroLoader: heroLoader,
+            // IMGMGR-362 (WP21 P3): the ONE `GridPreferences` this app has, handed to the tree as
+            // the observable object rather than as a copied `Bool` — one instance, two readers
+            // (this column's tree and the grid's own menus), one persisted key set. `gridStore`
+            // is a single `@State` here (:43), so both columns of the split view read the same
+            // object and the iPad cannot hold a stale answer.
+            preferences: gridStore.preferences, layoutMode: layoutMode,
             reloadToken: treeReloadToken,
             // P3: read here in the body, so a summaries load that lands later re-renders the
             // rows — `queueStore` is observed, the tree section is a value.
@@ -471,7 +483,42 @@ struct RootView: View {
     // launch surface (the queue root) and the persistent one on Regular-2/3 — `LayoutResolver`
     // never hides this column (`.doubleColumn`/`.all`), so of the two columns it is the one whose
     // bar is present in every `layoutMode` branch.
-    .toolbar { accountToolbarItem }
+    .toolbar {
+      folderTreeViewMenuItem
+      accountToolbarItem
+    }
+  }
+
+  /// IMGMGR-362 (WP21 P3), the plan's Compact REACHABILITY answer, verified in the code rather
+  /// than assumed: the More menu is declared on the GRID's action bar (`GridView`) and nowhere
+  /// else, so on the phone — where the tree home is a place of its own and the grid is pushed on
+  /// top of it — a reader standing in front of the folder tree has no way to reach a view option
+  /// about the folder tree.
+  ///
+  /// So the tree home gets its own View menu, and what it renders is the SAME
+  /// `GridMoreMenuEntry` value the grid's menu renders (`GridMoreMenu.pruneMirroredArchive`),
+  /// through the same `GridMoreMenuItem` row: the same identifier, the same title, the same
+  /// binding onto the same `GridPreferences` property. One key, two entry points, and no second
+  /// mechanism — a divergence between the two menus is not something to keep in step, it is
+  /// impossible.
+  ///
+  /// `foldsClearIntoMore: false` because that fold is the grid ACTION BAR's width rule (WP13 P1)
+  /// and applies to the Clear row alone; this menu holds neither.
+  @ToolbarContentBuilder
+  private var folderTreeViewMenuItem: some ToolbarContent {
+    ToolbarItem(placement: .primaryAction) {
+      Menu {
+        GridMoreMenuItem(
+          entry: GridMoreMenu.pruneMirroredArchive, store: gridStore,
+          foldsClearIntoMore: false, openShootWindow: shootWindowOpener)
+      } label: {
+        Label("View", systemImage: "slider.horizontal.3")
+      }
+      // Named for the same reason `gridMoreMenu` is: "View" is a word this app puts on screen in
+      // more than one place, and a UI test that matched the label alone could drive the wrong
+      // control.
+      .accessibilityIdentifier("folderTreeViewMenu")
+    }
   }
 
   private var contentColumn: some View {

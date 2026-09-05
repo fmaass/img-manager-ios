@@ -87,7 +87,10 @@ enum GridMoreMenu {
       entries: [select, clearMark, copyForLightroom]),
     GridMoreMenuSection(
       id: "more.section.view", title: "View",
-      entries: [filenamePlates, picksInGroups, density]),
+      // IMGMGR-362 APPENDED the archive prune to THIS section's own run — a view option beside
+      // the other view options. The decided order is untouched: every pair that was ordered
+      // before is ordered the same now, and the section stays one contiguous run.
+      entries: [filenamePlates, picksInGroups, density, pruneMirroredArchive]),
     GridMoreMenuSection(
       id: "more.section.shoot", title: "Shoot",
       entries: [status, openInNewWindow]),
@@ -184,6 +187,28 @@ enum GridMoreMenu {
     surface: .toggle(
       isOn: { $0.preferences.picksInGroups },
       set: { store, isOn in store.preferences.picksInGroups = isOn }))
+
+  /// IMGMGR-362 (WP21 P3): hide the archive folders the incoming library already holds.
+  ///
+  /// Beside Filename plates and Picks in groups because it is the same kind of switch — "change
+  /// what the browse surfaces draw" — and in THIS menu because the native app already has a
+  /// view-options surface (the web sibling puts its twin next to the tier row instead; that is
+  /// covered-differently, not divergence).
+  ///
+  /// The tree home renders THIS SAME VALUE in its own View menu (`RootView.sidebar`), because the
+  /// More menu is on the grid's action bar and the surface that shows the tree is not the grid.
+  /// One entry, one identifier, one preference key, two places a reader can reach it — never a
+  /// second switch that could disagree with this one.
+  static let pruneMirroredArchive = GridMoreMenuEntry(
+    id: "more.pruneMirroredArchive",
+    accessibilityIdentifier: "gridMoreMenu.more.pruneMirroredArchive",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "eye.slash",
+    title: { _ in "Hide mirrored archive" },
+    isEnabled: { _ in true },
+    surface: .toggle(
+      isOn: { $0.preferences.pruneMirroredArchive },
+      set: { store, isOn in store.preferences.pruneMirroredArchive = isOn }))
 
   /// DENSITY, mapped onto the grid's EXISTING six row-height steps (`GridRowHeight`) rather
   /// than a second persisted property. The native grid already has six measured zoom steps

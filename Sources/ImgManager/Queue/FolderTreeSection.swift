@@ -44,6 +44,19 @@ struct FolderTreeSection: View {
   /// (`HeroThumbnailLoader.swift:38-44`), so a shoot visible as a queue card AND as a tree row at
   /// the same time, before either finishes, fetches twice. Cheap and read-only, but real.
   let heroLoader: HeroThumbnailLoader
+  /// IMGMGR-362 (WP21 P3): the reader's persisted view options, as the OBSERVABLE OBJECT the
+  /// composition root already owns (`GridStore.preferences`) and never as a copied `Bool`.
+  ///
+  /// That distinction is the whole wiring: `GridPreferences` is `@Observable`, so reading
+  /// `preferences.pruneMirroredArchive` inside this view's body (`branches(for:)`) is what
+  /// SUBSCRIBES the tree to the flag. A `Bool` passed in would re-render only when the owner of
+  /// that value happened to re-render — which on the iPad split view is a different column's
+  /// business — and the tree would sit on a stale answer.
+  ///
+  /// One instance, two readers (this and the grid), one persisted key set: the pivot the plan
+  /// held in reserve (lifting the preferences to a `RootView` `@State`) is not needed, because
+  /// `RootView` already owns exactly one `GridStore` and both columns read it.
+  let preferences: GridPreferences
   let layoutMode: LayoutMode
   /// Bumped by a pull-to-refresh on the home (`QueueHomeRefresh`, `QueueView`), which is the one
   /// thing that re-runs the tree load — the load itself is view state, so the gesture reaches it
@@ -185,7 +198,11 @@ struct FolderTreeSection: View {
       FolderTreeModel.filter(
         FolderTreePresentation.tree(for: layoutMode, folders: load.folders(tier)),
         matching: searchText),
-      tier: tier)
+      tier: tier,
+      // IMGMGR-362: read HERE, in the body's own call, so the tree re-renders the moment the
+      // reader flips the switch in either menu. `FolderTreeModel.tierItems` decides what the flag
+      // means (archive only, before the fold); this view only says what the reader asked for.
+      pruneMirroredArchive: preferences.pruneMirroredArchive)
   }
 
   /// Searching the 855 already-loaded folder NAMES, in memory. Never `GridImagesQuery.q` — that
