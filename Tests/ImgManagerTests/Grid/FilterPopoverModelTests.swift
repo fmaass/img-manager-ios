@@ -25,6 +25,7 @@ struct FilterPopoverModelTests {
   /// rating buckets, all three mark states including zeros, `has_master` both ways.
   private func liveShapedFacets() -> Components.Schemas.ImageFacets {
     Components.Schemas.ImageFacets(
+      camera: facetCounts([("SONY ILCE-7RM5", 4), ("FUJIFILM X-T2", 4), ("unset", 4)]),
       ext: facetCounts([("jpg", 9), ("arw", 3)]),
       hasMaster: facetCounts([("true", 5), ("false", 7)]),
       mark: facetCounts([("pick", 4), ("dislike", 0), ("none", 8)]),
@@ -172,26 +173,131 @@ struct FilterPopoverModelTests {
     #expect(mark?.rows.map(\.title) == ["Pick", "Unmarked", "Dislike"])
   }
 
-  /// B7, the single default: no `camera` filter parameter and no `camera` facet exist on
-  /// `/api/images`, `/api/facets` or `/api/image-groups`, and `camera_preview_only` answers a
-  /// different question ("is this image's best source the camera's own preview"). Shipping the
-  /// wrong dimension under the owner's word is worse than shipping the rows that are real.
-  @Test("No Camera row exists, and no camera_preview_only stand-in was substituted for one")
-  func noCameraRowAndNoStandIn() {
-    #expect(
-      !FilterPopoverModel.sections.contains(where: {
-        $0.title.localizedCaseInsensitiveContains("camera")
-      }))
+  /// **The B7 default is spent** (WP21 P2, IMGMGR-376). It rested on a fact about the server —
+  /// no `camera` filter parameter and no `camera` facet existed on `/api/images`, `/api/facets`
+  /// or `/api/image-groups` — and img-manager v0.20.0 shipped both (IMGMGR-316), re-vendored by
+  /// WP21 P1. What survives verbatim is the OTHER half: `camera_preview_only` answers a
+  /// different question ("is this image's best source the camera's own preview") and is still not
+  /// a stand-in and still not a row, now that a real Camera dimension sits beside it.
+  @Test("The Camera row is the server's own values, and camera_preview_only is still not a row")
+  func theCameraRowIsServerValuesAndNoStandInWasSubstituted() {
+    let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
+    let camera = live.first(where: { $0.field == .camera })
+    #expect(camera?.title == "Camera")
+    // The response's own bodies, in the server's own order and with its own counts — never a
+    // declared vocabulary and never derived from a page of images.
+    #expect(camera?.rows.map(\.value) == ["SONY ILCE-7RM5", "FUJIFILM X-T2"])
+    #expect(camera?.rows.map(\.count) == [4, 4])
+    #expect(camera?.rows.allSatisfy({ $0.isEnabled }) == true)
+    #expect(row(live, .camera, "SONY ILCE-7RM5")?.markRole == nil)
+
+    // The half of B7 that still holds.
     let fields = FilterPopoverModel.sections.map(\.field)
     #expect(!fields.contains(.cameraPreviewOnly))
-    let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
     #expect(!live.flatMap(\.rows).contains(where: { $0.field == .cameraPreviewOnly }))
   }
 
-  @Test("The declared sections are Rating, Mark, Edited and Type, in the owner's own order")
+  /// `unset` is the server's name for a NULL column (`_count_by`: "A NULL is reported as 'unset'
+  /// rather than dropped"), so it arrives in the `camera` facet for every photograph with no
+  /// `exif_camera`. It is not a body one can ASK for — `camera=unset` would filter on a camera
+  /// literally named that — so the popover does not offer it as a row, while the Stats tab (which
+  /// renders every value the server sent) routes its tap through `toggle`, which clears.
+  @Test("The `unset` camera bucket is not offered as a popover row, and its tap clears instead")
+  func theUnsetCameraBucketIsNotAFilter() {
+    let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
+    let camera = live.first(where: { $0.field == .camera })
+    #expect(camera?.rows.contains(where: { $0.value == "unset" }) == false)
+    // POSITIVE CONTROL, same response: the two real bodies ARE offered, so the absence above is
+    // the rule doing its work rather than an empty section.
+    #expect(camera?.rows.count == 2)
+
+    var query = GridImagesQuery()
+    query.camera = "SONY ILCE-7RM5"
+    InspectorFacetField.camera.toggle("unset", in: &query)
+    #expect(query.camera == nil)
+  }
+
+  /// The stated cap (WP21 P2's pivot, never a silent truncation): the server orders `_count_by`
+  /// by count DESC and caps at its own `FACET_VALUE_LIMIT` of 30, so the head of that list is
+  /// what a popover rendering an EAGER `VStack` can carry.
+  ///
+  /// **And the cap SAYS SO** (diff-gate B1). A head with nothing announcing it is a silent
+  /// truncation whatever the doc comment claims, so the section ends in one disabled row stating
+  /// exactly how many bodies did not fit. The number is derived from `cappedRows`' own output, so
+  /// the two cannot drift: with 20 bodies and a limit of 12 it is 8, and 7 once a 21st-ranked
+  /// body in force is appended beside the head (`20 - 12 - 1`).
+  @Test("A wide Camera response is capped at the stated head, and the ACTIVE body survives it")
+  func theCameraSectionIsCappedAtItsStatedHead() {
+    let limit = FilterPopoverModel.cameraValueLimit
+    let bodies = limit + 8
+    let wide = (0..<bodies).map { ("BODY-\(String(format: "%02d", $0))", 100 - $0) }
+    let facets = Components.Schemas.ImageFacets(camera: facetCounts(wide), total: 500)
+
+    let head = FilterPopoverModel.rows(facets, GridImagesQuery())
+      .first(where: { $0.field == .camera })
+    let headValues = head?.rows.filter { $0.value != FilterPopoverModel.overflowValue }
+    #expect(headValues?.count == limit)
+    #expect(headValues?.first?.value == "BODY-00")
+    #expect(headValues?.last?.value == "BODY-\(String(format: "%02d", limit - 1))")
+
+    // The notice, LAST and disabled: it states the eight bodies that did not fit, it is not
+    // selectable, and it is not a camera anyone can filter to.
+    let notice = head?.rows.last
+    #expect(notice?.value == FilterPopoverModel.overflowValue)
+    #expect(notice?.accessibilityIdentifier == "filterPopoverRow-camera-more")
+    #expect(notice?.title == "+\(bodies - limit) more cameras")
+    #expect(notice?.count == bodies - limit)
+    #expect(notice?.isEnabled == false)
+    #expect(notice?.isActive == false)
+    #expect(head?.rows.count == limit + 1)
+
+    // A body OUTSIDE the head that is currently in force stays offered, or the reader could
+    // apply a filter from the Stats tab and have no control here that clears it. It is APPENDED,
+    // never swapped in over an evicted head row — so the notice's number drops by exactly one.
+    var query = GridImagesQuery()
+    query.camera = "BODY-\(String(format: "%02d", limit + 5))"
+    let withActive = FilterPopoverModel.rows(facets, query)
+      .first(where: { $0.field == .camera })
+    #expect(withActive?.rows.count == limit + 2)  // head + the active body + the notice
+    #expect(withActive?.rows.contains(where: { $0.isActive && $0.value == query.camera }) == true)
+    // ...and it carries its REAL count, not a re-offered zero: it came from the response.
+    #expect(withActive?.rows.first(where: { $0.isActive })?.count == 100 - (limit + 5))
+    // Nothing was evicted to make room for it: the whole head is still there.
+    let lastHeadBody = "BODY-\(String(format: "%02d", limit - 1))"
+    #expect(withActive?.rows.contains(where: { $0.value == lastHeadBody }) == true)
+    let activeNotice = withActive?.rows.last
+    #expect(activeNotice?.value == FilterPopoverModel.overflowValue)
+    #expect(activeNotice?.count == bodies - limit - 1)
+    #expect(activeNotice?.title == "+\(bodies - limit - 1) more cameras")
+
+    // A response inside the cap is untouched, and states NO overflow — the cap is a ceiling, not
+    // a fixed size, and a notice that appeared when nothing was hidden would be a lie.
+    let narrow = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
+      .first(where: { $0.field == .camera })
+    #expect(narrow?.rows.count == 2)
+    #expect(narrow?.rows.contains(where: { $0.value == FilterPopoverModel.overflowValue }) == false)
+
+    // The boundary the arithmetic has to survive: head + the one active body covers EVERY body,
+    // so there is nothing left to announce and no notice is drawn.
+    let exact = (0..<(limit + 1)).map { ("BODY-\(String(format: "%02d", $0))", 100 - $0) }
+    var exactQuery = GridImagesQuery()
+    exactQuery.camera = "BODY-\(String(format: "%02d", limit))"
+    let exactRows = FilterPopoverModel.rows(
+      Components.Schemas.ImageFacets(camera: facetCounts(exact), total: 500), exactQuery
+    ).first(where: { $0.field == .camera })
+    #expect(exactRows?.rows.count == limit + 1)
+    #expect(
+      exactRows?.rows.contains(where: { $0.value == FilterPopoverModel.overflowValue }) == false)
+  }
+
+  @Test("The declared sections are Rating, Mark, Edited, Type and Camera, in the owner's order")
   func theDeclaredSectionSet() {
-    #expect(FilterPopoverModel.sections.map(\.field) == [.rating, .mark, .hasMaster, .ext])
-    #expect(FilterPopoverModel.sections.map(\.title) == ["Rating", "Mark", "Edited", "Type"])
+    #expect(
+      FilterPopoverModel.sections.map(\.field) == [.rating, .mark, .hasMaster, .ext, .camera])
+    #expect(
+      FilterPopoverModel.sections.map(\.title) == [
+        "Rating", "Mark", "Edited", "Type", "Camera",
+      ])
     let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
     #expect(row(live, .hasMaster, "true")?.title == "Edited in Lightroom")
   }
@@ -261,6 +367,15 @@ struct FilterPopoverModelTests {
       #expect((row(sections, .rating, "4")?.count ?? 0) > 0)
       #expect((row(sections, .hasMaster, "true")?.count ?? 0) > 0)
       #expect((sections.first(where: { $0.field == .ext })?.rows.count ?? 0) >= 2)
+      // WP21 P2: the two camera bodies the UI leg addresses by identifier, with real counts —
+      // and the `unset` bucket the fixture also carries left out of the offered rows.
+      let camera = sections.first(where: { $0.field == .camera })
+      #expect(camera?.rows.map(\.value) == ["SONY ILCE-7RM5", "FUJIFILM X-T2"])
+      #expect(camera?.rows.allSatisfy({ $0.count > 0 && $0.isEnabled }) == true)
+      // Two bodies is inside the cap, so the fixture the UI legs read carries NO overflow
+      // notice — which is what makes the UI test's absence assertion meaningful.
+      #expect(
+        camera?.rows.contains(where: { $0.value == FilterPopoverModel.overflowValue }) == false)
       #expect(DebugStubTransport.fixtureFacets().total == 12)
     }
   #endif

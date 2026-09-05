@@ -172,6 +172,12 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
   case tag
   case sourceTier
   case ext
+  /// WP21 P2 (IMGMGR-376). One camera BODY, exactly as `/api/facets` reports it — an equality on
+  /// `images.exif_camera` server-side, not a make/model parse and not the `camera_preview_only`
+  /// question three cases below. It arrived with img-manager v0.20.0 (`ImageFacets.camera` plus a
+  /// `camera` query parameter on every filter-bearing route); before that neither half existed,
+  /// which is why this enum shipped without it.
+  case camera
   case good
   case hasMaster
   case cameraPreviewOnly
@@ -187,6 +193,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: return "Tag"
     case .sourceTier: return "Source"
     case .ext: return "Type"
+    case .camera: return "Camera"
     case .good: return "Good"
     case .hasMaster: return "Master"
     case .cameraPreviewOnly: return "Camera preview only"
@@ -204,6 +211,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: return facets.tag ?? []
     case .sourceTier: return facets.sourceTier ?? []
     case .ext: return facets.ext ?? []
+    case .camera: return facets.camera ?? []
     case .good: return facets.good ?? []
     case .hasMaster: return facets.hasMaster ?? []
     case .cameraPreviewOnly: return facets.cameraPreviewOnly ?? []
@@ -220,7 +228,10 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
       case "false": return "No"
       default: return value
       }
-    case .mark, .rating, .label, .keyword, .tag, .sourceTier, .ext:
+    case .mark, .rating, .label, .keyword, .tag, .sourceTier, .ext, .camera:
+      // Verbatim, camera included: `SONY ILCE-7RM5` is the body's own name as the EXIF carries
+      // it and as the filter must send it back — prettifying it here would put a string on
+      // screen that no `camera=` request could ever be built from.
       return value
     }
   }
@@ -236,6 +247,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: return query.tag == value
     case .sourceTier: return query.sourceTier?.rawValue == value
     case .ext: return query.ext == value
+    case .camera: return query.camera == value
     case .good: return query.good.map { String($0) } == value
     case .hasMaster: return query.hasMaster.map { String($0) } == value
     // The parameter's contract default is `false`, so only `true` is ever a filter — the
@@ -262,6 +274,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: return query.tag
     case .sourceTier: return query.sourceTier?.rawValue
     case .ext: return query.ext
+    case .camera: return query.camera
     case .good: return query.good.map { String($0) }
     case .hasMaster: return query.hasMaster.map { String($0) }
     case .cameraPreviewOnly: return query.cameraPreviewOnly == true ? "true" : nil
@@ -285,6 +298,11 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: query.tag = value
     case .sourceTier: query.sourceTier = GridSourceTier(rawValue: value)
     case .ext: query.ext = value
+    // `unset` is the server's own name for "this photograph has no `exif_camera` at all"
+    // (`_count_by`), not a body one can ask for: sending `camera=unset` would filter on a
+    // camera literally named that. So the row clears the dimension instead — the same rule the
+    // rating facet's own `unset` row follows two lines up.
+    case .camera: query.camera = value == "unset" ? nil : value
     case .good: query.good = Bool(value)
     case .hasMaster: query.hasMaster = Bool(value)
     case .cameraPreviewOnly: query.cameraPreviewOnly = value == "true" ? true : nil
@@ -300,6 +318,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: query.tag = nil
     case .sourceTier: query.sourceTier = nil
     case .ext: query.ext = nil
+    case .camera: query.camera = nil
     case .good: query.good = nil
     case .hasMaster: query.hasMaster = nil
     case .cameraPreviewOnly: query.cameraPreviewOnly = nil
@@ -315,6 +334,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .tag: return query.tag != nil
     case .sourceTier: return query.sourceTier != nil
     case .ext: return query.ext != nil
+    case .camera: return query.camera != nil
     case .good: return query.good != nil
     case .hasMaster: return query.hasMaster != nil
     case .cameraPreviewOnly: return query.cameraPreviewOnly == true
@@ -333,7 +353,11 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
 /// tappable and self-clearing — only the count and Clear leave the tier alone.
 enum InspectorFacetFilters {
   static let clearableFields: [InspectorFacetField] = [
-    .mark, .rating, .label, .keyword, .tag, .ext, .good, .hasMaster, .cameraPreviewOnly,
+    // `.camera` is here and not in the scope exclusion above (WP21 P2, plan AC 12): a camera
+    // body is a FILTER a facet row applies, not part of the shoot scope `selectShoot` publishes
+    // atomically — so it counts towards the active-filter badge and Clear takes it with the
+    // rest, exactly like Type.
+    .mark, .rating, .label, .keyword, .tag, .ext, .camera, .good, .hasMaster, .cameraPreviewOnly,
   ]
 
   static func activeCount(_ query: GridImagesQuery) -> Int {

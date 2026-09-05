@@ -62,11 +62,23 @@ struct FilterPopoverSection: Identifiable, Sendable {
 /// "what a second tap does" and "what Clear clears" have exactly one implementation, shared with
 /// the Stats tab (`InspectorModel.swift`). This type adds no mutation path of its own.
 ///
-/// **There is no Camera row** (decision 1, gate round 1 B7): no `camera` (make/model) filter
-/// parameter and no `camera` facet exist on `/api/images`, `/api/facets` or `/api/image-groups`,
-/// and `camera_preview_only` answers a different question — "is this image's best source the
-/// camera's own preview" — so it is not offered as a stand-in. IMGMGR-316 carries the cross-repo
-/// facet; only an explicit owner answer adds the row, and then only as one more declaration below.
+/// **The Camera row exists** (WP21 P2, IMGMGR-376 / -339; owner/orchestrator resolution
+/// 2026-09-04, comment 3750/3751 on those tickets). The default this replaces was a fact about
+/// the server, not a product choice: at WP16 P3 no `camera` filter parameter and no `camera`
+/// facet existed on `/api/images`, `/api/facets` or `/api/image-groups`, so the row could not be
+/// built. IMGMGR-316 shipped both in img-manager v0.20.0 — `ImageFacets.camera` and a `camera`
+/// query parameter on all six filter-bearing routes — and this client re-vendored that contract
+/// in WP21 P1, so the row is now built from the server's own values.
+///
+/// The shipped rule, in full:
+///   - ONE dimension, `InspectorFacetField.camera`, with the two presentations every facet has —
+///     this popover section and the Stats-tab section `InspectorView.facetRows` auto-renders from
+///     `InspectorFacetField.allCases`. One owner state, both tappable. No chip and no third
+///     control: the native app has exactly one filter surface.
+///   - Values come ONLY from `ImageFacets.camera`, never derived client-side, which is why the
+///     declaration below is empty (response-discovered, like Type).
+///   - `camera_preview_only` is still NOT a stand-in and still not a row: it answers a different
+///     question — "is this image's best source the camera's own preview".
 enum FilterPopoverModel {
 
   /// A declared value: fixed, named, and present whatever the response holds.
@@ -79,11 +91,27 @@ enum FilterPopoverModel {
   private struct Declaration {
     let field: InspectorFacetField
     let title: String
-    /// Empty means the values come from the RESPONSE rather than from here. Only Type does: `ext`
-    /// is a free-form string in the vendored contract (no enum), so a declared list of extensions
-    /// would be invented wire vocabulary — the failure mode IMGMGR-173 records.
+    /// Empty means the values come from the RESPONSE rather than from here. Type and Camera both
+    /// do: `ext` and `camera` are free-form strings in the vendored contract (no enum), so a
+    /// declared list of extensions or camera bodies would be invented wire vocabulary — the
+    /// failure mode IMGMGR-173 records.
     var values: [DeclaredValue] = []
+    /// A response-discovered section's row cap, or nil for "however many the response holds".
+    ///
+    /// Only Camera sets one, and it is a stated cap rather than a silent truncation (WP21 P2's
+    /// pivot). The server answers `_count_by` ordered by count DESC then value, capped at its own
+    /// `FACET_VALUE_LIMIT` of 30, so a photographer with many bodies could hand this popover
+    /// thirty rows — and `FilterPopoverView` renders an EAGER `VStack` precisely because the row
+    /// set is "FIXED and small". Twelve is the head of that list; `cappedRows` keeps whichever
+    /// row is currently in force even when it falls outside the head, so no filter is ever
+    /// unclearable from the surface that applied it, and appends one disabled `+N more cameras`
+    /// row stating exactly how many bodies did not fit — the cap is announced on the surface, not
+    /// only in this comment. Type takes no cap: `ext` is a handful of file extensions.
+    var valueLimit: Int?
   }
+
+  /// The head of the Camera section, stated (see `Declaration.valueLimit`).
+  static let cameraValueLimit = 12
 
   /// The owner's own order (decision 1): ">=stars and the tri-state mark row (Pick / Unmarked /
   /// Dislike) plus Edited / Type … drill-ins".
@@ -111,6 +139,9 @@ enum FilterPopoverModel {
       field: .hasMaster, title: "Edited",
       values: [DeclaredValue(value: "true", title: "Edited in Lightroom", markRole: .edited)]),
     Declaration(field: .ext, title: "Type"),
+    // WP21 P2: response-discovered, last, and the only capped section. Last because it is the
+    // widest dimension and the owner's order names the judgement rows first.
+    Declaration(field: .camera, title: "Camera", valueLimit: cameraValueLimit),
   ]
 
   /// The declaration at rest: every named row at zero, nothing active, nothing reachable. This is
@@ -239,7 +270,7 @@ enum FilterPopoverModel {
     _ declaration: Declaration, _ facets: Components.Schemas.ImageFacets?, _ query: GridImagesQuery
   ) -> [FilterPopoverRow] {
     let field = declaration.field
-    var rows = counts(field, facets).map { count in
+    var rows = counts(field, facets).filter { isOfferable($0.value, field) }.map { count in
       row(
         field: field, value: count.value, title: field.displayValue(count.value),
         count: count.count, markRole: nil, query: query)
@@ -256,7 +287,82 @@ enum FilterPopoverModel {
           field: field, value: "", title: declaration.title, count: 0, markRole: nil, query: query)
       ]
     }
+    if let limit = declaration.valueLimit {
+      rows = cappedRows(rows, limit: limit, field: field)
+    }
     return rows
+  }
+
+  /// Is this server-sent value one this surface can OFFER as a filter?
+  ///
+  /// One value fails it: `unset`, which the server emits for a NULL column (`_count_by`: "A NULL
+  /// is reported as 'unset' rather than dropped"). It is a real population — "no `exif_camera` at
+  /// all" is four of the twelve DEBUG photographs — but there is no `camera=` request that asks
+  /// for it, and a row whose only effect is to clear the dimension is not a filter, it is a
+  /// mislabelled Clear button. `InspectorFacetField.camera.toggle` treats it the same way for the
+  /// Stats tab, which renders every value the server sent by design.
+  ///
+  /// Scoped to the dimensions where a NULL is ordinary rather than applied to every discovered
+  /// row: `ext` is never null on an indexed photograph, and dropping a value from Type would be a
+  /// change this phase has no reason to make.
+  private static func isOfferable(_ value: String, _ field: InspectorFacetField) -> Bool {
+    guard field == .camera else { return true }
+    return value != "unset"
+  }
+
+  /// The head of a capped section — and the row that SAYS it is a head (diff-gate B1).
+  ///
+  /// The server's own order is count DESC (`_count_by`), so `prefix(limit)` IS the top `limit` by
+  /// count. Two things then keep the cap from being a silent truncation, which the plan's pivot
+  /// forbids in as many words:
+  ///
+  ///   1. The row currently IN FORCE survives whatever its position, and is APPENDED rather than
+  ///      swapped in over an evicted head row — a body the reader chose must stay clearable from
+  ///      the surface that applied it (the same rule the active-value re-offer above exists for),
+  ///      and evicting a genuinely top-ranked body to make room for it would hide a row the
+  ///      reader never asked to lose. A capped section is therefore `limit` rows, or `limit + 1`
+  ///      while a body outside the head is in force.
+  ///   2. Whatever is still not shown is COUNTED and stated in one trailing row. `hidden` is
+  ///      computed from this same function's own output — `rows.count - head.count` — so the
+  ///      number cannot drift from what was actually dropped, and it falls to zero (no row) the
+  ///      moment the head plus the active row covers everything.
+  private static func cappedRows(
+    _ rows: [FilterPopoverRow], limit: Int, field: InspectorFacetField
+  ) -> [FilterPopoverRow] {
+    guard rows.count > limit else { return rows }
+    var head = Array(rows.prefix(limit))
+    if let active = rows.first(where: { $0.isActive }), !head.contains(where: { $0.isActive }) {
+      head.append(active)
+    }
+    let hidden = rows.count - head.count
+    guard hidden > 0 else { return head }
+    head.append(overflowRow(field: field, hidden: hidden))
+    return head
+  }
+
+  /// The "and there are more" row: a statement, never a filter.
+  ///
+  /// Disabled and never active, so it cannot be tapped and `applyFacetFilter` can never be called
+  /// with its `value` — the identifier `filterPopoverRow-<field>-more` names a notice, not a
+  /// camera body. It carries `hidden` as its `count` like every other row rather than a zero,
+  /// because the popover publishes a row's number as its accessibility VALUE: a reader (and a
+  /// test) can then read the exact number of bodies that did not fit.
+  private static func overflowRow(field: InspectorFacetField, hidden: Int) -> FilterPopoverRow {
+    FilterPopoverRow(
+      field: field, value: overflowValue, title: overflowTitle(field, hidden: hidden),
+      count: hidden, isActive: false, isEnabled: false, markRole: nil)
+  }
+
+  /// The overflow row's wire-shaped `value`, and the reason it is not one: no facet value is ever
+  /// read out of this row (it is disabled), so this string only has to be stable for the
+  /// identifier and distinct from a body a photographer owns.
+  static let overflowValue = "more"
+
+  private static func overflowTitle(_ field: InspectorFacetField, hidden: Int) -> String {
+    switch field {
+    case .camera: return "+\(hidden) more cameras"
+    default: return "+\(hidden) more"
+    }
   }
 
   private static func row(

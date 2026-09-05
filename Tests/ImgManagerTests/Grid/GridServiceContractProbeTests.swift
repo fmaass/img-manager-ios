@@ -332,4 +332,81 @@ struct GridServiceContractProbeTests {
     #expect(sent?["sort"] == nil)
     #expect(sent?["cursor"] == nil)
   }
+
+  // MARK: - WP21 P2: the `camera` filter reaches EVERY projection (plan AC 12)
+
+  /// The filter set travels on six different query shapes, and the generator gives each operation
+  /// its OWN `Input.Query` type even where the shapes match — so "the client can send `camera`"
+  /// has to be asked six times, once per mapping. A dimension threaded into `asListImagesQuery`
+  /// alone would look correct in the grid and silently no-op the moment the reader opened a
+  /// scene, refreshed a card, stepped through the loupe, or read a group header count.
+  ///
+  /// Read off the WIRE the real generated `Client` built, not off a Swift property: the names
+  /// asserted are the contract's own (`camera`, as `/api/images`, `/api/facets`,
+  /// `/api/browse/stacks`, `/api/images/{id}/neighbours` and `/api/image-groups` all declare it,
+  /// between `ext` and `has_master`).
+  @Test(
+    "`camera` is emitted by every recorded projection: images, facets, scenes, neighbours, groups"
+  )
+  func cameraReachesEveryRecordedProjection() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    var query = GridImagesQuery(folderID: 1)
+    query.camera = "SONY ILCE-7RM5"
+
+    _ = try await service.images(query, cursor: nil, limit: 10)
+    _ = try await service.facets(query)
+    _ = try await service.browseStacks(query, direction: .asc, cursor: nil, limit: 10)
+    _ = try await service.neighbours(after: 7, query: query, limit: 5)
+    _ = try await service.imageGroups(query, groupBy: .camera)
+
+    let listImages = await transport.lastListImagesQuery
+    let facets = await transport.lastFacetsQuery
+    let browseStacks = await transport.lastBrowseStacksQuery
+    let neighbours = await transport.lastNeighboursQuery
+    let imageGroups = await transport.lastImageGroupsQuery
+    let recorded: [(String, [String: String]?)] = [
+      ("list-images", listImages), ("facets", facets), ("scene browse", browseStacks),
+      ("neighbours", neighbours), ("group headers", imageGroups),
+    ]
+    for (surface, sent) in recorded {
+      #expect(
+        sent?["camera"] == "SONY ILCE-7RM5",
+        "\(surface) dropped the camera filter: \(String(describing: sent?["camera"]))")
+      // POSITIVE CONTROL per surface: a parameter that has always been sent is on the SAME
+      // recording, so a hit above is the field being added rather than the request being
+      // recorded at all.
+      #expect(sent?["folder_id"] == "1", "\(surface) recorded no request, so its check is vacuous")
+    }
+  }
+
+  /// The SIXTH projection, asserted on the generated `Input.Query` rather than on the wire: the
+  /// shared `GridStubTransport` records no query for `GET /api/stacks/{id}` (it reads only the id
+  /// out of the path), and that file is outside this phase's scope fence. The value still passes
+  /// through the real generated type, so a mapping that forgot `camera` fails here — and the five
+  /// wire assertions above are what prove that type serialises it.
+  @Test("The stack-row refresh projection carries `camera` — the sixth filter surface")
+  func theStackRowProjectionCarriesCamera() {
+    var query = GridImagesQuery(folderID: 1)
+    query.camera = "FUJIFILM X-T2"
+
+    let stackRow = query.asStackRowQuery()
+    #expect(stackRow.camera == "FUJIFILM X-T2")
+    #expect(stackRow.folderId == 1)  // positive control: the projection was built at all
+
+    // The other five at the same level, so all six mappings are named in one place and a new
+    // projection added without `camera` has an obvious gap to fall into.
+    #expect(query.asListImagesQuery().camera == "FUJIFILM X-T2")
+    #expect(query.asFacetsQuery().camera == "FUJIFILM X-T2")
+    #expect(
+      query.asBrowseStacksQuery(direction: .asc, cursor: nil, seekDate: nil, limit: 10).camera
+        == "FUJIFILM X-T2")
+    #expect(query.asNeighboursQuery(limit: 5).camera == "FUJIFILM X-T2")
+    #expect(query.asImageGroupsQuery(groupBy: .camera).camera == "FUJIFILM X-T2")
+
+    // ...and nil stays nil: an unset dimension must not become an empty-string filter.
+    let unfiltered = GridImagesQuery(folderID: 1)
+    #expect(unfiltered.asStackRowQuery().camera == nil)
+    #expect(unfiltered.asListImagesQuery().camera == nil)
+  }
 }

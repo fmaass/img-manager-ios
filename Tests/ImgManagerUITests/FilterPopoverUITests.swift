@@ -16,6 +16,13 @@ import XCTest
 /// discriminate a thin fixture from an absent surface. The fixture expansion has no isolated RED;
 /// `DebugStubFacetsFixtureTests` pins its shape post hoc and says so in its own doc comment.
 ///
+/// **WP21 P2 (IMGMGR-376 / -339) extends this file**, in the same both-destination idiom and for
+/// the same reason: the new assertions name only identifier strings and literals, so they compile
+/// against the pre-change tree and fail on it — `filterPopoverRow-camera-*` is in no hierarchy at
+/// `87497ce` (no Camera declaration exists), and the scene card's spoken sentence carries no
+/// "edited" clause there, so `testTheSceneCardsPencilCarriesTheEditedCount` fails on the label it
+/// reads. Neither RED needs an app symbol.
+///
 /// Makes NO device-idiom decision (plan invariant (i)): every step keys off an OBSERVED element,
 /// so the same assertions run against Regular's `.primaryAction` toolbar and against Compact's
 /// persistent options row. The `gridShortcutHelpControl` leg is the "the row did not overflow"
@@ -142,6 +149,11 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
       "filterPopoverRow-rating-3", "filterPopoverRow-rating-4", "filterPopoverRow-rating-5",
       "filterPopoverRow-mark-pick", "filterPopoverRow-mark-none", "filterPopoverRow-mark-dislike",
       "filterPopoverRow-hasMaster-true", "filterPopoverRow-ext-jpg", "filterPopoverRow-ext-arw",
+      // WP21 P2: response-discovered like Type, from the DEBUG fixture's own `camera` facet —
+      // the two bodies `fixtureGroupKey` already groups the twelve stub photographs by. The
+      // identifier is `filterPopoverRow-<field>-<value>` verbatim (`FilterPopoverRow.id`), so
+      // the server's own value, spaces and all, is what addresses the row.
+      "filterPopoverRow-camera-SONY ILCE-7RM5", "filterPopoverRow-camera-FUJIFILM X-T2",
     ]
     let missing = declared.filter { !app.descendants(matching: .any)[$0].exists }
     XCTAssertTrue(
@@ -188,12 +200,58 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
       "The popover has no Type row for the fixture's own file type.")
     XCTAssertNotNil(count(of: type), "The Type row states no numeric count.")
 
-    // B7: no Camera row, and no `camera_preview_only` substituted for one.
+    // WP21 P2 (IMGMGR-376 / -339), the shipped rule that replaces B7's default: the Camera
+    // dimension IS offered now that img-manager v0.20.0 serves `ImageFacets.camera` and a
+    // `camera` filter parameter, and its values come from the RESPONSE — never derived here.
+    let camera = row(app, "camera", "SONY ILCE-7RM5")
+    XCTAssertTrue(
+      camera.waitForExistence(timeout: 5),
+      "The popover has no Camera row for the fixture's own camera body — the one filter "
+        + "dimension WP21 P2 adds is missing from the surface that offers it.")
+    XCTAssertEqual(
+      camera.label, "SONY ILCE-7RM5",
+      "The Camera row does not carry the server's own value verbatim.")
+    let cameraCount = count(of: camera)
+    XCTAssertNotNil(camera.value as? String, "The Camera row states no count at all.")
+    XCTAssertGreaterThan(
+      cameraCount ?? 0, 0,
+      "The Camera row states 0 against the DEBUG fixture, whose `camera` facet answers with two "
+        + "real bodies — either the fixture lost its `camera:` values or the counts are not "
+        + "being read off `ImageFacets.camera`.")
+    XCTAssertTrue(
+      camera.isEnabled, "A Camera row with results is not tappable.")
+
+    // The SECOND body, so the section is response-discovered rather than one hard-coded row.
+    let camera2 = row(app, "camera", "FUJIFILM X-T2")
+    XCTAssertTrue(
+      camera2.waitForExistence(timeout: 5),
+      "The popover offers only one camera body — the section is not reading the response's own "
+        + "value list.")
+
+    // The stated cap's notice row (diff-gate B1). It is asserted here by ABSENCE and not added to
+    // the `declared` addressability set above, which asserts presence: the DEBUG fixture answers
+    // `camera` with two bodies — inside `FilterPopoverModel.cameraValueLimit` — so nothing was
+    // truncated and a "+N more cameras" row would be stating something untrue. The PRESENCE case
+    // has no honest UI leg without inventing a wire shape the server never sends for twelve
+    // photographs (`DebugStubFacetsFixtureTests` pins camera to a partition of those twelve), so
+    // it is proven in `FilterPopoverModelTests.theCameraSectionIsCappedAtItsStatedHead` against a
+    // 20-body response instead. The two camera rows asserted above are this check's positive
+    // control: the section IS on screen, so the zero hits below are the rule and not a blank.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "filterPopoverRow-camera-more").count,
+      0,
+      "The popover shows a truncation notice against a two-body fixture — the cap announced an "
+        + "overflow that did not happen.")
+
+    // Unchanged from B7 and still the point: `camera_preview_only` answers a DIFFERENT question
+    // ("is this image's best source the camera's own preview") and is not a stand-in for the
+    // Camera dimension. It must still not be a popover row now that a real one exists.
     XCTAssertEqual(
       app.descendants(matching: .any).matching(
         identifier: "filterPopoverRow-cameraPreviewOnly-true"
       ).count, 0,
-      "A `camera_preview_only` row is standing in for the Camera row decision 1 omits (B7).")
+      "A `camera_preview_only` row is standing beside the real Camera row — the popover offers "
+        + "the wrong dimension under the owner's word.")
 
     let screenshot = XCUIScreen.main.screenshot()
     let attachment = XCTAttachment(screenshot: screenshot)
@@ -290,5 +348,59 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
       XCTWaiter().wait(for: [cleared], timeout: 10), .completed,
       "Tapping the already-active '>= 4' row did not clear it — the funnel still reports an "
         + "active filter, so the popover and the filter it applies have drifted apart.")
+  }
+
+  // MARK: - WP21 P2: the scene card's pencil carries `edited_count` (IMGMGR-339)
+
+  /// The badge half of WP21 P2, on the real surface and on BOTH destinations.
+  ///
+  /// **Read off the CARD's own spoken sentence, not off `sceneEdited` as an element**, and that is
+  /// a deliberate correction of the phase's acceptance wording rather than a shortcut.
+  /// `SceneCardView.cell` ends in `.accessibilityElement(children: .combine)` with its own
+  /// `.accessibilityLabel`, so the badge cluster's identifiers are merged away and no descendant
+  /// named `sceneEdited` is in the hierarchy to find — which is exactly why the shipped
+  /// `SceneBandScreenshotUITests` asserts the pick count as `card.label.contains("2 picked")`
+  /// rather than by identifier. The identifier stays on the pencil (it is what a future
+  /// non-combined card would expose, and it is what `MarkPalette` colouring hangs beside), but an
+  /// assertion on it would fail on a tree that never contained it.
+  ///
+  /// RED at `87497ce`: there the card announces "Scene of 5 photos, closed, 2 picked" and the
+  /// pencil is a glyph with no number, so the `2 edited` clause is absent.
+  func testTheSceneCardsPencilCarriesTheEditedCount() {
+    let app = XCUIApplication()
+    app.launchArguments = ["-UITestStubGrid", "-UITestEnterSceneMode"]
+    app.launch()
+
+    XCTAssertTrue(
+      app.descendants(matching: .any)["gridDislikeButton"].waitForExistence(timeout: 30),
+      "Action bar (gridDislikeButton) never appeared within 30s — expected the DEBUG fixture "
+        + "composition's populated grid in Scene mode, got something else.")
+
+    let card = app.descendants(matching: .any)["sceneCard"].firstMatch
+    XCTAssertTrue(
+      card.waitForExistence(timeout: 20),
+      "No scene card is on screen — the fixture never entered Scene mode with data, so the "
+        + "badge assertion below would be vacuous.")
+
+    // The fixture scene holds five members, two of them edited (`fixtureStackRow`'s
+    // `editedCount`), so a card that still draws a bare pencil — or draws the pick count where
+    // the edit count belongs — fails here. `2 edited` cannot be satisfied by `2 picked`.
+    XCTAssertTrue(
+      card.label.contains("2 edited"),
+      "The collapsed card does not carry `edited_count`. Label: '\(card.label)'")
+
+    // POSITIVE CONTROL in the same reading: the clause the card ALREADY said is still there, so
+    // the hit above is an added clause rather than a rewritten sentence.
+    XCTAssertTrue(
+      card.label.contains("2 picked"),
+      "Positive control failed: the pick count left the card's sentence. Label: "
+        + "'\(card.label)'")
+
+    let screenshot = XCUIScreen.main.screenshot()
+    let attachment = XCTAttachment(screenshot: screenshot)
+    attachment.name = "P2-scene-edited-count"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    XCTContext.runActivity(named: "card: '\(card.label)'") { _ in }
   }
 }

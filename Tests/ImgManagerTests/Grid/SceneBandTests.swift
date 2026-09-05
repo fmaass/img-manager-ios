@@ -333,6 +333,79 @@ struct SceneChromeAccessibilityTests {
     #expect(SceneHandleAccessibility.value(isExpanded: true) == "Open")
   }
 
+  /// WP21 P2 (IMGMGR-339): the pencil states `edited_count`, and states nothing at zero — the
+  /// same rule ✓N follows, for the same reason. Pure, so the badge's whole decision is readable
+  /// without a render host; `FilterPopoverUITests.testTheSceneCardsPencilCarriesTheEditedCount`
+  /// asserts the sentence these functions produce on the real surface.
+  @Test("The pencil carries the edited COUNT, and the cluster is silent when nothing was said")
+  func thePencilCarriesTheEditedCount() {
+    #expect(SceneVerdictBadges.editsText(count: 0) == nil)
+    #expect(SceneVerdictBadges.editsText(count: 1) == "1")
+    #expect(SceneVerdictBadges.editsText(count: 2) == "2")
+    #expect(SceneVerdictBadges.editsText(count: 14) == "14")
+    #expect(SceneVerdictBadges.pickText(0) == nil)
+    #expect(SceneVerdictBadges.pickText(3) == "3")
+
+    // The capsule follows the digits: drawn when either is said, absent when neither is.
+    #expect(SceneVerdictBadges.isSilent(pickedCount: 0, editedCount: 0))
+    #expect(!SceneVerdictBadges.isSilent(pickedCount: 0, editedCount: 1))
+    #expect(!SceneVerdictBadges.isSilent(pickedCount: 1, editedCount: 0))
+    #expect(!SceneVerdictBadges.isSilent(pickedCount: 2, editedCount: 2))
+  }
+
+  /// **The sentence and the pencil are ONE value** (diff-gate B2). `SceneCardView` combines its
+  /// children into one accessibility element, so the only thing a UI test can read is the card's
+  /// LABEL — which is a proof about the badge only if the digit in that label IS the digit the
+  /// pencil renders. Asserted structurally here rather than by two matching literals: the clause
+  /// must equal `", " + editsText + " edited"` for the very `editsText` the `Label` is built from
+  /// (`SceneCardView.swift:172-178`), so an implementation that recomputed the sentence from
+  /// `editedCount` independently of the badge fails this test even while both happen to agree.
+  @Test("The spoken clause embeds EXACTLY the editsText the pencil renders")
+  func theSpokenClauseEmbedsExactlyTheRenderedDigit() {
+    for count in [1, 2, 7, 14] {
+      guard let rendered = SceneVerdictBadges.editsText(count: count) else {
+        Issue.record("editsText(count: \(count)) is nil — the pencil would draw nothing")
+        continue
+      }
+      #expect(SceneVerdictBadges.spokenEditsClause(count: count) == ", \(rendered) edited")
+      let spoken = SceneVerdictBadges.spokenLabel(
+        memberCount: 9, pickedCount: 1, editedCount: count, isExpanded: false)
+      #expect(spoken.hasSuffix(", \(rendered) edited"))
+      // ...and the base sentence is untouched in front of it.
+      #expect(
+        spoken
+          == SceneCardAccessibility.label(memberCount: 9, pickedCount: 1, isExpanded: false)
+          + SceneVerdictBadges.spokenEditsClause(count: count))
+    }
+    // Nothing rendered, nothing said — the two agree at zero as well as above it.
+    #expect(SceneVerdictBadges.editsText(count: 0) == nil)
+    #expect(SceneVerdictBadges.spokenEditsClause(count: 0) == "")
+  }
+
+  /// The card's spoken sentence gains the edited clause and keeps everything it already said —
+  /// this is the surface a UI test can read, because `SceneCardView` combines its children into
+  /// ONE accessibility element and the badge identifiers are merged away with them.
+  @Test("The card's sentence adds the edited clause without disturbing the shipped half")
+  func theCardsSentenceCarriesTheEditedClause() {
+    #expect(
+      SceneVerdictBadges.spokenLabel(
+        memberCount: 5, pickedCount: 2, editedCount: 2, isExpanded: false)
+        == "Scene of 5 photos, closed, 2 picked, 2 edited")
+    #expect(
+      SceneVerdictBadges.spokenLabel(
+        memberCount: 5, pickedCount: 0, editedCount: 3, isExpanded: true)
+        == "Scene of 5 photos, open, 3 edited")
+    // Nothing at zero: the sentence is exactly what the shipped function returns.
+    #expect(
+      SceneVerdictBadges.spokenLabel(
+        memberCount: 3, pickedCount: 2, editedCount: 0, isExpanded: false)
+        == SceneCardAccessibility.label(memberCount: 3, pickedCount: 2, isExpanded: false))
+    #expect(
+      SceneVerdictBadges.spokenLabel(
+        memberCount: 1, pickedCount: 0, editedCount: 0, isExpanded: false)
+        == "Scene of 1 photo, closed")
+  }
+
   @Test("The card announces its size, its state and its pick COUNT — nothing at zero")
   func theCardAnnouncesTheCountNotAFlag() {
     #expect(

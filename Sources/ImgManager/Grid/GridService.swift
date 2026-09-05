@@ -765,6 +765,15 @@ struct GridImagesQuery: Sendable, Equatable {
   var tag: String?
   var tree: String?
   var ext: String?
+  /// One camera BODY, exactly as `/api/facets` reports it (IMGMGR-376, WP21 P2). An equality on
+  /// `images.exif_camera` server-side, so the string travels back verbatim — this client neither
+  /// parses it nor derives the value list, which is why there is no enum here.
+  ///
+  /// Threaded into EVERY projection below, not only the two the popover reads. A filter the grid
+  /// applies but the scene band, the stack-row re-read, the loupe's neighbours or the group
+  /// headers do not send is a filter that silently no-ops on those surfaces — the reader would
+  /// see one camera's photographs and a header count for all of them.
+  var camera: String?
   var hasMaster: Bool?
   var mark: String?
   var dateFrom: Date?
@@ -801,8 +810,8 @@ struct GridImagesQuery: Sendable, Equatable {
       groupBy: groupBy.flatMap(Operations.ListImagesApiImagesGet.Input.Query.GroupByPayload.init),
       cursor: cursor, limit: limit, folderId: folderID, ratingMin: ratingMin, good: good,
       label: label, keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.listImagesPayload,
-      tree: tree, ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      tree: tree, ext: ext, camera: camera, hasMaster: hasMaster, mark: mark,
+      dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing,
       sort: sort.flatMap(Operations.ListImagesApiImagesGet.Input.Query.SortPayload.init),
       direction: direction.flatMap(
         Operations.ListImagesApiImagesGet.Input.Query.DirectionPayload.init))
@@ -811,9 +820,9 @@ struct GridImagesQuery: Sendable, Equatable {
   func asFacetsQuery() -> Operations.ImageFacetsApiFacetsGet.Input.Query {
     .init(
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
-      tag: tag, sourceTier: sourceTier?.facetsPayload, tree: tree, ext: ext, hasMaster: hasMaster,
-      mark: mark, dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly,
-      missing: missing)
+      tag: tag, sourceTier: sourceTier?.facetsPayload, tree: tree, ext: ext, camera: camera,
+      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 
   /// WP12: the SAME filter surface `asListImagesQuery` sends, plus the two things Scene browse
@@ -828,7 +837,7 @@ struct GridImagesQuery: Sendable, Equatable {
       direction: direction.payload, cursor: cursor, seekDate: seekDate, limit: limit,
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.browseStacksPayload, tree: tree, ext: ext,
-      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      camera: camera, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
       cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 
@@ -839,7 +848,7 @@ struct GridImagesQuery: Sendable, Equatable {
     .init(
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.stackRowPayload, tree: tree, ext: ext,
-      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      camera: camera, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
       cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 
@@ -854,8 +863,8 @@ struct GridImagesQuery: Sendable, Equatable {
         Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.GroupByPayload.init),
       limit: limit, folderId: folderID, ratingMin: ratingMin, good: good, label: label,
       keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.neighboursPayload, tree: tree,
-      ext: ext, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      ext: ext, camera: camera, hasMaster: hasMaster, mark: mark,
+      dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing,
       sort: sort.flatMap(
         Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.SortPayload.init),
       direction: direction.flatMap(
@@ -875,7 +884,7 @@ struct GridImagesQuery: Sendable, Equatable {
       groupBy: key.imageGroupsPayload,
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.imageGroupsPayload, tree: tree, ext: ext,
-      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      camera: camera, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
       cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 }

@@ -112,6 +112,7 @@ struct InspectorModelTests {
   /// sidecar dimension as "present"/"absent", a NULL rating as "unset").
   private func serverFacets() -> Components.Schemas.ImageFacets {
     Components.Schemas.ImageFacets(
+      camera: [.init(count: 11, value: "FUJIFILM X-T2"), .init(count: 9, value: "unset")],
       cameraPreviewOnly: [.init(count: 3, value: "true")],
       ext: [.init(count: 9, value: "raf")],
       good: [.init(count: 2, value: "true"), .init(count: 7, value: "false")],
@@ -158,6 +159,11 @@ struct InspectorModelTests {
     query.ratingMin = 3
     query.ext = "raf"
     #expect(InspectorFacetFilters.activeCount(query) == 3)
+    // WP21 P2 (plan AC 12): a camera body is a FILTER, so it joins the badge's count and Clear
+    // takes it — it is not shoot scope the way `folderID`/`sourceTier` are.
+    query.camera = "FUJIFILM X-T2"
+    #expect(InspectorFacetFilters.activeCount(query) == 4)
+    #expect(InspectorFacetFilters.clearableFields.contains(.camera))
   }
 
   @Test("Clear resets every facet field and NOTHING else — the shoot scope and q survive")
@@ -175,6 +181,7 @@ struct InspectorModelTests {
     query.keyword = "wedding"
     query.tag = "to-print"
     query.ext = "raf"
+    query.camera = "FUJIFILM X-T2"
     query.good = true
     query.hasMaster = true
     query.cameraPreviewOnly = true
@@ -188,6 +195,7 @@ struct InspectorModelTests {
     #expect(query.keyword == nil)
     #expect(query.tag == nil)
     #expect(query.ext == nil)
+    #expect(query.camera == nil)
     #expect(query.good == nil)
     #expect(query.hasMaster == nil)
     #expect(query.cameraPreviewOnly == nil)
@@ -235,6 +243,37 @@ struct InspectorModelTests {
     #expect(InspectorFacetField.keyword.displayValue("wedding") == "wedding")
     #expect(InspectorFacetField.mark.displayValue("pick") == "pick")
     #expect(InspectorFacetField.ext.displayValue("raf") == "raf")
+    // Verbatim, camera included: the body's own EXIF name is what a `camera=` request must send.
+    #expect(
+      InspectorFacetField.camera.displayValue("SONY ILCE-7RM5") == "SONY ILCE-7RM5")
+  }
+
+  /// The camera dimension binds to `GridImagesQuery.camera`; the server's `unset` bucket is not a
+  /// filterable body, so its tap clears the dimension — the same rule the rating facet's own
+  /// `unset` row follows (WP21 P2, IMGMGR-376).
+  @Test("Camera rows bind to `camera`; the server's 'unset' bucket is not a filterable value")
+  func cameraRowsBindToCamera() {
+    var query = GridImagesQuery()
+    InspectorFacetField.camera.toggle("SONY ILCE-7RM5", in: &query)
+    #expect(query.camera == "SONY ILCE-7RM5")
+    #expect(InspectorFacetField.camera.isActive("SONY ILCE-7RM5", in: query))
+    #expect(InspectorFacetField.camera.activeValue(in: query) == "SONY ILCE-7RM5")
+    #expect(!InspectorFacetField.camera.isActive("FUJIFILM X-T2", in: query))
+    #expect(InspectorFacetField.camera.isSet(in: query))
+
+    // A different body switches to it; the value already in force clears the dimension.
+    InspectorFacetField.camera.toggle("FUJIFILM X-T2", in: &query)
+    #expect(query.camera == "FUJIFILM X-T2")
+    InspectorFacetField.camera.toggle("FUJIFILM X-T2", in: &query)
+    #expect(query.camera == nil)
+
+    InspectorFacetField.camera.toggle("unset", in: &query)
+    #expect(query.camera == nil)
+    #expect(!InspectorFacetField.camera.isActive("unset", in: query))
+    // ...and from a body already in force, the `unset` row still clears rather than sending it.
+    query.camera = "SONY ILCE-7RM5"
+    InspectorFacetField.camera.toggle("unset", in: &query)
+    #expect(query.camera == nil)
   }
 
   @Test("The Info button carries the active-filter count, and says so out loud")
@@ -278,7 +317,10 @@ struct InspectorModelTests {
     // one — and a row that cannot filter is not offered.
     #expect(!InspectorFacetField.allCases.contains { $0.rawValue.contains("sidecar") })
     #expect(serverFacets().sidecar?.isEmpty == false)  // positive control: the server DOES send it
-    #expect(InspectorFacetField.allCases.count == 10)
+    // Ten until WP21 P2 added `.camera` (IMGMGR-376), the one dimension img-manager v0.20.0
+    // made both countable and sendable.
+    #expect(InspectorFacetField.allCases.count == 11)
+    #expect(InspectorFacetField.allCases.contains(.camera))
   }
 
   @Test("InspectorInfo has NO property a path could bind to — structural 'no path row'")

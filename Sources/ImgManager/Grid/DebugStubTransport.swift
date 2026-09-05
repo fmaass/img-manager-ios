@@ -284,10 +284,17 @@
 
     /// The card's own row. `representative` is a member whose `has_edit` is true, so the card
     /// draws the ✎ badge beside the ✓N one — the two-badge cluster the owner decided on.
+    ///
+    /// WP21 P2 (IMGMGR-339): `editedCount` is COUNTED from the members rather than written down,
+    /// so it cannot drift from the photographs the fixture actually holds — two of the five carry
+    /// `has_edit` (`fixtureImages()` marks every third), which is the digit the pencil now
+    /// states. Phase 1 landed the field at a placeholder 0; a zero here would draw no pencil at
+    /// all and make the badge's UI leg vacuous.
     private static func fixtureStackRow() -> Components.Schemas.StackBrowseStackRow {
       let members = fixtureStackMemberImages()
       return Components.Schemas.StackBrowseStackRow(
-        anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000), editedCount: 0, hasPick: true,
+        anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000),
+        editedCount: members.filter { $0.hasEdit == true }.count, hasPick: true,
         kind: .stack,
         matchedCount: members.count, memberCount: members.count,
         pickedCount: members.filter { $0.mark.state == .pick }.count,
@@ -329,12 +336,24 @@
     /// `total` stays 12, consistent with `fixtureImages()`'s twelve rows. The per-dimension counts
     /// sum to twelve as well, so nothing here reads as a page-derived tally.
     ///
+    /// WP21 P2 (IMGMGR-376) adds `camera`, which img-manager v0.20.0 serves. Its buckets are NOT
+    /// invented either: they are `fixtureGroupKey`'s own three, so the response and the grouped
+    /// page describe the same twelve photographs — four Sonys, four Fujis and four with no
+    /// `exif_camera` at all. That last bucket arrives as `"unset"` because that is what the
+    /// server emits for a NULL (`app/api/images.py`'s `_count_by`: "A NULL is reported as
+    /// 'unset' rather than dropped"), which is what makes the popover's non-filterable-value
+    /// rule testable against a real wire shape rather than a hypothetical one.
+    ///
     /// Internal rather than private, unlike its siblings: `FilterPopoverModelTests` runs the MODEL
     /// over this exact response, so a later edit that quietly drops the zero-count row — and with
     /// it the popover's zero-disabled UI coverage — fails a named unit test instead of silently
     /// making a UI leg vacuous.
     static func fixtureFacets() -> Components.Schemas.ImageFacets {
       Components.Schemas.ImageFacets(
+        camera: [
+          .init(count: 4, value: "SONY ILCE-7RM5"), .init(count: 4, value: "FUJIFILM X-T2"),
+          .init(count: 4, value: "unset"),
+        ],
         ext: [.init(count: 9, value: "jpg"), .init(count: 3, value: "arw")],
         hasMaster: [.init(count: 5, value: "true"), .init(count: 7, value: "false")],
         mark: [

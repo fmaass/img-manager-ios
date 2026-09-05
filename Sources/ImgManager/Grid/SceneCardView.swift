@@ -18,7 +18,8 @@ import SwiftUI
 /// **The badges follow the web (IMGMGR-241, owner directive 2026-08-31).** LEFT: `member_count`,
 /// how big the scene is — where a photo tile's own state row sits, so the eye finds the same kind
 /// of fact in the same place on either kind of cell. TOP-RIGHT: what has been SAID about the
-/// scene — `✓n` from `picked_count` first, then the cover's own `has_edit` pencil, glyph-only.
+/// scene — `✓n` from `picked_count` first, then `✎n` from `edited_count` (WP21 P2; the pencil
+/// was glyph-only, over the cover's own `has_edit`, until v0.20.0 gave it a number to state).
 /// Pick before edited is the order the reader judges in.
 ///
 /// Three badges became two questions, deliberately. `has_pick` was a FLAG, and a flag makes a
@@ -26,6 +27,12 @@ import SwiftUI
 /// culling a burst asks of a closed scene, and one the client cannot answer itself because a
 /// collapsed scene's members are never loaded. The match badge is GONE (same directive): it
 /// answered a third question in a corner where the owner wants two.
+///
+/// **Both questions are now numbers** (WP21 P2, IMGMGR-339). The pencil carried no digit because
+/// there was nothing to count with: it read the COVER's own `has_edit`, a boolean about one
+/// photograph standing in for a fact about the scene. img-manager v0.20.0 answers the real
+/// question — `StackBrowseStackRow.edited_count`, required on every row — so the pencil states
+/// how many of the scene's photographs have an edit, for the same reason ✓N replaced `has_pick`.
 ///
 /// The expand chevron is gone from here too, and that is IMGMGR-240: it was a decoration inside
 /// a combined accessibility element, looking like the control it was not. The real control is
@@ -43,8 +50,9 @@ struct SceneCardView: View {
   private var cover: Components.Schemas.ImageSummary { row.representative }
 
   private var accessibilityName: String {
-    SceneCardAccessibility.label(
-      memberCount: row.memberCount, pickedCount: row.pickedCount, isExpanded: isExpanded)
+    SceneVerdictBadges.spokenLabel(
+      memberCount: row.memberCount, pickedCount: row.pickedCount, editedCount: row.editedCount,
+      isExpanded: isExpanded)
   }
 
   var body: some View {
@@ -138,29 +146,36 @@ struct SceneCardView: View {
       .accessibilityIdentifier("sceneMemberCount")
   }
 
-  /// What has been said about the scene: the pick COUNT, then the cover's edited state.
+  /// What has been said about the scene: the pick COUNT, then the edited COUNT.
   ///
-  /// Nothing at zero on either — a badge that is always there states nothing. The pencil carries
-  /// no digit, and that is the SAME deviation the web shipped: `has_edit` is the cover's own
-  /// field, and there is no server-side `edited_count` to count with until IMGMGR-263 adds one.
+  /// Nothing at zero on either — a badge that is always there states nothing. Both digits are the
+  /// SERVER's own per-scene counts (`picked_count`, `edited_count`); neither is derived from the
+  /// cover or from members a collapsed scene never loads.
   @ViewBuilder
   private var verdictBadges: some View {
     // Nothing said, nothing drawn: an empty capsule in the corner of every unjudged scene would
-    // be the "badge that is always there" this cluster exists to avoid.
-    if row.pickedCount >= 1 || cover.hasEdit == true {
+    // be the "badge that is always there" this cluster exists to avoid. Asked of the same pure
+    // functions the two labels come from, so the cluster cannot appear empty or hide a digit.
+    if !SceneVerdictBadges.isSilent(pickedCount: row.pickedCount, editedCount: row.editedCount) {
       HStack(spacing: 3) {
-        if row.pickedCount >= 1 {
-          Label("\(row.pickedCount)", systemImage: "checkmark")
+        if let picks = SceneVerdictBadges.pickText(row.pickedCount) {
+          Label(picks, systemImage: "checkmark")
             .accessibilityIdentifier("scenePickCount")
             // WP16 P1 (p3332 decision 5). The enclosing `.foregroundStyle(.white)` below still
             // answers for anything without its own — `countBadge` is a separate view and stays
             // white, because how big a scene is says nothing about its verdict.
             .foregroundStyle(MarkPalette.color(for: .pick))
         }
-        if cover.hasEdit == true {
-          Image(systemName: "pencil")
+        // ONE source for the digit and for the sentence that reports it (diff-gate B2): the
+        // string this `Label` RENDERS is the same `editsText` value `spokenLabel` embeds, so the
+        // card cannot announce "2 edited" while the pencil draws something else — or nothing.
+        if let edits = SceneVerdictBadges.editsText(count: row.editedCount) {
+          Label(edits, systemImage: "pencil")
             .accessibilityIdentifier("sceneEdited")
-            .accessibilityLabel("Edited")
+            // The SAME `edits` binding the Label renders, so the badge's own spoken name cannot
+            // drift from its glyph either. (`children: .combine` swallows it on this card; it is
+            // what a future non-combined card would read out.)
+            .accessibilityLabel("\(edits) edited")
             .foregroundStyle(MarkPalette.color(for: .edited))
         }
       }
@@ -188,5 +203,62 @@ struct SceneCardView: View {
         .padding(3)
         .accessibilityHidden(true)
     }
+  }
+}
+
+/// What the collapsed card's verdict cluster SAYS, as values rather than as a view (WP21 P2,
+/// IMGMGR-339). The same posture `TileView.plateText` and `GridGroupControl.title(for:)` take:
+/// "the pencil states the number, and states nothing at zero" is then a test that reads strings
+/// instead of a screenshot somebody has to look at.
+///
+/// `spokenLabel` composes the card's sentence rather than replacing it: the size/state/picked
+/// half stays `SceneCardAccessibility.label` — one sentence, still assembled in one place — and
+/// this adds the edited clause the shipped function does not know about. It is what an assertion
+/// on the badge has to read, because `SceneCardView.cell` ends in
+/// `.accessibilityElement(children: .combine)`: the cluster's own identifiers are merged away
+/// (`SceneExpandHandle`'s doc comment says so in as many words — "a handle drawn inside it would
+/// be swallowed whole"), so `sceneEdited` names the pencil for a future non-combined card and for
+/// the palette that colours it, while the card's LABEL is the surface a UI test can observe.
+enum SceneVerdictBadges {
+
+  /// The ✓ badge's digit, or nil for "draw nothing".
+  static func pickText(_ pickedCount: Int) -> String? {
+    pickedCount >= 1 ? "\(pickedCount)" : nil
+  }
+
+  /// **The one source of the pencil's digit** (diff-gate B2), read by BOTH the rendered `Label`
+  /// and the spoken sentence below. Nil means "draw nothing" — `edited_count` is a REQUIRED
+  /// non-negative integer on every `StackBrowseStackRow`, so zero is a real answer and not an
+  /// absence.
+  ///
+  /// Why one function rather than two agreeing ones: the card combines its children into a single
+  /// accessibility element, so a UI test can only read the card's LABEL. If that label were
+  /// composed from `editedCount` independently of what the pencil renders, the assertion would
+  /// witness the sentence and not the badge — a pencil drawing the wrong digit, or none, would
+  /// still pass. Both call sites going through this function is what makes the label a proof
+  /// about the pixels.
+  static func editsText(count: Int) -> String? {
+    count >= 1 ? "\(count)" : nil
+  }
+
+  /// The edited half of the card's sentence, and the pencil's own accessibility label: exactly
+  /// `editsText` plus the word it is read with, or the empty string when nothing is drawn.
+  static func spokenEditsClause(count: Int) -> String {
+    guard let edits = editsText(count: count) else { return "" }
+    return ", \(edits) edited"
+  }
+
+  /// Nothing said, nothing drawn. Derived from the two digit functions so the capsule and the
+  /// digits inside it can never disagree about whether there is anything to show.
+  static func isSilent(pickedCount: Int, editedCount: Int) -> Bool {
+    pickText(pickedCount) == nil && editsText(count: editedCount) == nil
+  }
+
+  static func spokenLabel(
+    memberCount: Int, pickedCount: Int, editedCount: Int, isExpanded: Bool
+  ) -> String {
+    SceneCardAccessibility.label(
+      memberCount: memberCount, pickedCount: pickedCount, isExpanded: isExpanded)
+      + spokenEditsClause(count: editedCount)
   }
 }

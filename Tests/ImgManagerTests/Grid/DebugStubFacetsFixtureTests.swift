@@ -74,6 +74,9 @@ struct DebugStubFacetsFixtureTests {
       #expect(buckets(\.mark).values.reduce(0, +) == total)
       #expect(buckets(\.hasMaster).values.reduce(0, +) == total)
       #expect(buckets(\.ext).values.reduce(0, +) == total)
+      // WP21 P2: camera partitions the twelve too — every photograph has exactly one body or
+      // none, and the none-bucket arrives as the server's own `unset`.
+      #expect(buckets(\.camera).values.reduce(0, +) == total)
     }
 
     /// All three states, and one of them a REAL zero — the popover's zero-disabled path has no
@@ -91,6 +94,21 @@ struct DebugStubFacetsFixtureTests {
       #expect(buckets(\.hasMaster) == ["true": 5, "false": 7])
       #expect(buckets(\.ext) == ["jpg": 9, "arw": 3])
       #expect(buckets(\.ext).count >= 2)
+    }
+
+    /// The `camera` dimension img-manager v0.20.0 added (WP21 P2, IMGMGR-376), pinned by literal
+    /// so a later fixture edit that dropped it — and with it the popover's Camera UI leg —
+    /// fails here rather than making that leg vacuous.
+    ///
+    /// The buckets are `fixtureGroupKey`'s own three, so the facet response and the grouped page
+    /// describe the same twelve photographs. `unset` is present ON PURPOSE: it is what the server
+    /// emits for a NULL `exif_camera` (`_count_by`), and the popover's "not offerable as a filter"
+    /// rule has no other source of evidence on the iPad legs.
+    @Test("Camera arrives with the fixture's two bodies plus the server's own `unset` bucket")
+    func cameraCarriesTheFixturesBodiesAndTheUnsetBucket() {
+      #expect(buckets(\.camera) == ["SONY ILCE-7RM5": 4, "FUJIFILM X-T2": 4, "unset": 4])
+      #expect(buckets(\.camera).keys.contains("unset"))
+      #expect(buckets(\.camera).values.allSatisfy({ $0 > 0 }))
     }
 
     /// The one number that must stay consistent with `fixtureImages()`'s twelve rows: a `total`
