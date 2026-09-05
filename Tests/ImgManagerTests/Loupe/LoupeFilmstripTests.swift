@@ -111,7 +111,8 @@ struct LoupeFilmstripTests {
           imageRow(makeImage(id: 10)),
           stackRowItem(
             Components.Schemas.StackBrowseStackRow(
-              anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false,
+              anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0,
+              hasPick: false,
               kind: .stack, matchedCount: 2, memberCount: 2, pickedCount: 0,
               representative: cover, stackId: 5)),
         ], limit: 100, nextCursor: nil))
@@ -269,7 +270,8 @@ struct LoupeFilmstripTests {
       .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
     let card = Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0, hasPick: false,
+      kind: .stack,
       matchedCount: 2, memberCount: 2, pickedCount: 0,
       representative: makeImage(id: 900, revision: "cover-rev"), stackId: 5)
     await transport.setBrowseStacksPage(

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# sync-openapi.sh — vendor img-manager's OpenAPI contract at ONE commit, verbatim.
+# sync-openapi.sh — vendor img-manager's OpenAPI contract at ONE commit, verbatim except the
+# seven bridged nullable property sites this script rewrites (see the canonicalization below).
 #
 # Ported from memos-ng-ios's scripts/sync-openapi.sh (same pattern, adapted source path). The iOS
-# client is generated from img-manager's `frontend/openapi.json`; vendoring it verbatim means the
-# committed file is byte-for-byte `git show <sha>:frontend/openapi.json` in img-manager, so
-# provenance is checkable with one command rather than trusted.
+# client is generated from img-manager's `frontend/openapi.json`; vendoring it this way means the
+# committed file is `git show <sha>:frontend/openapi.json` in img-manager plus exactly the seven
+# rewrites the canonicalization prints and counts, so provenance is checkable with one `diff`
+# rather than trusted — and the diff has a known, enumerated length rather than being empty.
 #
 # RETIRED BRIDGE (WP8 P1-ios, docs/OPENAPI_NORMALIZATION_DEBT.md): this script used to write a
 # second, rewritten copy (openapi.vendored.json -> tools/normalize-openapi.py -> openapi.json)
@@ -93,11 +95,16 @@ fetch frontend/openapi.json "$candidate"
 # precisely the type the union described. A REQUIRED site would change meaning, so that refuses
 # outright rather than guessing.
 #
-# The rewrite is deliberately confined to a union with NO sibling keys. Sites that carry one (the
-# ten `?sidecar` query parameters carry a `title`) are left exactly as the server wrote them and
-# are still dropped by the generator — so they are ENUMERATED on every sync and counted into
-# OPENAPI_SOURCE rather than passed over in silence. Nothing in this client consumes `?sidecar`
-# today; when something does, this is the rule that extends.
+# The rewrite is deliberately confined to a union with NO sibling keys, and stays that way even
+# though it now matches zero parameters. Until img-manager v0.20.0 the ten `?sidecar` query
+# parameters carried a `title` beside the union, were left exactly as the server wrote them and
+# were still dropped by the generator; that half was retired by the SERVER, which now writes them
+# as a bare `$ref` with the `title` beside it — the shape the generator emits. So the parameter
+# loop and the enumeration below match nothing at bac5dd16 (`still_dropped_nullable_unions=0`) and
+# are kept as a GUARD: a regression that re-introduces the shape is counted into OPENAPI_SOURCE on
+# the next sync rather than passed over in silence, and the loop keeps its REQUIRED-site refusal.
+# The seven optional MODEL properties still rewrite (IMGMGR-281 (b): keep the null union server-side
+# and bridge it here).
 #
 # `json.dumps(indent=2)` plus a trailing newline round-trips img-manager's own writer byte for
 # byte (verified), so diffing the result against

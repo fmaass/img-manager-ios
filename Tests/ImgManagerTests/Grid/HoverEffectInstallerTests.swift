@@ -73,7 +73,8 @@ struct HoverEffectWiringTests {
 
   private func makeStackRow(id: Int) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: nil, hasPick: false, kind: .stack, matchedCount: 3, memberCount: 3,
+      anchorTakenAt: nil, editedCount: 0, hasPick: false, kind: .stack, matchedCount: 3,
+      memberCount: 3,
       pickedCount: 0, representative: makeImage(id: id), stackId: id)
   }
 

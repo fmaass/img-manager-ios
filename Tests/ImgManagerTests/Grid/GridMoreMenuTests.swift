@@ -464,7 +464,8 @@ struct GridViewMoreMenuTests {
   /// with the focus on the loose photograph — the state the absorb is offered in.
   private func loadLooseAbsorbFixture(_ store: GridStore, _ transport: GridStubTransport) async {
     let row = Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0, hasPick: false,
+      kind: .stack,
       matchedCount: 3, memberCount: 3, pickedCount: 0, representative: makeImage(id: 1),
       stackId: 5)
     await transport.setBrowseStacksPage(
@@ -482,11 +483,13 @@ struct GridViewMoreMenuTests {
   /// enclosing loop already made, so each entry's probe still runs against its own store.
   private func loadSceneEditFixture(_ store: GridStore, _ transport: GridStubTransport) async {
     let row = Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: false, kind: .stack,
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0, hasPick: false,
+      kind: .stack,
       matchedCount: 3, memberCount: 3, pickedCount: 0, representative: makeImage(id: 1),
       stackId: 5)
     let other = Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: Date(timeIntervalSince1970: 1_700_003_600), hasPick: false, kind: .stack,
+      anchorTakenAt: Date(timeIntervalSince1970: 1_700_003_600), editedCount: 0, hasPick: false,
+      kind: .stack,
       matchedCount: 2, memberCount: 2, pickedCount: 0, representative: makeImage(id: 7), stackId: 6)
     await transport.setBrowseStacksPage(
       .init(

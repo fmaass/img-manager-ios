@@ -141,6 +141,9 @@ struct GridService: Sendable {
     } catch {
       throw GridServiceError.unreachable
     }
+    if case .serviceUnavailable(let cancelled) = output {
+      throw GridServiceError.countCancelled(retryAfterSeconds: cancelled.headers.retryAfter)
+    }
     guard case .ok(let ok) = output, let body = try? ok.body.json else {
       throw GridServiceError.unreachable
     }
@@ -257,9 +260,11 @@ struct GridService: Sendable {
   /// membership: the client re-reads (ADR-0005's server-authority stance, which ADR-0008 leaves
   /// untouched).
   ///
-  /// This operation declares NO 409 — the contract documents only what it really emits, and a
-  /// cross-folder or cross-tier merge is a coded 422 — so the `.conflict` case simply does not
-  /// exist on its generated `Output`.
+  /// img-manager v0.20.0 declares the 409 `StackExtractConflictError` here too (IMGMGR-371) — it
+  /// used to declare none, on the principle that a status code declared on a route that never
+  /// emits it is as wrong as an emitted one nobody declared. It is NOT the same answer as the
+  /// refusal: a cross-folder or cross-tier merge is still a coded 422 (the request was wrong),
+  /// while the 409 says the scenes moved under a request that was right when it was written.
   func mergeStacks(stackIDs: [Int]) async throws -> Components.Schemas.StackEditResult {
     let output: Operations.MergeStacksApiStacksMergePost.Output
     do {
@@ -272,6 +277,12 @@ struct GridService: Sendable {
     case .ok(let ok):
       guard let result = try? ok.body.json else { throw StackEditError.unreachable }
       return result
+    case .conflict(let conflict):
+      guard let body = try? conflict.body.json else { throw StackEditError.unreachable }
+      switch body.detail.code {
+      case .foreignFolderMember: throw StackEditError.conflict(.foreignFolderMember)
+      case .membershipChanged: throw StackEditError.conflict(.membershipChanged)
+      }
     case .unprocessableContent:
       throw StackEditError.refused
     case .serviceUnavailable(let busy):
@@ -299,6 +310,12 @@ struct GridService: Sendable {
     case .ok(let ok):
       guard let result = try? ok.body.json else { throw StackEditError.unreachable }
       return result
+    case .conflict(let conflict):
+      guard let body = try? conflict.body.json else { throw StackEditError.unreachable }
+      switch body.detail.code {
+      case .foreignFolderMember: throw StackEditError.conflict(.foreignFolderMember)
+      case .membershipChanged: throw StackEditError.conflict(.membershipChanged)
+      }
     case .unprocessableContent:
       throw StackEditError.refused
     case .serviceUnavailable(let busy):
@@ -310,10 +327,10 @@ struct GridService: Sendable {
 
   /// `POST /api/stacks/{id}/extract` — take exactly these members into a scene of their own.
   ///
-  /// The ONE editor that answers 409 at all, and the contract says why it is the only one: the
-  /// route declares `StackExtractConflictError` alone, "because a status code declared on a route
-  /// that never emits it would be as wrong as an emitted one nobody declared". Its two codes are
-  /// mapped to a typed reason here, so the surface that renders it never sees a status number.
+  /// The FIRST editor to answer 409, and no longer the only one: v0.20.0 declares the same
+  /// `StackExtractConflictError` on merge, split and eject as well (IMGMGR-371), so the mapping
+  /// below is now the shape four of this client's editors share. Its two codes are mapped to a
+  /// typed reason here, so the surface that renders it never sees a status number.
   func extractFromStack(stackID: Int, imageIDs: [Int]) async throws
     -> Components.Schemas.StackEditResult
   {
@@ -396,6 +413,9 @@ struct GridService: Sendable {
       output = try await client.imageFacetsApiFacetsGet(.init(query: query.asFacetsQuery()))
     } catch {
       throw GridServiceError.unreachable
+    }
+    if case .serviceUnavailable(let cancelled) = output {
+      throw GridServiceError.countCancelled(retryAfterSeconds: cancelled.headers.retryAfter)
     }
     guard case .ok(let ok) = output, let body = try? ok.body.json else {
       throw GridServiceError.unreachable
@@ -684,6 +704,13 @@ enum GridServiceError: Error, Sendable, Equatable {
   case conflict
   /// 400 on `GET /api/images`: the cursor-fingerprint refusal (see `images(_:)`'s doc comment).
   case cursorInvalid
+  /// 503 `count_cancelled` on a count-bearing read — `GET /api/facets` and
+  /// `GET /api/image-groups`, the two this client calls. The server cancelled the count before
+  /// it finished, so nothing came back partially and a count that could not be taken is not a
+  /// count of zero; it is not a reachability failure either, which is why it is not
+  /// `.unreachable`. `Retry-After` is the server's own answer to when it is worth asking again;
+  /// nil means it named none.
+  case countCancelled(retryAfterSeconds: Int?)
 }
 
 /// A scene edit's refusals, as the three DIFFERENT answers they are (WP14 P4, IMGMGR-277).
@@ -699,16 +726,22 @@ enum GridServiceError: Error, Sendable, Equatable {
 enum StackEditError: Error, Sendable, Equatable {
   /// 503 `stack_edit_busy`, with `Retry-After` if the server named one.
   case busy(retryAfterSeconds: Int?)
-  /// 409 — extraction only; the only editor that answers 409 at all.
+  /// 409 — the scene is not in the state the request was written against. Declared on merge,
+  /// split, extract and absorb (and on eject, which this client does not map) since v0.20.0; it
+  /// was the extraction's alone when this type was written.
   case conflict(SceneEditConflictReason)
-  /// 422. The refusals arrive as a CODED OBJECT detail (`{"detail": {"code", "message"}}`) while
-  /// the operation declares FastAPI's default `HTTPValidationError`, whose `detail` is an ARRAY —
-  /// so the coded body does not decode through the generated boundary at all and WHICH refusal it
-  /// was is not knowable here. Recorded rather than worked around: the honest client answer is
-  /// "this edit cannot be made", and the specific guards (`empty_split_side`, `not_a_member`,
-  /// `cross_folder_merge`) are backend-proven in `tests/test_api_stack_edit.py`. Two of the three
-  /// are also unreachable from this app by construction — the cross-folder merge is filtered out
-  /// of the target list, and an empty-side extraction is never offered.
+  /// 422, and since img-manager v0.20.0 an answer this client can actually read. The recut
+  /// declares the coded body these routes always emitted — `StackEditRefusalError { detail:
+  /// StackEditRefusal { code, message } }`, ten codes including `too_few_stacks` and
+  /// `invalid_request` — on all six stack editors, so the generated client decodes it and the
+  /// refusal arrives here as `.refused` instead of the `.unreachable` an undecodable body used to
+  /// produce (IMGMGR-371; the position this replaces is recorded in `StackEditContractProbeTests`).
+  ///
+  /// Deliberately still opaque. Every consumer of this case collapses to the payload-less
+  /// `SceneEditFailure.refused` (`SceneEdit.swift`), whose sentence is the one true thing for all
+  /// ten codes: nothing was changed. Widening it to carry `StackEditRefusal.CodePayload` is a
+  /// one-file change on the day a surface renders a per-code sentence; a value no reader
+  /// consumes is not a contract improvement.
   case refused
   /// 404 — the absorb alone (IMGMGR-347): the scene is gone, or a photograph the request named is
   /// not in the library. Kept apart from `.refused` because the reader is told a different thing.

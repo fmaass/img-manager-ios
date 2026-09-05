@@ -34,7 +34,8 @@ struct SceneBandTests {
     representative: Components.Schemas.ImageSummary
   ) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: anchor, hasPick: hasPick, kind: .stack, matchedCount: matchedCount,
+      anchorTakenAt: anchor, editedCount: 0, hasPick: hasPick, kind: .stack,
+      matchedCount: matchedCount,
       memberCount: memberCount, pickedCount: pickedCount, representative: representative,
       stackId: id)
   }

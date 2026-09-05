@@ -31,7 +31,8 @@ struct GridChromeRowsTests {
       .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
     // Cover id 900 appears nowhere else, the same convention `GridStoreSceneTests` uses.
     let stackRow = Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: nil, hasPick: false, kind: .stack, matchedCount: 3, memberCount: 3,
+      anchorTakenAt: nil, editedCount: 0, hasPick: false, kind: .stack, matchedCount: 3,
+      memberCount: 3,
       pickedCount: 0, representative: makeImage(id: 900), stackId: 5)
     let item = Components.Schemas.StackBrowsePage.ItemsPayloadPayload(
       value1: nil, value2: stackRow)

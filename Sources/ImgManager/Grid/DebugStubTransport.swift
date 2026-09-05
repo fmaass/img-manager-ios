@@ -287,7 +287,8 @@
     private static func fixtureStackRow() -> Components.Schemas.StackBrowseStackRow {
       let members = fixtureStackMemberImages()
       return Components.Schemas.StackBrowseStackRow(
-        anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000), hasPick: true, kind: .stack,
+        anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000), editedCount: 0, hasPick: true,
+        kind: .stack,
         matchedCount: members.count, memberCount: members.count,
         pickedCount: members.filter { $0.mark.state == .pick }.count,
         representative: members[1], stackId: fixtureStackID)

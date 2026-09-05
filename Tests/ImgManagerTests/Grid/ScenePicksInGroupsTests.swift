@@ -92,7 +92,8 @@ struct ScenePicksInGroupsTests {
           imageRow(makeImage(id: 10)),
           stackRowItem(
             Components.Schemas.StackBrowseStackRow(
-              anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), hasPick: true,
+              anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0,
+              hasPick: true,
               kind: .stack, matchedCount: 3, memberCount: 3, pickedCount: 2,
               representative: makeImage(id: 900, mark: .pick), stackId: 5)),
         ], limit: 100, nextCursor: nil))

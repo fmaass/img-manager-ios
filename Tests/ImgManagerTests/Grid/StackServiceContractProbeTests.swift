@@ -36,7 +36,8 @@ struct StackServiceContractProbeTests {
     anchor: Date? = nil, representative: Components.Schemas.ImageSummary
   ) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: anchor, hasPick: hasPick, kind: .stack, matchedCount: matchedCount,
+      anchorTakenAt: anchor, editedCount: 0, hasPick: hasPick, kind: .stack,
+      matchedCount: matchedCount,
       memberCount: memberCount, pickedCount: hasPick ? 1 : 0, representative: representative,
       stackId: id)
   }

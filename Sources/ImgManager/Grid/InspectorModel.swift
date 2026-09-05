@@ -154,15 +154,16 @@ struct InspectorMarkBlock: Equatable {
 /// active", "what a second tap does" and "what Clear clears" are unit-testable without SwiftUI —
 /// the view only renders what this type decides.
 ///
-/// `sidecar` is deliberately NOT a case, even though `GET /api/facets` returns a `sidecar` list:
-/// the vendored contract declares that PARAMETER as `anyOf: [$ref SidecarPresence, null]`, the
-/// idiom swift-openapi-generator drops silently (docs/OPENAPI_NORMALIZATION_DEBT.md — the 12
-/// `$ref` + null forms the retired normalisation bridge deliberately left alone, "a reference
-/// plus null is a different fix"). Neither `ListImagesApiImagesGet.Input.Query` nor
-/// `ImageFacetsApiFacetsGet.Input.Query` has the property at all (verified in the probe's own
-/// generated output, docs/evidence/p0a-probe/Types-BRIDGED-COMPLETE.swift.gz), which is also why
-/// `GridImagesQuery` never had a `sidecar` field. A sidecar row could show a count but never
-/// apply one, so it is not offered; closing that needs a backend schema change plus a re-vendor.
+/// `sidecar` is still NOT a case, but no longer because it cannot be sent (IMGMGR-371). Until
+/// v0.20.0 the vendored contract declared that PARAMETER as `anyOf: [$ref SidecarPresence, null]`,
+/// the idiom swift-openapi-generator drops silently, so neither `ListImagesApiImagesGet` nor
+/// `ImageFacetsApiFacetsGet` had it on `Input.Query` at all, and a sidecar row could have shown a
+/// count it could never apply. The recut retired that half at the SOURCE: all ten
+/// `?sidecar` parameters now arrive as a bare `$ref` with a `title` sibling
+/// (`still_dropped_nullable_unions=0` in `Packages/ImgManagerAPI/OPENAPI_SOURCE`), which the
+/// generator emits. What remains is a product decision — no surface asks for a sidecar row — and
+/// `GridImagesQuery` still has no `sidecar` field, so adding the case now means adding the
+/// filter, not waiting on the contract.
 enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
   case mark
   case rating

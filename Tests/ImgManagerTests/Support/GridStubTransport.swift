@@ -357,20 +357,62 @@ actor GridStubTransport: ClientTransport {
     membersHasStarted = false
   }
 
+  // MARK: - IMGMGR-371: the 503 count_cancelled envelope the recut declares
+
+  /// A cancelled count for the NEXT call on the route it is armed for — self-disarming single
+  /// slot, the same discipline as `facetsShouldFail`, because a cancelled count is precisely the
+  /// answer that must be able to differ from the next one. `retryAfterSeconds` is the header the
+  /// contract declares beside the body; nil arms the 503 with no header at all, which the contract
+  /// also permits.
+  struct CountCancelledOutcome: Sendable {
+    let retryAfterSeconds: Int?
+  }
+
+  private var facetsCountCancelled: CountCancelledOutcome?
+  private var imageGroupsCountCancelled: CountCancelledOutcome?
+
+  func setFacetsCountCancelled(_ outcome: CountCancelledOutcome) {
+    facetsCountCancelled = outcome
+  }
+
+  func setImageGroupsCountCancelled(_ outcome: CountCancelledOutcome) {
+    imageGroupsCountCancelled = outcome
+  }
+
+  /// Written as raw JSON for the same reason `.refusedCodedDetail` is: the point is the bytes on
+  /// the wire, not that a Swift value can be built for them.
+  private func countCancelledResponse(_ outcome: CountCancelledOutcome) -> (
+    HTTPResponse, HTTPBody?
+  ) {
+    var response = HTTPResponse(status: .serviceUnavailable)
+    response.headerFields[.contentType] = "application/json"
+    if let seconds = outcome.retryAfterSeconds, let name = HTTPField.Name("Retry-After") {
+      response.headerFields[name] = String(seconds)
+    }
+    let json = #"{"detail": {"code": "count_cancelled", "message": "the count was cancelled"}}"#
+    return (response, HTTPBody(Data(json.utf8)))
+  }
+
   // MARK: - WP14 P4 (IMGMGR-277): the three scene-edit writes
 
-  /// What one scene edit answers. Modelled at the WIRE level, like `DownloadOutcome`: the 409 and
-  /// 503 bodies are the ones the contract declares, so the tests decode them through the REAL
+  /// What one scene edit answers. Modelled at the WIRE level, like `DownloadOutcome`: the 422, 409
+  /// and 503 bodies are the ones the contract declares, so the tests decode them through the REAL
   /// generated client rather than through a hand-written model of it.
   enum StackEditOutcome: Sendable {
     case success(Components.Schemas.StackEditResult)
-    /// 409 — extraction only; the only editor that declares one.
+    /// 409 with the `StackExtractConflictError` body — the extraction's alone until v0.20.0
+    /// declared it on the merge, the split and the eject as well (IMGMGR-371). Route-agnostic, so
+    /// one emitter serves every editor that can answer one.
     case conflict(Components.Schemas.StackExtractConflict.CodePayload)
-    /// 422 in the shape the operation DECLARES (`HTTPValidationError`: `detail` is an ARRAY).
+    /// 422 in the shape the operation DECLARES, which since img-manager v0.20.0 IS the coded
+    /// object (`StackEditRefusalError`) the server always emitted — the recut moved the
+    /// declaration to the truth rather than the truth to the declaration (IMGMGR-371). Carries one
+    /// representative code (`not_a_member`), for the tests that care only that a refusal is a
+    /// refusal; `refusedCodedDetail` is the case that names one.
     case refused
-    /// 422 in the shape the server actually emits for a coded refusal — an OBJECT detail
-    /// (`{"detail": {"code", "message"}}`), which the declared array schema cannot decode. Kept as
-    /// its own case so the consequence is pinned by a test instead of assumed.
+    /// The same declared shape with the code NAMED, so a test can pin any of the ten
+    /// `StackEditRefusal` codes — including `too_few_stacks` and `invalid_request`, which the
+    /// recut brought into the declaration from a plain string and a `HTTPValidationError`.
     case refusedCodedDetail(code: String)
     /// 503 `stack_edit_busy`, with the `Retry-After` the contract declares beside it.
     case busy(retryAfterSeconds: Int?)
@@ -464,13 +506,12 @@ actor GridStubTransport: ClientTransport {
         Components.Schemas.StackExtractConflictError(
           detail: .init(code: code, message: "the scene is not in the state you asked about")))
     case .refused:
-      // Written as raw JSON rather than through the generated `HTTPValidationError`: this is the
+      // Written as raw JSON rather than through the generated `StackEditRefusalError`: this is the
       // DECLARED shape and the point is that it is on the wire byte for byte, not that a Swift
-      // value can be built for it (`ValidationError.loc` is a generated anyOf union whose spelling
-      // is an implementation detail of the generator).
+      // value can be built for it.
       return jsonBytes(
         .unprocessableContent,
-        #"{"detail": [{"loc": ["body"], "msg": "refused", "type": "value_error"}]}"#)
+        #"{"detail": {"code": "not_a_member", "message": "refused"}}"#)
     case .refusedCodedDetail(let code):
       return jsonBytes(
         .unprocessableContent, #"{"detail": {"code": "\#(code)", "message": "refused"}}"#)
@@ -796,6 +837,10 @@ actor GridStubTransport: ClientTransport {
         imageGroupsShouldFail = false
         throw SentinelTransportError(raw: "GridStubTransport: forced imageGroups failure")
       }
+      if let cancelled = imageGroupsCountCancelled {
+        imageGroupsCountCancelled = nil
+        return countCancelledResponse(cancelled)
+      }
       return try jsonResponse(.ok, resolvedGroups)
 
     case Operations.ImageFacetsApiFacetsGet.id:
@@ -814,6 +859,10 @@ actor GridStubTransport: ClientTransport {
       if facetsShouldFail {
         facetsShouldFail = false
         throw SentinelTransportError(raw: "GridStubTransport: forced facets failure")
+      }
+      if let cancelled = facetsCountCancelled {
+        facetsCountCancelled = nil
+        return countCancelledResponse(cancelled)
       }
       return try jsonResponse(.ok, resolvedFacets)
 

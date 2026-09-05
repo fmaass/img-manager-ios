@@ -35,7 +35,8 @@ struct GridStoreSceneTests {
     anchor: Date? = nil, representative: Components.Schemas.ImageSummary
   ) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: anchor, hasPick: hasPick, kind: .stack, matchedCount: matchedCount,
+      anchorTakenAt: anchor, editedCount: 0, hasPick: hasPick, kind: .stack,
+      matchedCount: matchedCount,
       memberCount: memberCount, pickedCount: hasPick ? 1 : 0, representative: representative,
       stackId: id)
   }
@@ -635,8 +636,8 @@ struct SceneRowBuilderTests {
 
   private func stack(_ id: Int, cover: Int) -> Components.Schemas.StackBrowseStackRow {
     .init(
-      hasPick: false, kind: .stack, matchedCount: 2, memberCount: 2, pickedCount: 0,
-      representative: image(cover), stackId: id)
+      editedCount: 0, hasPick: false, kind: .stack, matchedCount: 2, memberCount: 2,
+      pickedCount: 0, representative: image(cover), stackId: id)
   }
 
   @Test("A COLLAPSED scene renders as the card alone and contributes nothing actionable")

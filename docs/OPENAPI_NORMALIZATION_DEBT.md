@@ -1,5 +1,27 @@
 # OpenAPI normalization bridge — pinned debt (RESOLVED)
 
+**Addendum 2026-09-05 (WP21 P1, IMGMGR-371) — the PARAMETER half is retired, by the SERVER, and
+this document's last open count is now zero.** Re-vendored at img-manager
+`bac5dd16cb137ebcf4fe92b5b3361b52b93658ae` (tag v0.20.0, the WP17 P5 `--accept-breaking` recut).
+The ten `?sidecar` query parameters that carried a `title` beside their `anyOf: [$ref, null]` —
+counted as `still_dropped_nullable_unions=10` at every sha up to 0edeb4f (v0.18.0) — now arrive as
+`{"$ref": "#/components/schemas/SidecarPresence", "title": "Sidecar"}`, the shape
+swift-openapi-generator emits. Nothing in this repo changed to achieve that and nothing in this
+repo may claim it: the server stopped writing the union. `Packages/ImgManagerAPI/OPENAPI_SOURCE`
+now reads `canonicalized_nullable_refs=7`, `still_dropped_nullable_unions=0`, read back from the
+file.
+
+The seven optional MODEL properties (`ApiHealthResponse.maintenance`, `MaintenanceBusy.active_run`,
+`RunCounters.backfill/index/precompute/progress`, `StatusResponse.active_run`) still rewrite, by
+owner decision IMGMGR-281 **(b)** (2026-09-03): the null union stays in the server's schema and the
+iOS bridge stays here. `NullableSurvivalTests` still pins those seven, and adds none.
+
+`scripts/sync-openapi.sh`'s parameter loop is KEPT although it now matches zero sites — deleting it
+would also delete its REQUIRED-site refusal (`scripts/sync-openapi.sh:174-178`), the guard against a
+regression re-introducing the shape on a parameter this client cannot then send. It is an inert
+guard, and the counter it feeds is the evidence that it is inert. The `diff` against
+`git show bac5dd16…:frontend/openapi.json` is 77 lines, all seven property sites and nothing else.
+
 **Addendum 2026-08-31 (WP14 lane A, IMGMGR-249) — one narrow rewrite is back, and the
 "byte-identical" claim below is no longer the whole truth.** The retirement was right about
 SCALAR nullables: img-manager emits `type: [X, "null"]` natively and 188 sites arrive that way.

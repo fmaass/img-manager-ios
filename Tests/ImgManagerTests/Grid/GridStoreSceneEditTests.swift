@@ -36,7 +36,8 @@ struct GridStoreSceneEditTests {
     id: Int, memberCount: Int, anchor: Date?, representative: Components.Schemas.ImageSummary
   ) -> Components.Schemas.StackBrowseStackRow {
     Components.Schemas.StackBrowseStackRow(
-      anchorTakenAt: anchor, hasPick: false, kind: .stack, matchedCount: memberCount,
+      anchorTakenAt: anchor, editedCount: 0, hasPick: false, kind: .stack,
+      matchedCount: memberCount,
       memberCount: memberCount, pickedCount: 0, representative: representative, stackId: id)
   }
 

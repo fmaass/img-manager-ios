@@ -110,11 +110,14 @@ enum SceneEditFailure: Equatable, Sendable {
   /// only failure that offers a Retry, because it is the only one whose frozen payload is still
   /// the right question to ask.
   case busy(retryAfterSeconds: Int?)
-  /// 409 on an extraction — the scene is not in the state the request was written against.
+  /// 409 — the scene is not in the state the request was written against. Declared on the merge,
+  /// the split, the extraction and the absorb since img-manager v0.20.0 (IMGMGR-371); it was the
+  /// extraction's alone when this type was written.
   case conflict(SceneEditConflictReason)
   /// 422: the edit is refused by the contract itself (`not_a_member`, `empty_split_side`,
-  /// `cross_folder_merge`, …). The coded detail arrives as an object where the declared schema
-  /// says array, so the generated client cannot decode WHICH — see `GridService`.
+  /// `cross_folder_merge`, …). Since v0.20.0 the server DECLARES that coded object, so the
+  /// generated client decodes it and `GridService` knows which refusal it was — this case stays
+  /// deliberately payload-less because one sentence is true of all ten codes: nothing was changed.
   case refused
   /// 404 on an absorb (IMGMGR-347): the scene, or a photograph this request named, is not in the
   /// library any more. Its own case rather than a `.refused`, because it says something different
