@@ -8,11 +8,15 @@ import SwiftUI
 /// - `.compact`: the filmstrip below the main image, and no full-screen toggle control (the
 ///   presenting view — `RootView` — always shows this full-screen here already). WP13 P9
 ///   (IMGMGR-218) removed the filmstrip exclusion this bullet used to record: the phone gets the
-///   spec's thumb bar, and it is the SAME `FilmstripView` over the SAME projection the iPad's
-///   is, so Scene-mode frame walking is inherited rather than re-implemented.
-/// - `.regular2`/`.regular3`: the same filmstrip (same `GridStore.actionableImages`/
-///   `loadMoreIfNeeded`, never a filmstrip-local page — fold's "one paging path" pivot) and a
-///   full-screen toggle button in the header.
+///   spec's thumb bar, and it is the SAME `FilmstripView` over the SAME store the iPad's is, so
+///   Scene-mode frame walking is inherited rather than re-implemented.
+/// - `.regular2`/`.regular3`: the same filmstrip (same store, same pagers, never a
+///   filmstrip-local page — fold's "one paging path" pivot) and a full-screen toggle button in
+///   the header.
+///
+/// IMGMGR-406 (owner decision 2026-09-05, option (a), both idioms alike) scopes WHAT that one
+/// strip shows and whether it is built at all — `FilmstripScope` below — without giving any
+/// layout mode a strip the other does not have.
 ///
 /// Pixels: `.preview` tier only (spec: "the loupe never requests originals") — this view never
 /// requests `.grid` for its own main image (the filmstrip's thumbnails do, same as `TileView`).
@@ -28,6 +32,28 @@ import SwiftUI
 /// and `body` itself therefore exercises the seam, which is what
 /// `LoupeZoomWiringTests.bodyRoutesAFocusChangeIntoTheInstaller` observes. The `.task` still
 /// commits the reset to storage so that stepping A -> B -> A cannot restore A's old zoom.
+/// How long THIS loupe's paging is allowed to keep asking (Codex round 4).
+///
+/// The paging trigger is an unstructured `Task` on purpose — a `.task(id:)` would cancel a page
+/// still on the wire on every focus change, and `GridService` turns any thrown error, a
+/// `CancellationError` included, into `.unreachable`, which the pagers record as
+/// `lastPageLoadError`. But "not cancellable" also means the continuation after an `await`
+/// survives the loupe being closed, and would then start the NEXT pager's request against a
+/// surface nobody is looking at any more (`GridStore.closeLoupe` keeps focus and generation, so
+/// the store itself cannot tell).
+///
+/// A reference type held in `@State`, so the object the running Task captured is the SAME object
+/// the closing view bumps — a value would be re-created with the view struct on every render and
+/// the bump would land where nothing is watching. Ending the lifetime never cancels anything: the
+/// request already in flight completes and stores its page; only the ASK AFTER it is dropped.
+@MainActor
+final class LoupePagingLifetime {
+  private(set) var generation = 0
+
+  /// This loupe is gone: nothing started before now may ask for more.
+  func end() { generation += 1 }
+}
+
 struct LoupeView: View {
   @Bindable var store: GridStore
   let layoutMode: LayoutMode
@@ -49,17 +75,23 @@ struct LoupeView: View {
 
   @State private var proxyImage: PlatformImage?
   @State private var zoomModel: LoupeZoomModel
+  /// This presentation's paging lifetime — see `LoupePagingLifetime`. Injectable for the same
+  /// reason `zoomModel` is: a test cannot install `@State` on an unrendered view, but it CAN hand
+  /// in the object and end it from the outside.
+  @State private var pagingLifetime: LoupePagingLifetime
   @State private var imageViewport: CGSize = .zero
   @Environment(\.displayScale) private var displayScale
 
   init(
     store: GridStore, layoutMode: LayoutMode, share: ShareExportStore,
-    zoomModel: LoupeZoomModel = LoupeZoomModel()
+    zoomModel: LoupeZoomModel = LoupeZoomModel(),
+    pagingLifetime: LoupePagingLifetime = LoupePagingLifetime()
   ) {
     self.store = store
     self.layoutMode = layoutMode
     self.share = share
     _zoomModel = State(initialValue: zoomModel)
+    _pagingLifetime = State(initialValue: pagingLifetime)
   }
 
   private var focusedImage: Components.Schemas.ImageSummary? {
@@ -118,10 +150,34 @@ struct LoupeView: View {
       header()
       ShareStatusBar(share: share)
       mainImageArea(zoomToggle: zoomToggle)
-      filmstrip.make(store)
+      // IMGMGR-406: on a loose photograph in Scene mode the strip is not built at all, so the
+      // main image takes its 72 pt back. Emitting nothing is what frees the height — a strip that
+      // rendered an empty band would still occupy this row of the stack in every layout mode.
+      if FilmstripScope.resolve(for: store).isRendered {
+        filmstrip.make(store)
+      }
       ConflictRecoveryBanner(store: store)
       LoupeMarkBar(store: store)
     }
+    // NOT `.task(id:)` (Codex round 2): that binds the page load to this frame's view lifetime,
+    // so the next focus change CANCELS a page still on the wire — and `GridService` maps every
+    // thrown error, `CancellationError` included, to `.unreachable`, which the pagers record as
+    // `lastPageLoadError` (GridStore.swift:1177/1229/1340). Stepping back while the tail page
+    // loaded would have surfaced a paging error the reader can do nothing about. An unstructured
+    // `Task` outlives the focus change; the store's own single-flight guards (`isLoadingPage`,
+    // `sceneMembersInFlight`) and tail tests make a duplicate ask a no-op, so nothing is asked
+    // twice.
+    .onChange(of: store.focusedImageID, initial: true) { _, _ in
+      Task { await pageIfNeeded() }
+    }
+    // Both halves of "this loupe is gone", because neither alone is guaranteed: `closeLoupe()`
+    // removes this view (Compact's cover, Regular's docked branch) but the disappear is the
+    // framework's timing, while the store's own flag is the app's. Ending twice is harmless — the
+    // generation only has to CHANGE.
+    .onChange(of: store.isLoupeOpen) { _, isOpen in
+      if !isOpen { pagingLifetime.end() }
+    }
+    .onDisappear { pagingLifetime.end() }
     .task(id: store.focusedImageID) {
       // Commit the frame-change reset to storage (the render already reflects it through
       // `resolvedZoom`): without this, stepping away from a zoomed frame and back would restore
@@ -135,6 +191,45 @@ struct LoupeView: View {
       await loadMainImage()
       syncZoomGeometry()
     }
+  }
+
+  /// The loupe's paging hook: the store's own pagers, and nothing else. Named so the Do-NOT
+  /// ("no second paging path, no loupe-local cursor" — WP8 P5's pivot) is one function a diff can
+  /// read, rather than a closure buried in a view modifier.
+  ///
+  /// IMGMGR-267: this is EXACTLY `GridView.page(from:)`, asked of a photograph. The three
+  /// questions ("page the flat grid", "page the scene stream", "page THIS scene's membership")
+  /// are each a no-op in the wrong mode by the store's own guards, so asking all three adds no
+  /// second path — it makes the loupe ask the same ones the grid does.
+  ///
+  /// IMGMGR-406 moved it here from `FilmstripView`, where it hung off each thumbnail's own
+  /// `.task`. Since option (a) there is no strip at all on a loose photograph in Scene mode, and
+  /// a trigger that lives on a view which is not drawn is not a trigger: the reader could walk to
+  /// the tail of the loaded window and simply stop, because the loupe's own forward-neighbour
+  /// prefetch is flat-only (`GridStore.loupeNext`). Driving it from the FOCUSED photograph — the
+  /// one thing that exists in every mode and every layout — keeps the reader's walk paging, and
+  /// keeps it to exactly ONE ask per frame: the strip used to ask once per rendered thumbnail.
+  func pageIfNeeded() async {
+    let lifetime = pagingLifetime
+    let generation = lifetime.generation
+    // TWO guards, checked at entry and again after EVERY await, because the Task is deliberately
+    // not cancellable and its continuation therefore outlives the loupe:
+    //
+    // - `store.isLoupeOpen` is the SYNCHRONOUS one. `closeLoupe()` clears it on the main actor in
+    //   the same turn the reader closed, so a fetch that completes in the update cycle BEFORE the
+    //   view's own `onDisappear`/`onChange` has run still sees it false (Codex round 5).
+    // - the lifetime generation covers the other direction: this presentation going away without
+    //   the store's flag moving (a disappear, or a swap between the docked and full-screen loupe).
+    //
+    // Neither tears anything down: the request in flight completes and stores its page; only the
+    // ASK AFTER it is dropped.
+    func mayStillAsk() -> Bool { store.isLoupeOpen && lifetime.generation == generation }
+    guard let imageID = store.focusedImageID, mayStillAsk() else { return }
+    await store.loadMoreIfNeeded(currentItemID: imageID)
+    guard mayStillAsk() else { return }
+    await store.loadMoreSceneMembersIfNeeded(afterMemberID: imageID)
+    guard mayStillAsk() else { return }
+    await store.loadMoreScenesIfNeeded(currentRowID: .image(imageID))
   }
 
   /// IMGMGR-348, owner device pass 2026-09-02: the zoom ("100 %"), auto-advance ("play") and
@@ -436,20 +531,102 @@ enum LoupeMarkPresentation {
   }
 }
 
-/// EVERY layout mode since WP13 P9 (IMGMGR-218), the phone included: the grid retained as a
-/// filmstrip "so context is never lost" (spec) — the SAME `GridStore.actionableImages`/
-/// `focusedImageID`, and the SAME serialized `loadMoreIfNeeded` the grid's own `GridView` uses
-/// (fold's "one paging path" pivot), never a filmstrip-local cursor.
+/// WHAT the loupe's filmstrip shows, and whether there is a strip at all — one value, so the rows
+/// the strip draws and the decision to draw it cannot come apart.
 ///
-/// WP12: walking the shared actionable projection is what makes the filmstrip agree with the grid
-/// in BOTH modes rather than only in flat browse — in Scene mode it shows the loose photographs
-/// and the members of opened scenes, in display order, and no collapsed card's cover.
+/// IMGMGR-406 (owner decision 2026-09-05, option (a), iPad and iPhone alike): inside a scene the
+/// strip is THAT SCENE, not the stream. Culling a burst is a comparison between its own frames,
+/// and a strip carrying the loose photographs either side of the band answered a question nobody
+/// was asking. On a loose photograph there is no such set, so the strip is not drawn at all and
+/// the main image takes the height — an empty band would be a bar that says nothing.
+///
+/// Flat browse is untouched: the strip is the whole sequence, as it has been since WP12.
+///
+/// Pure, and computed from state the store already holds, so the rule is a value a test reads
+/// rather than a branch inside a `body`.
+enum FilmstripScope: Equatable, Sendable {
+  /// Flat browse: the shared actionable projection, whole.
+  case sequence([Components.Schemas.ImageSummary])
+  /// Scene browse, on a member: the open scene's band, in display order.
+  case members([Components.Schemas.ImageSummary])
+  /// Scene browse, on a loose photograph: no strip.
+  case hidden
+
+  var frames: [Components.Schemas.ImageSummary] {
+    switch self {
+    case .sequence(let images), .members(let images): return images
+    case .hidden: return []
+    }
+  }
+
+  /// Whether the strip is built. The one question `LoupeView.body` asks; deriving it from the
+  /// same value as `frames` is what makes "no frames" and "no strip" the same fact.
+  var isRendered: Bool {
+    switch self {
+    case .sequence, .members: return true
+    case .hidden: return false
+    }
+  }
+
+  static func resolve(
+    displayMode: GridDisplayMode,
+    focusedImageID: Int?,
+    openSceneMembers: [Components.Schemas.ImageSummary]?,
+    actionableImages: [Components.Schemas.ImageSummary]
+  ) -> FilmstripScope {
+    switch displayMode {
+    case .flat:
+      return .sequence(actionableImages)
+    case .scene:
+      // No focus is the same answer as a loose photograph: there is no scene to show.
+      guard focusedImageID != nil, let band = openSceneMembers, !band.isEmpty else {
+        return .hidden
+      }
+      return .members(band)
+    }
+  }
+
+  /// The same decision, asked of the store — the form both call sites use, so neither of them
+  /// assembles the arguments (and neither can assemble them differently).
+  @MainActor
+  static func resolve(for store: GridStore) -> FilmstripScope {
+    var band: [Components.Schemas.ImageSummary]?
+    if let focused = store.focusedImageID {
+      band = store.openSceneMembers(containing: focused)
+    }
+    return resolve(
+      displayMode: store.displayMode, focusedImageID: store.focusedImageID,
+      openSceneMembers: band, actionableImages: store.actionableImages)
+  }
+}
+
+/// EVERY layout mode since WP13 P9 (IMGMGR-218), the phone included: the grid retained as a
+/// filmstrip "so context is never lost" (spec) — the SAME `GridStore` state the grid's own
+/// `GridView` reads, never a filmstrip-local pool or cursor. Paging is not this view's job at all
+/// since IMGMGR-406: `LoupeView.pageIfNeeded()` drives the store's three pagers from the FOCUSED
+/// photograph, so the walk keeps paging on a loose photograph where this view does not exist.
+///
+/// WP12 established that the strip walks the shared ACTIONABLE projection, never `store.images`
+/// and never a collapsed card's cover (ADR-0005 decision 4) — that half stands. IMGMGR-406
+/// replaces the other half of the WP12 rule ("in Scene mode it shows the loose photographs and
+/// the members of opened scenes"): in Scene mode the strip is now the open scene's band alone,
+/// and on a loose photograph there is no strip. `FilmstripScope` above holds that rule.
 ///
 /// WP13 P9: the strip FOLLOWS the focused frame. P8's advance-on-mark moves `focusedImageID` on
 /// every committed loupe mark, so a strip that only moved when the reader dragged it would
 /// silently stop tracking after the first advance — which on a phone, where the strip is the
 /// only context there is, would be worse than no strip. `revealTarget(in:)` names the frame to
 /// bring into view and `reveal(_:through:)` is the one seam that brings it.
+///
+/// Do NOT:
+/// - give the strip a cursor, a page, or a paging TRIGGER of its own (IMGMGR-267, IMGMGR-406) —
+///   the one trigger is `LoupeView.pageIfNeeded()`, on the focused photograph; a `.task` per
+///   thumbnail here would both ask N times per frame and go silent whenever the strip is hidden;
+/// - draw a thumbnail as anything but a real Button (IMGMGR-268);
+/// - reserve the strip's height when the scope is `.hidden` (IMGMGR-406) — an empty bar is the
+///   thing the owner decision removes;
+/// - derive the rows from anywhere but `FilmstripScope`: `frames` and "is there a strip" are one
+///   decision, and a second source for either is how they start disagreeing.
 struct FilmstripView: View {
   @Bindable var store: GridStore
   /// The scroll seam. Production drives the live `ScrollViewProxy`; a test substitutes a
@@ -457,9 +634,14 @@ struct FilmstripView: View {
   /// rendered `ScrollViewReader`.
   var scroller: FilmstripFocusScroller = .live
 
-  /// THE projection the strip walks: the shared actionable one, never `store.images` — which is
-  /// empty in Scene mode — and so never a collapsed card's cover (ADR-0005 decision 4).
-  var frames: [Components.Schemas.ImageSummary] { store.actionableImages }
+  /// The scope this strip is drawing, re-read from the store on every evaluation so a focus move
+  /// from a member to a loose photograph (or into another scene) can leave no stale rows behind.
+  var scope: FilmstripScope { FilmstripScope.resolve(for: store) }
+
+  /// THE rows the strip walks. In flat browse the shared actionable projection — never
+  /// `store.images`, and so never a collapsed card's cover (ADR-0005 decision 4); in Scene mode
+  /// the open scene's band, which is a subset of that same projection (IMGMGR-406).
+  var frames: [Components.Schemas.ImageSummary] { scope.frames }
 
   /// The frame the strip must bring into view, or `nil` when there is nothing to reveal.
   ///
@@ -478,31 +660,27 @@ struct FilmstripView: View {
   /// The parameterless form the suites read.
   var revealTarget: Int? { revealTarget(in: frames) }
 
-  /// The strip's paging hook: the store's own pagers, and nothing else. Named so the Do-NOT
-  /// ("no second paging path, no filmstrip-local cursor" — WP8 P5's pivot) is one function a
-  /// diff can read, rather than a closure buried in a row modifier.
-  ///
-  /// IMGMGR-267: this is EXACTLY `GridView.page(from:)`, asked of a photograph. It used to be the
-  /// flat pager alone, which returns early unless `displayMode == .flat` — so in Scene mode the
-  /// strip walked the loaded pool and, at the tail, simply stopped, while the grid behind it went
-  /// on paging. The three questions ("page the flat grid", "page the scene stream", "page THIS
-  /// scene's membership") are each a no-op in the wrong mode by the store's own guards, so asking
-  /// all three here adds no second path — it makes the strip ask the same ones the grid does.
-  func pageIfNeeded(around image: Components.Schemas.ImageSummary) async {
-    await store.loadMoreIfNeeded(currentItemID: image.id)
-    await store.loadMoreSceneMembersIfNeeded(afterMemberID: image.id)
-    await store.loadMoreScenesIfNeeded(currentRowID: .image(image.id))
-  }
-
   /// The one place a scroll is asked for; `body`'s `onChange` carries no logic of its own.
   func reveal(_ target: Int?, through proxy: ScrollViewProxy?) {
     guard let target else { return }
     scroller.reveal(proxy, target)
   }
 
+  /// Nothing is emitted for a `.hidden` scope. `LoupeView.body` already declines to build this
+  /// view then; this is the SAME decision at the only other place it could be lost — a strip
+  /// constructed anywhere else (a test, a future host) cannot draw an empty band either.
+  @ViewBuilder
   var body: some View {
-    let frames = self.frames
-    return ScrollViewReader { proxy in
+    // Bound ONCE: the decision to draw and the rows drawn come from the same value, so a focus
+    // move between the two reads cannot produce a strip with somebody else's frames.
+    let scope = self.scope
+    if scope.isRendered {
+      strip(frames: scope.frames)
+    }
+  }
+
+  private func strip(frames: [Components.Schemas.ImageSummary]) -> some View {
+    ScrollViewReader { proxy in
       ScrollView(.horizontal) {
         LazyHStack(spacing: 4) {
           ForEach(frames, id: \.id) { image in
@@ -523,7 +701,6 @@ struct FilmstripView: View {
             .accessibilityIdentifier("filmstripThumbnail-\(image.id)")
             .accessibilityLabel(FilmstripThumbnailAccessibility.label(for: image))
             .accessibilityAddTraits(isFocused ? [.isSelected] : [])
-            .task(id: image.id) { await pageIfNeeded(around: image) }
           }
         }
         .padding(.horizontal, 8)

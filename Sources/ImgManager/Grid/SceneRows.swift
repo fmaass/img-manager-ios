@@ -111,8 +111,9 @@ enum SceneDisplayRow: Sendable, Equatable, Identifiable {
 /// The derivations Scene mode's whole safety argument rests on, kept pure and free-standing so
 /// they are testable without a store, a view or a network — the same shape the web keeps them in
 /// (`frontend/src/lib/stacks.ts`). Two of them are the boundary itself (`displayRows`,
-/// `actionableImages`); the other three are what WP14 lane B needed on top of it — where an open
-/// band hangs its control, and the arithmetic behind the ✓N badge.
+/// `actionableImages`); three are what WP14 lane B needed on top of it — where an open band hangs
+/// its control, and the arithmetic behind the ✓N badge; and `openSceneMembers` is IMGMGR-406's
+/// filmstrip scope, asked of that same state.
 enum SceneRowBuilder {
 
   /// The display sequence: the served rows in the SERVER's order, with each OPEN scene REPLACED
@@ -151,6 +152,31 @@ enum SceneRowBuilder {
       }
     }
     return out
+  }
+
+  /// The band of the OPEN scene this photograph belongs to, in display order — or `nil` because it
+  /// belongs to none (a loose photograph, or a member of a scene nobody has open).
+  ///
+  /// IMGMGR-406, owner decision 2026-09-05 option (a): the loupe's filmstrip is "this scene",
+  /// not "everything on screen", so it needs the membership question answered the same way the
+  /// band itself is drawn — from `expanded` and `members`, the state `displayRows` above already
+  /// renders, never a second fetch and never a cached band of a scene the reader has CLOSED
+  /// (`GridStore.toggleSceneExpanded` keeps those members in hand deliberately, so the fence on
+  /// `expanded` is what keeps a closed scene's photographs out of every consumer of this).
+  /// Iterating the expanded ids in sorted order keeps the answer deterministic even though a
+  /// photograph can only ever be in one of them.
+  static func openSceneMembers(
+    containing imageID: Int,
+    expanded: Set<Int>,
+    members: [Int: [Components.Schemas.ImageSummary]]
+  ) -> [Components.Schemas.ImageSummary]? {
+    for stackID in expanded.sorted() {
+      guard let band = members[stackID], band.contains(where: { $0.id == imageID }) else {
+        continue
+      }
+      return band
+    }
+    return nil
   }
 
   /// Which member each open band hangs its own control on: the FIRST member of every scene whose

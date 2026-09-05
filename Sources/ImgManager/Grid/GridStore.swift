@@ -174,6 +174,20 @@ final class GridStore {
       rows: sceneRows, expanded: sceneExpanded, members: sceneMembers)
   }
 
+  /// Which OPEN scene this photograph belongs to, as its band in display order — `nil` for a
+  /// loose photograph, for a member of a scene nobody has open, and for every photograph in flat
+  /// browse, where the question does not arise.
+  ///
+  /// IMGMGR-406: the loupe's filmstrip asks this to scope itself to the scene being culled. It is
+  /// a READ of the state the band is already rendered from (`sceneExpanded`/`sceneMembers`), so
+  /// the strip and the band can never name different photographs, and it never reaches the
+  /// network — a scene whose membership has not been fetched simply answers `nil`.
+  func openSceneMembers(containing imageID: Int) -> [Components.Schemas.ImageSummary]? {
+    guard displayMode == .scene else { return nil }
+    return SceneRowBuilder.openSceneMembers(
+      containing: imageID, expanded: sceneExpanded, members: sceneMembers)
+  }
+
   /// THE list of "photographs on screen" — the single projection every mark, tag, undo, focus,
   /// arrow-navigation and loupe path in this type reads instead of `images` directly.
   ///
@@ -181,7 +195,9 @@ final class GridStore {
   /// the display sequence's photographs: loose rows and the members of EXPANDED scenes, never a
   /// collapsed card's cover. Deriving it once, here, is what makes "a card is not a write target"
   /// and "an expanded member IS one" the same fact rather than two rules a dozen call sites each
-  /// have to remember — including the loupe's filmstrip, which walks this same list.
+  /// have to remember. The loupe's filmstrip walks this list in FLAT browse; in Scene mode
+  /// IMGMGR-406 narrows the strip to one open scene's band (`openSceneMembers(containing:)`
+  /// above), while every mark, focus and navigation path here keeps reading this projection.
   var actionableImages: [Components.Schemas.ImageSummary] {
     switch displayMode {
     case .flat: return images
@@ -1218,11 +1234,13 @@ final class GridStore {
   /// (IMGMGR-267).
   ///
   /// Two surfaces walk the loaded scene window and they walk DIFFERENT sequences: the grid walks
-  /// display rows, whose tail can be a collapsed card, while the filmstrip walks the actionable
+  /// display rows, whose tail can be a collapsed card, while the LOUPE walks the actionable
   /// photographs, whose tail is the last loose photograph or band member — which, in a stream
   /// ending in collapsed cards, is not the last display row at all. Asking only the first
-  /// question is what made the strip unable to extend the pool in Scene mode: its own last frame
-  /// was never "the tail", so it never asked for more and the strip simply ended.
+  /// question is what made the loupe unable to extend the pool in Scene mode: its own last frame
+  /// was never "the tail", so it never asked for more and the walk simply ended. (The asker was
+  /// the filmstrip until IMGMGR-406 moved the trigger onto the focused photograph, which is the
+  /// same sequence's tail and exists whether or not a strip is drawn.)
   ///
   /// Both answers name the same window and are served by the SAME function through the SAME
   /// `sceneNextCursor` — this widens what counts as the end, it does not add a second pager.

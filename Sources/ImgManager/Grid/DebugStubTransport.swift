@@ -116,7 +116,9 @@
       case Operations.BrowseStacksApiBrowseStacksGet.id:
         return try jsonResponse(.ok, Self.fixtureStackPage())
       case Operations.ListStackMembersApiStacksStackIdMembersGet.id:
-        return try jsonResponse(.ok, Self.fixtureStackMemberPage())
+        let memberCursor = request.path.flatMap { URLComponents(string: $0)?.queryItems }?
+          .first(where: { $0.name == "cursor" })?.value
+        return try jsonResponse(.ok, Self.fixtureStackMemberPage(cursor: memberCursor))
       case Operations.GetStackApiStacksStackIdGet.id:
         return try jsonResponse(.ok, Self.fixtureStackRow())
       // IMGMGR-347: the absorb the More menu's new row drives. Counted BEFORE the answer goes
@@ -270,16 +272,46 @@
     /// ambiguous about which card an assertion is talking about.
     static let fixtureStackID = 5000
 
-    /// Five members of the fixture scene, TWO of them picked — so `picked_count` is a number a
-    /// screenshot can disagree with (a boolean flag could not), and the inline strip has more
-    /// than one thumbnail to lay out.
+    /// The fixture scene's members: the five named ones (ids 3…7, TWO of them picked — so
+    /// `picked_count` is a number a screenshot can disagree with, and the inline strip has more
+    /// than one thumbnail to lay out), then a long tail of plain ones.
+    ///
+    /// IMGMGR-406: the tail is what makes a band LONGER than any gate destination's grid
+    /// viewport, so the grid never renders the band's last member and therefore never pages the
+    /// membership itself (`GridView` pages from rendered cells only). That is the one arrangement
+    /// in which the loupe's own paging trigger is observable end to end: the strip can be
+    /// scrolled to the loaded tail while the grid behind it cannot. The tail carries no picks and
+    /// no edits, so `picked_count` (2) and `edited_count` (2) are exactly what they were.
     private static func fixtureStackMemberImages() -> [Components.Schemas.ImageSummary] {
-      fixtureImages().dropFirst(2).prefix(5).enumerated().map { index, image in
+      let named = fixtureImages().dropFirst(2).prefix(5).enumerated().map { index, image in
         var member = image
         member.mark = .init(
           revision: image.mark.revision, state: (index == 0 || index == 2) ? .pick : .none)
         return member
       }
+      return named + (601...635).map { plainMember(id: $0) }
+    }
+
+    /// The last member of the loaded band — the frame a UI test focuses to make the loupe ask for
+    /// the next membership page. Named here so the fixture, not a test, owns the number.
+    static let fixtureBandTailMemberID = 635
+    /// The member only the SECOND membership page carries: it can appear in a strip only after
+    /// something asked for that page.
+    static let fixtureSecondPageMemberID = 700
+
+    /// A member with no verdict, no edit and no group key: tail material, deliberately inert so
+    /// growing the band cannot move any count a shipped screenshot test asserts on.
+    private static func plainMember(id: Int) -> Components.Schemas.ImageSummary {
+      Components.Schemas.ImageSummary(
+        aspectRatio: 1.5, capturedAt: Date(), ext: "jpg",
+        filename: "STUB_\(String(format: "%04d", id)).jpg", folderId: 1, hasEdit: false, id: id,
+        lightroom: .init(good: false, rating: 0, sidecarPresent: false),
+        mark: .init(revision: "r\(id)", state: .none), missing: false,
+        proxies: .init(additionalProperties: [
+          "grid": .init(height: 400, url: nil, verdict: .ok, width: 600),
+          "preview": .init(height: 1600, url: nil, verdict: .ok, width: 2400),
+        ]),
+        sourceKind: "camera_original", sourceLabel: "STUB_\(id).ARW", sourceTier: "local")
     }
 
     /// The card's own row. `representative` is a member whose `has_edit` is true, so the card
@@ -292,11 +324,16 @@
     /// all and make the badge's UI leg vacuous.
     private static func fixtureStackRow() -> Components.Schemas.StackBrowseStackRow {
       let members = fixtureStackMemberImages()
+      // IMGMGR-406 (Codex round 4): the counts advertise the WHOLE scene, not the first page of
+      // it — the band serves `members.count` now and one more on the second membership page, and
+      // a card that promised 40 while its band ends at 41 would be the fixture lying about the
+      // very thing this scene exists to page.
+      let advertised = members.count + 1
       return Components.Schemas.StackBrowseStackRow(
         anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000),
         editedCount: members.filter { $0.hasEdit == true }.count, hasPick: true,
         kind: .stack,
-        matchedCount: members.count, memberCount: members.count,
+        matchedCount: advertised, memberCount: advertised,
         pickedCount: members.filter { $0.mark.state == .pick }.count,
         representative: members[1], stackId: fixtureStackID)
     }
@@ -315,10 +352,23 @@
         ], limit: 100, nextCursor: nil)
     }
 
-    private static func fixtureStackMemberPage() -> Components.Schemas.StackMemberPage {
-      Components.Schemas.StackMemberPage(
-        items: fixtureStackMemberImages(), limit: 100, nextCursor: nil, stackId: fixtureStackID)
+    /// Two membership pages (IMGMGR-406). Page one is the loaded band and names its successor;
+    /// the second page is served only to a request that carries that cursor, which is what makes
+    /// its one member evidence that somebody asked.
+    private static func fixtureStackMemberPage(cursor: String?)
+      -> Components.Schemas.StackMemberPage
+    {
+      guard cursor == memberPageTwoCursor else {
+        return Components.Schemas.StackMemberPage(
+          items: fixtureStackMemberImages(), limit: 100, nextCursor: memberPageTwoCursor,
+          stackId: fixtureStackID)
+      }
+      return Components.Schemas.StackMemberPage(
+        items: [plainMember(id: fixtureSecondPageMemberID)], limit: 100, nextCursor: nil,
+        stackId: fixtureStackID)
     }
+
+    private static let memberPageTwoCursor = "members-2"
 
     /// WP16 P3 (IMGMGR-295), the named fixture work item (gate round 1, B9). Until this phase the
     /// stub answered `/api/facets` with ONE mark row (`pick`, 3) and no `rating`, `ext` or
