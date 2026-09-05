@@ -123,6 +123,41 @@ struct FolderTreeItemRow: Identifiable {
 
   var id: FolderTreeItemID { item.id }
   var isExpandable: Bool { !item.children.isEmpty }
+
+  /// What a tap on this row's NAME does (IMGMGR-400). Derived here rather than decided inside the
+  /// view, so the rule is one value a unit test reads instead of a branch only a device could
+  /// disagree with — which is how both halves of the owner's device-pass report stayed shipped:
+  /// a container's name did nothing (only its chevron toggled) and a folder whose `kind` is not a
+  /// dated shoot did nothing at all.
+  ///
+  /// The web is the design decision (p3396, "the same folder view on the ios app as on web"):
+  /// `FolderTreeBranch.vue:63` selects ANY folder on its name, `:95`/`:103` toggle a month on its
+  /// label, and the chevron (`:50`) toggles either way. So: a FOLDER row opens its folder — its
+  /// `kind` is not consulted, because `/api/images` resolves `folder_id` to the whole subtree and
+  /// every folder therefore has a grid to show; a FOLD is no folder (`FolderTreeItemID`), so its
+  /// name drives the same toggle its chevron drives; and a row with neither is inert rather than
+  /// pretending to be one of them.
+  ///
+  /// `isSelectableShoot` is deliberately NOT read here. It still answers which rows are SHOOTS —
+  /// cover thumbnail, count subline, readiness badge, the `folderRow-`/`folderContainer-`
+  /// identifier split (`FolderTreeRowPresentation`) — and that vocabulary is unchanged; only the
+  /// tap was widened.
+  var tapAction: FolderTreeRowTapAction {
+    if let node = item.node { return .openFolder(node.id) }
+    return isExpandable ? .toggleExpansion : .inert
+  }
+}
+
+/// The three things a tap on a tree row's name can do (IMGMGR-400). A value rather than a closure
+/// so the decision is testable apart from the view that performs it.
+enum FolderTreeRowTapAction: Equatable, Sendable {
+  /// Select the row and enter the grid — `GridStore.selectShoot(folderID:sourceTier:)`, the one
+  /// path every row into the grid has always taken.
+  case openFolder(Int)
+  /// Open or close this row's children, the same action the chevron performs.
+  case toggleExpansion
+  /// Nothing to open and nothing to expand.
+  case inert
 }
 
 /// The pure half of the folder tree: flat `[FolderNode]` in, forest out, plus the client-side

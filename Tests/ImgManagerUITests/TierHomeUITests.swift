@@ -65,6 +65,55 @@ final class TierHomeUITests: OrientationPinnedUITestCase {
         + "through GridStore.selectShoot(folderID:sourceTier:).")
   }
 
+  /// IMGMGR-400 (owner device pass, TestFlight 0.12.0 (15)): "the actual image folders dont open
+  /// at all to show pictures". A folder row of ANY kind must enter the grid on a tap, exactly as
+  /// the web does (`FolderTreeBranch.vue:63` selects any folder on its name). The shipped tree
+  /// wired the tap ONLY where `FolderTreeNode.isSelectableShoot` was true — `ShootListFilter
+  /// .shootKinds` = {dated, dated_split} — so every import/project/template/other folder holding
+  /// images was inert on the device (156 such leaves in production).
+  ///
+  /// The fixture's `template` leaf (id 4, kind `template`, 3 images, under the shoot id 3) is
+  /// that case in the LIVE vocabulary (IMGMGR-173). Its handle is `folderContainer-4` and not
+  /// `folderRow-4`: `FolderTreeRowPresentation.rowIdentifier` still splits the two prefixes by
+  /// `isSelectableShoot`, which this fix deliberately leaves alone — the shoot-list semantics
+  /// (cover thumbnail, subline, readiness badge, `ShootListFilter`) are unchanged and only the
+  /// TAP was widened.
+  ///
+  /// The walk also pins the other half of the web's behaviour on a folder that has children: the
+  /// shoot id 3 is opened by its CHEVRON, which reveals the template row rather than navigating.
+  func testAFolderOfAnyKindEntersTheGridNotOnlyADatedShoot() throws {
+    let app = launch(extraArguments: [])
+
+    let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
+    XCTAssertTrue(reveal(incoming, in: app), "The Incoming tier row never appeared.")
+    incoming.tap()
+
+    app.descendants(matching: .any)["folderDisclose-2"].firstMatch.tap()
+    let month = app.descendants(matching: .any)["folderTreeMonth-2-2026-09"].firstMatch
+    XCTAssertTrue(reveal(month, in: app), "The year container revealed no month fold.")
+    app.descendants(matching: .any)["folderDisclose-2-2026-09"].firstMatch.tap()
+
+    let shoot = app.descendants(matching: .any)["folderRow-3"].firstMatch
+    XCTAssertTrue(reveal(shoot, in: app), "The month fold revealed none of the shoots it folds.")
+
+    // The chevron on a row that BOTH navigates and expands still only expands.
+    app.descendants(matching: .any)["folderDisclose-3"].firstMatch.tap()
+    let template = app.descendants(matching: .any)["folderContainer-4"].firstMatch
+    XCTAssertTrue(
+      reveal(template, in: app),
+      "The shoot's own chevron revealed no `template` subfolder — the fixture nests one (id 4) "
+        + "and the chevron must still open it.")
+    attach(named: "IMGMGR-400-non-dated-folder-reachable")
+
+    template.tap()
+    XCTAssertTrue(
+      app.buttons["Dislike"].waitForExistence(timeout: 30),
+      "Tapping a folder whose kind is not a dated shoot never reached the grid (IMGMGR-400): a "
+        + "template/import/project/other folder holding images must enter the SAME grid through "
+        + "GridStore.selectShoot(folderID:sourceTier:).")
+    attach(named: "IMGMGR-400-non-dated-folder-grid")
+  }
+
   // MARK: - The walk
 
   private func walkIncomingToTheShootAndIntoTheGrid(_ app: XCUIApplication, label: String) {

@@ -313,3 +313,103 @@ struct FolderTreeLoadTests {
     #expect(FolderTreeLoadPresentation.message(for: .loaded) == nil)
   }
 }
+
+/// IMGMGR-400: what a tap on a row's NAME does, as a value — the decision the two device-pass
+/// defects were made of, pinned before any view renders it.
+///
+/// The owner's report on TestFlight 0.12.0 (15) was two halves of one rule: "the folders only
+/// open when tapping on the chevron to expand the tree" and "the actual image folders dont open
+/// at all to show pictures". The shipped row wired a tap ONLY on `isSelectableShoot`
+/// (`ShootListFilter.shootKinds` = {dated, dated_split}), and expansion ONLY on the chevron
+/// Button — so a container's name did nothing and a template/import/project/other folder full of
+/// photographs did nothing at all.
+///
+/// The web is the design decision (BookStack p3396, "the same folder view on the ios app as on
+/// web"): `FolderTreeBranch.vue:63` selects ANY folder on its name, and `:95`/`:103` toggle a
+/// month fold on its label. That is exactly the three-way answer below.
+///
+/// `kind` values here are the LIVE server vocabulary (IMGMGR-173) — {other, dated, dated_split,
+/// import, project, template} — never an invented one.
+@Suite("Folder tree row tap — every folder navigates, a fold toggles (IMGMGR-400)")
+struct FolderTreeRowTapActionTests {
+
+  private func node(id: Int, kind: String, children: [FolderTreeNode] = []) -> FolderTreeNode {
+    FolderTreeNode(
+      folder: .init(
+        descendantImageCount: 3, id: id, imageCount: 3, kind: kind, name: "n\(id)",
+        path: "p\(id)"),
+      children: children)
+  }
+
+  private func row(_ item: FolderTreeItem) -> FolderTreeItemRow {
+    FolderTreeItemRow(item: item, depth: 0)
+  }
+
+  private func fold(_ members: [FolderTreeItem]) -> FolderTreeItem {
+    .month(
+      FolderTreeMonth(parentID: 2, year: "2026", month: "09", label: "september", count: 9),
+      members: members)
+  }
+
+  /// The first defect's half: a folder row that is NOT a dated shoot opens its own folder. Every
+  /// kind the API emits is here, so a rule that re-narrowed to a subset fails on the member it
+  /// left out rather than on a single representative.
+  @Test("a folder row of every live kind opens its own folder")
+  func aFolderRowOfEveryLiveKindOpensItsOwnFolder() {
+    for (id, kind) in [
+      (1, "dated"), (2, "dated_split"), (3, "template"), (4, "import"), (5, "project"),
+      (6, "other"),
+    ] {
+      let item = FolderTreeItem.folder(node(id: id, kind: kind), children: [])
+      #expect(row(item).tapAction == .openFolder(id))
+    }
+  }
+
+  /// A folder that ALSO has children still opens on its name — the chevron is the only thing that
+  /// expands it (web behaviour: the name navigates, the disclosure toggles).
+  @Test("a folder with children opens on its name rather than toggling")
+  func aFolderWithChildrenOpensOnItsNameRatherThanToggling() {
+    let parent = node(id: 3, kind: "dated", children: [node(id: 4, kind: "template")])
+    let item = FolderTreeItem.folder(
+      parent, children: [.folder(node(id: 4, kind: "template"), children: [])])
+
+    #expect(row(item).isExpandable)
+    #expect(row(item).tapAction == .openFolder(3))
+  }
+
+  /// The second defect's half: a month fold is no folder, so its name toggles it — the one row
+  /// whose tap is the chevron's action.
+  @Test("a month fold with members toggles on its name")
+  func aMonthFoldWithMembersTogglesOnItsName() {
+    let item = fold([.folder(node(id: 3, kind: "dated"), children: [])])
+
+    #expect(row(item).isExpandable)
+    #expect(row(item).tapAction == .toggleExpansion)
+  }
+
+  /// Nothing to expand and no folder to open: the row stays inert rather than falling back to
+  /// either affordance. The control for the leg above — the fold's answer is its MEMBERS, not its
+  /// case.
+  @Test("a fold with no members is inert")
+  func aFoldWithNoMembersIsInert() {
+    let item = fold([])
+
+    #expect(!row(item).isExpandable)
+    #expect(row(item).tapAction == .inert)
+  }
+
+  /// The fix widened the TAP and nothing else: `ShootListFilter` is still the one definition of a
+  /// browsable shoot, and it is still {dated, dated_split} — which is what keeps the cover
+  /// thumbnail, the count subline and the readiness badge on shoot rows only
+  /// (`FolderTreeRowPresentation.showsThumbnail`), and the `folderRow-`/`folderContainer-`
+  /// identifier split intact.
+  @Test("the shoot-list vocabulary is untouched by the tap widening")
+  func theShootListVocabularyIsUntouchedByTheTapWidening() {
+    #expect(ShootListFilter.shootKinds == ["dated", "dated_split"])
+    #expect(node(id: 3, kind: "template").isSelectableShoot == false)
+    #expect(FolderTreeRowPresentation.showsThumbnail(node(id: 3, kind: "template")) == false)
+    #expect(
+      FolderTreeRowPresentation.rowIdentifier(for: node(id: 3, kind: "template"), id: 3)
+        == "folderContainer-3")
+  }
+}

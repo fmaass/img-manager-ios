@@ -102,6 +102,51 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     attach(named: "P7-grid-reached-from-a-nested-shoot")
   }
 
+  /// IMGMGR-400 (owner device pass, TestFlight 0.12.0 (15)): "the folders only open when tapping
+  /// on the chevron to expand the tree". A container row's NAME has to toggle it exactly as its
+  /// chevron does — the web has always done this (`FolderTreeBranch.vue:95,:103` toggle a month
+  /// on its label), and the shipped tree offered the toggle on the chevron Button ALONE, so a
+  /// reader tapping the row name got nothing at all.
+  ///
+  /// Driven on the MONTH FOLD, which is the only row whose name toggles rather than navigates: a
+  /// fold is no folder (`FolderTreeItemID`), so there is nothing to open a grid with. The year
+  /// container above it is a real folder and its name now enters the grid, which is why the walk
+  /// still reaches the fold through `folderDisclose-2`.
+  func testTappingAMonthFoldsNameTogglesItExactlyAsItsChevronDoes() throws {
+    let app = XCUIApplication()
+    app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
+    app.launch()
+
+    let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
+    XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
+    localTier.tap()
+
+    app.descendants(matching: .any)["folderDisclose-2"].firstMatch.tap()
+    let month = app.descendants(matching: .any)["folderTreeMonth-2-2026-09"].firstMatch
+    XCTAssertTrue(reveal(month, in: app), "The year container revealed no month fold to tap.")
+
+    // The absence below is read against a surface that WAS found (LSN-0033): the fold is on
+    // screen and closed, so "the shoot is not there" is the fold's state and not a tree that
+    // never rendered.
+    XCTAssertFalse(
+      app.descendants(matching: .any)["folderRow-3"].firstMatch.exists,
+      "The month fold started open — this leg cannot tell an opening tap from a no-op.")
+
+    month.tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["folderRow-3"].firstMatch.waitForExistence(timeout: 10),
+      "Tapping the month fold's NAME did not open it (IMGMGR-400): the row toggles only from its "
+        + "chevron Button, so a tap anywhere else on the row does nothing.")
+    attach(named: "IMGMGR-400-month-name-tap-opens")
+
+    month.tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["folderRow-3"].firstMatch.waitForNonExistence(timeout: 10),
+      "Tapping the open month fold's NAME did not close it — the name must drive the SAME toggle "
+        + "the chevron drives, in both directions.")
+    attach(named: "IMGMGR-400-month-name-tap-closes")
+  }
+
   /// Scrolls the home list until `element` is on screen, in BOTH directions: the search field
   /// sits above the rows, so an up-only scan walks past what it is looking for and never comes
   /// back (observed in gate run 1cfa3f4).

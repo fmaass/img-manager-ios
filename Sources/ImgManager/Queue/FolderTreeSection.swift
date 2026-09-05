@@ -21,9 +21,12 @@ import SwiftUI
 /// `parent_id`, client-side name filter), this file only renders it. Three properties are worth
 /// stating because they are easy to break:
 ///
-/// - a row that is not a shoot EXPANDS but does not navigate (`FolderTreeNode.isSelectableShoot`,
-///   still `ShootListFilter`'s single definition), so the tree can show containers without
-///   inventing a second navigation entry point;
+/// - EVERY folder row navigates and a month fold toggles, as `FolderTreeItemRow.tapAction` says
+///   and the web has always done (IMGMGR-400 corrected P7 here: the tap used to be gated on
+///   `FolderTreeNode.isSelectableShoot`, which left every import/project/template/other folder
+///   holding photographs inert). `isSelectableShoot` — still `ShootListFilter`'s single
+///   definition — now answers only what a row IS: its cover, its subline, its readiness badge
+///   and its `folderRow-`/`folderContainer-` identifier;
 /// - the count on every row is `descendant_image_count` straight off the wire, which is exactly
 ///   the population a tap opens (`/api/images` resolves `folder_id` to the whole subtree), so the
 ///   badge and the grid can never disagree;
@@ -459,7 +462,9 @@ enum FolderTreeLoadPresentation {
 /// label. 110 production folders are both a shoot and a parent, and with a single combined label
 /// a tap meant to open a subtree also navigated into the grid; worse, the composition could not
 /// be driven through the real UI at all (gate run 1cfa3f4). Here the chevron toggles and nothing
-/// else, the name navigates and nothing else, and each carries its own accessibility identifier.
+/// else, and each carries its own accessibility identifier. The NAME does whatever the row's own
+/// `tapAction` says (IMGMGR-400): it opens the folder on every folder row, and on a month fold —
+/// which has no folder to open — it calls the same `toggleExpansion()` the chevron calls.
 /// Both are chrome — there is no gesture-only path anywhere in this tree.
 private struct FolderTreeRowView: View {
   let row: FolderTreeItemRow
@@ -485,11 +490,7 @@ private struct FolderTreeRowView: View {
   private var expandControl: some View {
     if row.isExpandable {
       Button {
-        if isOpen {
-          expandedBranches.remove(row.id)
-        } else {
-          expandedBranches.insert(row.id)
-        }
+        toggleExpansion()
       } label: {
         Image(systemName: "chevron.right")
           .font(.caption.weight(.semibold))
@@ -517,7 +518,12 @@ private struct FolderTreeRowView: View {
 
   @ViewBuilder
   private var nameAndCount: some View {
-    if let node = row.item.node, node.isSelectableShoot {
+    // What the tap does is `FolderTreeItemRow.tapAction`'s answer, never re-decided here
+    // (IMGMGR-400). Every FOLDER row navigates — a folder whose `kind` is not a dated shoot holds
+    // photographs just the same, and the device pass found 156 such leaves inert — and a month
+    // FOLD, which is no folder, drives the very toggle its chevron drives.
+    switch row.tapAction {
+    case .openFolder(let folderID):
       // Same row-navigation pattern as the pre-P7 sidebar (RootView's own doc comment on this
       // exact fix): `.simultaneousGesture` layered on TOP of the enclosing List's own selection
       // recognizer, never a bare `Button` and never `.onChange(of: selectedFolderID)` — a plain
@@ -525,23 +531,40 @@ private struct FolderTreeRowView: View {
       // a same-value re-tap.
       rowContent
         .contentShape(Rectangle())
-        .tag(node.id)
+        .tag(folderID)
         // The stable, id-derived identifier lives on the row's NAME text, not here: an
         // identifier on a container overrides its descendants' (GridView.swift:743-747), which
         // would make this row's cover and subline unaddressable. `FolderTreeRowPresentation
-        // .rowIdentifier` decides the string; `rowContent` applies it.
+        // .rowIdentifier` decides the string — `folderRow-` on a shoot and `folderContainer-`
+        // elsewhere, unchanged, because that split still names what a row IS; `rowContent`
+        // applies it.
         .simultaneousGesture(
           TapGesture().onEnded {
-            selectedFolderID = node.id
-            onSelect(node.id, tier.sourceTier)
+            selectedFolderID = folderID
+            onSelect(folderID, tier.sourceTier)
           }
         )
-    } else {
-      // A container, or a month fold: it expands, and it does NOT navigate. A container's
-      // identifier is deliberately a different prefix, so `folderRow-<id>` keeps meaning "a row
-      // that enters the grid"; a fold's is `folderTreeMonth-…` and names no folder at all. Both
-      // are applied on the name text with the shoot's, for the override reason above.
+    case .toggleExpansion:
+      // A month fold: no folder id exists to hand `GridStore`, so the name opens the fold rather
+      // than navigating — the ONE toggle action the chevron Button also calls, so the two
+      // affordances can never drift apart. Deliberately NOT `.tag(…)`: a fold is not a selectable
+      // row of the enclosing `List`.
       rowContent
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { toggleExpansion() })
+    case .inert:
+      // Nothing to open, nothing to expand.
+      rowContent
+    }
+  }
+
+  /// Open or close this row — the single implementation both affordances call (the chevron
+  /// Button and, on a fold, the row name).
+  private func toggleExpansion() {
+    if isOpen {
+      expandedBranches.remove(row.id)
+    } else {
+      expandedBranches.insert(row.id)
     }
   }
 
