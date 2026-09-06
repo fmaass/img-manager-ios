@@ -99,14 +99,27 @@
 # not. Tracked modifications and untracked NON-ignored files still refuse with exit 97: they mean
 # the tree is not the commit that would be gated.
 #
+# LEG SELECTION (IMGMGR-410): a spec may carry an optional FOURTH field, `legs=<list>`, which is
+# handed to bin/mac-gate.sh as MAC_GATE_LEGS so a script-only change can be gated in minutes
+# instead of ~50. It is stored in the record (`legs=`), shown by `list`, and the gate's own
+# summary line — copied into the summary file verbatim — then reads `legs=SUBSET(…) — NOT a full
+# gate`, so a subset run can never be cited as a full one. A spec with no fourth field is a full
+# gate, exactly as before. The list is checked here for shape, and against the leg registry in
+# the worktree's own bin/gate-lib.sh when it has one; the authority is bin/mac-gate.sh, which
+# re-resolves the selection against the GATED REF and refuses (rc 2) before it takes a lock.
+#
 # Usage:
-#   bin/gate-queue.sh enqueue <worktree>:<ref>:<label> [<worktree>:<ref>:<label> …]
+#   bin/gate-queue.sh enqueue <worktree>:<ref>:<label>[:legs=<list>] [<spec> …]
 #   bin/gate-queue.sh list
 #   bin/gate-queue.sh drop <label> [--dry-run] [--force] [--lock-wait <seconds>]
 #   bin/gate-queue.sh drop <label> --finished [--dry-run]
 #   bin/gate-queue.sh --help
 #
-# `drop --force` skips the grace window that protects a record whose flock may still be spawning;
+# `drop --force` overrides BOTH protections on the empty-pid path: the grace window that protects
+# a record whose flock may still be spawning, AND the refusal to retire a spec whose ENQUEUE
+# process is still alive (that spec may simply be waiting behind an hour-long run — pass --force
+# only when you know that enqueue is not coming back). It changes nothing on the normal path: a
+# spec with a flock pid is still signalled only after the full argv proof.
 # `drop --finished` retires the hold a FINISHED spec still has on its worktree (the record only —
 # the worktree is left exactly as that run left it). Both are operator overrides: the ordinary way
 # out of a hold is to check that worktree out on its branch, which clears it by itself.
@@ -117,12 +130,13 @@
 # run's test-iphone/test-ipad logs beside it (a RED run's logs are overwritten by the next
 # run's copyback) -> restore the branch -> append the summary line. Launch it detached, e.g.
 #   setsid nohup bin/gate-queue.sh enqueue "$PWD:$(git rev-parse HEAD):lane-a" >/dev/null 2>&1 &
-# A label may hold only [A-Za-z0-9._-] (it is a file name), and its record is created with
+# A label may hold only [A-Za-z0-9._-] (it is a file name), a leg list only [A-Za-z0-9,._-], and its record is created with
 # O_EXCL, so two concurrent enqueues of one label admit exactly one. The loser exits 2 when it
 # loses on the label itself, or 7 when it first sees the winner's hold on that worktree; either
 # way exactly one is admitted and the loser writes nothing.
 #
-# STATE: one record per label under $GATE_QUEUE_STATE, `key=value` lines, written by the
+# STATE: one record per label under $GATE_QUEUE_STATE, `key=value` lines (`legs=` among them, empty
+# for a full gate), written by the
 # processes that own the transitions and never inferred by an observer: the enqueue process
 # writes `waiting`, the flock pid and its start time, the run writes `running` and its own pid
 # as its first action inside the lock, `checked_out=<sha>` and `branch_at=<sha>` the moment it
@@ -141,6 +155,13 @@
 #                       (default: /home/fabian/projects/worktrees/.gate-queue/)
 #   GATE_QUEUE_SUMMARY  file the one-line per-run summaries are appended to
 #                       (default: /home/fabian/projects/worktrees/wp13-gate-queue.summary)
+#   GATE_QUEUE_PAUSE_PID_WRITE
+#                       TEST SEAM, unset in every real run: a path prefix at which `enqueue`
+#                       stops just before it stamps the flock pid on a record. It touches
+#                       "<path>.at", waits for "<path>.go", writes, then touches "<path>.done".
+#                       It exists because the generation check on that write guards a window a
+#                       few microseconds wide, and bin/gate-queue-test.sh has to be able to
+#                       stand inside it to prove the guard is really there
 #
 # Exit codes:
 #   0  the command did what it says (enqueue: every spec's gate returned 0)
@@ -153,14 +174,22 @@
 #      or `--finished` was given for a spec that is not finished, or that holds nothing
 #   4  drop refused: there is no record for that label
 #   5  drop refused: the recorded pid failed the proof above, the signal did not take, or the
-#      record has no flock pid yet and is younger than the grace window (see --force)
+#      record has no flock pid yet AND either its enqueue process is still ALIVE (the spec is
+#      waiting for the queue lock or about to spawn) or the record is younger than the grace
+#      window. `--force` overrides both of those two, never the argv proof
 #   6  drop refused: the per-record lock was still held after --lock-wait seconds
 #   7  refused because the spec's worktree is held by another record in this state dir — a gate
 #      RUNNING under it, a gate QUEUED on it, or a finished run's branch restore that was skipped
 #      and left it detached. From `enqueue` (at admission: no record written, nothing launched)
 #      or from the run itself (immediately before the detach: `state=refused-held rc=7`, the
 #      reason in the record's `refused` key and in the summary line, the gate never started and
-#      the worktree never touched).
+#      the worktree never touched). ALSO from a run whose GENERATION no longer matches its
+#      record — the spec was retired while it was queued and the label re-used, so it is not the
+#      spec that record now describes: `STALE-GENERATION` in the run log, nothing touched. A run
+#      that finds the same mismatch at the END, before its branch restore, leaves the worktree
+#      exactly as it is and logs `STALE-GENERATION-AT-RESTORE`, exiting with the gate's own code.
+#   *  any other code from a run is the exit code bin/mac-gate.sh itself returned; that is what
+#      the record's `rc` holds and what `enqueue` aggregates into 0 or 1
 #   97 the run refused the worktree because it is not clean (`git status --porcelain` is
 #      non-empty: tracked modifications or untracked NON-ignored files; ignored files are fine).
 #      Recorded as that spec's `rc`, with DIRTY-TREE in its run log; the gate never started.
@@ -404,6 +433,14 @@ rec_age_seconds() {
   printf '%s\n' "$((now_s - then_s))"
 }
 
+# legs_note LABEL — the record's leg selection for `list`, or `(full)` when it has none. An
+# EMPTY `legs=` and a record written before IMGMGR-410 both mean the same thing: a full gate.
+legs_note() {
+  local l
+  l="$(rec_get "$1" legs)" || l=""
+  [ -n "$l" ] && printf '%s' "$l" || printf -- '(full)'
+}
+
 pid_note() { # PID — "1234 alive" / "1234 dead" / "-"
   case "${1:-}" in
     ''|*[!0-9]*) printf -- '-' ;;
@@ -506,6 +543,21 @@ verify_waiting_pid() {
   return 0
 }
 
+# rec_owns_generation LABEL GEN — 0 when the record for LABEL is still the one GEN was stamped
+# on, i.e. this process may write to it. An EMPTY GEN means the caller has no generation to
+# compare (a hand-run `__run`), and is deliberately permissive: nothing was promised. Read under
+# the record's own lock when the caller does not already hold it, so the answer cannot be
+# assembled while rec_set is rewriting the file. One definition, two callers — the enqueue's pid
+# write and the run's re-check before the branch restore.
+rec_owns_generation() {
+  local label="$1" gen="$2" held=0 cur
+  [ -n "$gen" ] || return 0
+  if [ "$REC_LOCK_HELD" = "$label" ]; then held=1; else rec_lock_open "$label"; fi
+  cur="$(rec_get "$label" gen)" || cur=""
+  [ "$held" -eq 1 ] || rec_lock_close
+  [ "$cur" = "$gen" ]
+}
+
 cmd_help() {
   sed -n '2,/^set -uo/p' "$self_path" | sed -e 's/^# \{0,1\}//' -e '/^set -uo/d'
 }
@@ -549,7 +601,7 @@ restore_worktree() {
 # with the queue lock held. Semantics unchanged from wp13-gate-queue-v4.sh except the branch
 # restore, which now refuses rather than rewinds (IMGMGR-398).
 cmd_run() {
-  local wt=$1 ref=$2 label=$3 log=$4 branch rc branch_at ref_sha hold
+  local wt=$1 ref=$2 label=$3 log=$4 branch rc branch_at ref_sha hold legs stale
   rec_lock_open "$label"
   # FIRST OF ALL, before this run writes a single field: is this record still the one that queued
   # us? A drop can retire a spec while its child is still queued behind the queue lock, and the
@@ -593,6 +645,10 @@ cmd_run() {
     printf "REFUSED-HELD spec '%s' holds %s — %s\n" "${hold%%	*}" "$wt" "${hold#*	}" > "$log"
     exit 7
   fi
+  # The leg selection travels in the record, not in argv: the drop-safety proof matches this
+  # process's argv entry for entry, and a fifth operand would have to be threaded through it for
+  # no gain. Empty = a full gate, which is what mac-gate.sh reads an unset MAC_GATE_LEGS as.
+  legs="$(rec_get "$label" legs)" || legs=""
   rec_set "$label" "state=running" "run_pid=$$" "started=$(now)"
   branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   # No --ignored: gitignored working files are allowed (see the header); tracked modifications
@@ -605,17 +661,33 @@ cmd_run() {
   # Only now is the tree provably this run's: the lock has covered the hold re-check, the
   # clean-tree refusal, the detach and the record of it as one unit.
   rec_lock_close
-  ( cd "$wt" && MAC_GATE_HOST=merkur MAC_GATE_BRANCH="$branch" bin/mac-gate.sh ) > "$log" 2>&1
+  ( cd "$wt" && MAC_GATE_HOST=merkur MAC_GATE_BRANCH="$branch" MAC_GATE_LEGS="$legs" bin/mac-gate.sh ) > "$log" 2>&1
   rc=$?
   cp "$wt/.gate-artifacts/test-iphone.log" "${log%.log}-test-iphone.log" 2>/dev/null
   cp "$wt/.gate-artifacts/test-ipad.log" "${log%.log}-test-ipad.log" 2>/dev/null
+  # Re-check the generation before letting go of the worktree (round-5 advisory 1). The check at
+  # the top of this function covered the CHECKOUT; a gate runs for the better part of an hour
+  # after it, and restore_worktree both moves the tree and writes `restore=`/`checked_out=` into
+  # the record. If this run is no longer the spec that record describes, neither belongs to us:
+  # writing them would edit a live replacement's record, and checking the branch out would let go
+  # of a tree whose hold that replacement may be relying on. Compared under the record lock — but
+  # not HELD across the restore, or a concurrent enqueue's 5-second snapshot would time out on a
+  # slow checkout and read it as a hold. Leaving the tree detached is the safe direction: the
+  # `checked_out` field keeps holding it until a human checks it out or retires it.
+  stale=0
+  rec_owns_generation "$label" "${GATE_QUEUE_GEN:-}" || stale=1
+  if [ "$stale" -eq 1 ]; then
+    printf "STALE-GENERATION-AT-RESTORE this run was queued for generation '%s' but the record for '%s' now holds '%s'. Leaving %s exactly as it is (detached at %s) and writing nothing to that record; check it out on its branch by hand.\n" \
+      "$GATE_QUEUE_GEN" "$label" "$(rec_get "$label" gen)" "$wt" "$ref_sha" >> "$log" 2>/dev/null || true
+    exit "$rc"
+  fi
   restore_worktree "$wt" "$branch" "$ref_sha" "$branch_at" "$label" "$log"
   exit "$rc"
 }
 
 cmd_enqueue() {
   [ $# -ge 1 ] || die 2 "enqueue needs at least one <worktree>:<ref>:<label> spec"
-  local spec wt rest ref label log fpid rc worst=0 refused=0 prev prev_pid rec hold own_hold resfile gen
+  local spec wt rest ref label log fpid rc worst=0 refused=0 prev prev_pid rec hold own_hold resfile gen tail legs
   mkdir -p "$STATE"
   [ -d "$(dirname "$LOCK")" ] || die 2 "the lock directory $(dirname "$LOCK") does not exist"
   for spec in "$@"; do
@@ -623,10 +695,35 @@ cmd_enqueue() {
       *:*:*) ;;
       *) die 2 "bad spec '$spec': want <worktree>:<ref>:<label>" ;;
     esac
-    wt=${spec%%:*}; rest=${spec#*:}; ref=${rest%%:*}; label=${rest#*:}
+    wt=${spec%%:*}; rest=${spec#*:}; ref=${rest%%:*}; tail=${rest#*:}
+    # The optional FOURTH field (IMGMGR-410). A label may not contain a colon, so splitting on
+    # the third one is unambiguous and a three-field spec parses exactly as it always did.
+    legs=""
+    case "$tail" in
+      *:*) label=${tail%%:*}; legs=${tail#*:} ;;
+      *)   label=$tail ;;
+    esac
     case "$label" in
       ''|*[!A-Za-z0-9._-]*) die 2 "bad label '$label': the record is a file name, so a label may hold only [A-Za-z0-9._-]" ;;
     esac
+    if [ -n "$legs" ]; then
+      case "$legs" in
+        legs=*) legs=${legs#legs=} ;;
+        *) die 2 "bad spec '$spec': the optional fourth field must be legs=<comma-separated legs>, got '$legs'" ;;
+      esac
+      case "$legs" in
+        '') die 2 "bad spec '$spec': legs= is empty; leave the field off for a full gate" ;;
+        *[!A-Za-z0-9,._-]*) die 2 "bad leg list '$legs': a leg list may hold only [A-Za-z0-9,._-]" ;;
+      esac
+      # Checked against the REAL registry when the worktree carries one, so a typo refuses here
+      # instead of after the queue lock. Advisory: the worktree is on its branch now and the run
+      # gates <ref>, so bin/mac-gate.sh re-resolves the same list against the gated ref and
+      # refuses there too — this only moves the common case earlier.
+      if [ -f "$wt/bin/gate-lib.sh" ]; then
+        ( . "$wt/bin/gate-lib.sh" && gate_legs_resolve "$legs" >/dev/null ) \
+          || die 2 "bad leg list '$legs' in spec '$spec' (see: $wt/bin/mac-gate.sh --help)"
+      fi
+    fi
     [ -d "$wt" ] || die 2 "no such worktree: $wt"
     [ -x "$wt/bin/mac-gate.sh" ] || die 2 "$wt/bin/mac-gate.sh is missing or not executable"
     # LOCK ORDER (round-3 review, B5): scan the other records BEFORE taking this label's lock.
@@ -669,7 +766,7 @@ cmd_enqueue() {
     # A generation token for this admission: a child queued for an earlier occupant of this label
     # compares it before it touches anything (round-5 review, 2c).
     gen="$(date +%s)-$$-$RANDOM"
-    rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" \
+    rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" "legs=$legs" \
       "lock=$LOCK" "enqueue_pid=$$" "flock_pid=" "flock_start=" "run_pid=" "state=waiting" \
       "rc=" "enqueued=$(now)" "gen=$gen"
     # Released before the spawn so the child cannot inherit this descriptor's lock. A drop in
@@ -682,7 +779,28 @@ cmd_enqueue() {
     GATE_QUEUE_REFUSAL_FILE="$resfile" GATE_QUEUE_GEN="$gen" \
       flock -w "$LOCK_WAIT" "$LOCK" "$self_path" __run "$wt" "$ref" "$label" "$log" &
     fpid=$!
-    rec_set "$label" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")"
+    # TEST SEAM, inert unless GATE_QUEUE_PAUSE_PID_WRITE names a path: touch "<path>.at" here and
+    # wait for "<path>.go" before the write, then touch "<path>.done" after it. The window this
+    # guard protects — between releasing the admission lock above and stamping the pid below — is
+    # microseconds wide, and a guard no test can step inside is a guard no test can prove; the
+    # only alternative was a test that passes whether or not the guard is there. Used by exactly
+    # one case in bin/gate-queue-test.sh (25-pid-write-gate).
+    if [ -n "${GATE_QUEUE_PAUSE_PID_WRITE:-}" ]; then
+      : > "${GATE_QUEUE_PAUSE_PID_WRITE}.at"
+      while [ ! -e "${GATE_QUEUE_PAUSE_PID_WRITE}.go" ]; do sleep 0.05; done
+    fi
+    # Generation-gated (round-5 advisory 4): between the release above and this write the label
+    # could — in principle — have been forcibly retired and re-used, and these two fields would
+    # then be stamped on the REPLACEMENT's record, whose own flock they do not describe. The
+    # child's own generation check already stops a stale CHECKOUT; this stops the bookkeeping
+    # from being confused as well. Read and written under one hold of the record lock, so the
+    # comparison cannot go stale between the two.
+    rec_lock_open "$label"
+    if rec_owns_generation "$label" "$gen"; then
+      rec_set "$label" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")"
+    fi
+    rec_lock_close
+    [ -z "${GATE_QUEUE_PAUSE_PID_WRITE:-}" ] || : > "${GATE_QUEUE_PAUSE_PID_WRITE}.done"
     wait "$fpid"
     rc=$?
     # Finalize only while this process still owns the record (round-3 review, B6). After a
@@ -735,17 +853,18 @@ cmd_list() {
   done
   [ "$held" -gt 0 ] || echo "held    : no worktree is held; none is checked out by this queue"
   echo
-  printf '%-22s %-8s %-4s %-14s %-24s %-42s %s\n' LABEL STATE RC "ENQUEUE PID" "FLOCK/RUN PID" REF WORKTREE
+  printf '%-22s %-8s %-4s %-14s %-24s %-42s %-30s %s\n' LABEL STATE RC "ENQUEUE PID" "FLOCK/RUN PID" REF LEGS WORKTREE
   for rec in "$STATE"/*.spec; do
     [ -e "$rec" ] || continue
     label="$(basename "$rec" .spec)"
     n=$((n + 1))
     st="$(rec_get "$label" state)"
-    printf '%-22s %-8s %-4s %-14s %-24s %-42s %s\n' \
+    printf '%-22s %-8s %-4s %-14s %-24s %-42s %-30s %s\n' \
       "$label" "${st:-?}" "$(rec_get "$label" rc)" \
       "$(pid_note "$(rec_get "$label" enqueue_pid)")" \
       "$(pid_note "$(rec_get "$label" flock_pid)")/$(pid_note "$(rec_get "$label" run_pid)")" \
-      "$(rec_get "$label" ref)" "$(rec_get "$label" worktree)"
+      "$(rec_get "$label" ref)" "$(legs_note "$label")" \
+      "$(rec_get "$label" worktree)"
   done
   [ "$n" -gt 0 ] || echo "(no spec records)"
   echo

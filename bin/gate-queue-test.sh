@@ -68,16 +68,23 @@ cat > "$repo/bin/mac-gate.sh" <<'STUB'
 #!/usr/bin/env bash
 mkdir -p .gate-artifacts
 printf 'stub iphone log\n' > .gate-artifacts/test-iphone.log
-echo "mac-gate SUMMARY: stub=0 branch=${MAC_GATE_BRANCH:-?} host=${MAC_GATE_HOST:-?}"
+echo "mac-gate SUMMARY: legs=${MAC_GATE_LEGS:-full} | stub=0 branch=${MAC_GATE_BRANCH:-?} host=${MAC_GATE_HOST:-?}"
 # IMGMGR-398 cases only: reproduce, from inside the gated worktree while the queue holds it
 # detached, the two ways the tree can move under a run. Unset by default, so every other case
 # sees the stub unchanged.
+# IMGMGR-409 cases: the generation the enqueue forwarded through the environment reaches the
+# gate itself, so a test can prove the forwarding by reading it back rather than assuming it.
+echo "STUB_SAW_GEN=${GATE_QUEUE_GEN:-<unset>}"
+# …and, on demand, another enqueue takes the label over WHILE this gate runs, which is what the
+# run's re-check before the branch restore has to notice.
+[ -z "${STUB_USURP_LABEL:-}" ] || sed -i "s/^gen=.*/gen=usurped-by-another-enqueue/" "$GATE_QUEUE_STATE/$STUB_USURP_LABEL.spec"
 [ -z "${STUB_GATE_COMMIT:-}" ] || git commit -q --allow-empty -m "interloper $STUB_GATE_COMMIT"
 [ -z "${STUB_GATE_MOVE_TO:-}" ] || git branch -f "${STUB_GATE_MOVE_BRANCH:-lane}" "$STUB_GATE_MOVE_TO"
 sleep "${STUB_GATE_SLEEP:-1}"
 exit 0
 STUB
 chmod +x "$repo/bin/mac-gate.sh"
+cp "$here/gate-lib.sh" "$repo/bin/gate-lib.sh"
 git -C "$repo" add -A
 git -C "$repo" commit -qm init
 git -C "$repo" worktree add -q -b lane "$wt"
@@ -173,7 +180,7 @@ if [ "$(field running-demo state)" = done ] && [ "$(field running-demo rc)" = 0 
 else
   bad 2-done "state=$(field running-demo state) rc=$(field running-demo rc) queue exit=$enq1rc"
 fi
-if grep -q 'running-demo ref=.* rc=0 mac-gate SUMMARY: stub=0' "$GATE_QUEUE_SUMMARY" \
+if grep -q 'running-demo ref=.* rc=0 mac-gate SUMMARY: legs=full | stub=0' "$GATE_QUEUE_SUMMARY" \
    && grep -q 'QUEUE-DONE' "$GATE_QUEUE_SUMMARY"; then
   ok 2-summary "the v4 summary line and QUEUE-DONE were appended"
 else
@@ -1020,6 +1027,224 @@ if [ -n "$(field gen-demo gen)" ] && [ "$(field gen-demo rc)" = 0 ]; then
   ok 21-gen-stamp "enqueue stamped a generation on the record it created (gen=$(field gen-demo gen))"
 else
   bad 21-gen-stamp "gen=$(field gen-demo gen) rc=$(field gen-demo rc)"
+fi
+# …and the child really RECEIVED it. 21-gen-stamp alone would still pass if the environment
+# forwarding of GATE_QUEUE_GEN silently broke (round-5 advisory 3), so read the value back out
+# of the gate the enqueue started: it must be the generation on the record, not empty.
+saw="$(sed -n 's/^STUB_SAW_GEN=//p' "$(field gen-demo log)" | tail -1)"
+if [ -n "$saw" ] && [ "$saw" != '<unset>' ] && [ "$saw" = "$(field gen-demo gen)" ]; then
+  ok 21-gen-forwarded "the generation reached the gate through the enqueue's environment (STUB_SAW_GEN=$saw = the record's gen); a broken forwarding reads as <unset> here"
+else
+  bad 21-gen-forwarded "STUB_SAW_GEN='$saw' record gen='$(field gen-demo gen)'"
+fi
+
+# ---- 23: the generation is re-checked before the branch RESTORE, not only before the checkout
+# (round-5 advisory 1). The stub takes the label over while the gate runs, so by the time the run
+# wants to give the worktree back it is no longer the spec that record describes: it must leave
+# the tree exactly as it is and write NOTHING to the replacement's record.
+lane2_branch="$(git -C "$wt2" rev-parse --abbrev-ref HEAD)"
+mkrec() { # LABEL LOG GEN — a waiting record for wt2, the shape an enqueue writes
+  cat > "$GATE_QUEUE_STATE/$1.spec" <<EOF
+spec=$wt2:$sha2:$1
+worktree=$wt2
+ref=$sha2
+label=$1
+log=$2
+lock=$GATE_QUEUE_LOCK
+enqueue_pid=$$
+flock_pid=
+run_pid=
+state=waiting
+rc=
+enqueued=$(date '+%Y-%m-%d %H:%M:%S')
+gen=$3
+EOF
+}
+mkrec restore-gen-demo "$tmp/rg.log" rg-gen
+STUB_USURP_LABEL=restore-gen-demo STUB_GATE_SLEEP=0 GATE_QUEUE_GEN=rg-gen \
+  flock -w 30 "$GATE_QUEUE_LOCK" "$qs" __run "$wt2" "$sha2" restore-gen-demo "$tmp/rg.log"
+rgrc=$?
+if [ "$rgrc" -eq 0 ] && grep -q 'STALE-GENERATION-AT-RESTORE' "$tmp/rg.log" \
+   && ! git -C "$wt2" symbolic-ref -q HEAD >/dev/null 2>&1 \
+   && [ -z "$(field restore-gen-demo restore)" ] \
+   && [ "$(field restore-gen-demo gen)" = usurped-by-another-enqueue ]; then
+  ok 23-restore-gen "a run whose generation was taken over during the gate left $wt2 detached and wrote no restore= into the replacement's record (exit $rgrc, the gate's own)"
+else
+  bad 23-restore-gen "rc=$rgrc detached=$(git -C "$wt2" symbolic-ref -q HEAD >/dev/null 2>&1 && echo no || echo yes) restore='$(field restore-gen-demo restore)' gen='$(field restore-gen-demo gen)' log=$(cat "$tmp/rg.log" 2>&1)"
+fi
+git -C "$wt2" checkout -q "$lane2_branch"
+rm -f "$GATE_QUEUE_STATE/restore-gen-demo.spec"
+# Control: the SAME run with nobody taking the label over restores the branch and records it —
+# so the refusal above is the generation check, not a restore that never works.
+mkrec restore-ok-demo "$tmp/rgok.log" rgok-gen
+STUB_GATE_SLEEP=0 GATE_QUEUE_GEN=rgok-gen \
+  flock -w 30 "$GATE_QUEUE_LOCK" "$qs" __run "$wt2" "$sha2" restore-ok-demo "$tmp/rgok.log"
+rgokrc=$?
+if [ "$rgokrc" -eq 0 ] && [ "$(field restore-ok-demo restore)" = ok ] \
+   && [ "$(git -C "$wt2" rev-parse --abbrev-ref HEAD)" = "$lane2_branch" ] \
+   && ! grep -q 'STALE-GENERATION' "$tmp/rgok.log"; then
+  ok 23-restore-control "with the generation intact the same run restores '$lane2_branch' and records restore=ok"
+else
+  bad 23-restore-control "rc=$rgokrc restore=$(field restore-ok-demo restore) head=$(git -C "$wt2" rev-parse --abbrev-ref HEAD)"
+fi
+rm -f "$GATE_QUEUE_STATE/restore-ok-demo.spec"
+
+# ---- 24: a PAUSED enqueue that resumes after its label was retired and re-used must not write
+# into the replacement's record (round-5 advisory 4). The old enqueue is stopped while it waits
+# on a gate that will never start, its label is retired and re-enqueued behind a held queue lock,
+# and then it is resumed: the replacement's record must come back byte-identical, and the old
+# enqueue must PROVABLY have run its post-`wait` code rather than having died quietly.
+#
+# The retirement is written into the record here instead of through `drop`, for a reason worth
+# recording: `drop` signals the waiting flock and then waits for it to disappear, and the child
+# of a STOPPED parent cannot be reaped — it stays a zombie that `kill -0` still finds, so drop
+# refuses with rc 5. Killing the child and writing the state `drop --force` would have left is
+# the same end state by the only route a paused enqueue allows.
+#
+# What this case can and cannot reach: the enqueue's pid write happens microseconds after the
+# spawn, and no supported sequence pauses a process inside that window — the advisory says as
+# much, which is why its own generation gate is belt-and-braces. This case covers the reachable
+# half of the class end to end: a resumed old enqueue touching a replacement's record at all.
+flock -w 120 "$GATE_QUEUE_LOCK" sleep 90 &
+blocker=$!; strays="$strays $blocker"
+sleep 0.5
+STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:pidgate-demo" > "$tmp/enq24a.out" 2>&1 &
+enq_a=$!; strays="$strays $enq_a"
+if waitfor 20 state_is pidgate-demo waiting && waitfor 20 has_pid pidgate-demo; then
+  a_flock="$(field pidgate-demo flock_pid)"
+  a_gen="$(field pidgate-demo gen)"
+  kill -STOP "$enq_a"
+  kill -TERM "$a_flock" 2>/dev/null
+  sed -i -e 's/^state=.*/state=done/' -e 's/^rc=.*/rc=143/' "$GATE_QUEUE_STATE/pidgate-demo.spec"
+  STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:pidgate-demo" > "$tmp/enq24b.out" 2>&1 &
+  enq_b=$!; strays="$strays $enq_b"
+  if waitfor 20 state_is pidgate-demo waiting && waitfor 20 has_pid pidgate-demo \
+     && [ "$(field pidgate-demo gen)" != "$a_gen" ]; then
+    ok 24-readmitted "the retired label was re-enqueued and carries a NEW generation ($a_gen -> $(field pidgate-demo gen))"
+  else
+    bad 24-readmitted "state=$(field pidgate-demo state) gen=$(field pidgate-demo gen) (was $a_gen)"
+  fi
+  b_md5="$(md5sum < "$GATE_QUEUE_STATE/pidgate-demo.spec")"
+  b_gen="$(field pidgate-demo gen)"; b_pid="$(field pidgate-demo flock_pid)"
+  summary_before="$(grep -c 'pidgate-demo' "$GATE_QUEUE_SUMMARY" 2>/dev/null)"
+  summary_before="${summary_before:-0}"
+  kill -CONT "$enq_a"
+  wait "$enq_a" 2>/dev/null; arc=$?
+  summary_after="$(grep -c 'pidgate-demo' "$GATE_QUEUE_SUMMARY" 2>/dev/null)"
+  summary_after="${summary_after:-0}"
+  if [ "$summary_after" -gt "$summary_before" ]; then
+    ok 24-paused-resumed "the paused enqueue really resumed and ran its post-wait code — it appended its own summary line (exit $arc), so the next assertion is about a process that actually ran"
+  else
+    bad 24-paused-resumed "summary lines for pidgate-demo: $summary_before -> $summary_after; enqueue exit $arc, out=$(cat "$tmp/enq24a.out" 2>&1)"
+  fi
+  if [ "$(md5sum < "$GATE_QUEUE_STATE/pidgate-demo.spec")" = "$b_md5" ]; then
+    ok 24-finalize-gate "the replacement's record came back byte-identical — the resumed enqueue finalized nothing into a record it no longer owns (remove that guard and its state=done rc=143 lands here)"
+  else
+    bad 24-finalize-gate "record changed: gen '$b_gen' -> '$(field pidgate-demo gen)' flock_pid '$b_pid' -> '$(field pidgate-demo flock_pid)' state=$(field pidgate-demo state) rc=$(field pidgate-demo rc)"
+  fi
+  release "$blocker"
+  wait "$enq_b" 2>/dev/null
+else
+  bad 24-setup "the enqueue never reached state=waiting with a pid: $(cat "$GATE_QUEUE_STATE/pidgate-demo.spec" 2>&1)"
+  release "$blocker"
+fi
+
+# ---- 25: the generation gate on the ENQUEUE'S PID WRITE, proven from inside its own window.
+# Case 24 above cannot do this: it resumes an enqueue that passed its pid write long before, so
+# deleting the guard would leave it green — a test the implementation's removal cannot fail is
+# not a test (round-1 review, finding 3). GATE_QUEUE_PAUSE_PID_WRITE stops the enqueue at exactly
+# that statement; the label is taken over underneath it; the write must then not happen.
+flock -w 120 "$GATE_QUEUE_LOCK" sleep 90 &
+blocker25=$!; strays="$strays $blocker25"
+sleep 0.5
+pause="$tmp/pidpause"
+GATE_QUEUE_PAUSE_PID_WRITE="$pause" STUB_GATE_SLEEP=0 \
+  "$qs" enqueue "$wt2:$sha2:pidwrite-demo" > "$tmp/enq25.out" 2>&1 &
+enq25=$!; strays="$strays $enq25"
+if waitfor 20 test -e "$pause.at"; then
+  g1="$(field pidwrite-demo gen)"
+  pid_at_pause="$(field pidwrite-demo flock_pid)"
+  sed -i "s/^gen=.*/gen=taken-over-by-another-enqueue/" "$GATE_QUEUE_STATE/pidwrite-demo.spec"
+  : > "$pause.go"
+  if waitfor 20 test -e "$pause.done"; then
+    if [ -n "$g1" ] && [ -z "$pid_at_pause" ] && [ -z "$(field pidwrite-demo flock_pid)" ] \
+       && [ "$(field pidwrite-demo gen)" = taken-over-by-another-enqueue ]; then
+      ok 25-pid-write-gate "stopped INSIDE the window: the record's generation changed under the enqueue, and after its write step completed the replacement's flock_pid is STILL empty"
+    else
+      bad 25-pid-write-gate "gen was '$g1', flock_pid at the pause '$pid_at_pause', after the write '$(field pidwrite-demo flock_pid)', gen now '$(field pidwrite-demo gen)'"
+    fi
+  else
+    bad 25-pid-write-gate "the enqueue never passed its pid write (no $pause.done)"
+  fi
+else
+  bad 25-pid-write-gate "the enqueue never reached its pid-write pause (no $pause.at)"
+fi
+release "$blocker25"
+wait "$enq25" 2>/dev/null
+# Control: the SAME seam with nobody taking the label over — the pid IS written. Without this,
+# an assertion that a pid never appears would pass on a write that simply never happens.
+flock -w 120 "$GATE_QUEUE_LOCK" sleep 90 &
+blocker25b=$!; strays="$strays $blocker25b"
+sleep 0.5
+pause2="$tmp/pidpause-ok"
+GATE_QUEUE_PAUSE_PID_WRITE="$pause2" STUB_GATE_SLEEP=0 \
+  "$qs" enqueue "$wt2:$sha2:pidwrite-ok" > "$tmp/enq25b.out" 2>&1 &
+enq25b=$!; strays="$strays $enq25b"
+if waitfor 20 test -e "$pause2.at" && [ -z "$(field pidwrite-ok flock_pid)" ]; then
+  : > "$pause2.go"
+  if waitfor 20 test -e "$pause2.done" && [ -n "$(field pidwrite-ok flock_pid)" ]; then
+    ok 25-pid-write-control "through the same pause, with the generation intact, the pid IS written (flock_pid=$(field pidwrite-ok flock_pid)) — so the refusal above is the guard, not a write that never happens"
+  else
+    bad 25-pid-write-control "flock_pid after the write: '$(field pidwrite-ok flock_pid)'"
+  fi
+else
+  bad 25-pid-write-control "the control never reached its pause with an empty pid"
+fi
+release "$blocker25b"
+wait "$enq25b" 2>/dev/null
+
+# ---- 22: the leg selection travels through the queue (IMGMGR-410). A spec's optional fourth
+# field is stored in the record, handed to bin/mac-gate.sh as MAC_GATE_LEGS, shown by `list`, and
+# lands in the summary file — so a subset run cannot be read back as a full gate. A three-field
+# spec still means a full gate, and a leg list the registry does not know refuses at admission.
+STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:legs-demo:legs=mirror,manifest,lint" > "$tmp/enq22.out" 2>&1
+erc=$?
+if [ "$erc" -eq 0 ] && [ "$(field legs-demo legs)" = "mirror,manifest,lint" ] \
+   && grep -q 'mac-gate SUMMARY: legs=mirror,manifest,lint' "$(field legs-demo log)"; then
+  ok 22-legs-through "the spec's legs= reached the record AND bin/mac-gate.sh as MAC_GATE_LEGS: $(grep -o 'mac-gate SUMMARY:.*' "$(field legs-demo log)")"
+else
+  bad 22-legs-through "rc=$erc legs='$(field legs-demo legs)' log=$(cat "$(field legs-demo log)" 2>&1)"
+fi
+if grep -q 'legs-demo .*legs=mirror,manifest,lint' "$GATE_QUEUE_SUMMARY"; then
+  ok 22-legs-summary "the summary file carries the selection, so the run cannot be cited as a full gate"
+else
+  bad 22-legs-summary "$(grep legs-demo "$GATE_QUEUE_SUMMARY" | tr '\n' ' ')"
+fi
+if "$qs" list 2>&1 | grep -q 'legs-demo .*mirror,manifest,lint'; then
+  ok 22-legs-list "list shows the leg selection of every record"
+else
+  bad 22-legs-list "$("$qs" list 2>&1 | grep legs-demo)"
+fi
+STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:full-demo" > "$tmp/enq22b.out" 2>&1
+erc=$?
+if [ "$erc" -eq 0 ] && [ -z "$(field full-demo legs)" ] \
+   && grep -q 'mac-gate SUMMARY: legs=full' "$(field full-demo log)" \
+   && "$qs" list 2>&1 | grep -q 'full-demo .*(full)'; then
+  ok 22-legs-default "a three-field spec is still a full gate: no selection recorded, MAC_GATE_LEGS empty, list says (full)"
+else
+  bad 22-legs-default "rc=$erc legs='$(field full-demo legs)' log=$(cat "$(field full-demo log)" 2>&1)"
+fi
+out="$("$qs" enqueue "$wt2:$sha2:bogus-legs-demo:legs=mirror,not-a-leg" 2>&1)"; erc=$?
+if [ "$erc" -eq 2 ] && [ ! -f "$GATE_QUEUE_STATE/bogus-legs-demo.spec" ]; then
+  ok 22-legs-refuse "an unknown leg name refuses at admission (rc=2) and writes no record: ${out##*$'\n'}"
+else
+  bad 22-legs-refuse "rc=$erc record=$([ -f "$GATE_QUEUE_STATE/bogus-legs-demo.spec" ] && echo WRITTEN || echo none): $out"
+fi
+out="$("$qs" enqueue "$wt2:$sha2:shape-legs-demo:notlegs=mirror" 2>&1)"; erc=$?
+if [ "$erc" -eq 2 ] && [ ! -f "$GATE_QUEUE_STATE/shape-legs-demo.spec" ]; then
+  ok 22-legs-shape "a fourth field that is not legs=<list> refuses (rc=2): ${out##*$'\n'}"
+else
+  bad 22-legs-shape "rc=$erc: $out"
 fi
 
 # ------------------------------------------------------------------------------- 5: list

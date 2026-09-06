@@ -153,39 +153,229 @@ gate_mirror_filters() {
     '--filter=-s *'
 }
 
-# gate_local_manifest — "<blob sha> <path>" for every file git tracks, sorted. Run in the
-# checkout; the caller has already refused a dirty tree, so the index is HEAD.
+# THE MANIFEST LINE PROTOCOL (IMGMGR-408). Both halves emit one LINE per tracked file:
+#
+#     <mode> SP <blob sha> SP <escaped path>
+#
+# and the caller compares the two sorted lists byte for byte. Three properties make that faithful
+# for any path git can track, which the previous `awk '{print $2, $4}'` / newline-joined walk was
+# not (found by the Codex round-3 review of IMGMGR-398/-399; the rsync SELECTION already survived
+# these paths, only the manifest did not):
+#
+#   * NUL end to end on the way IN — `git ls-files -s -z` on this side, `find -print0` and
+#     `xargs -0` on the mirror side. Nothing is ever split on whitespace, so a path holding a
+#     SPACE is carried whole, and `-z` also stops `git ls-files` from C-QUOTING an exotic name
+#     into something the other half would never produce.
+#   * an injective escape on the way OUT: `\` becomes `\\` and a NEWLINE becomes `\n`. The
+#     records have to be lines — a NUL cannot survive the command substitution the comparison
+#     runs through, and `sort` is line-oriented — so the one byte that would break the line
+#     protocol is the one that gets escaped, and the escape of the escape keeps it reversible:
+#     two different paths cannot render as the same record. The path is everything after the
+#     second space and the two fields before it are fixed-width, so spaces need no escape.
+#   * the MODE is compared, not just the content. `find -type f` used to skip symlinks
+#     altogether; both halves now record a tracked symlink the way `git ls-files -s` does —
+#     mode 120000, blob = the hash of the LINK TARGET STRING, never of what it points at — and
+#     carrying 100644/100755 alongside means a symlink swapped for a regular file holding the
+#     same bytes, or an executable bit lost in transit, is a red manifest leg instead of an
+#     invisible difference.
+#
+# Both halves sort under LC_ALL=C so the two machines' locales cannot order the same records
+# differently; bin/mac-gate.sh re-sorts the mirror's reply the same way.
+
+# gate_local_manifest — the manifest of every file git tracks, sorted. Run in the checkout; the
+# caller has already refused a dirty tree, so the index is HEAD. `git ls-files -s -z` emits
+# "<mode> <object> <stage>\t<path>\0"; the split is by parameter expansion, so no subprocess is
+# forked per file.
 gate_local_manifest() {
-  git ls-files -s | awk '{print $2, $4}' | sort
+  local tmp rc rec meta path mode rest blob esc
+  tmp="$(mktemp)" || return 1
+  # A failing `git ls-files` must fail the manifest rather than return a short one that would
+  # compare as a missing-files diff nobody can read (same reasoning as gate_mirror_include_list).
+  git ls-files -s -z > "$tmp"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then rm -f "$tmp"; return "$rc"; fi
+  while IFS= read -r -d '' rec; do
+    meta="${rec%%$'\t'*}"
+    path="${rec#*$'\t'}"
+    mode="${meta%% *}"; rest="${meta#* }"; blob="${rest%% *}"
+    esc="${path//\\/\\\\}"; esc="${esc//$'\n'/\\n}"
+    printf '%s %s %s\n' "$mode" "$blob" "$esc"
+  done < "$tmp" | LC_ALL=C sort
+  rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # gate_mirror_manifest [DIR] — the same shape over a mirrored tree that has no .git at all:
 # `git hash-object` is a plain blob hash and needs no repository, so the two halves are
 # comparable. Prune, don't filter: `-not -path` still stat-walks every file under
 # .build/DerivedData (129 s over 9k files, 2026-08-30), and one batched hash-object spawn
-# replaces one fork per file. The prune list is exactly the nine names gate_mirror_filters
-# excludes, `signing.local.yml` and `.phase-ledger.md` included: pruning a name covers the file
-# AND a directory of that name, so nothing can be smuggled past the walk under a file-by-contract
-# name (round-4 review, A2). Those two ARE files by contract — a directory of either name is
-# outside this contract and is pruned rather than described.
-#
-# KNOWN LIMITATION (pre-dates this branch; the coordinator is ticketing it): both halves split on
-# whitespace — gate_local_manifest takes `awk '{print $2, $4}'` and this walk pastes a
-# newline-separated path list — so a tracked path containing a SPACE or a NEWLINE is not compared
-# faithfully, and `find -type f` skips symlinks that `git ls-files` reports. The repo has none of
-# the three today; do not read a green manifest leg as evidence about such paths.
+# replaces one fork per file — which is why the regular files are hashed through a single
+# `xargs -0` over a NUL list and their modes and display paths are built in a fork-free bash
+# loop beside it, in the same order, for `paste` to join. Symlinks take one fork each: they are
+# hashed from their target string, and a tree has few of them (this one has none today).
+# The prune list is exactly the nine names gate_mirror_filters excludes, `signing.local.yml` and
+# `.phase-ledger.md` included: pruning a name covers the file AND a directory of that name, so
+# nothing can be smuggled past the walk under a file-by-contract name (round-4 review, A2).
+# Those two ARE files by contract — a directory of either name is outside this contract and is
+# pruned rather than described.
 gate_mirror_manifest() {
   local dir="${1:-.}" tmp rc
   tmp="$(mktemp -d)" || return 1
   (
     cd "$dir" || exit 1
     find . \( -name .git -o -name .build -o -name DerivedData -o -name '*.xcodeproj' -o -name '*.xcresult' -o -name .gate-artifacts -o -name .tools -o -name signing.local.yml -o -name .phase-ledger.md \) -prune \
-      -o -type f -print \
-      | sed 's|^\./||' | sort > "$tmp/f"
-    tr '\n' '\0' < "$tmp/f" | xargs -0 git hash-object > "$tmp/h"
+      -o \( -type f -o -type l \) -print0 > "$tmp/raw" || exit 1
+    : > "$tmp/reg"; : > "$tmp/modes"; : > "$tmp/paths"; : > "$tmp/links"
+    while IFS= read -r -d '' p; do
+      d="${p#./}"
+      esc="${d//\\/\\\\}"; esc="${esc//$'\n'/\\n}"
+      if [ -L "$p" ]; then
+        # The blob git records for a symlink is the hash of its TARGET STRING. `readlink -n`
+        # keeps the exact bytes (no trailing newline); the path always begins `./`, so it can
+        # never be read as an option.
+        printf '120000 %s %s\n' "$(readlink -n "$p" | git hash-object --stdin)" "$esc" >> "$tmp/links" || exit 1
+      else
+        printf '%s\0' "$p" >> "$tmp/reg"
+        if [ -x "$p" ]; then printf '100755\n' >> "$tmp/modes"; else printf '100644\n' >> "$tmp/modes"; fi
+        printf '%s\n' "$esc" >> "$tmp/paths"
+      fi
+    done < "$tmp/raw"
+    # GNU xargs runs the command once even on empty input (BSD's does not); an empty tree must
+    # not become `git hash-object --` with no operands.
+    if [ -s "$tmp/reg" ]; then
+      xargs -0 git hash-object -- < "$tmp/reg" > "$tmp/h" || exit 1
+    else
+      : > "$tmp/h"
+    fi
+    paste -d' ' "$tmp/modes" "$tmp/h" "$tmp/paths" > "$tmp/out" || exit 1
+    cat "$tmp/links" >> "$tmp/out" || exit 1
   )
   rc=$?
-  [ "$rc" -ne 0 ] || paste -d' ' "$tmp/h" "$tmp/f" | sort
+  [ "$rc" -ne 0 ] || LC_ALL=C sort "$tmp/out"
   rm -rf "$tmp"
   return "$rc"
+}
+
+# --- The leg registry (IMGMGR-410) -------------------------------------------------------
+#
+# WHY: a change that touches only these scripts used to need a FULL gate — xcodegen, build,
+# widget-embed and two UI-test destinations, ~50 minutes — to prove a mirror or manifest fix.
+# Four such runs were spent on the IMGMGR-398/-399 branch in one day (2026-09-06). A named
+# subset lets a script-only change be gated in minutes.
+#
+# The registry lives HERE, beside the mirror contract, for the same reason that does: the
+# controller half (bin/mac-gate.sh, which validates the selection and prints it) and the remote
+# half (the build script on the Mac, which decides leg by leg what to run) both source this file
+# out of the same mirror, so the two cannot disagree about what a leg name means.
+#
+# CANONICAL ORDER — the order the legs really run in. gate_legs_resolve always prints in it, so
+# a resolved list is comparable to GATE_LEGS_ALL by plain string equality (that is what tells a
+# full gate from a subset) and a `legs=` field reads the same for the same selection.
+#
+# `mirror` names the rsync mirror step; the step RECORDS itself as the `rsync` leg, the name
+# every gate summary in this estate's evidence already carries. One name for the selection, the
+# other for the record, and both are documented rather than reconciled — renaming the recorded
+# leg would invalidate the citations.
+GATE_LEGS_ALL='mirror manifest api-nullable-tests xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep lint pins'
+
+# MANDATORY legs are in every selection whether they are named or not. Only `mirror` is: it is
+# not really a check, it is the transport — nothing can run on the Mac that was not copied there
+# first. `manifest` is deliberately NOT mandatory even though it is what proves the mirror equals
+# this HEAD: the ticket's own example names it, so it stays selectable, and a selection that
+# drops it produces leg results whose provenance is not proven. The `legs=SUBSET(…)` field on the
+# summary line is what keeps that from being read as a full gate.
+GATE_LEGS_MANDATORY='mirror'
+
+# PREREQUISITES, as `<leg>:<leg it needs in the same run>`. These are not conveniences to be
+# auto-added: a selection that names `build` without `xcodegen` is refused, because silently
+# adding xcodegen would turn a 3-minute subset into a 20-minute one the caller did not ask for,
+# and silently DROPPING build would report a green leg that never ran. Refusing says which.
+GATE_LEGS_REQUIRES='build:xcodegen widget-embed:build test-iphone:xcodegen test-ipad:xcodegen pins:xcodegen'
+
+# gate_legs_resolve [SELECTION] — print the effective leg list, space-separated, in canonical
+# order, for a comma-separated SELECTION. An empty or absent SELECTION is a FULL gate and prints
+# GATE_LEGS_ALL. Duplicates collapse and order in the SELECTION is irrelevant.
+#
+# Returns 2 and prints NOTHING on stdout (the reason goes to stderr) for an empty leg name, an
+# unknown one, or a leg whose prerequisite is not also selected — so a caller may use the output
+# only after checking the status, and an unknown name is refused before anything runs.
+# bash 3.2: no arrays, no mapfile; the split is by parameter expansion, not IFS.
+gate_legs_resolve() {
+  local sel_in="${1:-}" rest name leg pair req sel="" out=""
+  if [ -z "$sel_in" ]; then printf '%s\n' "$GATE_LEGS_ALL"; return 0; fi
+  case ",$sel_in," in
+    *,,*) printf 'gate-lib: empty leg name in the selection %s\n' "'$sel_in'" >&2; return 2 ;;
+  esac
+  rest="$sel_in"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *,*) name="${rest%%,*}"; rest="${rest#*,}" ;;
+      *)   name="$rest"; rest="" ;;
+    esac
+    # A token carrying WHITESPACE is refused before membership is even asked (round-1 review,
+    # finding 2). The registry is a space-joined string, so `case " $GATE_LEGS_ALL " in *" $tok "*`
+    # is a substring test: the single token `xcodegen build` matches the two adjacent entries and
+    # was accepted as one known leg. Legs are separated by COMMAS; a space inside a token is a
+    # malformed list, not a leg name, and saying so is better than resolving it by accident.
+    case "$name" in
+      *[[:space:]]*)
+        printf 'gate-lib: leg name %s contains whitespace — legs are separated by commas, not spaces\n' \
+          "'$name'" >&2; return 2 ;;
+    esac
+    case " $GATE_LEGS_ALL " in
+      *" $name "*) ;;
+      *) printf 'gate-lib: unknown leg %s (known legs: %s)\n' "'$name'" "$GATE_LEGS_ALL" >&2; return 2 ;;
+    esac
+    case " $sel " in *" $name "*) ;; *) sel="$sel $name" ;; esac
+  done
+  for leg in $GATE_LEGS_MANDATORY; do
+    case " $sel " in *" $leg "*) ;; *) sel="$sel $leg" ;; esac
+  done
+  for pair in $GATE_LEGS_REQUIRES; do
+    name="${pair%%:*}"; req="${pair#*:}"
+    case " $sel " in *" $name "*) ;; *) continue ;; esac
+    case " $sel " in
+      *" $req "*) ;;
+      *) printf 'gate-lib: leg %s needs %s in the same run — add it, or drop %s\n' \
+           "'$name'" "'$req'" "'$name'" >&2; return 2 ;;
+    esac
+  done
+  for leg in $GATE_LEGS_ALL; do
+    case " $sel " in *" $leg "*) out="$out $leg" ;; esac
+  done
+  printf '%s\n' "${out# }"
+}
+
+# gate_legs_field RESOLVED — the one field that tells a full gate from a subset, for the summary
+# line and for --list-legs. A subset says so in capitals AND lists exactly what ran: the merged-
+# main gate evidence in this estate cites the full leg list, and a subset run must never be
+# mistakable for one.
+gate_legs_field() {
+  if [ "$1" = "$GATE_LEGS_ALL" ]; then
+    printf 'legs=full\n'
+  else
+    printf 'legs=SUBSET(%s) — NOT a full gate\n' "$(printf '%s' "$1" | tr ' ' ',')"
+  fi
+}
+
+# gate_legs_field_refused REASON — the same field for a run that never started because its leg
+# selection would not resolve. bin/mac-gate.sh's die_refuse prints this shape for every refusal,
+# so bin/gate-queue.sh has a SUMMARY line to copy and a reader can tell a refusal from a crash.
+gate_legs_field_refused() {
+  printf 'legs=REFUSED(%s) — NOT a full gate\n' "$1"
+}
+
+# gate_summary_line LEGS_FIELD STEP_SUMMARY EXIT_CODE — the ONE definition of the gate's summary
+# line. bin/mac-gate.sh's summary_and_exit prints exactly this and nothing else, so the marker
+# that tells a subset from a full gate has one place to live and one place to be tested; the
+# line is what bin/gate-queue.sh greps out of a run log into its summary file.
+gate_summary_line() {
+  printf 'mac-gate SUMMARY: %s |%s | exit=%s\n' "$1" "$2" "$3"
+}
+
+# gate_leg_wanted NAME RESOLVED — 0 when NAME is in the resolved list. Used by the remote build
+# script leg by leg.
+gate_leg_wanted() {
+  case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
