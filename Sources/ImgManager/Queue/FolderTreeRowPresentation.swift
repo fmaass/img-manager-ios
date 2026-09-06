@@ -43,6 +43,41 @@ enum FolderTreeRowPresentation {
     return node.descendantImageCount.formatted()
   }
 
+  /// WHICH folder the tree PAINTS as selected (IMGMGR-405 rule 5). `selection` is the enclosing
+  /// `List`'s own binding; `opened` is the folder whose grid is actually showing —
+  /// `GridStore.query.folderID`, the field `selectShoot(folderID:sourceTier:)` records.
+  ///
+  /// It falls back rather than mirroring because a COLLAPSED `NavigationSplitView` is a stack:
+  /// popping back out of the grid on the phone clears the List's selection, and a highlight read
+  /// straight off that binding would vanish exactly when the reader returns to the tree to see
+  /// where they have been — the opposite of what the owner asked for.
+  ///
+  /// The store, and not a `@State` of this view, is the retainer (round-2 finding 3): the home is
+  /// rebuilt from scratch whenever `RootView.workspaceChrome` swaps its two-column and
+  /// three-column branches, and view state does not survive that. The store does, and it is the
+  /// same answer either way — the grid on the other side of the split is showing exactly one
+  /// folder, and that is the one the tree should be pointing at. The path that makes the
+  /// difference — a Compact pop-back clearing the selection, then a resize into the three-column
+  /// branch that destroys the tree's view state — is exactly the one no simulator run can drive,
+  /// which is why the retainer is chosen by construction here rather than pinned by a UI test.
+  ///
+  /// The List's own selection still WINS while it has one, so a selection made anywhere else —
+  /// the restored initial shoot (`RootView.swift:294`), the fixture launch (`:311`) — moves the
+  /// highlight without this tree having to be told.
+  ///
+  /// This value paints and nothing else. What a TAP means is decided against the List's actual
+  /// selection instead (`FolderTreeItemRow.tapAction`'s `isSelected`); see `FolderTreeSection`
+  /// for why the two must not be the same question.
+  static func highlight(selection: Int?, opened: Int?) -> Int? { selection ?? opened }
+
+  /// Whether THIS row is that folder. A month fold can never be: it has no folder id to compare
+  /// (`FolderTreeItemID`), which is what keeps "exactly one row at a time" true by construction
+  /// rather than by the view remembering to ask.
+  static func isSelected(_ item: FolderTreeItem, highlightedFolderID: Int?) -> Bool {
+    guard let node = item.node, let highlighted = highlightedFolderID else { return false }
+    return node.id == highlighted
+  }
+
   /// The row's own handle — `folderRow-` where a tap enters the grid, `folderContainer-` where it
   /// only expands. Unchanged strings; what changed (diff-gate r1, B1) is WHERE they are applied.
   ///

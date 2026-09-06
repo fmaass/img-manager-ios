@@ -21,12 +21,12 @@ import SwiftUI
 /// `parent_id`, client-side name filter), this file only renders it. Three properties are worth
 /// stating because they are easy to break:
 ///
-/// - EVERY folder row navigates and a month fold toggles, as `FolderTreeItemRow.tapAction` says
-///   and the web has always done (IMGMGR-400 corrected P7 here: the tap used to be gated on
-///   `FolderTreeNode.isSelectableShoot`, which left every import/project/template/other folder
-///   holding photographs inert). `isSelectableShoot` — still `ShootListFilter`'s single
-///   definition — now answers only what a row IS: its cover, its subline, its readiness badge
-///   and its `folderRow-`/`folderContainer-` identifier;
+/// - a tap ANYWHERE on a row does what `FolderTreeItemRow.tapAction(isOpen:isSelected:)` says,
+///   never something this view re-decides (IMGMGR-400 widened the tap past
+///   `FolderTreeNode.isSelectableShoot`; IMGMGR-405 widened it past the row's NAME and made a
+///   second tap on the folder you are standing in collapse it). `isSelectableShoot` — still
+///   `ShootListFilter`'s single definition — answers only what a row IS: its cover, its subline,
+///   its readiness badge and its `folderRow-`/`folderContainer-` identifier;
 /// - the count on every row is `descendant_image_count` straight off the wire, which is exactly
 ///   the population a tap opens (`/api/images` resolves `folder_id` to the whole subtree), so the
 ///   badge and the grid can never disagree;
@@ -80,6 +80,12 @@ struct FolderTreeSection: View {
   /// The fence as it stands when a load is about to start.
   let treeFence: () -> QueueStore.TreeFence
   @Binding var selectedFolderID: Int?
+  /// The folder whose grid is showing — `GridStore.query.folderID`, read in `RootView`'s own body
+  /// so this tree re-renders when it changes (round-2 finding 3). It is the half of the highlight
+  /// that survives: the enclosing `List`'s selection is cleared by a Compact pop-back, and a
+  /// `@State` of this view is destroyed whenever `RootView.workspaceChrome` swaps its
+  /// two-column/three-column branch, so neither can be the thing that remembers.
+  let openedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
   @State private var load = FolderTreeLoad.loading
@@ -130,6 +136,12 @@ struct FolderTreeSection: View {
     .task(id: reloadToken) {
       await runTreeLoad()
     }
+    // A selection made ANYWHERE — this tree, the restored initial shoot (`RootView.swift:294`),
+    // the DEBUG fixture (`:311`), the grid's own scope — opens whatever hides its row. Keyed on
+    // the DERIVED value so both of its inputs reach the reveal through one path.
+    .onChange(of: highlightedFolderID) { _, _ in
+      revealHighlightedFolder()
+    }
   }
 
   /// The ONE fetch path (F3): both entries — the `.task(id:)` and Retry — run this, so there is
@@ -146,9 +158,29 @@ struct FolderTreeSection: View {
     guard FolderTreeLoadGate.accepts(fresh, generation: generation, current: treeLoadGeneration)
     else { return }
     load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
+    // Rule 6, the relaunch case: the selection is restored before there is a tree to find it in,
+    // so the ancestors can only be opened once the rows exist.
+    revealHighlightedFolder()
     // Only a clean answer is worth remembering: a partial one would persist a tier's absence as
     // if it were its content, and the next launch would replay that as the library.
     if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier, fence) }
+  }
+
+  /// IMGMGR-405 rule 6: open the TIER branch and every row ancestor above the highlighted folder,
+  /// so a selection made before this tree was on screen is a row the reader can actually see.
+  ///
+  /// The tier half is round-2 finding 2: a restored selection under a closed Incoming/Edits/
+  /// Archive branch stayed hidden however many row ancestors were opened, and a top-level folder
+  /// in a closed tier has no row ancestors to open at all. `FolderTreeModel.revealPlan` decides
+  /// both halves; this only applies them, and only ever ADDS — a branch the reader closed by hand
+  /// stays closed unless it stands between them and the row they asked for.
+  private func revealHighlightedFolder() {
+    let plan = FolderTreeModel.revealPlan(
+      folderID: highlightedFolderID,
+      itemsByTier: Dictionary(
+        uniqueKeysWithValues: FolderTreeTier.allCases.map { ($0, branches(for: $0)) }))
+    expandedTiers.formUnion(plan.tiers)
+    expandedBranches.formUnion(plan.rows)
   }
 
   /// Whether the whole tree — every tier, after whatever the search field kept — is empty. Read
@@ -181,6 +213,12 @@ struct FolderTreeSection: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
+  }
+
+  /// IMGMGR-405 rule 5: the folder the tree PAINTS as selected — derived, never stored, so there
+  /// is no copy of it to go stale or to be destroyed with this view.
+  private var highlightedFolderID: Int? {
+    FolderTreeRowPresentation.highlight(selection: selectedFolderID, opened: openedFolderID)
   }
 
   private var trimmedSearch: String {
@@ -266,7 +304,7 @@ struct FolderTreeSection: View {
             row: row, tier: tier, isSearching: isSearching, heroLoader: heroLoader,
             summariesByFolderID: summariesByFolderID,
             expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
-            onSelect: onSelect)
+            highlightedFolderID: highlightedFolderID, onSelect: onSelect)
         }
       } label: {
         Text(tier.label).accessibilityIdentifier("folderTreeTier-\(tier.label)")
@@ -461,11 +499,20 @@ enum FolderTreeLoadPresentation {
 /// The two affordances are deliberately SEPARATE controls rather than one `DisclosureGroup`
 /// label. 110 production folders are both a shoot and a parent, and with a single combined label
 /// a tap meant to open a subtree also navigated into the grid; worse, the composition could not
-/// be driven through the real UI at all (gate run 1cfa3f4). Here the chevron toggles and nothing
-/// else, and each carries its own accessibility identifier. The NAME does whatever the row's own
-/// `tapAction` says (IMGMGR-400): it opens the folder on every folder row, and on a month fold —
-/// which has no folder to open — it calls the same `toggleExpansion()` the chevron calls.
-/// Both are chrome — there is no gesture-only path anywhere in this tree.
+/// be driven through the real UI at all (gate run 1cfa3f4). The chevron toggles and NOTHING else,
+/// and it sits outside the row's own tap area so the two can never both fire on one tap.
+/// Everything beside it is ONE target, at least 44 pt tall, doing whatever
+/// `tapAction(isOpen:isSelected:)` says (IMGMGR-405). Both are chrome — there is no gesture-only
+/// path anywhere in this tree.
+///
+/// Two MECHANISMS, chosen from what the device has already proved rather than from what reads
+/// well. A folder row keeps `.tag` + `.simultaneousGesture`: a bare `Button` never pushes
+/// NavigationSplitView's column on Compact (`RootView.sidebar`'s own doc comment), and this
+/// pattern is what shipped and works on the device today. A month fold becomes a real full-width
+/// `Button`, because a fold carries no `.tag` — and the owner's device pass on 0.12.1 (16) is the
+/// evidence that matters here: in the SAME row, the chevron `Button` toggled and the untagged
+/// `simultaneousGesture` beside it did not, so the enclosing `List(selection:)` is swallowing
+/// taps on rows it cannot select. A `Button` is the one thing that List defers to.
 private struct FolderTreeRowView: View {
   let row: FolderTreeItemRow
   let tier: FolderTreeTier
@@ -474,6 +521,10 @@ private struct FolderTreeRowView: View {
   let summariesByFolderID: [Int: Components.Schemas.FolderSummary]
   @Binding var expandedBranches: Set<FolderTreeItemID>
   @Binding var selectedFolderID: Int?
+  /// IMGMGR-405 rule 5, PAINT ONLY — `FolderTreeSection.highlightedFolderID`, which falls back to
+  /// the grid's own open folder when the List has no selection. What a tap MEANS is a different
+  /// question, asked of the List (`isListSelected`); see `tapTarget`.
+  let highlightedFolderID: Int?
   let onSelect: (Int, GridSourceTier) -> Void
 
   @State private var coverImage: PlatformImage?
@@ -481,9 +532,21 @@ private struct FolderTreeRowView: View {
   var body: some View {
     HStack(spacing: 6) {
       expandControl
-      nameAndCount
+      tapTarget
     }
     .padding(.leading, CGFloat(row.depth) * 14)
+    // IMGMGR-405 rule 5, mirroring the web's own selected row (`border-primary-500
+    // bg-primary-900/50`): a tint plus a leading bar, drawn by this row rather than by the
+    // enclosing `List`. The List's own selection rendering is what the owner reports NOT seeing —
+    // on Compact it is not drawn at all, and popping back out of the grid clears it — so the tree
+    // says where you are itself. Applied AFTER the depth inset so the bar sits on the row's edge,
+    // not on the indent, exactly as a desktop tree draws it.
+    .background(alignment: .leading) {
+      if isSelectedRow { Color.accentColor.opacity(0.18) }
+    }
+    .overlay(alignment: .leading) {
+      if isSelectedRow { Color.accentColor.frame(width: 3) }
+    }
   }
 
   @ViewBuilder
@@ -495,7 +558,9 @@ private struct FolderTreeRowView: View {
         Image(systemName: "chevron.right")
           .font(.caption.weight(.semibold))
           .rotationEffect(.degrees(isOpen ? 90 : 0))
-          .frame(width: 20, height: 24)
+          // As tall as the row it toggles, and no wider than it was: the chevron is a target of
+          // its own, and the row's tap area starts where this one ends.
+          .frame(width: 20, height: 44)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -516,19 +581,38 @@ private struct FolderTreeRowView: View {
     }
   }
 
+  /// The row minus its chevron: ONE target, whatever it is made of (IMGMGR-405 rule 1).
+  ///
+  /// The branch is on `row.folderID` and NOT on the tap action, deliberately: what a tap DOES is
+  /// `tapAction`'s answer and changes with the row's state, while which MECHANISM can deliver the
+  /// tap at all is fixed by whether the enclosing `List` can select this row. Keying the view
+  /// structure to the action would hand a `.tag`-less Button to an expanded, selected folder —
+  /// the one row that must keep its tag — and would rebuild the row's subtree on every toggle.
   @ViewBuilder
-  private var nameAndCount: some View {
-    // What the tap does is `FolderTreeItemRow.tapAction`'s answer, never re-decided here
-    // (IMGMGR-400). Every FOLDER row navigates — a folder whose `kind` is not a dated shoot holds
-    // photographs just the same, and the device pass found 156 such leaves inert — and a month
-    // FOLD, which is no folder, drives the very toggle its chevron drives.
-    switch row.tapAction {
-    case .openFolder(let folderID):
+  private var tapTarget: some View {
+    // Resolved HERE, at body evaluation, and CARRIED into the handler — never read inside it
+    // (round-3 finding 1). The row carries a `.tag`, so the List's own selection recognizer and
+    // this view's gesture run on the same tap in an order neither of them fixes: a handler that
+    // asked "am I selected?" at fire time could be answering AFTER the List had already written
+    // the tag, see itself as selected, answer `.collapse`, skip `onSelect` — and leave the grid
+    // on a scope nobody selected. The value below is the PRE-tap state by construction, because
+    // the row re-renders on every selection change, so `.collapse` can only come from a row the
+    // List already held: a same-value re-tap it cannot act on. Every other case is
+    // `.openFolder`, which writes the selection and calls `onSelect`, so the two agree.
+    //
+    // The `let` IS the guarantee, and it is the whole of it — no test can see the difference
+    // between this and the same call inside the closure, because both produce the same value
+    // until the two recognizers interleave on a device. Keeping the read out of the handler is
+    // therefore a review invariant: a future edit that moves it in reintroduces the defect
+    // silently. `FolderTreeRowInteractionTests` pins the DECISION; this line pins WHEN it is made.
+    let action = row.tapAction(isOpen: isOpen, isSelected: isListSelected)
+    if let folderID = row.folderID {
       // Same row-navigation pattern as the pre-P7 sidebar (RootView's own doc comment on this
       // exact fix): `.simultaneousGesture` layered on TOP of the enclosing List's own selection
       // recognizer, never a bare `Button` and never `.onChange(of: selectedFolderID)` — a plain
       // Button never pushes NavigationSplitView's column on Compact, and onChange never fires on
-      // a same-value re-tap.
+      // a same-value re-tap. It reaches the row because the row carries a `.tag`; the fold below
+      // is the case where it does not.
       rowContent
         .contentShape(Rectangle())
         .tag(folderID)
@@ -538,34 +622,87 @@ private struct FolderTreeRowView: View {
         // .rowIdentifier` decides the string — `folderRow-` on a shoot and `folderContainer-`
         // elsewhere, unchanged, because that split still names what a row IS; `rowContent`
         // applies it.
-        .simultaneousGesture(
-          TapGesture().onEnded {
-            selectedFolderID = folderID
-            onSelect(folderID, tier.sourceTier)
-          }
-        )
-    case .toggleExpansion:
-      // A month fold: no folder id exists to hand `GridStore`, so the name opens the fold rather
-      // than navigating — the ONE toggle action the chevron Button also calls, so the two
-      // affordances can never drift apart. Deliberately NOT `.tag(…)`: a fold is not a selectable
-      // row of the enclosing `List`.
-      rowContent
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { toggleExpansion() })
-    case .inert:
-      // Nothing to open, nothing to expand.
+        .simultaneousGesture(TapGesture().onEnded { perform(action) })
+    } else if case .month(let month, _) = row.item, row.isExpandable {
+      // A month fold: no folder id exists to hand `GridStore`, and no `.tag` either — which is
+      // precisely why this one is a real `Button` (IMGMGR-405). Its `folderTreeMonth-…` handle
+      // moves ONTO the button because a Button publishes its label as one accessibility element,
+      // and the handle has to name the whole row for a tap at its trailing edge to be a tap on
+      // the row. The CHEVRON keeps its own separate `folderDisclose-…`.
+      Button {
+        perform(action)
+      } label: {
+        // The shape goes INSIDE the label, exactly as the chevron beside it does: that is the
+        // composition this List is already known to hit-test on the device, and it is what makes
+        // the empty space between the fold's label and its count part of the target.
+        rowContent.contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityIdentifier(FolderTreeRowPresentation.monthIdentifier(for: month))
+    } else {
+      // Nothing to open, nothing to expand — a fold with no members, which `foldByMonth` never
+      // builds (a month exists only where a member asked for one).
       rowContent
     }
   }
 
-  /// Open or close this row — the single implementation both affordances call (the chevron
-  /// Button and, on a fold, the row name).
+  /// Perform the action `tapTarget` resolved for this row's state — a parameter, never a fresh
+  /// read: see that property for why the pre-tap state is the only honest input here.
+  private func perform(_ action: FolderTreeRowTapAction) {
+    switch action {
+    case .openFolder(let folderID, let expanding):
+      // Expanded FIRST, so a collapsed parent is already open behind the grid that this same tap
+      // pushes — on Compact the reader comes back to an opened branch rather than to the row they
+      // started on.
+      if expanding { expandedBranches.insert(row.id) }
+      selectedFolderID = folderID
+      onSelect(folderID, tier.sourceTier)
+    case .expand:
+      expandedBranches.insert(row.id)
+    case .collapse:
+      expandedBranches.remove(row.id)
+    case .inert:
+      break
+    }
+  }
+
+  /// Open or close this row — what the CHEVRON does, in both directions and whatever the row's
+  /// selection state is. Deliberately not `perform(_:)`: the chevron never navigates.
   private func toggleExpansion() {
     if isOpen {
       expandedBranches.remove(row.id)
     } else {
       expandedBranches.insert(row.id)
     }
+  }
+
+  /// Whether this row is PAINTED as the selected folder (rule 5): the highlight, which survives a
+  /// Compact pop-back and a column-count swap.
+  private var isSelectedRow: Bool {
+    FolderTreeRowPresentation.isSelected(row.item, highlightedFolderID: highlightedFolderID)
+  }
+
+  /// Whether the enclosing `List` ALREADY holds this row's folder — a different question from the
+  /// paint above, and the one the tap action must be asked (round-2 finding 1).
+  ///
+  /// The row carries a `.tag`, so the List's own selection recognizer runs on the same tap as this
+  /// view's gesture. Where the List already holds this id the tap is a same-value re-tap and the
+  /// List does nothing, which is the only state in which "collapse and do not navigate" is a
+  /// promise this view can keep. Judged on the HIGHLIGHT instead, a row that is merely painted —
+  /// Compact, after a pop-back cleared the selection — would answer `.collapse` while the List
+  /// underneath changed nil→id and pushed the grid: the collapse and a navigation on one tap.
+  ///
+  /// The consequence, stated rather than hidden: on Compact, tapping the highlighted expanded
+  /// folder re-opens its grid and leaves the branch open. That is the honest reading of the tap —
+  /// the reader is not standing in that folder any more, they came back out of it — and it is
+  /// exactly what the List is going to do regardless of what this view decides.
+  ///
+  /// Read at BODY evaluation only (`tapTarget`), never inside the gesture handler: the two
+  /// recognizers fire in an order this view does not control, so a fire-time read could see the
+  /// List's own write and answer about the state the tap CAUSED instead of the one it found.
+  private var isListSelected: Bool {
+    guard let folderID = row.folderID, let selected = selectedFolderID else { return false }
+    return folderID == selected
   }
 
   @ViewBuilder
@@ -586,7 +723,11 @@ private struct FolderTreeRowView: View {
           .lineLimit(1)
           .truncationMode(.middle)
           .accessibilityIdentifier(
-            FolderTreeRowPresentation.rowIdentifier(for: node, id: node.id))
+            FolderTreeRowPresentation.rowIdentifier(for: node, id: node.id)
+          )
+          // On the element that already carries the row's handle, so one query answers both
+          // "which row is this" and "is it the selected one" (IMGMGR-405 rule 5).
+          .accessibilityAddTraits(isSelectedRow ? [.isSelected] : [])
         // A shoot's own roll-up, one line down: the server's number, never recomputed, and
         // stated ONCE — this is the same count the trailing caption below carries on the
         // container rows, moved rather than duplicated.
@@ -623,7 +764,9 @@ private struct FolderTreeRowView: View {
           .foregroundStyle(.secondary)
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    // Rule 1: the row is one target of at least the platform's own minimum, so the trailing half
+    // of a one-line container row is as tappable as its name.
+    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
   }
 
   /// A month fold (IMGMGR-350 P1/P2). It carries NO cover and NO selection — it is not a folder,
@@ -632,16 +775,18 @@ private struct FolderTreeRowView: View {
   /// uses, because a fold hides folders exactly as a closed container does.
   private func monthContent(_ month: FolderTreeMonth) -> some View {
     HStack(spacing: 8) {
+      // The fold's `folderTreeMonth-…` handle is applied to the BUTTON that wraps this content
+      // (`tapTarget`), not here: a Button publishes its label as a single accessibility element,
+      // and the handle has to name the whole row so a test can tap its trailing edge.
       Text(month.label)
         .lineLimit(1)
-        .accessibilityIdentifier(FolderTreeRowPresentation.monthIdentifier(for: month))
       Spacer(minLength: 8)
       Text(month.count.formatted())
         .font(.caption)
         .monospacedDigit()
         .foregroundStyle(.secondary)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
   }
 
   /// The shoot row's cover, fetched through the SAME `HeroThumbnailLoader` the queue cards use —

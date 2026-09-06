@@ -473,6 +473,12 @@ struct RootView: View {
             },
             treeFence: { queueStore.treeFence() },
             selectedFolderID: $selectedFolderID,
+            // IMGMGR-405: the folder whose grid is showing, read HERE in the body so the tree
+            // re-renders when the scope changes — `GridStore.query` is what
+            // `selectShoot(folderID:sourceTier:)` records, and it is the only notion of "the open
+            // folder" that outlives both a Compact pop-back (which clears the List's selection)
+            // and the column-count swap this very view performs (which destroys the tree's state).
+            openedFolderID: gridStore.query.folderID,
             onSelect: { folderID, sourceTier in
               Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
             })

@@ -80,7 +80,9 @@
       case Operations.ListImagesApiImagesGet.id:
         return try jsonResponse(
           .ok,
-          Components.Schemas.ImagePage(items: Self.fixtureImages(), limit: 100, nextCursor: nil))
+          Components.Schemas.ImagePage(
+            items: Self.fixtureImages(scopedTo: Self.perFolderScope(of: request)), limit: 100,
+            nextCursor: nil))
       case Operations.ImageGroupsApiImageGroupsGet.id:
         // WP13 P5b: the fixture's `group_key` values are CAMERA names, so this is the dimension
         // it models; the counts are the live probe's own (2026-08-30), deliberately far larger
@@ -417,6 +419,27 @@
         total: 12)
     }
 
+    /// IMGMGR-405: the `folder_id` this request asked for, and ONLY while `-UITestPerFolderGrid`
+    /// is set — `nil` otherwise, which is every shipped suite and the whole of Release.
+    private static func perFolderScope(of request: HTTPRequest) -> Int? {
+      guard DebugStubLaunch.perFolderGrid else { return nil }
+      return queryParameters(of: request)["folder_id"].flatMap(Int.init)
+    }
+
+    /// The same twelve photographs, re-identified per folder: `folderID * 1000 + n`, so a tile's
+    /// identifier (`gridTile-<id>`) names the folder its grid was loaded for. `nil` returns the
+    /// fixture untouched, which is what keeps this invisible to every suite that does not ask.
+    private static func fixtureImages(scopedTo folderID: Int?) -> [Components.Schemas.ImageSummary]
+    {
+      guard let folderID else { return fixtureImages() }
+      return fixtureImages().map { image in
+        var scoped = image
+        scoped.id = folderID * 1000 + image.id
+        scoped.folderId = folderID
+        return scoped
+      }
+    }
+
     private static func fixtureImages() -> [Components.Schemas.ImageSummary] {
       let aspects: [Double] = [1.5, 1.0, 0.75, 3.5, 1.5, 1.5, 1.0, 1.5, 2.0, 1.0, 1.5, 0.75]
       return aspects.enumerated().map { index, aspect in
@@ -686,6 +709,25 @@
     /// like all of them, because a Release archive strips this whole file.
     static var startsWithInspectorHidden: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestInspectorHidden")
+    }
+
+    /// IMGMGR-405: an EIGHTH, independent launch argument. `/api/images` answers the same twelve
+    /// fixture photographs whatever `folder_id` is asked for, which is right for every suite that
+    /// only needs A grid — and useless for the one assertion that has to tell WHICH folder's grid
+    /// is on screen (rule 3: a collapsing tap leaves the other side of the split view alone).
+    /// With this set, the fixture's ids are offset by the folder asked for, so `gridTile-2001…`
+    /// is the year folder's grid and `gridTile-1001…` the root shoot's, and "the grid did not
+    /// change" becomes something a test can read instead of assume.
+    ///
+    /// OPT-IN precisely so nothing else moves: no shipped suite passes it, so every existing
+    /// screenshot, tile and loupe assertion still sees ids 1…12. Debug-only like every flag here.
+    ///
+    /// Scoped to the image PAGE alone, deliberately: the groups, facets and neighbour fixtures
+    /// keep the unscoped dozen, so a suite that passes this flag and then drives Scene mode or the
+    /// loupe would be comparing two id spaces. The one test that passes it reads tile identifiers
+    /// and nothing else.
+    static var perFolderGrid: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestPerFolderGrid")
     }
 
     /// IMGMGR-350 checkpoint-2 (B1): an EIGHTH, independent launch argument. The tree home must

@@ -361,30 +361,34 @@ struct FolderTreeRowTapActionTests {
       (6, "other"),
     ] {
       let item = FolderTreeItem.folder(node(id: id, kind: kind), children: [])
-      #expect(row(item).tapAction == .openFolder(id))
+      #expect(
+        row(item).tapAction(isOpen: false, isSelected: false) == .openFolder(id, expanding: false))
     }
   }
 
-  /// A folder that ALSO has children still opens on its name — the chevron is the only thing that
-  /// expands it (web behaviour: the name navigates, the disclosure toggles).
-  @Test("a folder with children opens on its name rather than toggling")
-  func aFolderWithChildrenOpensOnItsNameRatherThanToggling() {
+  /// A folder that ALSO has children still opens on a tap — and since IMGMGR-405 the same tap
+  /// opens the branch, which is what every desktop tree this one is modelled on does. The chevron
+  /// keeps its own separate job (it toggles and never navigates).
+  @Test("a collapsed folder with children opens AND expands on one tap")
+  func aCollapsedFolderWithChildrenOpensAndExpandsOnOneTap() {
     let parent = node(id: 3, kind: "dated", children: [node(id: 4, kind: "template")])
     let item = FolderTreeItem.folder(
       parent, children: [.folder(node(id: 4, kind: "template"), children: [])])
 
     #expect(row(item).isExpandable)
-    #expect(row(item).tapAction == .openFolder(3))
+    #expect(
+      row(item).tapAction(isOpen: false, isSelected: false) == .openFolder(3, expanding: true))
   }
 
-  /// The second defect's half: a month fold is no folder, so its name toggles it — the one row
-  /// whose tap is the chevron's action.
-  @Test("a month fold with members toggles on its name")
-  func aMonthFoldWithMembersTogglesOnItsName() {
+  /// The second defect's half: a month fold is no folder, so a tap on it toggles — the one row
+  /// whose tap is the chevron's action, in both directions.
+  @Test("a month fold with members toggles rather than navigating")
+  func aMonthFoldWithMembersTogglesRatherThanNavigating() {
     let item = fold([.folder(node(id: 3, kind: "dated"), children: [])])
 
     #expect(row(item).isExpandable)
-    #expect(row(item).tapAction == .toggleExpansion)
+    #expect(row(item).tapAction(isOpen: false, isSelected: false) == .expand)
+    #expect(row(item).tapAction(isOpen: true, isSelected: false) == .collapse)
   }
 
   /// Nothing to expand and no folder to open: the row stays inert rather than falling back to
@@ -395,7 +399,7 @@ struct FolderTreeRowTapActionTests {
     let item = fold([])
 
     #expect(!row(item).isExpandable)
-    #expect(row(item).tapAction == .inert)
+    #expect(row(item).tapAction(isOpen: false, isSelected: false) == .inert)
   }
 
   /// The fix widened the TAP and nothing else: `ShootListFilter` is still the one definition of a
@@ -411,5 +415,247 @@ struct FolderTreeRowTapActionTests {
     #expect(
       FolderTreeRowPresentation.rowIdentifier(for: node(id: 3, kind: "template"), id: 3)
         == "folderContainer-3")
+  }
+}
+
+/// IMGMGR-405 (owner device pass, TestFlight 0.12.1 (16)): "click on the whole row to expand …
+/// visualize which folder is selected … industry proven common practices".
+///
+/// Two rules, both pinned here as values before any pixel renders them. (1) A tap on a row means
+/// something different depending on where the reader already is — the convention every desktop
+/// tree keeps (Google Drive, the VS Code explorer, SwiftUI's own `DisclosureGroup`, and this
+/// app's own web UI): one tap opens a closed branch and enters it, a second tap on the branch you
+/// are standing in closes it again. (2) The selected folder is exactly one row, a fold never
+/// among them.
+///
+/// The table below is the whole input space of `tapAction(isOpen:isSelected:)` — leaf, parent
+/// closed, parent open and selected, parent open and unselected, fold closed, fold open, empty
+/// fold — because a routing rule with a case missing is a rule that regresses in silence.
+@Suite("Folder tree row tap and selection (IMGMGR-405)")
+struct FolderTreeRowInteractionTests {
+
+  private func wire(
+    id: Int, parent: Int? = nil, kind: String = "dated", name: String? = nil, path: String? = nil
+  ) -> Components.Schemas.FolderNode {
+    .init(
+      descendantImageCount: 3, id: id, imageCount: 3, kind: kind, name: name ?? "folder-\(id)",
+      parentId: parent, path: path ?? "p\(id)")
+  }
+
+  /// The fixture tree the shipped UI tests walk, in wire form: one hoisted tier root over a
+  /// root-level shoot and a YEAR container, whose two dated children fold into one month row and
+  /// whose first child carries a `template` leaf of its own.
+  private var incomingItems: [FolderTreeItem] {
+    let nodes = [
+      wire(id: 9, kind: "other", name: "photo_incoming", path: "photo_incoming"),
+      wire(id: 1, parent: 9, name: "2026-08-27 — Stub Shoot"),
+      wire(id: 2, parent: 9, kind: "other", name: "2026"),
+      wire(id: 3, parent: 2, name: "2026-09-14 — Wandern"),
+      wire(id: 4, parent: 3, kind: "template", name: "template"),
+      wire(id: 5, parent: 2, name: "2026-09-27 — Ufer"),
+    ]
+    return FolderTreeModel.tierItems(FolderTreeModel.forest(nodes), tier: .incoming)
+  }
+
+  /// A second tier, so the reveal has something it must NOT open: one year container over one
+  /// dated shoot, ids disjoint from the incoming fixture's exactly as the live tiers are.
+  private var archiveItems: [FolderTreeItem] {
+    let nodes = [
+      wire(id: 20, kind: "other", name: "2025", path: "2025"),
+      wire(id: 21, parent: 20, name: "2025-12-24 — Archive Shoot", path: "2025/archive-shoot"),
+    ]
+    return FolderTreeModel.tierItems(FolderTreeModel.forest(nodes), tier: .archive)
+  }
+
+  private var itemsByTier: [FolderTreeTier: [FolderTreeItem]] {
+    [.incoming: incomingItems, .edits: [], .archive: archiveItems]
+  }
+
+  private func node(id: Int, kind: String = "dated", children: [FolderTreeNode] = [])
+    -> FolderTreeNode
+  {
+    FolderTreeNode(folder: wire(id: id, kind: kind), children: children)
+  }
+
+  private func row(_ item: FolderTreeItem) -> FolderTreeItemRow {
+    FolderTreeItemRow(item: item, depth: 0)
+  }
+
+  private var leaf: FolderTreeItem { .folder(node(id: 1), children: []) }
+
+  private var parent: FolderTreeItem {
+    .folder(node(id: 2, kind: "other", children: [node(id: 3)]), children: [leafThree])
+  }
+
+  private var leafThree: FolderTreeItem { .folder(node(id: 3), children: []) }
+
+  private func fold(_ members: [FolderTreeItem]) -> FolderTreeItem {
+    .month(
+      FolderTreeMonth(parentID: 2, year: "2026", month: "09", label: "september", count: 9),
+      members: members)
+  }
+
+  @Test("every row state maps to exactly one tap action")
+  func everyRowStateMapsToExactlyOneTapAction() {
+    let probes: [(String, FolderTreeItem, Bool, Bool, FolderTreeRowTapAction)] = [
+      // A leaf has nothing to open, so its tap is the one it always was (rule 4).
+      ("leaf folder", leaf, false, false, .openFolder(1, expanding: false)),
+      // …including when it is the row the reader is standing in: there is no branch to close.
+      ("leaf folder, selected", leaf, false, true, .openFolder(1, expanding: false)),
+      // One tap does both (rule 2).
+      ("folder with children, collapsed", parent, false, false, .openFolder(2, expanding: true)),
+      // The second tap on the branch you are in closes it, and nothing navigates (rule 3).
+      ("folder with children, open and selected", parent, true, true, .collapse),
+      // Open while the LIST does not hold this row is not "the branch you are in" — the Compact
+      // case after a pop-back, where the row is still painted but the selection is nil. Entering
+      // it is what the reader means AND what the List is about to do anyway, so the two agree
+      // instead of collapsing under a navigation (round-2 finding 1).
+      (
+        "folder with children, open and not selected", parent, true, false,
+        .openFolder(2, expanding: false)
+      ),
+      // A fold is no folder, so it only ever toggles — in both directions.
+      ("month fold, collapsed", fold([leafThree]), false, false, .expand),
+      ("month fold, open", fold([leafThree]), true, false, .collapse),
+      // The control for the two above: the fold's answer is its MEMBERS, not its case.
+      ("month fold with no members", fold([]), false, false, .inert),
+    ]
+
+    for (what, item, isOpen, isSelected, expected) in probes {
+      #expect(row(item).tapAction(isOpen: isOpen, isSelected: isSelected) == expected, "\(what)")
+    }
+  }
+
+  /// Rule 6: a selection made before this tree was on screen has to be REVEALED, which means
+  /// opening every row between the tier and it — the month fold included, since that is where a
+  /// dated shoot actually lives.
+  @Test("the ancestors of a folder are every row between the tier and it")
+  func theAncestorsOfAFolderAreEveryRowBetweenTheTierAndIt() {
+    let items = incomingItems
+
+    #expect(
+      FolderTreeModel.ancestorRowIDs(ofFolder: 4, in: items)
+        == [.folder(2), .month("2:2026-09"), .folder(3)])
+    #expect(
+      FolderTreeModel.ancestorRowIDs(ofFolder: 3, in: items) == [.folder(2), .month("2:2026-09")])
+    // A top-level row is already visible, and its own row is never among its ancestors — a reveal
+    // that expanded the folder it reveals would re-open a branch the reader had just closed.
+    #expect(FolderTreeModel.ancestorRowIDs(ofFolder: 1, in: items).isEmpty)
+    // A folder this tier does not hold is the normal answer for two of the three tiers.
+    #expect(FolderTreeModel.ancestorRowIDs(ofFolder: 999, in: items).isEmpty)
+  }
+
+  /// The decision table for ONE row across the three states its selection can be in — the
+  /// per-row twin of the whole-space table above, kept because these three are the readings the
+  /// view's own capture has to choose between (`FolderTreeSection.tapTarget`).
+  ///
+  /// It pins the DECISION only. That the view resolves it from the state the tap FOUND rather
+  /// than from the state the tap causes is structural — a `let` at body evaluation — and cannot
+  /// be witnessed here without hosting the view; the argument for it is the comment at that
+  /// capture, and keeping the read out of the gesture closure is a review invariant.
+  @Test("one row's action across selected, unselected-open and unselected-closed")
+  func oneRowsActionAcrossSelectedUnselectedOpenAndUnselectedClosed() {
+    let branch = row(parent)
+
+    // Selected BEFORE the tap: the List already holds this id, so the tap is a same-value re-tap
+    // it cannot act on — the only state in which closing the branch navigates nowhere.
+    #expect(branch.tapAction(isOpen: true, isSelected: true) == .collapse)
+
+    // Not selected before the tap, however the row is painted: the List is about to select it, so
+    // the row's own action has to be the one that AGREES — enter the folder, leave the branch
+    // open. A handler that re-read the selection after the List had written the tag would read
+    // `true` here, answer `.collapse`, and skip `onSelect` while the List navigated anyway: the
+    // stale-scope defect this pins.
+    #expect(branch.tapAction(isOpen: true, isSelected: false) == .openFolder(2, expanding: false))
+    #expect(branch.tapAction(isOpen: false, isSelected: false) == .openFolder(2, expanding: true))
+  }
+
+  /// Round-2 finding 2: the reveal has to open the TIER branch too. Each tier is a
+  /// `DisclosureGroup` with its own expansion, so a restored selection under a closed Incoming /
+  /// Edits / Archive stayed hidden however many row ancestors were opened.
+  ///
+  /// The case an ancestors-only rule cannot even express is the second leg here: a TOP-LEVEL
+  /// folder inside a closed tier has no row ancestors at all, so the empty row set is the correct
+  /// answer AND the tier must still open. Only the tier that holds the folder opens: the plan is
+  /// applied additively to state the reader owns.
+  @Test("the reveal opens the tier branch as well as the rows above the folder")
+  func theRevealOpensTheTierBranchAsWellAsTheRowsAboveTheFolder() {
+    let deep = FolderTreeModel.revealPlan(folderID: 4, itemsByTier: itemsByTier)
+    #expect(deep.tiers == [.incoming])
+    #expect(deep.rows == [.folder(2), .month("2:2026-09"), .folder(3)])
+
+    let topLevel = FolderTreeModel.revealPlan(folderID: 1, itemsByTier: itemsByTier)
+    #expect(topLevel.tiers == [.incoming])
+    #expect(topLevel.rows.isEmpty)
+
+    // The other tier, and the control that the plan is not simply "open everything".
+    let archived = FolderTreeModel.revealPlan(folderID: 21, itemsByTier: itemsByTier)
+    #expect(archived.tiers == [.archive])
+    #expect(archived.rows == [.folder(20), .month("20:2025-12")])
+
+    #expect(FolderTreeModel.revealPlan(folderID: 999, itemsByTier: itemsByTier) == .init())
+    #expect(FolderTreeModel.revealPlan(folderID: nil, itemsByTier: itemsByTier) == .init())
+  }
+
+  /// The two facts `ancestorRowIDs` cannot tell apart on its own, which is why the plan asks this
+  /// separately: "no ancestors" and "not here" are both the empty set.
+  @Test("a tier is asked whether it holds the folder at all")
+  func aTierIsAskedWhetherItHoldsTheFolderAtAll() {
+    #expect(FolderTreeModel.containsFolder(1, in: incomingItems))
+    #expect(FolderTreeModel.containsFolder(4, in: incomingItems))
+    #expect(!FolderTreeModel.containsFolder(21, in: incomingItems))
+    #expect(!FolderTreeModel.containsFolder(999, in: incomingItems))
+  }
+
+  /// The property the reveal actually has to have, read through the SAME `visibleRows` the view
+  /// renders: with those ancestors open, the row is on screen — and with nothing open it is not,
+  /// which is the control that the first half is the expansion's doing and not the tree's.
+  @Test("expanding those ancestors is what puts the row on screen")
+  func expandingThoseAncestorsIsWhatPutsTheRowOnScreen() {
+    let items = incomingItems
+    let plan = FolderTreeModel.revealPlan(folderID: 4, itemsByTier: itemsByTier)
+
+    let revealed = FolderTreeModel.visibleRows(items) { plan.rows.contains($0) }
+    #expect(revealed.map(\.id).contains(.folder(4)))
+
+    let closed = FolderTreeModel.visibleRows(items) { _ in false }
+    #expect(!closed.map(\.id).contains(.folder(4)))
+  }
+
+  /// Rule 5, the "exactly one row" half — counted over the whole open tree rather than asserted
+  /// on the one row a test picked, so a highlight that matched by name, by depth or by count
+  /// would fail here.
+  @Test("exactly one row is the selected folder, and a fold is never it")
+  func exactlyOneRowIsTheSelectedFolderAndAFoldIsNeverIt() {
+    let rows = FolderTreeModel.visibleRows(incomingItems) { _ in true }
+    let selected = rows.filter {
+      FolderTreeRowPresentation.isSelected($0.item, highlightedFolderID: 3)
+    }
+
+    #expect(selected.map(\.id) == [.folder(3)])
+
+    // The fold's own parent id is 2, and the fold is NOT that folder: a month row has no folder
+    // id to compare (`FolderTreeItemID`), which is what keeps it unselectable by construction.
+    let year = rows.filter { FolderTreeRowPresentation.isSelected($0.item, highlightedFolderID: 2) }
+    #expect(year.map(\.id) == [.folder(2)])
+
+    #expect(
+      rows.allSatisfy {
+        !FolderTreeRowPresentation.isSelected($0.item, highlightedFolderID: nil)
+      })
+  }
+
+  /// Rule 5's other half, and the reason the highlight is not read straight off the enclosing
+  /// `List`'s selection: a collapsed `NavigationSplitView` is a stack, so popping back out of the
+  /// grid on the phone clears that binding. The tree must still say where the reader was — and
+  /// the fallback is the STORE's own open folder (`GridStore.query.folderID`), never a `@State` of
+  /// the tree, because the home is destroyed and rebuilt whenever `RootView` swaps its column
+  /// count (round-2 finding 3).
+  @Test("the highlight survives the selection being cleared, and any real selection wins")
+  func theHighlightSurvivesTheSelectionBeingClearedAndAnyRealSelectionWins() {
+    #expect(FolderTreeRowPresentation.highlight(selection: 3, opened: nil) == 3)
+    #expect(FolderTreeRowPresentation.highlight(selection: nil, opened: 3) == 3)
+    #expect(FolderTreeRowPresentation.highlight(selection: 5, opened: 3) == 5)
+    #expect(FolderTreeRowPresentation.highlight(selection: nil, opened: nil) == nil)
   }
 }

@@ -124,38 +124,61 @@ struct FolderTreeItemRow: Identifiable {
   var id: FolderTreeItemID { item.id }
   var isExpandable: Bool { !item.children.isEmpty }
 
-  /// What a tap on this row's NAME does (IMGMGR-400). Derived here rather than decided inside the
-  /// view, so the rule is one value a unit test reads instead of a branch only a device could
-  /// disagree with — which is how both halves of the owner's device-pass report stayed shipped:
-  /// a container's name did nothing (only its chevron toggled) and a folder whose `kind` is not a
-  /// dated shoot did nothing at all.
+  /// The folder this row navigates AS, or `nil` on a fold — `FolderTreeItem.node`'s promise read
+  /// once, at the row. The view's tap MECHANISM turns on exactly this question (a tagged folder
+  /// row carries a gesture, a fold carries a Button; see `FolderTreeSection`), so it is a named
+  /// row property rather than an `item.node` unwrap repeated inside a view builder.
+  var folderID: Int? { item.node?.id }
+
+  /// What a tap ANYWHERE on this row does (IMGMGR-405, widening IMGMGR-400). Derived here rather
+  /// than decided inside the view, so the rule is one value a unit test reads instead of a branch
+  /// only a device could disagree with — which is how each half of two device-pass reports stayed
+  /// shipped: a container's name did nothing, a non-dated folder did nothing at all, and then a
+  /// month row still expanded only from its chevron.
   ///
   /// The web is the design decision (p3396, "the same folder view on the ios app as on web"):
   /// `FolderTreeBranch.vue:63` selects ANY folder on its name, `:95`/`:103` toggle a month on its
-  /// label, and the chevron (`:50`) toggles either way. So: a FOLDER row opens its folder — its
-  /// `kind` is not consulted, because `/api/images` resolves `folder_id` to the whole subtree and
-  /// every folder therefore has a grid to show; a FOLD is no folder (`FolderTreeItemID`), so its
-  /// name drives the same toggle its chevron drives; and a row with neither is inert rather than
-  /// pretending to be one of them.
+  /// label, and the chevron (`:50`) toggles either way. IMGMGR-405 adds what the desktop trees
+  /// this one is modelled on (Google Drive, the VS Code explorer, `DisclosureGroup`) all do: a
+  /// row with children opens on the same tap that enters it, and a second tap on the row you are
+  /// already standing in closes it again.
+  ///
+  /// Which is why this takes the view's state instead of being a property: "already open" and
+  /// "already the selected folder" are the two facts that separate an opening tap from a closing
+  /// one, and neither is knowable from the tree alone. A FOLD is no folder
+  /// (`FolderTreeItemID`), so it only ever toggles; a row with neither children nor a folder is
+  /// inert rather than pretending to be one of them.
   ///
   /// `isSelectableShoot` is deliberately NOT read here. It still answers which rows are SHOOTS —
   /// cover thumbnail, count subline, readiness badge, the `folderRow-`/`folderContainer-`
   /// identifier split (`FolderTreeRowPresentation`) — and that vocabulary is unchanged; only the
   /// tap was widened.
-  var tapAction: FolderTreeRowTapAction {
-    if let node = item.node { return .openFolder(node.id) }
-    return isExpandable ? .toggleExpansion : .inert
+  func tapAction(isOpen: Bool, isSelected: Bool) -> FolderTreeRowTapAction {
+    guard let folderID else {
+      guard isExpandable else { return .inert }
+      return isOpen ? .collapse : .expand
+    }
+    guard isExpandable else { return .openFolder(folderID, expanding: false) }
+    guard isOpen else { return .openFolder(folderID, expanding: true) }
+    // Standing in the folder already: the tap is the reader closing the branch, so it must not
+    // re-enter a grid that is already on screen. Not selected means the row is merely open under
+    // someone else's selection, and a tap there is still "take me into this folder".
+    return isSelected ? .collapse : .openFolder(folderID, expanding: false)
   }
 }
 
-/// The three things a tap on a tree row's name can do (IMGMGR-400). A value rather than a closure
-/// so the decision is testable apart from the view that performs it.
+/// What a tap on a tree row can do (IMGMGR-405, recut from IMGMGR-400's three). A value rather
+/// than a closure so the decision is testable apart from the view that performs it.
 enum FolderTreeRowTapAction: Equatable, Sendable {
   /// Select the row and enter the grid — `GridStore.selectShoot(folderID:sourceTier:)`, the one
-  /// path every row into the grid has always taken.
-  case openFolder(Int)
-  /// Open or close this row's children, the same action the chevron performs.
-  case toggleExpansion
+  /// path every row into the grid has always taken. `expanding` is the collapsed-parent case: one
+  /// tap both opens the branch and enters it, which is what a tree the reader is browsing with
+  /// one thumb has to do to be worth the tap.
+  case openFolder(Int, expanding: Bool)
+  /// Open this row's children without navigating — a fold, which has no folder to enter.
+  case expand
+  /// Close this row's children, leaving whatever is on the other side of the split view alone.
+  case collapse
   /// Nothing to open and nothing to expand.
   case inert
 }
@@ -450,4 +473,73 @@ enum FolderTreeModel {
     walk(items, depth: 0)
     return rows
   }
+
+  /// The rows that have to be OPEN for `folderID`'s own row to be on screen — every ancestor on
+  /// the path to it, folders and month folds alike, and never the folder's own row (IMGMGR-405
+  /// rule 6: revealing a selection must not also expand the thing being revealed, or a reader who
+  /// just collapsed it would watch it spring back open).
+  ///
+  /// Pure, and separate from the reveal itself, because the reveal has to run in three unrelated
+  /// places — a tree that finishes loading with a selection already made, a relaunch that restores
+  /// one (`RootView.swift:294`), and a selection made in another column — and a rule written three
+  /// times is three rules. Empty where the folder is top-level (nothing to open) and where it is
+  /// absent from this tier's rows at all, which is the normal answer for two of the three tiers.
+  static func ancestorRowIDs(
+    ofFolder folderID: Int, in items: [FolderTreeItem]
+  ) -> Set<FolderTreeItemID> {
+    var ancestors: Set<FolderTreeItemID> = []
+    func walk(_ items: [FolderTreeItem], trail: [FolderTreeItemID]) -> Bool {
+      for item in items {
+        if item.node?.id == folderID {
+          ancestors = Set(trail)
+          return true
+        }
+        if walk(item.children, trail: trail + [item.id]) { return true }
+      }
+      return false
+    }
+    _ = walk(items, trail: [])
+    return ancestors
+  }
+
+  /// Whether this tier's rows hold `folderID` at all. Separate from `ancestorRowIDs` because that
+  /// one answers the EMPTY set for two different facts — a top-level folder has no ancestors, and
+  /// so has a folder that is not in this tier — and the reveal has to tell them apart: the first
+  /// still needs its tier branch opened, the second must not touch that tier at all.
+  static func containsFolder(_ folderID: Int, in items: [FolderTreeItem]) -> Bool {
+    items.contains { $0.node?.id == folderID || containsFolder(folderID, in: $0.children) }
+  }
+
+  /// Everything that has to be OPEN for one folder's row to be reachable on the home — the TIER
+  /// branch it lives under as well as the rows inside it (IMGMGR-405 rule 6, round-2 finding 2).
+  ///
+  /// The tier is the half a reveal built only out of ancestors forgets: `FolderTreeSection`
+  /// renders each tier as a `DisclosureGroup` whose expansion is its own state, so a restored
+  /// selection under a closed Incoming/Edits/Archive branch stayed invisible however many row
+  /// ancestors were opened — and a TOP-LEVEL folder in a closed tier has no row ancestors at all,
+  /// which is the case an ancestors-only rule cannot even express.
+  ///
+  /// One value over all three tiers rather than a loop in the view, so "which tiers open, which
+  /// rows open" is a thing a test reads. A folder no tier holds produces an empty plan, and so
+  /// does no selection: the reveal is then a no-op rather than a special case at the call site.
+  static func revealPlan(
+    folderID: Int?, itemsByTier: [FolderTreeTier: [FolderTreeItem]]
+  ) -> FolderTreeRevealPlan {
+    var plan = FolderTreeRevealPlan()
+    guard let folderID else { return plan }
+    for (tier, items) in itemsByTier where containsFolder(folderID, in: items) {
+      plan.tiers.insert(tier)
+      plan.rows.formUnion(ancestorRowIDs(ofFolder: folderID, in: items))
+    }
+    return plan
+  }
+}
+
+/// What a reveal has to open: tier branches and rows, the two pieces of expansion state the home
+/// keeps (`FolderTreeSection.expandedTiers` / `expandedBranches`). A value, so the rule is
+/// testable without a view — and additive by construction at the call site, which is what keeps a
+/// branch the reader closed by hand closed unless it stands between them and their own selection.
+struct FolderTreeRevealPlan: Equatable {
+  var tiers: Set<FolderTreeTier> = []
+  var rows: Set<FolderTreeItemID> = []
 }
