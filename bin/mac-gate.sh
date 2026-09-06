@@ -60,6 +60,20 @@
 # Execution Protocol requires. SHA and `git status` language stays reserved for this
 # machine's real checkout.
 #
+# WHAT THE MIRROR CARRIES (IMGMGR-399, 2026-09-05): the rsync mirrors the files `git ls-files`
+# reports, less anything the fixed exclude list holds back (nothing tracked matches it today, and
+# a tracked path that ever did would be missing from the mirror and named by the manifest leg) — the manifest's own source — as an explicit root-anchored include list
+# behind the fixed exclude list, with a sender-only catch-all behind that. So the mirror holds
+# what git TRACKS (force-added files under ignored directories and `!negations` included), the
+# two manifest halves compare like with like, and a gitignored leftover from an earlier run is
+# swept out of the mirror rather than protected in it. Before that, any gitignored working file
+# (a docs/plans/ copy, docs/session-reviews/) was mirrored and then failed the manifest leg. An
+# file outside the tracked set reaches the mirror at all, ignored or not — the clean-tree refusal
+# below (like bin/gate-queue.sh's exit 97) rejects a tree carrying uncommitted work before the
+# gate starts, so drift is a refusal rather than a manifest mismatch. The filter list, the include list and both manifest
+# halves live in bin/gate-lib.sh, which this script sources and the mirror carries, so the local
+# and the remote half can never drift apart.
+#
 # Usage:
 #   MAC_GATE_HOST=merkur bin/mac-gate.sh
 #   bin/mac-gate.sh --help
@@ -120,10 +134,18 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || die_refuse "not inside a git working tree"
 cd "$repo_root"
 
+# The mirror contract (rsync filters + both manifest halves) — see the header. The remote
+# manifest and build scripts source the mirrored copy of this same file.
+# shellcheck source=bin/gate-lib.sh
+. "$repo_root/bin/gate-lib.sh" || die_refuse "cannot source bin/gate-lib.sh (the mirror contract lives there)"
+
 head_sha="$(git rev-parse HEAD 2>/dev/null)" \
   || die_refuse "no HEAD — nothing has been committed yet (the orchestrator's snapshot commit, plan Execution Protocol step 2b, runs before this gate)"
+# `git status --porcelain` WITHOUT --ignored: gitignored files are allowed (nothing outside the
+# tracked set reaches the mirror, see the header), tracked modifications and untracked
+# non-ignored files are not — they mean the tree is not the commit being gated.
 porcelain_status="$(git status --porcelain 2>&1)"
-[ -z "$porcelain_status" ] || die_refuse "controller tree is not clean — commit or stash before gating (git status --porcelain is non-empty)"
+[ -z "$porcelain_status" ] || die_refuse "controller tree is not clean — commit or stash before gating (git status --porcelain is non-empty; ignored files are fine, tracked changes and untracked non-ignored files are not)"
 
 branch="${MAC_GATE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 [ "$branch" != "HEAD" ] || die_refuse "detached HEAD — set MAC_GATE_BRANCH"
@@ -214,7 +236,7 @@ summary_and_exit() {
 
 # --- Local (controller-side) content manifest: git blob hashes over tracked files. -------
 say "--- step: content manifest (controller side, HEAD=$head_sha) ---"
-local_manifest="$(git ls-files -s | awk '{print $2, $4}' | sort)"
+local_manifest="$(gate_local_manifest)"
 manifest_count="$(printf '%s\n' "$local_manifest" | grep -c .)"
 say "controller manifest: $manifest_count tracked files at HEAD $head_sha, working tree clean (git status --porcelain: 0 bytes)"
 
@@ -311,10 +333,16 @@ target_dir="$(printf '%s' "$target_dir" | tail -1)"
 lock_held=1
 say "gate lock   : taken (owner=$lock_owner)"
 
+# The mirror's file selection is `git ls-files` itself (see bin/gate-lib.sh): the list is written
+# into the artifacts dir, which is both gitignored and excluded from the mirror.
+mirror_list="$artifacts/mirror-include.list"
+gate_mirror_include_list "$mirror_list" \
+  || die_refuse "could not write the tracked-file list for the mirror ($mirror_list)"
+say "mirror include list: $(tr -cd '\0' < "$mirror_list" | wc -c) tracked paths"
+mirror_filters=()
+while IFS= read -r _filter; do mirror_filters+=("$_filter"); done < <(gate_mirror_filters "$mirror_list")
 rsync -a --delete -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' \
-  --exclude '.git' --exclude 'signing.local.yml' --exclude '.build' \
-  --exclude 'DerivedData' --exclude '*.xcodeproj' --exclude '*.xcresult' \
-  --exclude '.gate-artifacts' --exclude '.tools' --exclude '.phase-ledger.md' \
+  "${mirror_filters[@]}" \
   ./ "$host:${target_dir#$HOME/}/work/" 2>&1 | tee -a "$log"
 record rsync "${PIPESTATUS[0]}"
 [ "$first_fail" -eq 0 ] || summary_and_exit
@@ -327,21 +355,16 @@ say "--- step: content manifest (mirror side) ---"
 # same 139-file tree came back in time on one run and timed out on the next two, i.e. the cap was
 # turning host load into a false "the mirror differs from HEAD" verdict on a tree that was in fact
 # identical. The CHECK is unchanged — only the patience is.
-# Prune, don't filter: -not -path still STAT-WALKS every file under .build/DerivedData
-# (observed 2026-08-30: 129s real / 0.4s cpu over 9k files while a Plex transcode owned the
-# disk), and the per-file `git hash-object` fork added 139 more spawns. Pruned traversal +
-# one batched hash-object spawn keeps the same file set and fits the cap on a busy disk.
+# The walk itself is gate_mirror_manifest in bin/gate-lib.sh — the mirrored copy of the same
+# file this script sourced above, so the remote half of the comparison can never drift from the
+# local one (IMGMGR-399). It carries the pruned traversal and the single batched hash-object
+# spawn that fit this cap on a busy disk. Piped to `bash -s` like the prep script: the Mac's
+# login shell is not necessarily bash, and the library is bash.
 manifest_t0=$SECONDS
-remote_manifest="$(timeout 180 ssh -o BatchMode=yes "$host" "
-  cd '$target_dir/work'
-  tmp=\$(mktemp -d)
-  find . \( -name .git -o -name .build -o -name DerivedData -o -name '*.xcodeproj' -o -name '*.xcresult' -o -name .gate-artifacts -o -name .tools \) -prune \
-    -o -type f -not -name '.phase-ledger.md' -not -name 'signing.local.yml' -print \
-  | sed 's|^\./||' | sort > \"\$tmp/f\"
-  tr '\n' '\0' < \"\$tmp/f\" | xargs -0 git hash-object > \"\$tmp/h\"
-  paste -d' ' \"\$tmp/h\" \"\$tmp/f\"
-  rm -rf \"\$tmp\"
-" 2>&1)"
+remote_manifest_script="cd '$target_dir/work' || exit 1
+. ./bin/gate-lib.sh || exit 1
+gate_mirror_manifest ."
+remote_manifest="$(printf '%s\n' "$remote_manifest_script" | timeout 180 ssh -o BatchMode=yes "$host" 'bash -s' 2>&1)"
 remote_rc=$?
 say "mirror manifest walk: $((SECONDS - manifest_t0))s (cap 180 s)"
 if [ $remote_rc -ne 0 ]; then
