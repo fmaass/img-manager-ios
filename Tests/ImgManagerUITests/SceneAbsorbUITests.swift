@@ -29,13 +29,6 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
     return app
   }
 
-  private func openMoreMenu(_ app: XCUIApplication) {
-    let more = app.descendants(matching: .any)["gridMoreMenu"]
-    XCTAssertTrue(
-      more.waitForExistence(timeout: 10), "Nothing named 'gridMoreMenu' is on the action bar.")
-    more.tap()
-  }
-
   /// The whole gesture, by identifier: focus a loose photograph, open the More menu, choose the
   /// scene, and read the app's own count of absorb requests off the fixture probe — the transport
   /// is an actor, so the request reaching the server is only observable where it is published.
@@ -50,10 +43,9 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
       "The fixture's first loose photograph is not on screen — Scene mode never loaded.")
     loose.tap()
 
-    openMoreMenu(app)
     let row = app.descendants(matching: .any)["gridMoreMenu.more.absorbScene"]
     XCTAssertTrue(
-      row.waitForExistence(timeout: 10),
+      openMoreMenu(in: app, revealing: row, timeout: 10),
       "The More menu offers no way to put a loose photograph into a scene.")
     XCTAssertTrue(
       row.isEnabled,
@@ -87,11 +79,10 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
   /// says why — the failure the owner hit was a row that looked available and did nothing.
   func testTheAbsorbRowStatesItsReasonWhenNoLoosePhotographIsFocused() throws {
     let app = launchedSceneApp()
-    openMoreMenu(app)
 
     let row = app.descendants(matching: .any)["gridMoreMenu.more.absorbScene"]
     XCTAssertTrue(
-      row.waitForExistence(timeout: 10),
+      openMoreMenu(in: app, revealing: row, timeout: 10),
       "The absorb row disappears when it cannot act — it must state its reason instead.")
     XCTAssertFalse(
       row.isEnabled,

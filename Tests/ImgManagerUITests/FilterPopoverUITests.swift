@@ -124,11 +124,10 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
     let filter = funnel(app)
     XCTAssertTrue(filter.waitForExistence(timeout: 10), "No 'gridFilterControl' in the hierarchy.")
-    filter.tap()
 
     let rating4 = row(app, "rating", "4")
     XCTAssertTrue(
-      rating4.waitForExistence(timeout: 10),
+      openPresentation(filter, revealing: rating4, timeout: 10),
       "The open popover has no '>= 4' rating row — decision 1's '>=stars' rows are missing.")
     // REGRESSION GUARD, from the gate run on 5e2e9d4: every DECLARED row must be an ADDRESSABLE
     // element, not one that would appear after a scroll. That run realised only the four rows
@@ -273,13 +272,12 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
     let filter = funnel(app)
     XCTAssertTrue(filter.waitForExistence(timeout: 10), "No 'gridFilterControl' in the hierarchy.")
-    filter.tap()
 
     // The fixture answers `mark` with all three states and a ZERO among them (B9), so this row is
     // a real live zero rather than a contrived one.
     let dislike = row(app, "mark", "dislike")
     XCTAssertTrue(
-      dislike.waitForExistence(timeout: 10),
+      openPresentation(filter, revealing: dislike, timeout: 10),
       "The zero-count Dislike row was OMITTED from the popover. B2: a declared row renders its "
         + "live 0, it never vanishes.")
     XCTAssertEqual(
@@ -312,9 +310,10 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
       filter.value as? String, "Off",
       "The funnel reports an active filter at launch, before anything was applied.")
 
-    filter.tap()
     let rating4 = row(app, "rating", "4")
-    XCTAssertTrue(rating4.waitForExistence(timeout: 10), "The popover has no '>= 4' row.")
+    XCTAssertTrue(
+      openPresentation(filter, revealing: rating4, timeout: 10),
+      "The popover has no '>= 4' row.")
     rating4.tap()
 
     // The popover closes on the tap, and the funnel — reading the SAME
@@ -335,10 +334,9 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
     // Second tap on the SAME row clears the dimension (one value per dimension — the shipped
     // chip semantics), and the dot goes with it.
-    funnel(app).tap()
     let rating4Again = row(app, "rating", "4")
     XCTAssertTrue(
-      rating4Again.waitForExistence(timeout: 10),
+      openPresentation(funnel(app), revealing: rating4Again, timeout: 10),
       "The popover did not reopen, so the second-tap-clears rule could not be exercised.")
     rating4Again.tap()
 

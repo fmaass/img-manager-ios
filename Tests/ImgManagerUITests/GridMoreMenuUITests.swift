@@ -25,16 +25,6 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     return app
   }
 
-  private func openMoreMenu(
-    _ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line
-  ) {
-    let more = app.descendants(matching: .any)["gridMoreMenu"]
-    XCTAssertTrue(
-      more.waitForExistence(timeout: 10),
-      "Nothing named 'gridMoreMenu' is on the action bar.", file: file, line: line)
-    more.tap()
-  }
-
   /// How many elements on screen carry `title` as their own words, counted the two ways the
   /// accessibility tree can expose a menu section header — as static text and as an element
   /// whose identifier defaults to its label. Either is proof the header rendered; a header that
@@ -60,7 +50,6 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     // `ViewThatFits` actually chose, so this test states the width fact instead of inferring it.
     let tier = (app.descendants(matching: .any)["gridMoreMenu"].value as? String) ?? ""
     let folded = tier.contains("folded")
-    openMoreMenu(app)
 
     // EXACTLY the decided set, read off the rendered menu by the identifiers the entries ship
     // with. "Download…" is deliberately absent (owner decision 3) and is asserted absent with
@@ -77,6 +66,11 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       // capability key, never whether the affordance exists.
       "gridMoreMenu.more.openInNewWindow",
     ]
+    // The open itself (IMGMGR-404): the first declared entry is what says the menu presented at
+    // all, so it is waited for through the shared opener; the loop below is unchanged.
+    XCTAssertTrue(
+      openMoreMenu(in: app, revealing: app.descendants(matching: .any)[expected[0]], timeout: 5),
+      "The More menu does not render '\(expected[0])'.")
     for identifier in expected {
       let entry = app.descendants(matching: .any)[identifier]
       XCTAssertTrue(
@@ -136,9 +130,10 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     beforeAttachment.lifetime = .keepAlways
     add(beforeAttachment)
 
-    openMoreMenu(app)
     let toggle = app.descendants(matching: .any)["gridMoreMenu.more.filenamePlates"]
-    XCTAssertTrue(toggle.waitForExistence(timeout: 5), "No Filename plates entry in the menu.")
+    XCTAssertTrue(
+      openMoreMenu(in: app, revealing: toggle, timeout: 5),
+      "No Filename plates entry in the menu.")
     toggle.tap()
 
     // Positive control in the same check: the grid is still there, so "plates visible" below is
@@ -160,9 +155,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     onAttachment.lifetime = .keepAlways
     add(onAttachment)
 
-    openMoreMenu(app)
     let toggleAgain = app.descendants(matching: .any)["gridMoreMenu.more.filenamePlates"]
-    XCTAssertTrue(toggleAgain.waitForExistence(timeout: 5))
+    XCTAssertTrue(openMoreMenu(in: app, revealing: toggleAgain, timeout: 5))
     toggleAgain.tap()
     XCTAssertTrue(app.buttons["Dislike"].waitForExistence(timeout: 10))
     var gone = false
@@ -179,10 +173,10 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
 
   func testStatusSheetIsReadOnly() throws {
     let app = launchedApp()
-    openMoreMenu(app)
 
     let statusEntry = app.descendants(matching: .any)["gridMoreMenu.more.status"]
-    XCTAssertTrue(statusEntry.waitForExistence(timeout: 5), "No Status entry in the menu.")
+    XCTAssertTrue(
+      openMoreMenu(in: app, revealing: statusEntry, timeout: 5), "No Status entry in the menu.")
     statusEntry.tap()
 
     let statusBar = app.navigationBars["Status"]
@@ -245,13 +239,11 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       "'\(header)' is already on screen before the More menu opened, so the hit below would not "
         + "be attributable to the menu's own section header.")
 
-    openMoreMenu(app)
-
     // Positive control for the header assertion: the menu really did present its rows, so a
     // headerless result below is about the HEADERS and not about a menu that never opened.
     let known = app.descendants(matching: .any)["gridMoreMenu.more.status"]
     XCTAssertTrue(
-      known.waitForExistence(timeout: 5),
+      openMoreMenu(in: app, revealing: known, timeout: 5),
       "The More menu did not present its Status row, so the section-header check would be "
         + "vacuous.")
 

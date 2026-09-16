@@ -186,9 +186,8 @@ final class SelectModeScreenshotUITests: OrientationPinnedUITestCase {
     // The folded half of the same contract: a narrower column MOVES Clear into the More menu, it
     // never removes the control.
     if !clearIsInTheBar {
-      more.tap()
       XCTAssertTrue(
-        clear.waitForExistence(timeout: 5),
+        openPresentation(more, revealing: clear, timeout: 5),
         "\(configuration): Clear is in neither the bar nor the More menu — the fold dropped a "
           + "control instead of relocating it.")
       XCTAssertTrue(clear.isEnabled, "\(configuration): the folded Clear must be live too.")

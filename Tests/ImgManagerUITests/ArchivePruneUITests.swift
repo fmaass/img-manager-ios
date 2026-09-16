@@ -118,11 +118,10 @@ final class ArchivePruneUITests: OrientationPinnedUITestCase {
       menu.waitForExistence(timeout: 10),
       "The tree home exposes no View menu, so the prune has no entry point on the surface that "
         + "renders the tree (the plan's Compact reachability check).")
-    menu.tap()
 
     let entry = app.descendants(matching: .any)[toggle].firstMatch
     XCTAssertTrue(
-      entry.waitForExistence(timeout: 10),
+      openPresentation(menu, revealing: entry, timeout: 10),
       "The tree home's View menu does not render '\(toggle)'.")
     // EXACTLY one, counted rather than `firstMatch`-ed: the entry is declared once and rendered
     // in two places (this menu and the grid's More menu), so "two rows answering to one

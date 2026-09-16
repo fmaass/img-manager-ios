@@ -49,12 +49,17 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
         + "view-option controls is now reachable only behind it, which is exactly the state "
         + "IMGMGR-221 exists to end.")
 
-    sort.tap()
-
     // The six offered keys plus both directions, as menu rows a finger can reach. Names come
     // from `SortKey.title`/`SortDirection.title`; this test holds the only copy outside the app
     // on purpose — a renamed row that never reached the menu fails here.
-    for title in ["Date", "Filename", "Rating", "ISO", "Camera", "Lens"] {
+    let titles = ["Date", "Filename", "Rating", "ISO", "Camera", "Lens"]
+    // The open itself (IMGMGR-404): the first row is what says the menu presented at all, so it
+    // is waited for through the shared opener — the run that went red here tapped a Sort control
+    // that never presented anything. The loop below is unchanged and still owns every row.
+    XCTAssertTrue(
+      openPresentation(sort, revealing: app.buttons[titles[0]], timeout: 5),
+      "The open Sort menu has no row named '\(titles[0])'.")
+    for title in titles {
       XCTAssertTrue(
         app.buttons[title].waitForExistence(timeout: 5),
         "The open Sort menu has no row named '\(title)'.")
@@ -79,11 +84,10 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       group.waitForExistence(timeout: 10),
       "Nothing named 'gridGroupControl' is on a primary surface.")
-    group.tap()
 
     let camera = app.buttons["Camera"]
     XCTAssertTrue(
-      camera.waitForExistence(timeout: 5),
+      openPresentation(group, revealing: camera, timeout: 5),
       "The Group menu offers no 'Camera' dimension — the group-by half of IMGMGR-221 is missing.")
     camera.tap()
 
@@ -157,9 +161,10 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
     beforeAttachment.lifetime = .keepAlways
     add(beforeAttachment)
 
-    group.tap()
     let camera = app.buttons["Camera"]
-    XCTAssertTrue(camera.waitForExistence(timeout: 5), "The Group menu offers no 'Camera' row.")
+    XCTAssertTrue(
+      openPresentation(group, revealing: camera, timeout: 5),
+      "The Group menu offers no 'Camera' row.")
     camera.tap()
 
     let grouped = app.descendants(matching: .any)["gridGroupControl"]
