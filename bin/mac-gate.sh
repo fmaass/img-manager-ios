@@ -661,6 +661,10 @@ if [ "$project_legs" = 1 ]; then
         echo "PINS OK: Package.resolved unchanged by resolution"
       else
         echo "PINS FAIL: Package.resolved drifted — a dependency moved since it was pinned"
+        # Drift is a red leg even when the resolution command itself exited 0 (IMGMGR-412): the
+        # controller turns the RECORDED rc into exit=1, never the printed word, so a real
+        # non-zero rc from the command is kept and only a false green is rewritten.
+        case " $summary " in *" pins=0 "*) summary="${summary/ pins=0/ pins=1}" ;; esac
       fi
     fi
   fi

@@ -467,6 +467,35 @@ else
   lfail s-summary-fn "got '$(gate_summary_line 'legs=full' ' a=0 b=1' 1)'"
 fi
 
+# --- IMGMGR-412: a drifted Package.resolved makes the pins leg RED even when the resolution
+# command itself exited 0. The block is lifted verbatim from the REMOTE script, so the shipped
+# lines run here — `want`/`step` are stubbed to the rc under test and the drift is induced by
+# rewriting the resolved file from inside the stubbed step, exactly where resolution would.
+pfail() { echo "FAIL $1: $2"; fail=1; }
+pok() { echo "PASS $1: $2"; }
+pins_block="$(sed -n '/^  if want pins; then$/,/^  fi$/p' "$mg")"
+run_pins() { # $1=step-rc $2=drift(0|1); prints the summary the block leaves behind
+  (
+    cd "$tmp" && rm -rf pinscase && mkdir -p pinscase/.gate-artifacts && cd pinscase || exit 9
+    printf 'pinned\n' > Package.resolved
+    want() { [ "$1" = pins ]; }
+    step() { summary="$summary $1=$STEP_RC"; if [ "$DRIFT" = 1 ]; then printf 'moved\n' > Package.resolved; fi; return 0; }
+    summary=" build=0"; STEP_RC="$1"; DRIFT="$2"
+    eval "$pins_block" > pins.out
+    printf '%s' "$summary"
+  )
+}
+if [ -z "$pins_block" ] || ! printf '%s' "$pins_block" | grep -q 'PINS FAIL'; then
+  pfail p-extract "the pins block was not found in $mg"
+else
+  s0="$(run_pins 0 0)"
+  case "$s0" in *" pins=0"*) pok p-clean "no drift keeps the leg green:$s0" ;; *) pfail p-clean "summary '$s0'" ;; esac
+  s1="$(run_pins 0 1)"
+  case "$s1" in *" pins=1"*) pok p-drift "drift with rc 0 records pins=1:$s1" ;; *) pfail p-drift "summary '$s1' (PINS FAIL printed but the leg stayed green)" ;; esac
+  s2="$(run_pins 65 1)"
+  case "$s2" in *" pins=65"*) pok p-drift-rc "a real non-zero rc is kept, not masked:$s2" ;; *) pfail p-drift-rc "summary '$s2'" ;; esac
+fi
+
 cd "$tmp"
 
 case "$summary" in *"t-clean=0"*"t-hit=1"*"t-noctl=1"*) echo "PASS summary: $summary" ;; *) echo "FAIL summary: $summary"; fail=1 ;; esac
