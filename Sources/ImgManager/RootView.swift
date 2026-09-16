@@ -436,10 +436,21 @@ struct RootView: View {
   /// `Button`, never `onChange`) is preserved verbatim inside `FolderTreeSection` itself — see
   /// its own doc comment.
   ///
-  /// IMGMGR-342 (sidebar composition) is open: the tree is this column's sole content, with no
-  /// pinned section above it. That is a minimal assumption this story does not decide.
+  /// IMGMGR-389 closes IMGMGR-342 (sidebar composition, Option B): above the tree sits ONE pinned
+  /// "Needs review" section, composed by `QueueView` inside the SAME list so the two are one
+  /// scroll and one selection. It renders only when it has members, so the tree is still this
+  /// column's sole content whenever nothing is awaiting review.
   private var sidebar: some View {
     Group {
+      // ONE routing path for both halves of the home. The pinned section and the tree row would
+      // otherwise each carry their own closure into `GridStore.selectShoot(folderID:sourceTier:)`
+      // — the same call twice, which is the shape a second navigation path starts as. The tier is
+      // optional because a summary names its tier as a wire string and an unrecognised one must
+      // clear the grid's filter rather than resolve to an invented tier; the tree's own
+      // `onSelect` is non-optional and adapts to this at its call site below.
+      let selectShoot: (Int, GridSourceTier?) -> Void = { folderID, sourceTier in
+        Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
+      }
       // Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides
       // this branch — `QueueView` mounts for BOTH `.connected` and `.unreachable` so its own
       // `QueueStore` degraded-state machine is always the one that runs; see that type's own
@@ -451,6 +462,8 @@ struct RootView: View {
         QueueView(
           queueStore: queueStore, selectedFolderID: $selectedFolderID,
           onRefreshTree: { treeReloadToken += 1 },
+          // IMGMGR-389: the pinned section's rows route through the SAME closure the tree's do.
+          onSelectShoot: selectShoot,
           treeSection: FolderTreeSection(
             // The same loader the rest of the app's covers come through (WP16 P5): one cache,
             // one concurrency gate for every cover in this column.
@@ -479,9 +492,7 @@ struct RootView: View {
             // folder" that outlives both a Compact pop-back (which clears the List's selection)
             // and the column-count swap this very view performs (which destroys the tree's state).
             openedFolderID: gridStore.query.folderID,
-            onSelect: { folderID, sourceTier in
-              Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
-            })
+            onSelect: { folderID, sourceTier in selectShoot(folderID, sourceTier) })
         )
       }
     }

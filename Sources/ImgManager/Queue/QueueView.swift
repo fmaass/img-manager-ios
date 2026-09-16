@@ -23,6 +23,12 @@ struct QueueView: View {
   /// state inside `FolderTreeSection`, so the gesture reaches it by advancing the token that
   /// section's `.task(id:)` keys on rather than by calling into it.
   let onRefreshTree: () -> Void
+  /// IMGMGR-389: how a PINNED row enters the grid — the very closure `RootView` hands the tree,
+  /// hoisted there into one value, so the two surfaces of this home share one routing path. The
+  /// tier is optional because a summary carries `source_tier` as a wire string and an unrecognised
+  /// one must clear the grid's tier filter rather than resolve to an invented tier;
+  /// `GridStore.selectShoot(folderID:sourceTier:)` takes it optional for exactly that reason.
+  let onSelectShoot: (Int, GridSourceTier?) -> Void
   /// On BOTH idioms since P6 (IMGMGR-216), and non-optional on purpose: the `nil`-on-Compact
   /// branch that left the phone without a browse surface cannot return without a type change.
   /// Since IMGMGR-350 it is not a section of this view but its whole content.
@@ -45,8 +51,25 @@ struct QueueView: View {
           unreachableBanner
         }
       }
-      // The tree IS the home (IMGMGR-350). The Section carries no header of its own: there is
-      // nothing above it to distinguish it from, and the tier rows are their own labels.
+      // IMGMGR-389 (IMGMGR-342 Option B): ONE pinned section, above the tree and inside the SAME
+      // list — one container, one scroll, one selection binding — and rendered only when it has
+      // members. No members means no Section at all: no header, no count, no placeholder, which
+      // is also what an unreachable summaries endpoint produces (there is nothing to filter), so
+      // the tree's own degraded banner above stays the only message on that screen.
+      //
+      // Derived ONCE and handed to both halves: the header states the count and the section lists
+      // the rows, and computing the membership twice would be two answers to one question.
+      let needsReview = NeedsReview.members(from: queueStore.summaries)
+      if !needsReview.isEmpty {
+        Section {
+          NeedsReviewSection(
+            members: needsReview, selectedFolderID: $selectedFolderID, onSelect: onSelectShoot)
+        } header: {
+          NeedsReviewHeader(count: needsReview.count)
+        }
+      }
+      // The tree IS the home (IMGMGR-350). The Section carries no header of its own: the tier
+      // rows are their own labels, and the pinned section above states its own name.
       Section { treeSection }
     }
     .refreshable {
@@ -214,8 +237,12 @@ struct QueueCardRow: View {
   /// `FolderSummary` carries `path`, never a separate display name (unlike `FolderNode`, which
   /// has both) — the shoot leaf's own path segment is the closest available "shoot name". See
   /// this phase's Open questions: flagged as a premise gap, not silently settled.
+  ///
+  /// IMGMGR-389 moved the derivation itself into `NeedsReview.shootName(for:)`, which the pinned
+  /// section needs for the same reason and on the same data. Same expression, one owner — two
+  /// surfaces naming one shoot differently is exactly what a duplicated one-liner drifts into.
   private var displayName: String {
-    summary.path.split(separator: "/").last.map(String.init) ?? summary.path
+    NeedsReview.shootName(for: summary)
   }
 
   /// Q's fidelity badge, derived from `camera_preview_only`/`with_masters` (Ready does NOT wait

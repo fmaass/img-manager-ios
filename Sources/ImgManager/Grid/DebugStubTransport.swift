@@ -76,7 +76,7 @@
         return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderSummariesApiFolderSummariesGet.id:
         return try jsonResponse(
-          .ok, Components.Schemas.FolderSummaryList(items: Self.fixtureSummaries()))
+          .ok, Components.Schemas.FolderSummaryList(items: Self.servedFixtureSummaries()))
       case Operations.ListImagesApiImagesGet.id:
         return try jsonResponse(
           .ok,
@@ -603,6 +603,38 @@
       ]
     }
 
+    /// What `/api/folder-summaries` actually answers for THIS launch — the shipped fixture, or
+    /// the all-reviewed variant `-UITestSummariesReviewed` asks for. `fixtureSummaries()` itself
+    /// is left exactly as it was, so `DebugStubFolderFixtureTests`' pins (the id set, and one
+    /// summary per readiness value) keep reading the same six rows.
+    static func servedFixtureSummaries() -> [Components.Schemas.FolderSummary] {
+      DebugStubLaunch.summariesReviewed ? reviewedFixtureSummaries() : fixtureSummaries()
+    }
+
+    /// IMGMGR-389: the same six shoots with every readiness rewritten to `ready_for_editing`, so
+    /// NO shoot is a member of the pinned "Needs review" set and the section's empty state can be
+    /// driven through the real UI. No shipped entry point can produce it — the fixture always has
+    /// members — and the emptiness has to come from the DATA rather than from a broken load, or
+    /// an absent section would prove only that nothing rendered.
+    ///
+    /// Rebuilt through the generated memberwise initialiser rather than mutated in place, in the
+    /// same field order the literals above use: `readiness` is the one field that differs, and it
+    /// is spelled as the schema's OWN wire string, exactly as every literal in this file does.
+    /// Internal, not private, so a unit test can read the same rows the app is served.
+    static func reviewedFixtureSummaries() -> [Components.Schemas.FolderSummary] {
+      fixtureSummaries().map { summary in
+        Components.Schemas.FolderSummary(
+          cameraPreviewOnly: summary.cameraPreviewOnly, decided: summary.decided,
+          disliked: summary.disliked, edited: summary.edited, folderId: summary.folderId,
+          kind: summary.kind, lastTouched: summary.lastTouched,
+          nothingLeftUnmarked: summary.nothingLeftUnmarked, path: summary.path,
+          picked: summary.picked, previewOutstanding: summary.previewOutstanding,
+          readiness: .init(rawValue: "ready_for_editing")!, sourceTier: summary.sourceTier,
+          sync: summary.sync, total: summary.total, unmarked: summary.unmarked,
+          withMasters: summary.withMasters)
+      }
+    }
+
     private static func fixtureDetail() -> Components.Schemas.ImageDetail {
       let exif = Components.Schemas.ImageDetail.ExifPayload(additionalProperties: [
         "Make": .init(value1: "Stub Camera Co.", value2: nil, value3: nil),
@@ -742,6 +774,17 @@
     /// needs. A failing endpoint could not produce this: it answers, and the phase moves on.
     static var hangSummaries: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestHangSummaries")
+    }
+
+    /// IMGMGR-389: another INDEPENDENT launch argument (the ordinals above stopped being a
+    /// reliable count some flags ago; what matters is that this one composes with all of them).
+    /// Every fixture summary is served as `ready_for_editing`, so the pinned "Needs review"
+    /// section has no members and must not render at all. The endpoint still ANSWERS — a healthy
+    /// home with nothing awaiting review, a different state from the failing and hanging
+    /// summaries above and the only one that proves the empty case. Debug-only like every flag
+    /// here.
+    static var summariesReviewed: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestSummariesReviewed")
     }
 
     /// IMGMGR-350 checkpoint-2 (B3): a NINTH, on the same terms. One tier of `/api/folders`

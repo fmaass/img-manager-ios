@@ -114,7 +114,16 @@ enum FolderTreeRowPresentation {
     for node: FolderTreeNode, summaries: [Int: Components.Schemas.FolderSummary]
   ) -> String? {
     guard node.isSelectableShoot, let summary = summaries[node.id] else { return nil }
-    return ReadinessSection(rawValue: summary.readiness.rawValue)?.title
+    return readinessBadge(for: summary)
+  }
+
+  /// The same badge for a surface that already HAS the summary and no tree node to join through —
+  /// the pinned "Needs review" section (IMGMGR-389), which is a filter over the summaries
+  /// themselves. Split out of the join above rather than written a second time: the wording of a
+  /// readiness value must come from one place, or the pinned row and the tree row underneath it
+  /// can say different things about the same shoot.
+  static func readinessBadge(for summary: Components.Schemas.FolderSummary) -> String? {
+    ReadinessSection(rawValue: summary.readiness.rawValue)?.title
   }
 
   /// The summaries as a `folder_id` join table — the ONE place the tree's rows meet the queue's
