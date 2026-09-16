@@ -101,22 +101,31 @@ struct LayoutPresentationTests {
   /// obvious implementation is a no-op. Rendering an `EmptyView` into the third column left the
   /// grid exactly where it was (`actionBarMidX before=104.5 after=104.5`, 1376 pt window): a
   /// `NavigationSplitView` reserves its columns by initializer arity, so the collapsed state has
-  /// to render the two-column shape instead — and then the sidebar would take the freed pane
-  /// unless the visibility says otherwise. That "unless" is this function, and these are the
-  /// four answers `RootView` depends on.
-  @Test("Collapsing the Regular-3 inspector asks for one pane, and it is not the sidebar")
-  func theCollapsedRegular3WorkspaceAsksForTheDetailPaneOnly() {
+  /// to render the two-column shape instead — and then this function says which of ITS panes the
+  /// workspace wants.
+  ///
+  /// **RE-SPECIFIED by IMGMGR-390.** WP16 P2 answered `.detailOnly` and this test pinned it, on
+  /// the reading that [/link/3220] keeps the sidebar off at Regular-3. The owner's decision on
+  /// IMGMGR-338 (comment 3731) is the opposite trade and is the REASON the inspector starts
+  /// collapsed: "so the sidebar/queue stays visible". `.doubleColumn` is that sentence as a
+  /// value — and it is why the default flip and this answer are one change, not two: flipping the
+  /// default while this still answered `.detailOnly` would have launched the workspace with the
+  /// queue gone, which is what the premise gate caught before any code was written.
+  @Test("The collapsed Regular-3 workspace keeps the sidebar beside the grid")
+  func theCollapsedRegular3WorkspaceAsksForTheSidebarBesideTheGrid() {
     // Shown: unchanged from what ships — the three-column request.
     #expect(
       InspectorPlacement.columnVisibility(for: .regular3, regular3InspectorShown: true) == .all)
-    // Collapsed: ONE pane. `.doubleColumn` here would put the queue beside the grid, which
-    // decision 4 did not ask for; `.all` is what the no-op EmptyView build was still asking for.
+    // Collapsed: TWO panes, sidebar + grid. `.detailOnly` (what WP16 P2 shipped) renders the grid
+    // alone and is the exact behaviour IMGMGR-390 reverses; `.all` is what the no-op EmptyView
+    // build was still asking for.
     #expect(
       InspectorPlacement.columnVisibility(for: .regular3, regular3InspectorShown: false)
-        == .detailOnly)
+        == .doubleColumn)
     // The flag is a REGULAR-3 fact only: it must not reach a width whose inspector is a sheet or
-    // a slide-over, where the sidebar carries the queue and hiding it would cost the launch
-    // surface. Both values, so a rule written as "collapsed -> detailOnly" everywhere fails here.
+    // a slide-over, where the visibility is the resolver's own answer. Both values, so a rule
+    // written as "collapsed -> doubleColumn" everywhere would still have to agree with
+    // `LayoutResolver` here rather than by coincidence.
     for shown in [true, false] {
       #expect(
         InspectorPlacement.columnVisibility(for: .compact, regular3InspectorShown: shown)
@@ -166,5 +175,52 @@ struct LayoutPresentationTests {
     // A pane with no width yet (the first layout pass) must not produce a negative frame.
     #expect(InspectorSlideOverMetrics.width(inPane: 0) == 0)
     #expect(InspectorSlideOverMetrics.width(inPane: -50) == 0)
+  }
+}
+
+/// IMGMGR-390 (owner decision on IMGMGR-338, comment 3731): **which surface carries the six host
+/// chrome controls**, pinned as a value for the same reason `InspectorPlacement` is — the answer
+/// is stated once and `GridView.toolbarContent` renders the statement, so a test can interrogate
+/// the decision without driving a `@ViewBuilder`.
+///
+/// The owner's decision named the inspector's own bar as the expanded state's host. Two gate runs
+/// (`37ac723` bar items, `b383b5a` a rendered row) measured that nothing in that column can be
+/// tapped while it is expanded — `exists == true`, `isHittable == false`, hit point {-1, -1} —
+/// because `.prominentDetail` with `columnVisibility == .all` renders the grid as a column
+/// overlaying a non-interactive detail pane. So the grid's bar hosts the set in BOTH states, the
+/// enum has no third case, and these tests pin that there is nowhere else to put them.
+@Suite("Host chrome placement per layout mode (IMGMGR-390)")
+struct WorkspaceChromePlacementTests {
+
+  @Test("Every Regular width hands the controls to the grid's own bar")
+  func everyRegularWidthHandsTheControlsToTheGridsOwnBar() {
+    // Regular-3 collapsed — the launch state: the grid IS the wide detail column, so all six are
+    // primary and directly hittable there. Expanded, the same bar belongs to the ~209 pt content
+    // column and the OS folds three of the six into the overflow chevron: the deviation already
+    // declared on IMGMGR-293, kept because the alternative column takes no taps at all.
+    #expect(WorkspaceChromePlacement.host(for: .regular3) == .gridColumn)
+    // Regular-2 is untouched by this story and asserted so it cannot drift with Regular-3.
+    #expect(WorkspaceChromePlacement.host(for: .regular2) == .gridColumn)
+  }
+
+  @Test("Compact keeps its options row")
+  func compactKeepsItsOptionsRow() {
+    // Compact has no room beside Account and Info, so the five ride `GridOptionsRow` under the
+    // bar — the shipped arrangement, named rather than folded into the Regular rule so it cannot
+    // be swept into one.
+    #expect(WorkspaceChromePlacement.host(for: .compact) == .compactOptionsRow)
+  }
+
+  @Test("Exactly one surface hosts the set at every width")
+  func exactlyOneSurfaceHostsTheSetAtEveryWidth() {
+    // The invariant the view depends on, stated over the WHOLE input space rather than left as a
+    // property of conditions that happen to agree: every width answers exactly one host, so no
+    // width can render the set twice or not at all.
+    let hosts = [LayoutMode.compact, .regular2, .regular3].map {
+      WorkspaceChromePlacement.host(for: $0)
+    }
+    #expect(hosts.count == 3)
+    #expect(hosts.filter { $0 == .gridColumn }.count == 2)
+    #expect(hosts.filter { $0 == .compactOptionsRow }.count == 1)
   }
 }

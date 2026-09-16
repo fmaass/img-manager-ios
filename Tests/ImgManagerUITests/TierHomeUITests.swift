@@ -9,11 +9,12 @@ import XCTest
 /// (`folderTreeMonth-<parentId>-<yyyy>-<mm>`, the presentation-only row P1 ported from the web)
 /// and taps the shoot underneath through to the grid.
 ///
-/// The three widths the story names are covered by the two destinations plus one launch
-/// argument, never by asking the app what device it is on: the iPhone leg is Compact for every
-/// method here; the iPad leg is the DEFAULT Regular-3 (inspector shown, sidebar present) for the
-/// methods that pass no argument, and Regular-2 for `-UITestInspectorHidden`, which collapses the
-/// inspector column exactly as the shipped control does (`RootView.showRegular3Inspector`).
+/// The widths are covered by the two destinations plus one launch argument, never by asking the
+/// app what device it is on: the iPhone leg is Compact for every method here, and the iPad leg is
+/// this class's pinned portrait, where the tree is beside the grid. Since IMGMGR-390 the
+/// inspector starts COLLAPSED wherever the width has one, so a plain launch is the collapsed
+/// state and `-UITestInspectorShown` is what asks for the expanded one
+/// (`RootView.showRegular3Inspector`).
 ///
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`, never in a Release
 /// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the home. That fixture answers
@@ -27,11 +28,12 @@ final class TierHomeUITests: OrientationPinnedUITestCase {
     walkIncomingToTheShootAndIntoTheGrid(app, label: "P2-tier-home-default")
   }
 
-  /// The same walk with the inspector column collapsed — Regular-2 on the iPad destination, and
-  /// unchanged Compact on the phone (the flag only governs Regular-3's third column).
-  func testTheHomeIsTheTierTreeWithTheInspectorCollapsed() throws {
-    let app = launch(extraArguments: ["-UITestInspectorHidden"])
-    walkIncomingToTheShootAndIntoTheGrid(app, label: "P2-tier-home-inspector-collapsed")
+  /// The same walk with the inspector column EXPANDED — the state that is no longer the default
+  /// (IMGMGR-390), so it is the one a launch argument now has to ask for. The flag only governs
+  /// Regular-3's third column, so Compact and Regular-2 walk exactly as above.
+  func testTheHomeIsTheTierTreeWithTheInspectorExpanded() throws {
+    let app = launch(extraArguments: ["-UITestInspectorShown"])
+    walkIncomingToTheShootAndIntoTheGrid(app, label: "P2-tier-home-inspector-expanded")
   }
 
   /// All three tiers are top-level places, and Edits is one of them: the owner kept it as a

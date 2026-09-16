@@ -55,17 +55,28 @@ struct RootView: View {
   /// is on and the `FolderTreeSection` that holds the load — and neither can reach the other.
   @State private var treeReloadToken = 0
   @State private var showInspector = false
-  /// WP16 P2 (IMGMGR-298), design record [/link/3332] decision 4 "both panels collapsible":
-  /// whether Regular-3's inspector COLUMN is rendered. Its own flag rather than a second use of
-  /// `showInspector`, because the two mean opposite things at rest — the sheet and the slide-over
-  /// start hidden and are opened, the column starts SHOWN and is hidden. Defaulting this to false
-  /// would be a capability loss dressed as a collapse. Deliberately NOT persisted across launches
-  /// (no `GridPreferences` key): IMGMGR-298 does not ask for it, and a reader who quit with the
-  /// inspector hidden should not find the workspace's own third column missing next launch.
+  /// Whether Regular-3's inspector COLUMN is rendered. Its own flag rather than a second use of
+  /// `showInspector`: WP16 P2 (IMGMGR-298) needed one because the two meant opposite things at
+  /// rest, and IMGMGR-390 keeps it because the COUPLING is different — this flag also decides the
+  /// split view's visibility (`inspectorVisibilityBinding`), which `showInspector` never does.
+  ///
+  /// **The default is now false.** WP16 P2's own comment argued the opposite — "defaulting this
+  /// to false would be a capability loss dressed as a collapse" — and the owner's decision on
+  /// IMGMGR-338 (comment 3731) overrules it with the trade that sentence did not price: at
+  /// Regular-3 the expanded inspector costs the SIDEBAR its pane and squeezes the grid's own bar
+  /// to ~209 pt, so the workspace opened with the queue gone and three of six chrome controls
+  /// folded into the overflow chevron. Collapsed at launch, the sidebar stays visible
+  /// (`InspectorPlacement.columnVisibility` answers `.doubleColumn`) and the six ride the grid's
+  /// wide bar; the reader expands the inspector when they want it, from the same persistent
+  /// control that has always closed it. Nothing is lost — only un-asked-for.
+  ///
+  /// Still deliberately NOT persisted across launches (no `GridPreferences` key): the state is
+  /// session-scoped by design, so every launch starts from the same, cheapest workspace, and a
+  /// reader who expanded the inspector once does not find a narrowed grid waiting next time.
   #if DEBUG
-    @State private var showRegular3Inspector = !DebugStubLaunch.startsWithInspectorHidden
+    @State private var showRegular3Inspector = DebugStubLaunch.startsWithInspectorShown
   #else
-    @State private var showRegular3Inspector = true
+    @State private var showRegular3Inspector = false
   #endif
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
@@ -244,8 +255,9 @@ struct RootView: View {
       // an `EmptyView` into it instead was measured at the gate and does not collapse anything
       // — `actionBarMidX before=104.5 after=104.5` at a 1376 pt window — because the column is
       // reserved by this initializer's arity, not by its content. See
-      // `InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`, which is what keeps
-      // the queue out of the width that frees up.
+      // `InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`, which says what the
+      // remaining panes are — since IMGMGR-390 the queue KEEPS its pane when the inspector
+      // collapses, which is the owner's whole reason for collapsing it.
       if layoutMode == .regular3 && showRegular3Inspector {
         NavigationSplitView(columnVisibility: $columnVisibility) {
           sidebar
@@ -395,8 +407,10 @@ struct RootView: View {
     guard mode != layoutMode else { return }
     layoutMode = mode
     // WP16 P2 (IMGMGR-298): through `InspectorPlacement`, not `LayoutResolver` directly, so a
-    // launch that starts collapsed (`-UITestInspectorHidden`) reaches Regular-3 already asking
-    // for the one-pane visibility the collapsed shape needs — the same answer the toggle gives.
+    // launch reaching Regular-3 already asks for the visibility its inspector state needs — the
+    // same answer the toggle gives. Since IMGMGR-390 the collapsed state IS the launch state
+    // (`-UITestInspectorShown` is what a DEBUG test uses to start expanded), so this is the path
+    // every fresh iPad landscape session takes.
     columnVisibility = InspectorPlacement.columnVisibility(
       for: mode, regular3InspectorShown: showRegular3Inspector)
   }
@@ -554,6 +568,10 @@ struct RootView: View {
             // width-specific surface. WP13 P10 (IMGMGR-219) changes only WHAT it presents at
             // Regular-2, and the decision now comes from one pure resolver
             // (`InspectorPlacement`) rather than an inline `layoutMode != .regular3`.
+            // IMGMGR-390 leaves the condition alone: this control is the sixth member of the set
+            // `WorkspaceChromePlacement` places, and that answer is the GRID's bar in every
+            // state, so it rides this bar beside the other five at Regular exactly as it always
+            // has. The inspector column could not host it — see `WorkspaceChromeHost`.
             if inspectorPresentation.usesChromeControl {
               ToolbarItem(placement: .primaryAction) {
                 inspectorChromeButton

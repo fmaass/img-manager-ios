@@ -67,7 +67,8 @@ struct GridView: View {
   /// WP13 P4 (IMGMGR-215): the options row sits immediately below the navigation bar — above
   /// the transient mode rows, because it is the one row that is always there. On Regular the
   /// same controls are `.primaryAction` toolbar items (see `toolbarContent`); they are never
-  /// rendered in both places at once.
+  /// rendered in both places at once, which is what `WorkspaceChromePlacement` states as a
+  /// value rather than leaving as a rule two call sites have to remember.
   ///
   /// Pinned order: the mode row above the recovery banner, the banner above the action bar.
   /// IMGMGR-256 removed the Scene caption row that used to sit above the mode row — Scene now
@@ -165,8 +166,15 @@ struct GridView: View {
   /// WP13 P5b adds Sort, leading: it is the control a reader reaches for first when asking "how
   /// is this stream arranged", and `SortGroupScreenshotUITests` asserts on both idioms that no
   /// overflow chevron came back as a result.
+  ///
+  /// IMGMGR-390 changes only where the ANSWER comes from: `WorkspaceChromePlacement.host(for:)`
+  /// instead of an inline `layoutMode != .compact`, so the one decision the owner asked about —
+  /// which bar the six ride — is a value two tests can interrogate. The answer is the same bar
+  /// in both inspector states; the type's note carries the two gate runs that ruled out the
+  /// inspector column, and the remaining inspector-SHOWN fold below stays the declared
+  /// deviation it already was on IMGMGR-293.
   @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-    if layoutMode != .compact {
+    if WorkspaceChromePlacement.host(for: layoutMode) == .gridColumn {
       // WP16 P3 (IMGMGR-295), decision 1: filtering reaches the grid's own chrome. Declared
       // FIRST deliberately — the OS folds a crowded bar from the TRAILING end, so declaration
       // order decides which control survives a narrow pane, and decision 1's control should not
@@ -196,8 +204,9 @@ struct GridView: View {
       // while not actually solving the fold (five items into three slots still folds something).
       // WP16 P2's two-column Regular-3 is what solved it — with the inspector collapsed the bar
       // has room and the funnel is primary, which the iPad leg now passes on all four popover
-      // tests. The remaining inspector-SHOWN fold is the declared deviation on IMGMGR-293, not
-      // something to pay for with a shipped control.
+      // tests. IMGMGR-390 makes that collapsed state the LAUNCH state, so the unfolded bar is
+      // what a reader meets; the remaining inspector-SHOWN fold is the declared deviation on
+      // IMGMGR-293, not something to pay for with a shipped control.
       ToolbarItem(placement: .primaryAction) {
         GridShortcutHelpControl(store: store)
       }

@@ -731,16 +731,20 @@
       ProcessInfo.processInfo.arguments.contains("-UITestEnterSceneMode")
     }
 
-    /// WP16 P2 (IMGMGR-298): a SEVENTH, independent launch argument. Decision 4 makes the
-    /// Regular-3 inspector collapsible, and `FacetsWithoutInspectorUITests` has to observe the
-    /// facets fetch while the inspector has NEVER been on screen — tapping the chrome control to
-    /// collapse it would put it on screen first, which is exactly the observation that proves
-    /// nothing. So this starts Regular-3 already collapsed, through the same
-    /// `RootView.showRegular3Inspector` state the shipped control toggles, never a second code
-    /// path. Independent of every flag above and of `-UITestStubGrid`'s own effects; Debug-only,
-    /// like all of them, because a Release archive strips this whole file.
-    static var startsWithInspectorHidden: Bool {
-      ProcessInfo.processInfo.arguments.contains("-UITestInspectorHidden")
+    /// A SEVENTH, independent launch argument — the INVERSE of the one WP16 P2 (IMGMGR-298)
+    /// shipped, which is retired with this story and understood by nothing any more. That one
+    /// hid the inspector, because the Regular-3 inspector was up at launch and a test that needed
+    /// it away could not tap the chrome control to get there (tapping puts it on screen first,
+    /// which is exactly the observation `FacetsWithoutInspectorUITests` proves nothing with). The
+    /// owner's decision on IMGMGR-338 makes COLLAPSED the launch state, so hiding is what a plain
+    /// launch already does and SHOWING is the state with no other route to it. Hence
+    /// `-UITestInspectorShown`: a test wanting the collapsed workspace launches plainly.
+    ///
+    /// Drives the same `RootView.showRegular3Inspector` state the shipped control toggles, never
+    /// a second code path. Independent of every flag above and of `-UITestStubGrid`'s own
+    /// effects; Debug-only, like all of them, because a Release archive strips this whole file.
+    static var startsWithInspectorShown: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestInspectorShown")
     }
 
     /// IMGMGR-405: an EIGHTH, independent launch argument. `/api/images` answers the same twelve

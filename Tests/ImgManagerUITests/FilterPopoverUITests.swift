@@ -30,13 +30,15 @@ import XCTest
 /// contract on Regular — one assertion, both meanings, no branch.
 final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
-  /// Launched with the inspector suppressed on purpose: decision 1 is about filtering WITHOUT the
+  /// Launched with the inspector off screen on purpose: decision 1 is about filtering WITHOUT the
   /// inspector, and WP16 P2 moved the facets trigger out of it, so the counts these rows state
-  /// must arrive on a screen the Stats tab was never on.
+  /// must arrive on a screen the Stats tab was never on. That took a launch argument of its own
+  /// until IMGMGR-390 made the collapsed workspace the LAUNCH state — a plain launch is now
+  /// exactly the screen this file needs, at every width.
   private func launchedApp(landscape: Bool = false) -> XCUIApplication {
     if landscape { XCUIDevice.shared.orientation = .landscapeLeft }
     let app = XCUIApplication()
-    app.launchArguments = ["-UITestStubGrid", "-UITestInspectorHidden"]
+    app.launchArguments = ["-UITestStubGrid"]
     app.launch()
     XCTAssertTrue(
       app.descendants(matching: .any)["gridDislikeButton"].waitForExistence(timeout: 30),
