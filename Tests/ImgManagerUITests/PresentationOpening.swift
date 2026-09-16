@@ -29,7 +29,7 @@ extension XCTestCase {
   /// supposed to put on screen — arrived within `timeout`, re-tapping once if the tap was lost.
   ///
   /// The result is deliberately not `@discardableResult`: a call site that ignored it would be
-  /// asserting nothing, so the compiler is what keeps the caller's assertion in the loop.
+  /// asserting nothing, so the unused-result warning is what keeps the caller's assertion in the loop.
   ///
   /// - Parameters:
   ///   - control: the opener (a funnel, a Sort/Group control, a More or View menu).
