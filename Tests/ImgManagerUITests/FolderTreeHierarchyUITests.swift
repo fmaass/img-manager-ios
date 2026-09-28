@@ -86,7 +86,7 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     // merely never having built it. At Regular the terms go in WITHOUT a return, so the
     // minimised field keeps its focus (see `clearFocusedSearchField`).
     let submit = compact ? "\n" : ""
-    if compact { field.tap() }
+    if compact, !focusForTyping(field, named: "The Search tab's field") { return }
     field.typeText("zzzz-no-such-folder" + submit)
     XCTAssertTrue(
       app.descendants(matching: .any)["folderTreeNoMatches"].firstMatch.waitForExistence(
@@ -103,7 +103,7 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       searchFieldIsCleared(field),
       "The no-match term was not cleared from the search field (it reads \"\(left)\").")
-    if compact { field.tap() }
+    if compact, !focusForTyping(field, named: "The Search tab's field") { return }
     field.typeText("wandern" + submit)
 
     // The filter really ran: the non-matching shoot is gone, the match survives, and the match's

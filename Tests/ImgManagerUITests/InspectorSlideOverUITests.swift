@@ -29,7 +29,12 @@ import XCTest
 ///
 /// Both `bin/mac-gate.sh` destinations run this file, and each asserts the contract of the mode
 /// it actually resolved — so the iPhone leg pins "Compact still presents the sheet" through the
-/// same code that pins the slide-over on the iPad leg.
+/// same code that pins the non-modal column on the iPad leg.
+///
+/// WP28 P3 (IMGMGR-450) migrated this file onto the system `.inspector`: the Regular-2 panel and
+/// the Regular-3 split column it was written against are gone, and every assertion here now
+/// reads the ONE inspector column at both Regular widths. The class name is kept so the gate's
+/// history of these tests stays one series.
 final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
 
   private enum ResolvedLayout: String {
@@ -100,18 +105,10 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     let inspectorAlreadyOnScreen = statsSegment.exists
     let hasChromeInfo = chromeInfo.exists
 
-    // Width FIRST, sidebar second — and only below the pin. IMGMGR-390 makes that ordering load
-    // bearing in the other direction too: the collapsed Regular-3 workspace now DOES render the
-    // sidebar, so a sidebar-first split would call a 1376 pt iPad "Regular-2". Integration
-    // finding on merged main 428694d, still true of the EXPANDED three-column state: there the
-    // queue is legitimately NOT on screen. The app asks for
-    // `columnVisibility == .all`, but under `.prominentDetail` the OS still renders only
-    // content + detail at these widths — exactly what `LayoutMode.swift`'s Pass 3 recorded (43
-    // samples, 672–1376 pt, rendered pane count constant at 2, "sidebar never shown"). The
-    // landscape probe proves it directly: 1376 pt with the permanent inspector up
-    // (inspectorAtLaunch=true, chromeInfo=false) and no queue card in the hierarchy. So a
-    // sidebar-first split mis-reads Regular-3 as Compact; the sidebar only ever separates
-    // Compact from Regular-2, which is the one range where the width pin cannot.
+    // Width FIRST, sidebar second — and only below the pin. The sidebar is on screen at
+    // Regular-3 too (IMGMGR-390; since WP28 P3 in both inspector states), so a sidebar-first
+    // split would call a 1376 pt iPad "Regular-2". The sidebar only ever separates Compact from
+    // Regular-2, the one range where the width pin cannot.
     let resolved: ResolvedLayout =
       width >= Self.regular3WidthThreshold
       ? .regular3
@@ -147,15 +144,15 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
       XCTAssertTrue(
         hasChromeInfo, "Regular-2 must reach the inspector from the persistent chrome control.")
       // The other half of blocking finding 1: at this width a PERMANENT inspector is wrong. The
-      // slide-over is opened from chrome, so nothing inspector-shaped may be on screen yet.
+      // inspector column is opened from chrome, so nothing inspector-shaped may be on screen yet.
       XCTAssertFalse(
         inspectorAlreadyOnScreen,
         "Regular-2's inspector must be opened from chrome, never permanently on screen.")
       chromeInfo.tap()
       XCTAssertTrue(
         statsSegment.waitForExistence(timeout: 10), "The inspector never appeared after Info.")
-      // THE phase assertion ([/link/3220] §2.2, IMGMGR-219): a slide-over, not a modal. The grid
-      // is still on screen AND still takes taps beside the panel. RED under the shipped sheet.
+      // THE phase assertion ([/link/3220] §2.2, IMGMGR-219): non-modal, not a sheet. The grid is
+      // still on screen AND still takes taps beside the system inspector column (WP28 P3).
       XCTAssertTrue(
         dislike.isHittable,
         "Regular-2's inspector must not block the grid — a panel that stops the grid taking "
@@ -194,7 +191,13 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
   ///
   /// Against `0b04220` both expand-leg assertions fail: nothing carried the offset across the
   /// rebuild, so the re-expanded grid is at the top with tile 1 showing and tile 12 far below.
-  func testRegular3CollapsePreservesTheGridScrollPosition() {
+  ///
+  /// WP28 P3 (IMGMGR-450): the system `.inspector` no longer moves the grid between split slots,
+  /// so the rebuild this guarded is gone; what stays is the reader's promise — toggling the
+  /// inspector keeps the place in the shoot. The expanded grid is now wider than the old ~209 pt
+  /// column, so if all twelve fixture tiles fit without scrolling there is no deep position to
+  /// preserve: that measured layout throws `XCTSkip` with the window, never a silent pass.
+  func testRegular3CollapsePreservesTheGridScrollPosition() throws {
     XCUIDevice.shared.orientation = .landscapeLeft
 
     let app = XCUIApplication()
@@ -212,19 +215,17 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     // asserted one there would be asserting a layout the device cannot resolve. Recorded, not
     // silently skipped.
     guard app.frame.size.width >= Self.regular3WidthThreshold else {
-      print(
-        "WP16P2-SCROLL \(app.frame.size): below the Regular-3 pin "
-          + "(\(Self.regular3WidthThreshold)) — no third column here to collapse")
-      return
+      throw XCTSkip(
+        "WP16P2-SCROLL window=\(app.frame.size): below the Regular-3 pin "
+          + "(\(Self.regular3WidthThreshold)) — no Regular-3 inspector here to toggle")
     }
 
     let chromeInfo = app.navigationBars.buttons
       .matching(NSPredicate(format: "label BEGINSWITH 'Info'")).firstMatch
     let firstTile = app.descendants(matching: .any)["gridTile-1"]
     let lastTile = app.descendants(matching: .any)["gridTile-12"]
-    // IMGMGR-390: expand first. The scroll this test preserves has to be taken in the ~209 pt
-    // content column — at the full window width the twelve fixture tiles may all fit, and the
-    // "we really did travel" control below would fail for a reason this test is not about.
+    // IMGMGR-390: expand first. The scroll this test preserves is taken in the narrower,
+    // expanded grid — at the full window width the twelve fixture tiles may all fit.
     chromeInfo.tap()
     XCTAssertTrue(
       app.buttons["Stats"].waitForExistence(timeout: 10),
@@ -237,6 +238,14 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
       "No scrollable grid containing the fixture's tiles — the twelve `gridTile-<id>` elements "
         + "are what this test scrolls through.")
 
+    // WP28 P3: the measured no-scroll layout — everything already on screen — is recorded and
+    // skipped, never read as a preserved position.
+    if lastTile.isHittable && firstTile.isHittable {
+      attach(app: app, named: "P3-scroll-everything-fits")
+      throw XCTSkip(
+        "WP16P2-SCROLL window=\(app.frame.size): the expanded grid shows all twelve fixture "
+          + "tiles without scrolling, so there is no deep position to preserve here.")
+    }
     var swipes = 0
     while !lastTile.isHittable && swipes < 12 {
       gridScroll.swipeUp()
@@ -275,8 +284,7 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       lastTile.isHittable,
       "Collapsing and re-expanding the inspector threw the reader back to the top of the shoot. "
-        + "The grid is rebuilt in a different split-view slot, so its ScrollView starts at zero "
-        + "unless the position is carried in store-owned state — see "
+        + "The position is carried in store-owned state — see "
         + "`GridStore.gridScrollAnchor` and `GridScrollAnchor`, which also explains why the "
         + "anchor cannot be a row id.")
     XCTAssertFalse(
@@ -307,8 +315,8 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     dislike: XCUIElement, hasChromeInfo: Bool, inspectorAlreadyOnScreen: Bool,
     orientationName: String
   ) {
-    // Leg (i). RED at 4753450: `usesChromeControl` was false for `.permanentColumn`, so no Info
-    // item was declared on the content column's bar at all (`RootView.swift:422`).
+    // Leg (i). RED at 4753450: `usesChromeControl` was false for the then-permanent Regular-3
+    // column, so no Info item was declared on the content column's bar at all.
     XCTAssertTrue(
       hasChromeInfo,
       "Regular-3 must reach the inspector from the SAME persistent chrome control the other two "
@@ -322,7 +330,7 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     XCTAssertFalse(
       inspectorAlreadyOnScreen,
       "Regular-3 must LAUNCH with the inspector collapsed (IMGMGR-390) — see "
-        + "`RootView.showRegular3Inspector`, which defaults to false in DEBUG and RELEASE alike.")
+        + "`RootView.showInspector`, which defaults to false in DEBUG and RELEASE alike.")
     XCTAssertTrue(dislike.isHittable, "The grid stays interactive in the collapsed workspace.")
 
     // ...and the pane the inspector is not taking is shared with the SIDEBAR. WP16 P2 asserted
@@ -335,9 +343,8 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       sidebarRow.waitForExistence(timeout: 10) && sidebarRow.isHittable,
       "The collapsed Regular-3 workspace did not render the sidebar. That is the point of the "
-        + "collapse (IMGMGR-390) — check the visibility the collapsed shape asks for "
-        + "(`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`, which must answer "
-        + "`.doubleColumn`).")
+        + "collapse (IMGMGR-390) — check the split's visibility "
+        + "(`LayoutResolver.columnVisibility(for:)`, applied by `RootView.applyWidth`).")
     recordTheRegular3SidebarProbe(app: app, orientationName: orientationName, state: "collapsed")
 
     let barBeforeExpand = dislike.frame.midX
@@ -361,9 +368,8 @@ final class InspectorSlideOverUITests: OrientationPinnedUITestCase {
         + "at \(barAfterExpand)) — the reader got an inspector rendered over a pane nothing gave "
         + "up, which is the measured no-op shape WP16 P2 recorded in the other direction "
         + "(before=104.5 after=104.5 at a 1376 pt window): a `NavigationSplitView` column is "
-        + "reserved by the initializer's arity, not by its content. The expanded workspace must "
-        + "render the three-column shape and ask for `.all` — see "
-        + "`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`.")
+        + "reserved by the initializer's arity, not by its content. Since WP28 P3 the width comes "
+        + "from the system `.inspector` column (`WorkspaceContent`), which must take it.")
     recordTheRegular3SidebarProbe(app: app, orientationName: orientationName, state: "shown")
 
     // Leg (iii): and it goes away again.

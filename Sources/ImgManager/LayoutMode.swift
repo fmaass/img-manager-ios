@@ -64,8 +64,8 @@ enum LayoutMode: Equatable {
 ///   through width=1376 (the device's absolute maximum landscape width), the rendered
 ///   pane count stayed at exactly 2 (content + detail; sidebar never shown) — it never
 ///   reached 3 anywhere in the reachable range, including at the physical width
-///   ceiling. Under `.prominentDetail` (this app's `navigationSplitViewStyle`) with
-///   un-forced `.automatic` visibility, this three-column split view simply does not
+///   ceiling. Under the prominent-detail style the three-column split then used (retired
+///   by WP28 P3, IMGMGR-450) with un-forced `.automatic` visibility, this three-column split view simply does not
 ///   autonomously reveal all three columns based on width. See the B3 section below for
 ///   what this means for `regular3Threshold`.
 ///
@@ -89,8 +89,8 @@ enum LayoutMode: Equatable {
 /// ## B3 (Regular-2 → Regular-3) — PRODUCT-PINNED inside a measured bracket
 ///
 /// Pass 3 proved there is no OS-automatic width threshold to measure here (see above) —
-/// under `.prominentDetail` with un-forced `.automatic` visibility, this split view
-/// never autonomously shows all three columns at any width, including the device's
+/// under the then-used prominent-detail style with un-forced `.automatic` visibility, that
+/// split view never autonomously shows all three columns at any width, including the device's
 /// physical maximum. The app only ever reaches the three-column state because
 /// `resolve(width:horizontalSizeClass:)` below EXPLICITLY requests it
 /// (`columnVisibility(for: .regular3) == .all`). Where to draw that line is therefore a

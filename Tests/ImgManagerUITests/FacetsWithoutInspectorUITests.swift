@@ -25,8 +25,9 @@ import XCTest
 ///
 /// Makes no device-idiom decision. After the move the trigger is layout-independent, so the same
 /// contract is asserted on both gate destinations: the iPhone leg observes it with the inspector
-/// behind its sheet, the iPad leg with the Regular-3 column collapsed — which since IMGMGR-390 is
-/// the launch state itself, so no launch argument is needed to reach it.
+/// behind its sheet, the iPad leg with the Regular-3 inspector collapsed — which since IMGMGR-390
+/// is the launch state itself, so no launch argument is needed to reach it. WP28 P3 (IMGMGR-450):
+/// the inspector is the system `.inspector` at every width; this contract is unchanged by it.
 final class FacetsWithoutInspectorUITests: OrientationPinnedUITestCase {
 
   /// LANDSCAPE: it is what puts the iPad destination at Regular-3, the width decision 4 changes;
@@ -56,9 +57,8 @@ final class FacetsWithoutInspectorUITests: OrientationPinnedUITestCase {
     XCTAssertFalse(
       statsSegment.exists,
       "The inspector is on screen at launch, so a facets fetch observed below would prove "
-        + "nothing — `RootView.showRegular3Inspector` no longer defaults to collapsed "
-        + "(IMGMGR-390), or this build still renders the permanent Regular-3 column "
-        + "unconditionally.")
+        + "nothing — `RootView.showInspector` no longer defaults to collapsed (IMGMGR-390), or "
+        + "this build presents the inspector unconditionally.")
     // Positive control for that 0-hit reading: the app really is up and its hierarchy really is
     // being searched, so "no Stats segment" cannot pass vacuously on a blank screen.
     XCTAssertTrue(

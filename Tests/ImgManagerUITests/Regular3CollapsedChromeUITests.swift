@@ -22,6 +22,12 @@ import XCTest
 ///   printed beside it records which of the other five the OS left out, as evidence rather than
 ///   as an assertion about an OS layout decision.
 ///
+/// WP28 P3 (IMGMGR-450): the expanded state is now the system `.inspector` column beside the
+/// grid, not the three-column split described above; the sidebar stays on screen in both states.
+/// The contracts here are unchanged — collapsed at launch, all six hittable collapsed, the escape
+/// hatch hittable expanded — and `InspectorSummaryUITests` adds the expanded-state reach of all
+/// six (directly or through the overflow).
+///
 /// Every six-control assertion reads `isHittable`, never `exists`: an item folded into the
 /// chevron is still in the hierarchy and would satisfy an existence check while being exactly the
 /// failure the owner reported. `FilterPopoverUITests` established that reading for the funnel;
@@ -60,8 +66,8 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
 
   // MARK: - The launch state
 
-  func testTheRegular3WorkspaceLaunchesCollapsedWithTheSidebarBesideTheGrid() {
-    guard let app = launchedRegular3App() else { return }
+  func testTheRegular3WorkspaceLaunchesCollapsedWithTheSidebarBesideTheGrid() throws {
+    let app = try launchedRegular3App()
 
     // The inspector is NOT on screen: `Stats` is the inspector's own segment, the reading every
     // sibling in this target uses for "something inspector-shaped is up".
@@ -69,8 +75,7 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
       app.buttons["Stats"].exists,
       "Regular-3 launched with the inspector expanded. The owner's decision (IMGMGR-338 comment "
         + "3731) is that it starts COLLAPSED so the sidebar stays visible — see "
-        + "`RootView.showRegular3Inspector`, which must default to false in DEBUG and RELEASE "
-        + "alike.")
+        + "`RootView.showInspector`, which must default to false in DEBUG and RELEASE alike.")
     // Positive control for that 0-hit reading: the app really is up and its hierarchy really is
     // being searched, so "no Stats" cannot pass vacuously on a blank screen.
     XCTAssertTrue(
@@ -78,14 +83,13 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
       "Positive control failed: the action bar is gone, so the absence check above is vacuous.")
 
     // ...and the pane the inspector is not taking belongs to the SIDEBAR plus the grid. This is
-    // the half a default flip alone does not deliver: the collapsed workspace has to ask for
-    // `.doubleColumn`, not the `.detailOnly` that shipped
-    // (`InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`).
+    // the half a default flip alone does not deliver: the workspace has to ask for both panes,
+    // never the `.detailOnly` that shipped (`LayoutResolver.columnVisibility(for:)`).
     let sidebarRow = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(
       sidebarRow.waitForExistence(timeout: 10),
-      "The sidebar is not on screen beside the collapsed grid. The collapsed Regular-3 workspace "
-        + "must ask for `.doubleColumn` — `.detailOnly` renders the grid alone, which is the "
+      "The sidebar is not on screen beside the collapsed grid. The Regular-3 workspace must "
+        + "ask for both panes — `.detailOnly` renders the grid alone, which is the "
         + "shipped behaviour this story reverses.")
     XCTAssertTrue(
       sidebarRow.isHittable,
@@ -109,8 +113,8 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
   /// leave would be the real defect, so that is what is asserted: the chrome control is reachable,
   /// and using it lands on the collapsed workspace where all six ARE reachable and the sidebar is
   /// back.
-  func testTheChromeControlStaysReachableWhileTheInspectorIsExpanded() {
-    guard let app = launchedRegular3App(extraArguments: ["-UITestInspectorShown"]) else { return }
+  func testTheChromeControlStaysReachableWhileTheInspectorIsExpanded() throws {
+    let app = try launchedRegular3App(extraArguments: ["-UITestInspectorShown"])
 
     XCTAssertTrue(
       app.buttons["Stats"].waitForExistence(timeout: 10),
@@ -146,7 +150,7 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
       sidebarRow.waitForExistence(timeout: 10) && sidebarRow.isHittable,
       "Collapsing from the expanded launch left the sidebar off screen — the collapsed workspace "
         + "must ask for `.doubleColumn` on the toggle path too, not the `.detailOnly` that "
-        + "shipped (`RootView.inspectorVisibilityBinding`).")
+        + "shipped (`LayoutResolver.columnVisibility(for:)`).")
     attach(app: app, named: "IMGMGR-390-regular3-collapsed-from-expanded")
   }
 
@@ -154,8 +158,8 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
 
   /// A ROUND TRIP, never "a control exists": a toggle that expands but strands the controls fails
   /// the middle leg, and one that cannot collapse again fails the last.
-  func testTheChromeControlExpandsAndCollapsesAndTheSixSurviveBothStates() {
-    guard let app = launchedRegular3App() else { return }
+  func testTheChromeControlExpandsAndCollapsesAndTheSixSurviveBothStates() throws {
+    let app = try launchedRegular3App()
 
     let stats = app.buttons["Stats"]
     let sidebarRow = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
@@ -193,7 +197,7 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
       sidebarRow.isHittable,
       "The sidebar did not come back with the collapse — the collapsed workspace must ask for "
         + "`.doubleColumn` in BOTH the launch path and the toggle path "
-        + "(`RootView.inspectorVisibilityBinding`).")
+        + "(`LayoutResolver.columnVisibility(for:)`).")
     assertEveryHostChromeControlIsHittable(
       in: app, state: "collapsed by the chrome control",
       hint: "Collapsed again, the six are back on the grid's bar.")
@@ -240,10 +244,11 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
     }
   }
 
-  /// The fixture launch plus the Regular-3 gate. Returns nil — with the reading recorded, never
-  /// silently — on a destination whose window is below the resolver's pin, because a Regular-3
-  /// assertion made there would be asserting a layout the device cannot resolve.
-  private func launchedRegular3App(extraArguments: [String] = []) -> XCUIApplication? {
+  /// The fixture launch plus the Regular-3 gate. Throws `XCTSkip` with the measured window on a
+  /// destination whose window is below the resolver's pin (WP28 P3: it used to return nil, which
+  /// read as a pass), because a Regular-3 assertion there would assert a layout the device
+  /// cannot resolve.
+  private func launchedRegular3App(extraArguments: [String] = []) throws -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid"] + extraArguments
     app.launch()
@@ -257,10 +262,9 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
     Thread.sleep(forTimeInterval: 2.0)
 
     guard app.frame.size.width >= Self.regular3WidthThreshold else {
-      print(
-        "IMGMGR-390 \(app.frame.size): below the Regular-3 pin "
-          + "(\(Self.regular3WidthThreshold)) — this destination has no third column to collapse")
-      return nil
+      throw XCTSkip(
+        "IMGMGR-390 window=\(app.frame.size): below the Regular-3 pin "
+          + "(\(Self.regular3WidthThreshold)) — this destination has no Regular-3 inspector")
     }
     return app
   }

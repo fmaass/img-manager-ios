@@ -920,7 +920,8 @@ struct ActionBarLayout: Equatable {
 /// stopped fitting an iPhone: 6×44 + 5×24 + 2×16 = 416 pt against 402. Then the iPad
 /// landscape leg (gate GREEN-8) showed the roomy 376-pt layout does not fit the Regular-3 GRID
 /// COLUMN either — the middle column of a three-pane split, whose width this app never pins
-/// (`NavigationSplitView` sizes it, `.prominentDetail`). So the bar no longer bets on a width at
+/// (`NavigationSplitView` sized it; since WP28 P3 the system inspector column narrows it).
+/// So the bar no longer bets on a width at
 /// all: it measures the one it is given and picks a tier — roomy, tight, or tight-with-Clear-
 /// folded — each of which keeps every control at its full 44 pt.
 enum ActionBarMetrics {

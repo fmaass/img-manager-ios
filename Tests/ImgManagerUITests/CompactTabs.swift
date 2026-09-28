@@ -44,4 +44,33 @@ extension XCTestCase {
     guard rendersCompactShell(app) else { return }
     selectCompactTab(app, title: "Library", file: file, line: line)
   }
+
+  /// Taps a Compact search field and waits until it can take typing: the keyboard is up or the
+  /// field reports keyboard focus, polled for at most 5 s, with ONE retap if it is not focused —
+  /// at most 10 s in all. Returns whether focus arrived; when it never does, the failure names
+  /// `name`. `typeText` into an unfocused field fails as "Neither element nor any descendant has
+  /// keyboard focus" (iPhone gate on ee16fad, `CompactTabShellUITests:165`, the Search tab's
+  /// field at {{88,798},{286,48}}): the tap had not handed it focus yet when typing began.
+  ///
+  /// - Parameters:
+  ///   - tap: how to tap it; the field's own centre unless a caller needs a specific point.
+  func focusForTyping(
+    _ field: XCUIElement, named name: String, tap: (() -> Void)? = nil,
+    file: StaticString = #filePath, line: UInt = #line
+  ) -> Bool {
+    let keyboard = XCUIApplication().keyboards.firstMatch
+    for _ in 0..<2 {
+      if let tap { tap() } else { field.tap() }
+      let deadline = Date(timeIntervalSinceNow: 5)
+      while Date() < deadline {
+        let focused = (field.value(forKey: "hasKeyboardFocus") as? Bool) ?? false
+        if focused || keyboard.exists { return true }
+        Thread.sleep(forTimeInterval: 0.25)
+      }
+    }
+    XCTFail(
+      "\(name) never took keyboard focus after two taps (10 s): no keyboard, and the field does "
+        + "not report focus — typing into it would be lost.", file: file, line: line)
+    return false
+  }
 }

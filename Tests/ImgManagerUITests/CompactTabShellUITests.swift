@@ -161,7 +161,8 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
     XCTAssertFalse(
       app.textFields["folderTreeSearchField"].exists,
       "The inline folder search field rendered at Compact beside the Search tab's field.")
-    field.tap()
+    let name = "The Search tab's field (`app.searchFields.firstMatch`)"
+    guard focusForTyping(field, named: name) else { return }
     field.typeText("Wandern")
 
     let match = element(app, "folderRow-3")

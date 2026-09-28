@@ -14,7 +14,7 @@ import XCTest
 /// this class's pinned portrait, where the tree is beside the grid. Since IMGMGR-390 the
 /// inspector starts COLLAPSED wherever the width has one, so a plain launch is the collapsed
 /// state and `-UITestInspectorShown` is what asks for the expanded one
-/// (`RootView.showRegular3Inspector`).
+/// (`RootView.showInspector`, expanded by that flag on the first resolve to Regular-3 only).
 ///
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`, never in a Release
 /// archive) plus `-UITestStubSkipAutoSelect`, so the app stops at the home. That fixture answers

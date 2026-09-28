@@ -60,29 +60,16 @@ struct RootView: View {
   @State private var folderSearch = FolderSearchModel()
   /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
   @State private var folderTree: FolderTreeState
+  /// The inspector's one flag at every width (WP28 P3, IMGMGR-450: the system `.inspector` on
+  /// `WorkspaceContent`). COLLAPSED at launch — the owner's decision on IMGMGR-338 (comment 3731,
+  /// IMGMGR-390): the reader expands it from the Info control when they want it. Deliberately not
+  /// persisted across launches, so every launch starts from the same, cheapest workspace.
   @State private var showInspector = false
-  /// Whether Regular-3's inspector COLUMN is rendered. Its own flag rather than a second use of
-  /// `showInspector`: WP16 P2 (IMGMGR-298) needed one because the two meant opposite things at
-  /// rest, and IMGMGR-390 keeps it because the COUPLING is different — this flag also decides the
-  /// split view's visibility (`inspectorVisibilityBinding`), which `showInspector` never does.
-  ///
-  /// **The default is now false.** WP16 P2's own comment argued the opposite — "defaulting this
-  /// to false would be a capability loss dressed as a collapse" — and the owner's decision on
-  /// IMGMGR-338 (comment 3731) overrules it with the trade that sentence did not price: at
-  /// Regular-3 the expanded inspector costs the SIDEBAR its pane and squeezes the grid's own bar
-  /// to ~209 pt, so the workspace opened with the queue gone and three of six chrome controls
-  /// folded into the overflow chevron. Collapsed at launch, the sidebar stays visible
-  /// (`InspectorPlacement.columnVisibility` answers `.doubleColumn`) and the six ride the grid's
-  /// wide bar; the reader expands the inspector when they want it, from the same persistent
-  /// control that has always closed it. Nothing is lost — only un-asked-for.
-  ///
-  /// Still deliberately NOT persisted across launches (no `GridPreferences` key): the state is
-  /// session-scoped by design, so every launch starts from the same, cheapest workspace, and a
-  /// reader who expanded the inspector once does not find a narrowed grid waiting next time.
   #if DEBUG
-    @State private var showRegular3Inspector = DebugStubLaunch.startsWithInspectorShown
-  #else
-    @State private var showRegular3Inspector = false
+    /// `-UITestInspectorShown` expands the inspector on the FIRST resolve to Regular-3 only —
+    /// the width the flag has always governed — so a suite passing it on the iPhone or at
+    /// Regular-2 (`TierHomeUITests`) still walks the collapsed workspace it walked before.
+    @State private var hasAppliedDebugInspectorStart = false
   #endif
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.scenePhase) private var scenePhase
@@ -262,13 +249,6 @@ struct RootView: View {
 
   private var workspaceChrome: some View {
     Group {
-      // WP16 P2 (IMGMGR-298): the THIRD COLUMN IS ASKED FOR ONLY WHILE IT IS WANTED. Rendering
-      // an `EmptyView` into it instead was measured at the gate and does not collapse anything
-      // — `actionBarMidX before=104.5 after=104.5` at a 1376 pt window — because the column is
-      // reserved by this initializer's arity, not by its content. See
-      // `InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`, which says what the
-      // remaining panes are — since IMGMGR-390 the queue KEEPS its pane when the inspector
-      // collapses, which is the owner's whole reason for collapsing it.
       // WP28 P1 (IMGMGR-448): the Compact layout mode renders the tab shell; every Regular state
       // keeps the split (`regularShell`), unchanged but for the shared `WorkspaceContent`
       // destination and (WP28 P2) the toolbar search. The
@@ -315,8 +295,11 @@ struct RootView: View {
           // `skipAutoSelect` lets the queue's OWN screenshot see the sidebar as a real launch
           // would, instead of being auto-navigated past it into the grid (see that flag's own
           // doc comment).
-          selectedFolderID = 1
-          await gridStore.selectShoot(folderID: 1)
+          // WP28 P3: `-UITestSelectFolder <id>` picks another fixture folder (the Summary's
+          // banner / no-summary cases); without it this is folder 1, as it always was.
+          let folderID = DebugStubLaunch.autoSelectFolderID
+          selectedFolderID = folderID
+          await gridStore.selectShoot(folderID: folderID)
           // WP28 P1: the fixture's shoot is hosted by the Compact Library tab, so a Compact
           // launch lands on the populated grid exactly as it did in the collapsed split.
           navigation.showSelectedShoot(in: .library)
@@ -408,13 +391,18 @@ struct RootView: View {
     // WP28 P1 (IMGMGR-448): Regular→Compact with a shoot selected lands on its grid in Library.
     navigation.applyLayoutChange(
       from: previous, to: mode, hasSelectedShoot: gridStore.query.folderID != nil)
-    // WP16 P2 (IMGMGR-298): through `InspectorPlacement`, not `LayoutResolver` directly, so a
-    // launch reaching Regular-3 already asks for the visibility its inspector state needs — the
-    // same answer the toggle gives. Since IMGMGR-390 the collapsed state IS the launch state
-    // (`-UITestInspectorShown` is what a DEBUG test uses to start expanded), so this is the path
-    // every fresh iPad landscape session takes.
-    columnVisibility = InspectorPlacement.columnVisibility(
-      for: mode, regular3InspectorShown: showRegular3Inspector)
+    // WP28 P3 (IMGMGR-450): one 2-column split at every Regular width, so the visibility is the
+    // resolver's own answer — the sidebar beside the grid (IMGMGR-390) whatever the inspector
+    // is doing, because the inspector no longer takes a split column.
+    columnVisibility = LayoutResolver.columnVisibility(for: mode)
+    #if DEBUG
+      if mode == .regular3, DebugStubLaunch.startsWithInspectorShown,
+        !hasAppliedDebugInspectorStart
+      {
+        hasAppliedDebugInspectorStart = true
+        showInspector = true
+      }
+    #endif
   }
 
   /// IMGMGR-255: the account item, declared ONCE and attached to the split view's own COLUMNS.
@@ -479,34 +467,15 @@ struct RootView: View {
   /// chrome is out of this phase's scope. `WorkspaceContent` attaches it to the GRID branch alone
   /// (`RegularFolderSearch`), bound to the same `FolderSearchModel` the sidebar's tree filters by.
   private var regularShell: some View {
-    Group {
-      if layoutMode == .regular3 && showRegular3Inspector {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-          sidebar
-        } content: {
-          contentColumn
-        } detail: {
-          detailColumn
-        }
-        .navigationSplitViewStyle(.prominentDetail)
-      } else {
-        // Compact, Regular-2, and (WP16 P2) Regular-3 with the inspector collapsed — the same
-        // shape, for the same reason, which is why the collapse reuses it rather than inventing
-        // one: a genuine 2-column split
-        // (sidebar | grid) — GridView owns the FULL workspace pane, matching fold item 7's
-        // "no permanent inspector column outside Regular-3" pin. Reusing the 3-column
-        // initializer with an EMPTY `detailColumn` (as this view did before this fix) still
-        // reserves a second, always-visible pane under `.doubleColumn` visibility — the grid
-        // was confined to a narrow column beside a wasted blank pane (retained Regular-2
-        // screenshot evidence). The 2-column initializer has no third pane to accidentally
-        // reserve, so `contentColumn` (grid + its own Info-sheet toolbar button) becomes the
-        // sole `detail`.
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-          sidebar
-        } detail: {
-          contentColumn
-        }
-      }
+    // One 2-column split (sidebar | workspace) at Regular-2 and Regular-3 alike, in the system
+    // default style. WP28 P3 (IMGMGR-450) retired the 3-column branch: the inspector is the
+    // system `.inspector` inside the detail (`WorkspaceContent`), so no column count changes when
+    // it opens and the grid keeps one structural identity. The 2-column initializer is also the
+    // WP8 diff-gate round-3 fix: a 3-column one with an empty pane still reserved it.
+    NavigationSplitView(columnVisibility: $columnVisibility) {
+      sidebar
+    } detail: {
+      contentColumn
     }
   }
 
@@ -677,52 +646,14 @@ struct RootView: View {
   /// WP28 P1 (IMGMGR-448): the shared workspace destination — the split's detail at Regular and
   /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).
   private var contentColumn: some View {
-    WorkspaceContent(
+    // WP28 P3: read here in the body, so the title follows the tree's and the queue's loads.
+    let title = WorkspaceTitle.name(
+      folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
+      summaries: queueStore.summaries)
+    return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
-      folderSearch: folderSearch, showInspector: $showInspector,
-      inspectorVisibility: inspectorVisibilityBinding)
-  }
-
-  /// The inspector's presentation at the CURRENT layout mode — the same resolver
-  /// `WorkspaceContent` reads, so the two cannot disagree about which surface is showing.
-  private var inspectorPresentation: InspectorPresentation {
-    InspectorPlacement.presentation(for: layoutMode)
-  }
-
-  /// WP16 P2 (IMGMGR-298): which flag the persistent chrome control owns at the CURRENT width,
-  /// resolved in ONE place — the same discipline `inspectorSheetBinding` above follows, and for
-  /// the same reason. The column and the two transient presentations cannot share one flag (they
-  /// mean opposite things at rest, see `showRegular3Inspector`), so the risk is three surfaces
-  /// disagreeing about which one a tap moved. Reading the presentation here is what makes that
-  /// structurally impossible rather than a rule three call sites have to remember.
-  private var inspectorVisibilityBinding: Binding<Bool> {
-    guard inspectorPresentation == .permanentColumn else { return $showInspector }
-    // The Regular-3 collapse is TWO facts that must move together: whether the inspector column
-    // is asked for, and what the split view is asked to show. Written in one setter — and the
-    // visibility computed from the incoming value rather than read back from the state just
-    // written — so no ordering between two `@State` writes can leave the pane count and the
-    // visibility describing different workspaces.
-    return Binding(
-      get: { showRegular3Inspector },
-      set: { shown in
-        showRegular3Inspector = shown
-        columnVisibility = InspectorPlacement.columnVisibility(
-          for: .regular3, regular3InspectorShown: shown)
-      })
-  }
-
-  /// WP16 P2 (IMGMGR-298): the third column renders only while Regular-3 AND the reader has not
-  /// collapsed it. `InspectorPresentation` gains no case for the collapsed state — the
-  /// presentation at this width is still a column; whether it is on screen is view state, the
-  /// same relationship `showInspector` already has with the sheet and the slide-over.
-  private var detailColumn: some View {
-    Group {
-      if layoutMode == .regular3 && showRegular3Inspector {
-        InspectorView(store: gridStore, service: gridService)
-      } else {
-        EmptyView()
-      }
-    }
+      folderSearch: folderSearch, queueStore: queueStore, title: title,
+      showInspector: $showInspector)
   }
 }
 

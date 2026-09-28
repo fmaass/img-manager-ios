@@ -67,8 +67,13 @@ extension XCTestCase {
   /// the term is. The caret goes to the END first — a tap on the field's middle leaves it
   /// mid-term (gate run on 08367cc read "such-wandern"); should that tap land on the clear
   /// control instead, the term is cleared all the same.
+  /// The tap waits for keyboard focus before the deletes (`focusForTyping`): the field was
+  /// just submitted, so the keyboard is down and the tap has to bring it back first.
   func clearSearchField(_ field: XCUIElement) {
-    field.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+    let end = field.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+    guard focusForTyping(field, named: "The Compact search field", tap: { end.tap() }) else {
+      return
+    }
     field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 24))
   }
 

@@ -740,11 +740,26 @@
     /// launch already does and SHOWING is the state with no other route to it. Hence
     /// `-UITestInspectorShown`: a test wanting the collapsed workspace launches plainly.
     ///
-    /// Drives the same `RootView.showRegular3Inspector` state the shipped control toggles, never
-    /// a second code path. Independent of every flag above and of `-UITestStubGrid`'s own
+    /// Drives the same `RootView.showInspector` state the shipped control toggles, never a second
+    /// code path — and, since WP28 P3 merged the inspector's flags, only on the first resolve to
+    /// Regular-3 (`RootView.applyWidth`), the one width this flag has ever governed.
+    /// Independent of every flag above and of `-UITestStubGrid`'s own
     /// effects; Debug-only, like all of them, because a Release archive strips this whole file.
     static var startsWithInspectorShown: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestInspectorShown")
+    }
+
+    /// WP28 P3 (IMGMGR-450): which fixture folder the auto-select opens — the id that follows
+    /// `-UITestSelectFolder` in the launch arguments, or folder 1 (the shipped default) when the
+    /// flag is absent or its value is not an id. The Summary's cases need folders the fixture
+    /// already has: 1 (`nothingLeftUnmarked == false`), 3 (`true`) and 4 (`template`, which has
+    /// no `FolderSummary` at all). Debug-only like every flag here.
+    static var autoSelectFolderID: Int {
+      let arguments = ProcessInfo.processInfo.arguments
+      guard let index = arguments.firstIndex(of: "-UITestSelectFolder"),
+        arguments.indices.contains(index + 1), let id = Int(arguments[index + 1])
+      else { return 1 }
+      return id
     }
 
     /// IMGMGR-405: an EIGHTH, independent launch argument. `/api/images` answers the same twelve

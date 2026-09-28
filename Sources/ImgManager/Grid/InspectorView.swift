@@ -7,13 +7,11 @@ enum InspectorTab: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 }
 
-/// One component, three presentations (P4 Approach + fold item 7):
-/// - Regular-3: a permanent column (`RootView.detailColumn`).
-/// - Regular-2: a slide-over — a non-modal trailing panel over the grid pane
-///   (`RootView.inspectorSlideOver`, WP13 P10 / IMGMGR-219). The grid stays visible and
-///   interactive beside it; this view itself is unchanged, only where it is presented.
-/// - Compact: ONE sheet with Info/Stats as segments (fold item 7 — not two separate phone-only
-///   surfaces, and no bottom-sheet-of-three-tabs like the mobile web's Library/Stats/Info).
+/// One component, one system presentation (WP28 P3, IMGMGR-450: `.inspector` on
+/// `WorkspaceContent`, toggled by the Info control):
+/// - Regular-2/3: the system inspector column trailing the grid — non-modal, collapsed at launch.
+/// - Compact: the system adapts it to ONE sheet with Info/Stats as segments (fold item 7 —
+///   not two separate phone-only surfaces, and no bottom-sheet-of-three-tabs like the mobile web's Library/Stats/Info).
 ///
 /// Filters live in the Stats segment as touch rows (Do-NOT: no dense icon filter row) — never
 /// crammed into chrome. No path row exists ANYWHERE in this view — there is no property on
