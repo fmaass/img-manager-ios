@@ -86,25 +86,29 @@ struct FolderTreeSection: View {
   /// `@State` of this view is destroyed whenever `RootView.workspaceChrome` swaps its
   /// two-column/three-column branch, so neither can be the thing that remembers.
   let openedFolderID: Int?
+  /// WP28 P1 (IMGMGR-448): the tree's load and the reader's expansion, hoisted out of this view's
+  /// `@State` into one `RootView`-owned object, so every surface that renders the tree — the
+  /// split's sidebar, the Compact Library tab and the Compact Search tab — shares one answer and
+  /// one set of open rows, and a column swap no longer throws either away.
+  @Bindable var treeState: FolderTreeState
+  /// What the rows are narrowed by (`FolderSearchModel.text` where a search surface exists, ""
+  /// for the Compact Library tab, which is the unfiltered tree).
+  let searchQuery: String
+  /// The inline field's text, or nil where the inline field is not rendered — at Compact the
+  /// Search tab's `.searchable` field is the one search surface (plan Decision 5).
+  let inlineSearchText: Binding<String>?
   let onSelect: (Int, GridSourceTier) -> Void
-
-  @State private var load = FolderTreeLoad.loading
-  @State private var searchText = ""
-  /// The rows the reader has opened — folders AND month folds, hence the widened identity
-  /// (`FolderTreeItemID`): a fold opens and closes like a branch and is selectable like nothing.
-  @State private var expandedBranches: Set<FolderTreeItemID> = []
-  @State private var expandedTiers: Set<FolderTreeTier> = []
-  /// F3: which tree load is the current one. Advanced by every start, checked by every finish.
-  @State private var treeLoadGeneration = 0
 
   var body: some View {
     Group {
-      if load.phase != .loading {
+      if treeState.load.phase != .loading {
         // IMGMGR-174: a load that failed says so, above whatever rows did arrive. It sits FIRST
         // because a partial failure still renders a tree underneath it, and a note below rows the
         // reader has already started scanning is a note they will not read.
         failureNotice
-        searchField
+        if let inlineSearchText {
+          searchField(inlineSearchText)
+        }
         ForEach(FolderTreeTier.allCases, id: \.self) { tier in
           tierBranch(tier)
         }
@@ -114,7 +118,7 @@ struct FolderTreeSection: View {
             .accessibilityIdentifier("folderTreeNoMatches")
         } else if !isSearching,
           FolderTreeLoadPresentation.showsEmptyLibrary(
-            for: load.phase, everyTierIsEmpty: everyTierIsEmpty)
+            for: treeState.load.phase, everyTierIsEmpty: everyTierIsEmpty)
         {
           // The queue's own empty state, moved with the home it belonged to (IMGMGR-350 P2):
           // "No shoots" used to key off `QueueSort.sections(from:)` being empty in `QueueView`,
@@ -151,13 +155,10 @@ struct FolderTreeSection: View {
   /// after it lands. A load that is no longer current, or that was cancelled, publishes nothing
   /// and writes nothing — it does not clear, and it does not report itself as a failure.
   private func runTreeLoad() async {
-    treeLoadGeneration += 1
-    let generation = treeLoadGeneration
+    let generation = treeState.beginLoad()
     let fence = treeFence()
     let fresh = await FolderTreeLoad.perform(using: gridService)
-    guard FolderTreeLoadGate.accepts(fresh, generation: generation, current: treeLoadGeneration)
-    else { return }
-    load = FolderTreeLoad.resolve(fresh: fresh, cached: cachedTree)
+    guard treeState.publish(fresh, generation: generation, cached: cachedTree) else { return }
     // Rule 6, the relaunch case: the selection is restored before there is a tree to find it in,
     // so the ancestors can only be opened once the rows exist.
     revealHighlightedFolder()
@@ -179,8 +180,8 @@ struct FolderTreeSection: View {
       folderID: highlightedFolderID,
       itemsByTier: Dictionary(
         uniqueKeysWithValues: FolderTreeTier.allCases.map { ($0, branches(for: $0)) }))
-    expandedTiers.formUnion(plan.tiers)
-    expandedBranches.formUnion(plan.rows)
+    treeState.expandedTiers.formUnion(plan.tiers)
+    treeState.expandedBranches.formUnion(plan.rows)
   }
 
   /// Whether the whole tree — every tier, after whatever the search field kept — is empty. Read
@@ -197,14 +198,14 @@ struct FolderTreeSection: View {
   /// screen. Chrome, not a gesture: the whole recovery is a labelled button.
   @ViewBuilder
   private var failureNotice: some View {
-    if let message = FolderTreeLoadPresentation.message(for: load.phase) {
+    if let message = FolderTreeLoadPresentation.message(for: treeState.load.phase) {
       VStack(alignment: .leading, spacing: 4) {
         Label(message, systemImage: "exclamationmark.triangle")
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("folderTreeLoadError")
         Button("Retry") {
           Task {
-            load = .loading
+            treeState.load = .loading
             await runTreeLoad()
           }
         }
@@ -222,7 +223,7 @@ struct FolderTreeSection: View {
   }
 
   private var trimmedSearch: String {
-    searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private var isSearching: Bool { !trimmedSearch.isEmpty }
@@ -237,8 +238,8 @@ struct FolderTreeSection: View {
   private func branches(for tier: FolderTreeTier) -> [FolderTreeItem] {
     FolderTreeModel.tierItems(
       FolderTreeModel.filter(
-        FolderTreePresentation.tree(for: layoutMode, folders: load.folders(tier)),
-        matching: searchText),
+        FolderTreePresentation.tree(for: layoutMode, folders: treeState.load.folders(tier)),
+        matching: searchQuery),
       tier: tier,
       // IMGMGR-362: read HERE, in the body's own call, so the tree re-renders the moment the
       // reader flips the switch in either menu. `FolderTreeModel.tierItems` decides what the flag
@@ -249,12 +250,12 @@ struct FolderTreeSection: View {
   /// Searching the 855 already-loaded folder NAMES, in memory. Never `GridImagesQuery.q` — that
   /// one is an image-level browse filter and answers a different question — and never a second
   /// call to the server for something the client is already holding.
-  private var searchField: some View {
+  private func searchField(_ text: Binding<String>) -> some View {
     HStack(spacing: 6) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(.secondary)
         .accessibilityHidden(true)
-      TextField("Search folders", text: $searchText)
+      TextField("Search folders", text: text)
         .textFieldStyle(.plain)
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
@@ -262,7 +263,7 @@ struct FolderTreeSection: View {
         .accessibilityIdentifier("folderTreeSearchField")
       if isSearching {
         Button {
-          searchText = ""
+          text.wrappedValue = ""
         } label: {
           Image(systemName: "xmark.circle.fill")
         }
@@ -278,9 +279,9 @@ struct FolderTreeSection: View {
   private func tierBranch(_ tier: FolderTreeTier) -> some View {
     let rows = FolderTreeModel.visibleRows(branches(for: tier)) { id in
       FolderTreePresentation.isExpanded(
-        id, readerExpanded: expandedBranches, isSearching: isSearching)
+        id, readerExpanded: treeState.expandedBranches, isSearching: isSearching)
     }
-    if !load.answered(tier) {
+    if !treeState.load.answered(tier) {
       // B3: the tier is a top-level PLACE, so its absence is said where it belongs rather than
       // only in the summary notice at the top — and never by rendering it as an empty branch.
       Label(
@@ -303,7 +304,7 @@ struct FolderTreeSection: View {
           FolderTreeRowView(
             row: row, tier: tier, isSearching: isSearching, heroLoader: heroLoader,
             summariesByFolderID: summariesByFolderID,
-            expandedBranches: $expandedBranches, selectedFolderID: $selectedFolderID,
+            expandedBranches: $treeState.expandedBranches, selectedFolderID: $selectedFolderID,
             highlightedFolderID: highlightedFolderID, onSelect: onSelect)
         }
       } label: {
@@ -319,13 +320,13 @@ struct FolderTreeSection: View {
     Binding(
       get: {
         FolderTreePresentation.isExpanded(
-          for: tier, in: expandedTiers, isSearching: isSearching)
+          for: tier, in: treeState.expandedTiers, isSearching: isSearching)
       },
       set: { open in
         if open {
-          expandedTiers.insert(tier)
+          treeState.expandedTiers.insert(tier)
         } else {
-          expandedTiers.remove(tier)
+          treeState.expandedTiers.remove(tier)
         }
       })
   }

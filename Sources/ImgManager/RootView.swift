@@ -54,6 +54,12 @@ struct RootView: View {
   /// summaries. It lives here because `RootView` builds both halves — the `QueueView` the gesture
   /// is on and the `FolderTreeSection` that holds the load — and neither can reach the other.
   @State private var treeReloadToken = 0
+  /// WP28 P1 (IMGMGR-448): the Compact shell's tabs and which one hosts the grid.
+  @State private var navigation = WorkspaceNavigation()
+  /// WP28 P1: the folder search text, hoisted so every search surface shares one query.
+  @State private var folderSearch = FolderSearchModel()
+  /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
+  @State private var folderTree: FolderTreeState
   @State private var showInspector = false
   /// Whether Regular-3's inspector COLUMN is rendered. Its own flag rather than a second use of
   /// `showInspector`: WP16 P2 (IMGMGR-298) needed one because the two meant opposite things at
@@ -145,12 +151,17 @@ struct RootView: View {
         guard case .signedIn(let subject) = session?.status else { return nil }
         return subject
       })
-    erasedBox.handler = { [weak queueStore] in
+    // WP28 P1: the folder tree's state is RootView's, so it outlives the workspace view and has
+    // to end with the session the same way the queue does (see `FolderTreeState.endSession`).
+    let folderTree = FolderTreeState()
+    _folderTree = State(initialValue: folderTree)
+    erasedBox.handler = { [weak queueStore, weak folderTree] in
       // FENCE FIRST, and synchronously — this closure is `@MainActor`, so nothing suspends
       // before this line. Clearing the file first (as this did) left a window between the two
       // awaits in which a fetch could resume against an un-advanced generation and write the
       // snapshot straight back, one await after the erasure had removed it.
       queueStore?.endSession()
+      folderTree?.endSession()
       await queueSnapshotStore.clear()
     }
     _queueStore = State(initialValue: queueStore)
@@ -258,7 +269,12 @@ struct RootView: View {
       // `InspectorPlacement.columnVisibility(for:regular3InspectorShown:)`, which says what the
       // remaining panes are — since IMGMGR-390 the queue KEEPS its pane when the inspector
       // collapses, which is the owner's whole reason for collapsing it.
-      if layoutMode == .regular3 && showRegular3Inspector {
+      // WP28 P1 (IMGMGR-448): the Compact layout mode renders the tab shell; every Regular state
+      // keeps the split below, unchanged but for the shared `WorkspaceContent` destination. The
+      // decision is `layoutMode` alone — width and size class, never the device idiom.
+      if layoutMode == .compact {
+        compactShell
+      } else if layoutMode == .regular3 && showRegular3Inspector {
         NavigationSplitView(columnVisibility: $columnVisibility) {
           sidebar
         } content: {
@@ -304,6 +320,8 @@ struct RootView: View {
           // Mirrored into the List's own selection state so the split view actually navigates,
           // exactly as a real tap would (the same reason the DEBUG fixture below sets it).
           selectedFolderID = folderID
+          // WP28 P1: at Compact the restored shoot opens in Library, as a tree tap there would.
+          navigation.showSelectedShoot(in: .library)
         }
       }
       #if DEBUG
@@ -322,6 +340,9 @@ struct RootView: View {
           // doc comment).
           selectedFolderID = 1
           await gridStore.selectShoot(folderID: 1)
+          // WP28 P1: the fixture's shoot is hosted by the Compact Library tab, so a Compact
+          // launch lands on the populated grid exactly as it did in the collapsed split.
+          navigation.showSelectedShoot(in: .library)
           // WP13 P1: applied AFTER the shoot loads, because `selectShoot` resets the selection
           // by design (a scope change leaves Select). See the flag's own doc comment.
           if DebugStubLaunch.enterSelectMode {
@@ -405,7 +426,11 @@ struct RootView: View {
   private func applyWidth(_ width: CGFloat) {
     let mode = LayoutResolver.resolve(width: width, horizontalSizeClass: horizontalSizeClass)
     guard mode != layoutMode else { return }
+    let previous = layoutMode
     layoutMode = mode
+    // WP28 P1 (IMGMGR-448): Regular→Compact with a shoot selected lands on its grid in Library.
+    navigation.applyLayoutChange(
+      from: previous, to: mode, hasSelectedShoot: gridStore.query.folderID != nil)
     // WP16 P2 (IMGMGR-298): through `InspectorPlacement`, not `LayoutResolver` directly, so a
     // launch reaching Regular-3 already asks for the visibility its inspector state needs — the
     // same answer the toggle gives. Since IMGMGR-390 the collapsed state IS the launch state
@@ -454,70 +479,153 @@ struct RootView: View {
   /// "Needs review" section, composed by `QueueView` inside the SAME list so the two are one
   /// scroll and one selection. It renders only when it has members, so the tree is still this
   /// column's sole content whenever nothing is awaiting review.
+  @ViewBuilder
   private var sidebar: some View {
-    Group {
-      // ONE routing path for both halves of the home. The pinned section and the tree row would
-      // otherwise each carry their own closure into `GridStore.selectShoot(folderID:sourceTier:)`
-      // — the same call twice, which is the shape a second navigation path starts as. The tier is
-      // optional because a summary names its tier as a wire string and an unrecognised one must
-      // clear the grid's filter rather than resolve to an invented tier; the tree's own
-      // `onSelect` is non-optional and adapts to this at its call site below.
-      let selectShoot: (Int, GridSourceTier?) -> Void = { folderID, sourceTier in
-        Task { await gridStore.selectShoot(folderID: folderID, sourceTier: sourceTier) }
+    let tree = folderTreeSection(
+      searchQuery: folderSearch.text, inlineSearchText: $folderSearch.text, onSelect: selectShoot)
+    // The app-level controls on the app-level column: the persistent bar on Regular-2/3 —
+    // `LayoutResolver` never hides this column (`.doubleColumn`/`.all`). At Compact the tab shell
+    // carries them instead: Account on the Shoots root, the View menu on the Library root.
+    queueHome(showsNeedsReview: true, onSelectShoot: selectShoot, tree: tree)
+      .toolbar {
+        folderTreeViewMenuItem
+        accountToolbarItem
       }
-      // Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides
-      // this branch — `QueueView` mounts for BOTH `.connected` and `.unreachable` so its own
-      // `QueueStore` degraded-state machine is always the one that runs; see that type's own
-      // doc comment for why the old direct switch was a defect, not a deliberate second gate.
-      switch SidebarRouting.destination(for: connectivity.status) {
-      case .checking:
-        ProgressView()
-      case .queue:
-        QueueView(
-          queueStore: queueStore, selectedFolderID: $selectedFolderID,
-          onRefreshTree: { treeReloadToken += 1 },
-          // IMGMGR-389: the pinned section's rows route through the SAME closure the tree's do.
-          onSelectShoot: selectShoot,
-          treeSection: FolderTreeSection(
-            // The same loader the rest of the app's covers come through (WP16 P5): one cache,
-            // one concurrency gate for every cover in this column.
-            gridService: gridService, heroLoader: heroLoader,
-            // IMGMGR-362 (WP21 P3): the ONE `GridPreferences` this app has, handed to the tree as
-            // the observable object rather than as a copied `Bool` — one instance, two readers
-            // (this column's tree and the grid's own menus), one persisted key set. `gridStore`
-            // is a single `@State` here (:43), so both columns of the split view read the same
-            // object and the iPad cannot hold a stale answer.
-            preferences: gridStore.preferences, layoutMode: layoutMode,
-            reloadToken: treeReloadToken,
-            // P3: read here in the body, so a summaries load that lands later re-renders the
-            // rows — `queueStore` is observed, the tree section is a value.
-            summariesByFolderID: FolderTreeRowPresentation.index(queueStore.summaries),
-            // P4: one store owns both of the home's answers — the tree's replay and its write
-            // travel through the same subject, generation and erase path as the summaries'.
-            cachedTree: queueStore.cachedTree,
-            rememberTree: { folders, fence in
-              await queueStore.rememberTree(folders, fence: fence)
-            },
-            treeFence: { queueStore.treeFence() },
-            selectedFolderID: $selectedFolderID,
-            // IMGMGR-405: the folder whose grid is showing, read HERE in the body so the tree
-            // re-renders when the scope changes — `GridStore.query` is what
-            // `selectShoot(folderID:sourceTier:)` records, and it is the only notion of "the open
-            // folder" that outlives both a Compact pop-back (which clears the List's selection)
-            // and the column-count swap this very view performs (which destroys the tree's state).
-            openedFolderID: gridStore.query.folderID,
-            onSelect: { folderID, sourceTier in selectShoot(folderID, sourceTier) })
-        )
-      }
+  }
+
+  /// ONE routing path for both halves of the home, on every shell. The pinned section and the tree
+  /// row would otherwise each carry their own closure into
+  /// `GridStore.selectShoot(folderID:sourceTier:)` — the same call twice, which is the shape a
+  /// second navigation path starts as. The tier is optional because a summary names its tier as a
+  /// wire string and an unrecognised one must clear the grid's filter rather than resolve to an
+  /// invented tier. WP28 P1: the Compact tabs reach it through `WorkspaceNavigation.open`, which
+  /// calls exactly this closure and then decides which tab shows the grid.
+  private var selectShoot: (Int, GridSourceTier?) -> Void {
+    let store = gridStore
+    return { folderID, sourceTier in
+      Task { await store.selectShoot(folderID: folderID, sourceTier: sourceTier) }
     }
-    // The app-level control on the app-level column. This is the bar on screen at Compact's
-    // launch surface (the queue root) and the persistent one on Regular-2/3 — `LayoutResolver`
-    // never hides this column (`.doubleColumn`/`.all`), so of the two columns it is the one whose
-    // bar is present in every `layoutMode` branch.
+  }
+
+  /// A Compact tab's row tap: the one routing path, then the tab that hosts the grid.
+  private func openShoot(from tab: CompactTab) -> (Int, GridSourceTier?) -> Void {
+    let nav = navigation
+    let route = selectShoot
+    return { folderID, sourceTier in
+      nav.open(folderID: folderID, tier: sourceTier, from: tab, via: route)
+    }
+  }
+
+  /// The queue home around a tree: the split's sidebar (with the pinned section) and the Compact
+  /// Library tab (without it — at Compact the section's one home is the Shoots tab).
+  ///
+  /// Diff-gate round-3 closure, B3: `SidebarRouting` (not raw `connectivity.status`) decides this
+  /// branch — `QueueView` mounts for BOTH `.connected` and `.unreachable` so its own `QueueStore`
+  /// degraded-state machine is always the one that runs; see that type's own doc comment for why
+  /// the old direct switch was a defect, not a deliberate second gate.
+  @ViewBuilder
+  private func queueHome(
+    showsNeedsReview: Bool, onSelectShoot: @escaping (Int, GridSourceTier?) -> Void,
+    tree: FolderTreeSection
+  ) -> some View {
+    switch SidebarRouting.destination(for: connectivity.status) {
+    case .checking:
+      ProgressView()
+    case .queue:
+      QueueView(
+        queueStore: queueStore, selectedFolderID: $selectedFolderID,
+        onRefreshTree: { treeReloadToken += 1 },
+        // IMGMGR-389: the pinned section's rows route through the SAME closure the tree's do.
+        onSelectShoot: onSelectShoot, showsNeedsReview: showsNeedsReview, treeSection: tree)
+    }
+  }
+
+  /// The folder tree, built in ONE place for every surface that renders it (the split's sidebar,
+  /// the Compact Library and Search tabs). All of them share `folderTree` — one load, one set of
+  /// open rows — and differ only in what narrows the rows, whether the inline field renders, and
+  /// where a row tap lands.
+  private func folderTreeSection(
+    searchQuery: String, inlineSearchText: Binding<String>?,
+    onSelect: @escaping (Int, GridSourceTier?) -> Void
+  ) -> FolderTreeSection {
+    FolderTreeSection(
+      // The same loader the rest of the app's covers come through (WP16 P5): one cache,
+      // one concurrency gate for every cover in this column.
+      gridService: gridService, heroLoader: heroLoader,
+      // IMGMGR-362 (WP21 P3): the ONE `GridPreferences` this app has, handed to the tree as
+      // the observable object rather than as a copied `Bool` — one instance, two readers
+      // (this column's tree and the grid's own menus), one persisted key set. `gridStore`
+      // is a single `@State` here (:43), so both columns of the split view read the same
+      // object and the iPad cannot hold a stale answer.
+      preferences: gridStore.preferences, layoutMode: layoutMode,
+      reloadToken: treeReloadToken,
+      // P3: read here in the body, so a summaries load that lands later re-renders the
+      // rows — `queueStore` is observed, the tree section is a value.
+      summariesByFolderID: FolderTreeRowPresentation.index(queueStore.summaries),
+      // P4: one store owns both of the home's answers — the tree's replay and its write
+      // travel through the same subject, generation and erase path as the summaries'.
+      cachedTree: queueStore.cachedTree,
+      rememberTree: { folders, fence in
+        await queueStore.rememberTree(folders, fence: fence)
+      },
+      treeFence: { queueStore.treeFence() },
+      selectedFolderID: $selectedFolderID,
+      // IMGMGR-405: the folder whose grid is showing, read HERE in the body so the tree
+      // re-renders when the scope changes — `GridStore.query` is what
+      // `selectShoot(folderID:sourceTier:)` records, and it is the only notion of "the open
+      // folder" that outlives both a Compact pop-back (which clears the List's selection)
+      // and the column-count swap this very view performs (which destroys the tree's state).
+      openedFolderID: gridStore.query.folderID, treeState: folderTree, searchQuery: searchQuery,
+      inlineSearchText: inlineSearchText,
+      onSelect: { folderID, sourceTier in onSelect(folderID, sourceTier) })
+  }
+
+  // MARK: - The Compact shell (WP28 P1, IMGMGR-448)
+
+  /// `layoutMode == .compact`'s whole chrome: three tabs over the ONE workspace destination. A
+  /// Back out of the hosting tab's grid clears the List selection, exactly as the collapsed
+  /// split's pop-back did — the open folder's highlight survives through `openedFolderID`.
+  private var compactShell: some View {
+    CompactShell(
+      navigation: navigation, search: folderSearch,
+      badgeCount: CompactTab.badgeCount(summaries: queueStore.summaries),
+      onHostPopped: { selectedFolderID = nil }, shoots: shootsRoot, library: libraryRoot,
+      searchRoot: searchRoot, destination: contentColumn)
+  }
+
+  /// The Shoots tab: Needs review, then Recent. Account's ONE Compact home (p4128 R2-Inventory)
+  /// — the grid's bar no longer carries it, so it is declared here and on the split's sidebar.
+  private var shootsRoot: some View {
+    ShootsHomeView(
+      queueStore: queueStore, selectedFolderID: $selectedFolderID,
+      onSelectShoot: openShoot(from: .shoots)
+    )
     .toolbar {
-      folderTreeViewMenuItem
       accountToolbarItem
     }
+  }
+
+  /// The Library tab: the tree alone, its degraded machine and its View menu unchanged.
+  @ViewBuilder
+  private var libraryRoot: some View {
+    let open = openShoot(from: .library)
+    let tree = folderTreeSection(searchQuery: "", inlineSearchText: nil, onSelect: open)
+    queueHome(showsNeedsReview: false, onSelectShoot: open, tree: tree)
+      .toolbar {
+        folderTreeViewMenuItem
+      }
+  }
+
+  /// The Search tab: the SAME tree, narrowed by the tab bar's search field (`folderSearch`), with
+  /// no inline field of its own.
+  private var searchRoot: some View {
+    List(selection: $selectedFolderID) {
+      Section {
+        folderTreeSection(
+          searchQuery: folderSearch.text, inlineSearchText: nil, onSelect: openShoot(from: .search))
+      }
+    }
+    .navigationTitle(CompactTab.search.title)
   }
 
   /// IMGMGR-362 (WP21 P3), the plan's Compact REACHABILITY answer, verified in the code rather
@@ -552,76 +660,18 @@ struct RootView: View {
     }
   }
 
+  /// WP28 P1 (IMGMGR-448): the shared workspace destination — the split's detail at Regular and
+  /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).
   private var contentColumn: some View {
-    Group {
-      // P5: Regular-2/3's loupe presentation — docked in place of the grid, never a takeover
-      // (spec: "not a full-screen takeover by default... the detail pane, with the grid retained
-      // as a filmstrip"). Compact never takes this branch (its loupe is always the full-screen
-      // cover above).
-      if gridStore.isLoupeOpen && layoutMode != .compact {
-        LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
-      } else {
-        GridView(store: gridStore, layoutMode: layoutMode)
-          .toolbar {
-            // Fold item 7's persistent chrome control, unchanged in role: wherever the inspector
-            // is not a permanent column, this ONE control is how it is reached — never a second,
-            // width-specific surface. WP13 P10 (IMGMGR-219) changes only WHAT it presents at
-            // Regular-2, and the decision now comes from one pure resolver
-            // (`InspectorPlacement`) rather than an inline `layoutMode != .regular3`.
-            // IMGMGR-390 leaves the condition alone: this control is the sixth member of the set
-            // `WorkspaceChromePlacement` places, and that answer is the GRID's bar in every
-            // state, so it rides this bar beside the other five at Regular exactly as it always
-            // has. The inspector column could not host it — see `WorkspaceChromeHost`.
-            if inspectorPresentation.usesChromeControl {
-              ToolbarItem(placement: .primaryAction) {
-                inspectorChromeButton
-              }
-            }
-            // IMGMGR-255, Compact ONLY: a collapsed `NavigationSplitView` is a stack, so the
-            // moment a shoot is selected the grid is PUSHED over the sidebar and the sidebar's
-            // bar — the one carrying the account item — leaves the screen entirely (the 10:15 P8
-            // gate tree at that moment: `BackButton 'img-manager'`, `Info`, and nothing else).
-            // The item therefore rides this bar as well, which is what `GridView.toolbarContent`
-            // has assumed in writing since WP13 P4: "Compact has no room for them beside Account
-            // and Info". Deliberately NOT declared on Regular — there both columns' bars are on
-            // screen at once, and a second copy would sit next to the first.
-            if layoutMode == .compact {
-              accountToolbarItem
-            }
-          }
-          .overlay(alignment: .trailing) {
-            // The ONE place P10 could have gone wrong: the slide-over is an overlay ON THE
-            // DETAIL PANE, never a third column. `workspace`'s 2-column `NavigationSplitView`
-            // for Compact/Regular-2 is a deliberate WP8 diff-gate round-3 fix (reusing the
-            // 3-column initializer with an empty `detailColumn` still reserved a wasted pane
-            // under `.doubleColumn`, squeezing the grid), and a panel built as a column would
-            // undo it. An overlay sits outside NavigationSplitView's column management
-            // entirely, so the two cannot fight over the same space.
-            if showInspector && inspectorPresentation == .slideOver {
-              inspectorSlideOver
-            }
-          }
-          .sheet(isPresented: inspectorSheetBinding) {
-            InspectorView(store: gridStore, service: gridService)
-          }
-      }
-    }
+    WorkspaceContent(
+      store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
+      showInspector: $showInspector, inspectorVisibility: inspectorVisibilityBinding)
   }
 
-  /// The inspector's presentation at the CURRENT layout mode. One resolver, read by the toolbar
-  /// condition, the sheet binding and the slide-over overlay alike, so the three can never
-  /// disagree about which surface is showing.
+  /// The inspector's presentation at the CURRENT layout mode — the same resolver
+  /// `WorkspaceContent` reads, so the two cannot disagree about which surface is showing.
   private var inspectorPresentation: InspectorPresentation {
     InspectorPlacement.presentation(for: layoutMode)
-  }
-
-  /// The sheet presents ONLY where the resolved presentation IS the sheet. One `showInspector`
-  /// state drives every non-permanent presentation, so there is no width at which two of them
-  /// could be on screen at once, and no second flag to drift out of step.
-  private var inspectorSheetBinding: Binding<Bool> {
-    Binding(
-      get: { showInspector && inspectorPresentation.isModal },
-      set: { showInspector = $0 })
   }
 
   /// WP16 P2 (IMGMGR-298): which flag the persistent chrome control owns at the CURRENT width,
@@ -644,73 +694,6 @@ struct RootView: View {
         columnVisibility = InspectorPlacement.columnVisibility(
           for: .regular3, regular3InspectorShown: shown)
       })
-  }
-
-  /// [/link/3220] §2.2's side panel: anchored to the trailing edge of the grid pane,
-  /// width-limited by `InspectorSlideOverMetrics`, and NON-MODAL — nothing dims, nothing is
-  /// disabled, and the grid keeps taking taps beside it. Two details carry that guarantee:
-  /// `GeometryReader` measures the PANE the overlay covers (so the width rule applies to the
-  /// space actually available, including a half-width iPad window), and the widened frame around
-  /// the panel carries no background, so it has no hit region of its own and taps in it reach the
-  /// grid underneath. System materials only, never a custom `glassEffect` (ADR-N1) — `.bar` and
-  /// `.thinMaterial` are already this app's chrome backing (`ActionBarView`, `GridView`).
-  private var inspectorSlideOver: some View {
-    GeometryReader { proxy in
-      InspectorView(store: gridStore, service: gridService)
-        .frame(width: InspectorSlideOverMetrics.width(inPane: proxy.size.width))
-        .frame(maxHeight: .infinity)
-        .background(.regularMaterial)
-        .overlay(alignment: .leading) { Divider() }
-        .accessibilityIdentifier("inspectorSlideOver")
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-    .transition(.move(edge: .trailing))
-  }
-
-  /// The Info button doubles as the "filters are on" indicator: on Compact the Info·Stats sheet
-  /// is the ONLY filter surface, so the count has to ride the control that opens it — there is
-  /// no other chrome to put it on, and a filtered grid that looks unfiltered is exactly the
-  /// failure this prevents. The count is the facet fields only, never the shoot scope
-  /// (`InspectorFacetFilters`), so browsing an archive shoot never reads as "filtered".
-  @ViewBuilder
-  private var inspectorChromeButton: some View {
-    let activeFilters = InspectorFacetFilters.activeCount(gridStore.currentQuery)
-    let spokenLabel = InspectorFacetFilters.infoButtonAccessibilityLabel(activeCount: activeFilters)
-    Button {
-      // A TOGGLE, not a one-way open: the slide-over has no sheet grabber to dismiss it, so the
-      // persistent chrome control is also how it closes (zero gesture-only actions). At Compact
-      // the sheet covers this control while it is up, so toggling reads exactly as before.
-      // WP16 P2 (IMGMGR-298): at Regular-3 the same tap hides and restores the COLUMN — which
-      // flag that is comes from `inspectorVisibilityBinding`, never from a branch written here.
-      withAnimation(.snappy(duration: 0.25)) { inspectorVisibilityBinding.wrappedValue.toggle() }
-    } label: {
-      if activeFilters > 0 {
-        // IMGMGR-224: the spoken phrasing rides the TITLE TEXT itself. A `ToolbarItem`'s bar item
-        // is built from the button's title, and the WP13 P10 gate log recorded VoiceOver reading
-        // the visual "Info · 1" while `.accessibilityLabel` on the button sat there as dead code;
-        // the 23:26 run of this lane showed the same for the collapsed-content form. Labelling
-        // the Text is the remaining attachment point that travels with the title the bar item
-        // actually takes. The visual string is unchanged either way.
-        Label {
-          Text(InspectorFacetFilters.infoButtonTitle(activeCount: activeFilters))
-            .accessibilityLabel(spokenLabel)
-        } icon: {
-          Image(systemName: "line.3.horizontal.decrease.circle.fill")
-        }
-        .labelStyle(.titleAndIcon)
-      } else {
-        Label {
-          Text("Info").accessibilityLabel(spokenLabel)
-        } icon: {
-          Image(systemName: "info.circle")
-        }
-      }
-    }
-    .accessibilityLabel(spokenLabel)
-    // Diagnostic AND useful: the account item's own identifier surfaces through the same bridge
-    // (gate tree, `accountToolbarButton`), so if this one appears while the label still does not,
-    // the bridge drops labels specifically — which is the finding, not a guess.
-    .accessibilityIdentifier("inspectorChromeButton")
   }
 
   /// WP16 P2 (IMGMGR-298): the third column renders only while Regular-3 AND the reader has not

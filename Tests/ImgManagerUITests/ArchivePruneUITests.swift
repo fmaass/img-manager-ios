@@ -150,6 +150,8 @@ final class ArchivePruneUITests: OrientationPinnedUITestCase {
       "-UITestStubGrid", "-UITestStubSkipAutoSelect",
     ]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
     return app
   }
 

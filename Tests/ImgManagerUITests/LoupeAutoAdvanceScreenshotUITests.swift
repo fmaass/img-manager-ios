@@ -181,6 +181,16 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
       "Action bar (Dislike button) never appeared — expected the DEBUG fixture composition's "
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
+    // WP28 P1 (IMGMGR-448): at Compact the grid's bar no longer carries Account — the Shoots tab's
+    // root is its ONE Compact home (p4128 R2-Inventory), one tab away from the open shoot, whose
+    // grid keeps its place in the Library tab meanwhile.
+    if rendersCompactShell(app) {
+      XCTAssertFalse(
+        app.descendants(matching: .any)["accountToolbarButton"].exists,
+        "The open shoot's grid bar still carries Account at Compact — a second Compact home.")
+      selectCompactTab(app, title: "Shoots")
+    }
+
     let account = app.descendants(matching: .any)["accountToolbarButton"]
     if !account.waitForExistence(timeout: 15) {
       XCTContext.runActivity(named: "element tree with no account toolbar item") { activity in

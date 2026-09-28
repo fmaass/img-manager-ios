@@ -379,3 +379,34 @@ gate_summary_line() {
 gate_leg_wanted() {
   case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
+
+# gate_export_screenshots LEG BUNDLE — WP28 P1 (IMGMGR-448): export every attachment of a UI
+# leg's result bundle into .gate-artifacts/screenshots/LEG/, which the controller's existing
+# copy-back brings home, so a reviewer on jupiter can see what the UI tests rendered. The bundle
+# itself lives under DerivedData — never in .gate-artifacts (it would ride the copy-back) — and
+# stays out of the mirror (`--exclude=*.xcresult`, gate_mirror_filters).
+#
+# Prints ONE line, `screenshots LEG exit=RC files=N`, and returns RC: 3 when there is no bundle
+# (the test step never produced one), 4 when the output directory cannot be made, otherwise the
+# export tool's own exit code — a failed export is a red result, never a swallowed one. The
+# directory is emptied first, so a count never includes a previous run's files. GATE_XCRESULTTOOL
+# replaces the tool (bin/gate-lib-test.sh); it is word-split on purpose.
+gate_export_screenshots() {
+  _ss_dir=".gate-artifacts/screenshots/$1"
+  _ss_log=".gate-artifacts/screenshots-$1.log"
+  if ! { rm -rf "$_ss_dir" && mkdir -p "$_ss_dir"; }; then
+    echo "screenshots $1 exit=4 files=0 (cannot create $_ss_dir)"
+    return 4
+  fi
+  if [ ! -d "$2" ]; then
+    echo "no result bundle at $2" > "$_ss_log"
+    echo "screenshots $1 exit=3 files=0 (no result bundle at $2)"
+    return 3
+  fi
+  ${GATE_XCRESULTTOOL:-xcrun xcresulttool} export attachments \
+    --path "$2" --output-path "$_ss_dir" > "$_ss_log" 2>&1
+  _ss_rc=$?
+  _ss_n="$(find "$_ss_dir" -type f ! -name manifest.json | wc -l | tr -d ' ')"
+  echo "screenshots $1 exit=$_ss_rc files=$_ss_n"
+  return "$_ss_rc"
+}

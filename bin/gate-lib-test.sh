@@ -496,6 +496,66 @@ else
   case "$s2" in *" pins=65"*) pok p-drift-rc "a real non-zero rc is kept, not masked:$s2" ;; *) pfail p-drift-rc "summary '$s2'" ;; esac
 fi
 
+# --- WP28 P1 (IMGMGR-448): the UI legs' screenshot export. The function runs against a stub in
+# place of xcresulttool (GATE_XCRESULTTOOL) — a success that writes two attachments and a
+# manifest, and a refusal — and the wiring is read from the REMOTE script itself, by the exact
+# argument text, so a comment mentioning the flag cannot satisfy it.
+sfail() { echo "FAIL $1: $2"; fail=1; }
+sok() { echo "PASS $1: $2"; }
+cat > "$tmp/stub-xcresulttool" <<'STUB'
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in --output-path) out="$2"; shift 2 ;; *) shift ;; esac
+done
+if [ "${STUB_RC:-0}" -ne 0 ]; then echo "stub refusal" >&2; exit "$STUB_RC"; fi
+printf 'png' > "$out/a.png"; printf 'png' > "$out/b.png"; printf '{}' > "$out/manifest.json"
+STUB
+chmod +x "$tmp/stub-xcresulttool"
+rm -rf "$tmp/sscase" && mkdir -p "$tmp/sscase/.gate-artifacts" "$tmp/sscase/bundle.xcresult"
+cd "$tmp/sscase" || exit 9
+if ! command -v gate_export_screenshots >/dev/null 2>&1; then
+  sfail ss-defined "gate_export_screenshots is not defined by gate-lib.sh"
+else
+  mkdir -p .gate-artifacts/screenshots/test-iphone
+  printf 'old' > .gate-artifacts/screenshots/test-iphone/stale.png
+  line="$(GATE_XCRESULTTOOL="$tmp/stub-xcresulttool" STUB_RC=0 gate_export_screenshots test-iphone "$PWD/bundle.xcresult")"; rc=$?
+  case "$rc|$line" in
+    "0|screenshots test-iphone exit=0 files=2") sok ss-export "$line" ;;
+    *) sfail ss-export "rc=$rc line='$line'" ;;
+  esac
+  if [ -f .gate-artifacts/screenshots/test-iphone/a.png ] && [ ! -e .gate-artifacts/screenshots/test-iphone/stale.png ]; then
+    sok ss-fresh "the export lands in screenshots/<leg>/ and a previous run's file is gone"
+  else
+    sfail ss-fresh "a.png missing or stale.png survived: $(ls .gate-artifacts/screenshots/test-iphone 2>&1 | tr '\n' ' ')"
+  fi
+  line="$(GATE_XCRESULTTOOL="$tmp/stub-xcresulttool" STUB_RC=65 gate_export_screenshots test-ipad "$PWD/bundle.xcresult")"; rc=$?
+  case "$rc|$line" in
+    "65|screenshots test-ipad exit=65 "*) sok ss-refused "the tool's own refusal is returned: $line" ;;
+    *) sfail ss-refused "rc=$rc line='$line' (a failed export must not read as green)" ;;
+  esac
+  line="$(GATE_XCRESULTTOOL="$tmp/stub-xcresulttool" STUB_RC=0 gate_export_screenshots test-ipad "$PWD/absent.xcresult")"; rc=$?
+  case "$rc|$line" in
+    "3|screenshots test-ipad exit=3 files=0"*) sok ss-no-bundle "$line" ;;
+    *) sfail ss-no-bundle "rc=$rc line='$line'" ;;
+  esac
+fi
+for leg in test-iphone test-ipad; do
+  n_bundle="$(grep -cF -- "-resultBundlePath \"\$derived/Results/$leg.xcresult\"" "$mg")"
+  n_export="$(grep -cF -- "gate_export_screenshots $leg \"\$derived/Results/$leg.xcresult\"" "$mg")"
+  n_record="$(grep -cF -- "summary=\"\$summary screenshots-$leg=\$?\"" "$mg")"
+  if [ "$n_bundle" = 1 ] && [ "$n_export" = 1 ] && [ "$n_record" = 1 ]; then
+    sok "ss-wiring-$leg" "result bundle, export and recorded result each wired once"
+  else
+    sfail "ss-wiring-$leg" "bundle=$n_bundle export=$n_export record=$n_record in $mg"
+  fi
+done
+if grep -qF -- "'--exclude=*.xcresult'" "$here/gate-lib.sh" && grep -qF -- "'--exclude=DerivedData'" "$here/gate-lib.sh"; then
+  sok ss-mirror "the bundle stays out of the mirror (*.xcresult and DerivedData excluded)"
+else
+  sfail ss-mirror "the mirror filters no longer exclude *.xcresult or DerivedData"
+fi
+
 cd "$tmp"
 
 case "$summary" in *"t-clean=0"*"t-hit=1"*"t-noctl=1"*) echo "PASS summary: $summary" ;; *) echo "FAIL summary: $summary"; fail=1 ;; esac

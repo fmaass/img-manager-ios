@@ -105,6 +105,10 @@ struct NeedsReviewSection: View {
   /// row and a tree row enter the grid through one `GridStore.selectShoot(folderID:sourceTier:)`
   /// call, and no second navigation path exists.
   let onSelect: (Int, GridSourceTier?) -> Void
+  /// WP28 P1 (IMGMGR-448): the row's identifier. The Shoots tab's Recent section renders its rows
+  /// through this same view — same row discipline, same routing — under its own identifiers, so a
+  /// UI test can tell the two sections apart.
+  var rowIdentifier: (Int) -> String = NeedsReview.rowIdentifier(for:)
 
   var body: some View {
     ForEach(members, id: \.folderId) { summary in
@@ -126,7 +130,7 @@ struct NeedsReviewSection: View {
         Text(NeedsReview.shootName(for: summary))
           .lineLimit(1)
           .truncationMode(.middle)
-          .accessibilityIdentifier(NeedsReview.rowIdentifier(for: summary.folderId))
+          .accessibilityIdentifier(rowIdentifier(summary.folderId))
         if let readiness = FolderTreeRowPresentation.readinessBadge(for: summary) {
           Text(readiness)
             .font(.caption2)

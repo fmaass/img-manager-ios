@@ -633,19 +633,35 @@ if [ "$project_legs" = 1 ]; then
     trap cleanup_sims EXIT
 
     if want test-iphone; then
+      # WP28 P1 (IMGMGR-448): a result bundle per UI leg, exported into
+      # .gate-artifacts/screenshots/test-iphone/ and recorded as its own result (gate-lib.sh,
+      # gate_export_screenshots). xcodebuild refuses an existing bundle path, so a previous
+      # run's bundle is removed first.
+      rm -rf "$derived/Results/test-iphone.xcresult"; mkdir -p "$derived/Results"
       step test-iphone xcodebuild test \
         -project ImgManager.xcodeproj -scheme ImgManager \
         -destination "id=$iphone_udid" \
         -derivedDataPath "$derived" \
+        -resultBundlePath "$derived/Results/test-iphone.xcresult" \
         -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+      gate_export_screenshots test-iphone "$derived/Results/test-iphone.xcresult"
+      summary="$summary screenshots-test-iphone=$?"
     fi
 
     if want test-ipad; then
+      # WP28 P1 (IMGMGR-448): a result bundle per UI leg, exported into
+      # .gate-artifacts/screenshots/test-ipad/ and recorded as its own result (gate-lib.sh,
+      # gate_export_screenshots). xcodebuild refuses an existing bundle path, so a previous
+      # run's bundle is removed first.
+      rm -rf "$derived/Results/test-ipad.xcresult"; mkdir -p "$derived/Results"
       step test-ipad xcodebuild test \
         -project ImgManager.xcodeproj -scheme ImgManager \
         -destination "id=$ipad_udid" \
         -derivedDataPath "$derived" \
+        -resultBundlePath "$derived/Results/test-ipad.xcresult" \
         -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+      gate_export_screenshots test-ipad "$derived/Results/test-ipad.xcresult"
+      summary="$summary screenshots-test-ipad=$?"
     fi
   fi
 

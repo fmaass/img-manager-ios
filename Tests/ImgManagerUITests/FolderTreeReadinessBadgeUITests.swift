@@ -19,6 +19,8 @@ final class FolderTreeReadinessBadgeUITests: OrientationPinnedUITestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(incoming, in: app), "The Incoming tier branch never appeared.")

@@ -164,6 +164,8 @@ final class TierHomeUITests: OrientationPinnedUITestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"] + extraArguments
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
     return app
   }
 

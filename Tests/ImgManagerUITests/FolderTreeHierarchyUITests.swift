@@ -30,6 +30,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
@@ -59,8 +61,21 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
       "Expanding the container revealed no nested shoot — the tree is not two levels deep.")
     attach(named: "P7-tree-two-levels")
 
-    let field = app.textFields["folderTreeSearchField"].firstMatch
-    XCTAssertTrue(reveal(field, in: app), "The folder search field never appeared.")
+    // WP28 P1 (IMGMGR-448), plan Decision 5: at Compact the ONE search surface is the Search
+    // tab's field in the tab bar, filtering the same tree; the inline field is Regular-only.
+    let compact = rendersCompactShell(app)
+    let field: XCUIElement
+    if compact {
+      selectCompactTab(app, title: "Search")
+      field = app.searchFields.firstMatch
+      XCTAssertTrue(field.waitForExistence(timeout: 15), "The Search tab carries no search field.")
+      XCTAssertFalse(
+        app.textFields["folderTreeSearchField"].exists,
+        "The inline folder search field rendered at Compact beside the Search tab's field.")
+    } else {
+      field = app.textFields["folderTreeSearchField"].firstMatch
+      XCTAssertTrue(reveal(field, in: app), "The folder search field never appeared.")
+    }
 
     // A term nothing matches produces the empty state. This runs FIRST as the positive control
     // (LSN-0033) for the absence asserted next: "the row was gone" cannot then be the list
@@ -73,8 +88,24 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
       "A search matching nothing produced no empty state — the filter is not running at all.")
     attach(named: "P7-tree-search-no-matches")
 
-    app.descendants(matching: .any)["folderTreeSearchClear"].firstMatch.tap()
-    XCTAssertTrue(reveal(field, in: app), "The search field vanished after being cleared.")
+    if compact {
+      // The system field's own clear control is not a stable handle; deleting the term is. A tap
+      // on the field's middle puts the caret mid-term (the gate run on 08367cc was left reading
+      // "such-wandern"), so the caret goes to the END first: a tap right of the text. Should that
+      // tap land on the field's clear control instead, the term is cleared all the same.
+      field.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 24))
+      // An empty search field reports its placeholder as its value (gate run 3 on 81c0ee8 read
+      // "Search folders" after a complete clear), so empty and the placeholder both count as
+      // cleared, and anything else — any residue of the no-match term — does not.
+      let left = (field.value as? String) ?? ""
+      XCTAssertTrue(
+        left.isEmpty || left == field.placeholderValue,
+        "The no-match term was not cleared from the Search tab's field (it reads \"\(left)\").")
+    } else {
+      app.descendants(matching: .any)["folderTreeSearchClear"].firstMatch.tap()
+      XCTAssertTrue(reveal(field, in: app), "The search field vanished after being cleared.")
+    }
     field.tap()
     field.typeText("wandern\n")
 
@@ -116,6 +147,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
@@ -162,6 +195,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
@@ -220,6 +255,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     // finding-2 correction. Opt-in: no other suite passes it, so nothing else moves.
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect", "-UITestPerFolderGrid"]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
@@ -311,6 +348,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestStubSkipAutoSelect"]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")

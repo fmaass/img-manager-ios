@@ -19,6 +19,8 @@ final class TreeHomeDegradedUITests: OrientationPinnedUITestCase {
       "-UITestStubGrid", "-UITestStubSkipAutoSelect", "-UITestFailSummaries",
     ]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     for tier in ["Incoming", "Edits", "Archive"] {
       let branch = app.descendants(matching: .any)["folderTreeTier-\(tier)"].firstMatch
@@ -50,6 +52,8 @@ final class TreeHomeDegradedUITests: OrientationPinnedUITestCase {
       "-UITestStubGrid", "-UITestStubSkipAutoSelect", "-UITestHangSummaries",
     ]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(
@@ -76,6 +80,8 @@ final class TreeHomeDegradedUITests: OrientationPinnedUITestCase {
       "-UITestStubGrid", "-UITestStubSkipAutoSelect", "-UITestFailArchiveFolders",
     ]
     app.launch()
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's; Shoots is the launch tab.
+    showLibraryIfCompact(app)
 
     // The two healthy tiers first: they are this test's positive control, so the archive row's
     // own state below is read against a tree that was actually drawn (LSN-0033).

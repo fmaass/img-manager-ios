@@ -29,6 +29,10 @@ struct QueueView: View {
   /// one must clear the grid's tier filter rather than resolve to an invented tier;
   /// `GridStore.selectShoot(folderID:sourceTier:)` takes it optional for exactly that reason.
   let onSelectShoot: (Int, GridSourceTier?) -> Void
+  /// WP28 P1 (IMGMGR-448): whether the pinned "Needs review" section renders above the tree.
+  /// The split's sidebar passes true (IMGMGR-389, unchanged); the Compact Library tab passes
+  /// false, because at Compact the section's one home is the Shoots tab.
+  let showsNeedsReview: Bool
   /// On BOTH idioms since P6 (IMGMGR-216), and non-optional on purpose: the `nil`-on-Compact
   /// branch that left the phone without a browse surface cannot return without a type change.
   /// Since IMGMGR-350 it is not a section of this view but its whole content.
@@ -60,7 +64,7 @@ struct QueueView: View {
       // Derived ONCE and handed to both halves: the header states the count and the section lists
       // the rows, and computing the membership twice would be two answers to one question.
       let needsReview = NeedsReview.members(from: queueStore.summaries)
-      if !needsReview.isEmpty {
+      if showsNeedsReview, !needsReview.isEmpty {
         Section {
           NeedsReviewSection(
             members: needsReview, selectedFolderID: $selectedFolderID, onSelect: onSelectShoot)

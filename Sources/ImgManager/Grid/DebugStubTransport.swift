@@ -787,9 +787,17 @@
     /// home with nothing awaiting review, a different state from the failing and hanging
     /// summaries above and the only one that proves the empty case. Debug-only like every flag
     /// here.
+    ///
+    /// WP28 P1 (IMGMGR-448): `-UITestNoNeedsReview` is a second spelling of the same switch, named
+    /// for what the Compact shell's badge tests need (no Needs-review member, so no Shoots badge).
+    /// One fixture, two names — never a second fixture that could drift from this one.
     static var summariesReviewed: Bool {
-      ProcessInfo.processInfo.arguments.contains("-UITestSummariesReviewed")
+      let arguments = ProcessInfo.processInfo.arguments
+      return arguments.contains("-UITestSummariesReviewed")
+        || arguments.contains(noNeedsReviewArgument)
     }
+
+    static let noNeedsReviewArgument = "-UITestNoNeedsReview"
 
     /// IMGMGR-350 checkpoint-2 (B3): a NINTH, on the same terms. One tier of `/api/folders`
     /// unreachable while the other two answer — "an unknown tier is not an empty tier" has no

@@ -79,6 +79,10 @@ final class NeedsReviewSectionUITests: OrientationPinnedUITestCase {
   /// is walked before it, so the absence cannot be a home that never loaded.
   func testTheSectionIsAbsentWhenNoShootAwaitsReview() throws {
     let app = launch(extraArguments: ["-UITestSummariesReviewed"])
+    // WP28 P1 (IMGMGR-448): at Compact the tree is the Library tab's, and the pinned section's one
+    // home is the Shoots tab — so the walk happens in Library and the absence is read on Shoots.
+    let compact = rendersCompactShell(app)
+    showLibraryIfCompact(app)
 
     let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(incoming, in: app), "The Incoming tier row never appeared.")
@@ -95,6 +99,13 @@ final class NeedsReviewSectionUITests: OrientationPinnedUITestCase {
         + "fixture readiness. Without this, the absence asserted below would prove nothing.")
     attach(named: "IMGMGR-389-every-shoot-reviewed")
 
+    if compact {
+      selectCompactTab(app, title: "Shoots")
+      XCTAssertTrue(
+        app.descendants(matching: .any)["recentRow-1"].firstMatch.waitForExistence(timeout: 15),
+        "The Shoots tab never listed the reviewed shoot under Recent, so the absence below "
+          + "could be a Shoots tab that never loaded.")
+    }
     XCTAssertFalse(
       app.descendants(matching: .any)["needsReviewSection"].firstMatch.exists,
       "The pinned section is still on screen with no shoot awaiting review. Empty means the "
