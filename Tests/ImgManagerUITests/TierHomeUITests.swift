@@ -49,6 +49,15 @@ final class TierHomeUITests: OrientationPinnedUITestCase {
         reveal(branch, in: app),
         "The \(tier) tier is not a top-level row of the home — IMGMGR-350 stacks all three.")
     }
+    // WP28 P2 (IMGMGR-449): at Regular the three tiers are the sidebar's "Library" section.
+    if !rendersCompactShell(app) {
+      let library = app.descendants(matching: .any)["sidebarSectionLibrary"].firstMatch
+      let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
+      XCTAssertTrue(
+        library.exists, "At Regular the tier rows have no \"Library\" header above them.")
+      XCTAssertLessThan(
+        library.frame.minY, incoming.frame.minY, "\"Library\" does not sit above the tiers.")
+    }
 
     let edits = app.descendants(matching: .any)["folderTreeTier-Edits"].firstMatch
     edits.tap()

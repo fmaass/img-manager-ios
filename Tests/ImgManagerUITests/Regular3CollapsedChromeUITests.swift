@@ -10,7 +10,7 @@ import XCTest
 ///   buys, and it is asserted in full, twice — at launch and after a round trip.
 /// - EXPANDED the inspector is the `.prominentDetail` column and the grid's content column
 ///   measures ~209 pt, where the OS folds three of six primary items into the system overflow
-///   chevron (recorded in `GridView.toolbarContent`, and the deviation IMGMGR-293 already
+///   chevron (recorded in `ShellToolbarLayout`, and the deviation IMGMGR-293 already
 ///   declares). The decision moved the six to the inspector's own bar for that state; two gate
 ///   runs then measured that NOTHING in that column takes a tap while it is expanded — as bar
 ///   items (`37ac723`) and as a rendered row (`b383b5a`) alike, every control read
@@ -129,7 +129,8 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
         + "the expansion cannot be undone. The OS folds a crowded bar from the trailing end and "
         + "this item leads the bar's enumeration (gate probe: navBarButtons=[\"Info\", "
         + "\"Filters\", ...]), so it is the one item the fold must never claim — check "
-        + "`RootView.contentColumn` and `GridView.toolbarContent` for what joined it there.")
+        + "`ShellToolbarLayout` (Info leads the one group) and `RootView.regularShell` (the "
+        + "toolbar search, WP28 P2) for what joined it there.")
     attach(app: app, named: "IMGMGR-390-regular3-expanded-at-launch")
 
     chrome.tap()
@@ -204,11 +205,16 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
   /// bar it is entitled to fold. Printed (not only an activity) because the gate copies back the
   /// xcodebuild log, which is where the ticket reads it afterwards.
   private func recordHostChromeCensus(in app: XCUIApplication, state: String) {
-    let census = Self.hostChromeIdentifiers.map { identifier -> String in
+    var census = Self.hostChromeIdentifiers.map { identifier -> String in
       let control = app.descendants(matching: .any)[identifier].firstMatch
       let reading = control.exists ? (control.isHittable ? "hittable" : "folded") : "absent"
       return "\(identifier)=\(reading)"
     }
+    // WP28 P2 (IMGMGR-449): the split's toolbar search now shares the bar — recorded beside the
+    // six, as evidence of what the fold took, never as an assertion.
+    let search = regularToolbarSearchButton(app)
+    let searchReading = search.exists ? (search.isHittable ? "hittable" : "folded") : "absent"
+    census.append("toolbarSearch=\(searchReading)")
     print(
       "IMGMGR-390-CENSUS \(state): window=\(app.frame.size) " + census.joined(separator: " "))
   }

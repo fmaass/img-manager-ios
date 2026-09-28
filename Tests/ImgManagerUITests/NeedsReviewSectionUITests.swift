@@ -34,6 +34,17 @@ final class NeedsReviewSectionUITests: OrientationPinnedUITestCase {
       "The home carries no pinned \"Needs review\" section. IMGMGR-389 pins ONE above the tree, "
         + "on every size class where the tree home renders.")
 
+    // WP28 P2 (IMGMGR-449): at Regular the section sits under the sidebar's "Shoots" header.
+    if !rendersCompactShell(app) {
+      let shoots = app.descendants(matching: .any)["sidebarSectionShoots"].firstMatch
+      XCTAssertTrue(
+        shoots.waitForExistence(timeout: 15),
+        "At Regular the pinned section has no \"Shoots\" header above it.")
+      XCTAssertLessThan(
+        shoots.frame.minY, section.frame.minY,
+        "\"Shoots\" does not sit above the \"Needs review\" header.")
+    }
+
     let count = app.descendants(matching: .any)["needsReviewCount"].firstMatch
     XCTAssertTrue(count.waitForExistence(timeout: 15), "The section header states no count.")
     XCTAssertEqual(
@@ -114,6 +125,16 @@ final class NeedsReviewSectionUITests: OrientationPinnedUITestCase {
       app.descendants(matching: .any)["needsReviewCount"].firstMatch.exists,
       "The section's count survived an empty membership — an empty section renders nothing, "
         + "including its header.")
+    if !compact {
+      // WP28 P2 (IMGMGR-449): "Shoots" goes with the section it names; the tree keeps its
+      // "Library" header, which is the positive control that sidebar headers render at all.
+      XCTAssertTrue(
+        app.descendants(matching: .any)["sidebarSectionLibrary"].firstMatch.exists,
+        "The sidebar's \"Library\" header is missing, so the absence below proves nothing.")
+      XCTAssertFalse(
+        app.descendants(matching: .any)["sidebarSectionShoots"].firstMatch.exists,
+        "\"Shoots\" renders with no Needs-review rows under it; an empty section renders nothing.")
+    }
   }
 
   private func launch(extraArguments: [String]) -> XCUIApplication {

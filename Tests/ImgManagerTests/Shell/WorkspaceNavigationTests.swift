@@ -175,4 +175,19 @@ struct FolderSearchModelTests {
     search.text = "Wandern"
     #expect(search.text == "Wandern")
   }
+
+  /// WP28 P2 (IMGMGR-449): `RootView` owns ONE `FolderSearchModel` for both shells — the Compact
+  /// Search tab's field and the Regular grid's toolbar search edit the same object — and a width
+  /// change reaches only the navigation. This pins that the transition itself leaves the term
+  /// alone; that both surfaces are bound to this one object is `RootView`'s wiring.
+  @Test("The folder search text survives a Regular → Compact → Regular width change")
+  func folderSearchSurvivesAWidthRoundTrip() {
+    let nav = WorkspaceNavigation()
+    let search = FolderSearchModel()
+    search.text = "wandern"
+    nav.applyLayoutChange(from: .regular3, to: .compact, hasSelectedShoot: true)
+    #expect(search.text == "wandern")
+    nav.applyLayoutChange(from: .compact, to: .regular2, hasSelectedShoot: true)
+    #expect(search.text == "wandern")
+  }
 }

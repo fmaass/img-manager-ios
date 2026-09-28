@@ -19,6 +19,9 @@ struct WorkspaceContent: View {
   let service: GridService
   let share: ShareExportStore
   let layoutMode: LayoutMode
+  /// WP28 P2 (IMGMGR-449): the shared folder search text, which the grid's toolbar search edits
+  /// at Regular and the sidebar's tree filters by.
+  let folderSearch: FolderSearchModel
   /// The one flag behind every NON-permanent presentation (sheet, slide-over).
   @Binding var showInspector: Bool
   /// What the persistent chrome control toggles at the current width — `RootView`'s
@@ -39,19 +42,21 @@ struct WorkspaceContent: View {
           .toolbar {
             // Fold item 7's persistent chrome control, unchanged in role: wherever the inspector
             // is not a permanent column, this ONE control is how it is reached — never a second,
-            // width-specific surface. WP13 P10 (IMGMGR-219) changes only WHAT it presents at
-            // Regular-2, and the decision now comes from one pure resolver
-            // (`InspectorPlacement`) rather than an inline `layoutMode != .regular3`.
-            // IMGMGR-390 leaves the condition alone: this control is the sixth member of the set
-            // `WorkspaceChromePlacement` places, and that answer is the GRID's bar in every
-            // state, so it rides this bar beside the other five at Regular exactly as it always
-            // has. The inspector column could not host it — see `WorkspaceChromeHost`.
-            if inspectorPresentation.usesChromeControl {
-              ToolbarItem(placement: .primaryAction) {
-                inspectorChromeButton
-              }
-            }
+            // width-specific surface (`InspectorPlacement` decides what it presents). IMGMGR-390:
+            // it is the sixth member of the set `WorkspaceChromePlacement` places on the GRID's
+            // bar in every state; the inspector column could not host it (`WorkspaceChromeHost`).
+            // WP28 P2 (IMGMGR-449): it and the five grid view options are ONE group, whose
+            // membership and order `ShellToolbarLayout` states.
+            ShellToolbarGroup(
+              controls: ShellToolbarLayout.gridBar(
+                for: layoutMode,
+                inspectorUsesChromeControl: inspectorPresentation.usesChromeControl),
+              store: store, info: inspectorChromeButton)
           }
+          // WP28 P2: the Regular folder search, on the grid only — the docked loupe branch above
+          // carries none, so its chrome is unchanged — and never at Compact, whose Search tab is
+          // the one search surface there.
+          .modifier(RegularFolderSearch(search: folderSearch, isEnabled: layoutMode != .compact))
           .overlay(alignment: .trailing) {
             // The ONE place P10 could have gone wrong: the slide-over is an overlay ON THE
             // DETAIL PANE, never a third column. `workspace`'s 2-column `NavigationSplitView`
@@ -154,4 +159,23 @@ struct WorkspaceContent: View {
     .accessibilityIdentifier("inspectorChromeButton")
   }
 
+}
+
+/// WP28 P2 (IMGMGR-449), plan Decision 5: the Regular shell's folder search — a toolbar search
+/// that `.minimize` renders as a button and expands to a field when the reader asks for it. It
+/// edits the shared `FolderSearchModel`, so the sidebar's tree filters as the reader types.
+/// Disabled, it adds nothing at all.
+struct RegularFolderSearch: ViewModifier {
+  @Bindable var search: FolderSearchModel
+  let isEnabled: Bool
+
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content
+        .searchable(text: $search.text, placement: .toolbar, prompt: "Search folders")
+        .searchToolbarBehavior(.minimize)
+    } else {
+      content
+    }
+  }
 }

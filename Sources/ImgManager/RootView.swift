@@ -270,36 +270,13 @@ struct RootView: View {
       // remaining panes are — since IMGMGR-390 the queue KEEPS its pane when the inspector
       // collapses, which is the owner's whole reason for collapsing it.
       // WP28 P1 (IMGMGR-448): the Compact layout mode renders the tab shell; every Regular state
-      // keeps the split below, unchanged but for the shared `WorkspaceContent` destination. The
+      // keeps the split (`regularShell`), unchanged but for the shared `WorkspaceContent`
+      // destination and (WP28 P2) the toolbar search. The
       // decision is `layoutMode` alone — width and size class, never the device idiom.
       if layoutMode == .compact {
         compactShell
-      } else if layoutMode == .regular3 && showRegular3Inspector {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-          sidebar
-        } content: {
-          contentColumn
-        } detail: {
-          detailColumn
-        }
-        .navigationSplitViewStyle(.prominentDetail)
       } else {
-        // Compact, Regular-2, and (WP16 P2) Regular-3 with the inspector collapsed — the same
-        // shape, for the same reason, which is why the collapse reuses it rather than inventing
-        // one: a genuine 2-column split
-        // (sidebar | grid) — GridView owns the FULL workspace pane, matching fold item 7's
-        // "no permanent inspector column outside Regular-3" pin. Reusing the 3-column
-        // initializer with an EMPTY `detailColumn` (as this view did before this fix) still
-        // reserves a second, always-visible pane under `.doubleColumn` visibility — the grid
-        // was confined to a narrow column beside a wasted blank pane (retained Regular-2
-        // screenshot evidence). The 2-column initializer has no third pane to accidentally
-        // reserve, so `contentColumn` (grid + its own Info-sheet toolbar button) becomes the
-        // sole `detail`.
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-          sidebar
-        } detail: {
-          contentColumn
-        }
+        regularShell
       }
     }
     .onGeometryChange(for: CGFloat.self) { proxy in
@@ -481,16 +458,56 @@ struct RootView: View {
   /// column's sole content whenever nothing is awaiting review.
   @ViewBuilder
   private var sidebar: some View {
-    let tree = folderTreeSection(
-      searchQuery: folderSearch.text, inlineSearchText: $folderSearch.text, onSelect: selectShoot)
+    // WP28 P2 (IMGMGR-449): narrowed by the grid's toolbar search (`RegularFolderSearch`), the
+    // one search surface at Regular; the tree renders no field of its own.
+    let tree = folderTreeSection(searchQuery: folderSearch.text, onSelect: selectShoot)
     // The app-level controls on the app-level column: the persistent bar on Regular-2/3 —
     // `LayoutResolver` never hides this column (`.doubleColumn`/`.all`). At Compact the tab shell
     // carries them instead: Account on the Shoots root, the View menu on the Library root.
-    queueHome(showsNeedsReview: true, onSelectShoot: selectShoot, tree: tree)
-      .toolbar {
-        folderTreeViewMenuItem
-        accountToolbarItem
+    // WP28 P2: the sidebar names its two sections, "Shoots" and "Library".
+    queueHome(
+      showsNeedsReview: true, showsSectionHeaders: true, onSelectShoot: selectShoot, tree: tree
+    )
+    .toolbar {
+      folderTreeViewMenuItem
+      accountToolbarItem
+    }
+  }
+
+  /// WP28 P2 (IMGMGR-449): the Regular shell — the split view in both of its shapes. The folder
+  /// search is NOT attached here: on the split it also rode the docked loupe's bar, and the loupe
+  /// chrome is out of this phase's scope. `WorkspaceContent` attaches it to the GRID branch alone
+  /// (`RegularFolderSearch`), bound to the same `FolderSearchModel` the sidebar's tree filters by.
+  private var regularShell: some View {
+    Group {
+      if layoutMode == .regular3 && showRegular3Inspector {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+          sidebar
+        } content: {
+          contentColumn
+        } detail: {
+          detailColumn
+        }
+        .navigationSplitViewStyle(.prominentDetail)
+      } else {
+        // Compact, Regular-2, and (WP16 P2) Regular-3 with the inspector collapsed — the same
+        // shape, for the same reason, which is why the collapse reuses it rather than inventing
+        // one: a genuine 2-column split
+        // (sidebar | grid) — GridView owns the FULL workspace pane, matching fold item 7's
+        // "no permanent inspector column outside Regular-3" pin. Reusing the 3-column
+        // initializer with an EMPTY `detailColumn` (as this view did before this fix) still
+        // reserves a second, always-visible pane under `.doubleColumn` visibility — the grid
+        // was confined to a narrow column beside a wasted blank pane (retained Regular-2
+        // screenshot evidence). The 2-column initializer has no third pane to accidentally
+        // reserve, so `contentColumn` (grid + its own Info-sheet toolbar button) becomes the
+        // sole `detail`.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+          sidebar
+        } detail: {
+          contentColumn
+        }
       }
+    }
   }
 
   /// ONE routing path for both halves of the home, on every shell. The pinned section and the tree
@@ -525,8 +542,8 @@ struct RootView: View {
   /// the old direct switch was a defect, not a deliberate second gate.
   @ViewBuilder
   private func queueHome(
-    showsNeedsReview: Bool, onSelectShoot: @escaping (Int, GridSourceTier?) -> Void,
-    tree: FolderTreeSection
+    showsNeedsReview: Bool, showsSectionHeaders: Bool = false,
+    onSelectShoot: @escaping (Int, GridSourceTier?) -> Void, tree: FolderTreeSection
   ) -> some View {
     switch SidebarRouting.destination(for: connectivity.status) {
     case .checking:
@@ -536,17 +553,16 @@ struct RootView: View {
         queueStore: queueStore, selectedFolderID: $selectedFolderID,
         onRefreshTree: { treeReloadToken += 1 },
         // IMGMGR-389: the pinned section's rows route through the SAME closure the tree's do.
-        onSelectShoot: onSelectShoot, showsNeedsReview: showsNeedsReview, treeSection: tree)
+        onSelectShoot: onSelectShoot, showsNeedsReview: showsNeedsReview,
+        showsSectionHeaders: showsSectionHeaders, treeSection: tree)
     }
   }
 
   /// The folder tree, built in ONE place for every surface that renders it (the split's sidebar,
   /// the Compact Library and Search tabs). All of them share `folderTree` — one load, one set of
-  /// open rows — and differ only in what narrows the rows, whether the inline field renders, and
-  /// where a row tap lands.
+  /// open rows — and differ only in what narrows the rows and where a row tap lands.
   private func folderTreeSection(
-    searchQuery: String, inlineSearchText: Binding<String>?,
-    onSelect: @escaping (Int, GridSourceTier?) -> Void
+    searchQuery: String, onSelect: @escaping (Int, GridSourceTier?) -> Void
   ) -> FolderTreeSection {
     FolderTreeSection(
       // The same loader the rest of the app's covers come through (WP16 P5): one cache,
@@ -576,7 +592,6 @@ struct RootView: View {
       // folder" that outlives both a Compact pop-back (which clears the List's selection)
       // and the column-count swap this very view performs (which destroys the tree's state).
       openedFolderID: gridStore.query.folderID, treeState: folderTree, searchQuery: searchQuery,
-      inlineSearchText: inlineSearchText,
       onSelect: { folderID, sourceTier in onSelect(folderID, sourceTier) })
   }
 
@@ -609,7 +624,7 @@ struct RootView: View {
   @ViewBuilder
   private var libraryRoot: some View {
     let open = openShoot(from: .library)
-    let tree = folderTreeSection(searchQuery: "", inlineSearchText: nil, onSelect: open)
+    let tree = folderTreeSection(searchQuery: "", onSelect: open)
     queueHome(showsNeedsReview: false, onSelectShoot: open, tree: tree)
       .toolbar {
         folderTreeViewMenuItem
@@ -621,8 +636,7 @@ struct RootView: View {
   private var searchRoot: some View {
     List(selection: $selectedFolderID) {
       Section {
-        folderTreeSection(
-          searchQuery: folderSearch.text, inlineSearchText: nil, onSelect: openShoot(from: .search))
+        folderTreeSection(searchQuery: folderSearch.text, onSelect: openShoot(from: .search))
       }
     }
     .navigationTitle(CompactTab.search.title)
@@ -665,7 +679,8 @@ struct RootView: View {
   private var contentColumn: some View {
     WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
-      showInspector: $showInspector, inspectorVisibility: inspectorVisibilityBinding)
+      folderSearch: folderSearch, showInspector: $showInspector,
+      inspectorVisibility: inspectorVisibilityBinding)
   }
 
   /// The inspector's presentation at the CURRENT layout mode — the same resolver

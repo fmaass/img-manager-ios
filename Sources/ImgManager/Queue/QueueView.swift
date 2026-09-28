@@ -33,6 +33,10 @@ struct QueueView: View {
   /// The split's sidebar passes true (IMGMGR-389, unchanged); the Compact Library tab passes
   /// false, because at Compact the section's one home is the Shoots tab.
   let showsNeedsReview: Bool
+  /// WP28 P2 (IMGMGR-449): the Regular sidebar's two named sections — "Shoots" over the pinned
+  /// Needs-review rows, "Library" over the tree (board iPad-Library-v2). The split's sidebar
+  /// passes true; the Compact Library tab passes false, because its tab already names it.
+  var showsSectionHeaders = false
   /// On BOTH idioms since P6 (IMGMGR-216), and non-optional on purpose: the `nil`-on-Compact
   /// branch that left the phone without a browse surface cannot return without a type change.
   /// Since IMGMGR-350 it is not a section of this view but its whole content.
@@ -69,12 +73,31 @@ struct QueueView: View {
           NeedsReviewSection(
             members: needsReview, selectedFolderID: $selectedFolderID, onSelect: onSelectShoot)
         } header: {
-          NeedsReviewHeader(count: needsReview.count)
+          // WP28 P2: "Shoots" names the section and "Needs review · N" stays its first line —
+          // the same identifiers on the same `Text`s, so nothing that reads the count moves.
+          // It renders with the section or not at all: no members, no header (IMGMGR-389).
+          // A declared P2 deviation, accepted at review: "Shoots" is not a standing header.
+          if showsSectionHeaders {
+            VStack(alignment: .leading, spacing: 4) {
+              SidebarSectionHeader.shoots.label
+              NeedsReviewHeader(count: needsReview.count)
+            }
+          } else {
+            NeedsReviewHeader(count: needsReview.count)
+          }
         }
       }
-      // The tree IS the home (IMGMGR-350). The Section carries no header of its own: the tier
-      // rows are their own labels, and the pinned section above states its own name.
-      Section { treeSection }
+      // The tree IS the home (IMGMGR-350). The tier rows are their own labels; at Regular the
+      // section is named "Library" (WP28 P2), at Compact the Library tab already names it.
+      if showsSectionHeaders {
+        Section {
+          treeSection
+        } header: {
+          SidebarSectionHeader.library.label
+        }
+      } else {
+        Section { treeSection }
+      }
     }
     .refreshable {
       await QueueHomeRefresh.run(summaries: { await queueStore.refresh() }, tree: onRefreshTree)
@@ -109,6 +132,34 @@ struct QueueView: View {
       Button("Try Again") { Task { await queueStore.refresh() } }
         .font(.footnote)
     }
+  }
+}
+
+/// WP28 P2 (IMGMGR-449): the Regular sidebar's section names. The identifier sits on the `Text`
+/// itself, never on a container around it — a container's identifier overrides its descendants'
+/// (`NeedsReviewHeader`'s own note).
+enum SidebarSectionHeader: CaseIterable, Sendable {
+  case shoots
+  case library
+
+  var title: String {
+    switch self {
+    case .shoots: "Shoots"
+    case .library: "Library"
+    }
+  }
+
+  var identifier: String {
+    switch self {
+    case .shoots: "sidebarSectionShoots"
+    case .library: "sidebarSectionLibrary"
+    }
+  }
+
+  @MainActor var label: some View {
+    Text(title)
+      .accessibilityAddTraits(.isHeader)
+      .accessibilityIdentifier(identifier)
   }
 }
 

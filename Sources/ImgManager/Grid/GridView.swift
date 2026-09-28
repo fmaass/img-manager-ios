@@ -59,14 +59,13 @@ struct GridView: View {
       // turns one packing pass into per-section passes — so the row table has to be rebuilt
       // when it lands, or arrow navigation would keep describing the unsectioned layout.
       .onChange(of: store.groupHeaders) { _, _ in publishRows() }
-      .toolbar { toolbarContent }
   }
 
   /// Compact's persistent options row and the transient mode rows, in their pinned order.
   ///
   /// WP13 P4 (IMGMGR-215): the options row sits immediately below the navigation bar — above
   /// the transient mode rows, because it is the one row that is always there. On Regular the
-  /// same controls are `.primaryAction` toolbar items (see `toolbarContent`); they are never
+  /// same controls are `.primaryAction` toolbar items (see `ShellToolbarLayout`); they are never
   /// rendered in both places at once, which is what `WorkspaceChromePlacement` states as a
   /// value rather than leaving as a rule two call sites have to remember.
   ///
@@ -157,61 +156,12 @@ struct GridView: View {
     private var debugProbeElement: some View { EmptyView() }
   #endif
 
-  /// WP13 P4 (IMGMGR-215): on Regular the view-option controls are PRIMARY toolbar items. They
-  /// used to be `ToolbarItem(placement: .secondaryAction)`, which collapses into the nav bar's
-  /// overflow chevron — the gap the owner reported and the audit confirmed in code (/link/3282,
-  /// owner feedback (c)). Compact has no room for them beside Account and Info, so there they
-  /// are the options row above instead.
-  ///
-  /// WP13 P5b adds Sort, leading: it is the control a reader reaches for first when asking "how
-  /// is this stream arranged", and `SortGroupScreenshotUITests` asserts on both idioms that no
-  /// overflow chevron came back as a result.
-  ///
-  /// IMGMGR-390 changes only where the ANSWER comes from: `WorkspaceChromePlacement.host(for:)`
-  /// instead of an inline `layoutMode != .compact`, so the one decision the owner asked about —
-  /// which bar the six ride — is a value two tests can interrogate. The answer is the same bar
-  /// in both inspector states; the type's note carries the two gate runs that ruled out the
-  /// inspector column, and the remaining inspector-SHOWN fold below stays the declared
-  /// deviation it already was on IMGMGR-293.
-  @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-    if WorkspaceChromePlacement.host(for: layoutMode) == .gridColumn {
-      // WP16 P3 (IMGMGR-295), decision 1: filtering reaches the grid's own chrome. Declared
-      // FIRST deliberately — the OS folds a crowded bar from the TRAILING end, so declaration
-      // order decides which control survives a narrow pane, and decision 1's control should not
-      // be the first casualty. Every shipped item below keeps its own shipped position.
-      ToolbarItem(placement: .primaryAction) {
-        GridFilterControl(store: store)
-      }
-      ToolbarItem(placement: .primaryAction) {
-        GridSortControl(store: store)
-      }
-      ToolbarItem(placement: .primaryAction) {
-        GridGroupControl(store: store)
-      }
-      ToolbarItem(placement: .primaryAction) {
-        GridZoomControl(store: store)
-      }
-      // Regular's route into the shortcut help sheet, in its shipped position. The gate's UI leg
-      // proved the other two routes are not drivable there — ⌘/ never reached the app on the iPad
-      // simulator (no attached hardware keyboard) and the system menu bar is not a surface a UI
-      // test can open — so without this the sheet has no chrome path on Regular at all, which is
-      // what `ViewOptionsScreenshotUITests.testShortcutHelpSheetListsEveryActiveShortcut` drives.
-      // Compact carries the same control in its options row.
-      //
-      // WP16 P3 briefly removed this item as the plan's pre-decided pivot, to buy the funnel a
-      // slot on a bar the 5e2e9d4 gate had measured folding three of six primary items. Reverted:
-      // the pivot cost a SHIPPED control its only Regular route and failed that shipped test,
-      // while not actually solving the fold (five items into three slots still folds something).
-      // WP16 P2's two-column Regular-3 is what solved it — with the inspector collapsed the bar
-      // has room and the funnel is primary, which the iPad leg now passes on all four popover
-      // tests. IMGMGR-390 makes that collapsed state the LAUNCH state, so the unfolded bar is
-      // what a reader meets; the remaining inspector-SHOWN fold is the declared deviation on
-      // IMGMGR-293, not something to pay for with a shipped control.
-      ToolbarItem(placement: .primaryAction) {
-        GridShortcutHelpControl(store: store)
-      }
-    }
-  }
+  // WP28 P2 (IMGMGR-449): the five view-option controls used to be declared here as five
+  // `ToolbarItem(placement: .primaryAction)`s, with Info declared separately around this view.
+  // All six are now ONE `ToolbarItemGroup` whose membership and order `ShellToolbarLayout` states
+  // (WP13 P4 made them primary items rather than overflow ones; WP16 P3 put Filter first;
+  // IMGMGR-390 decided which bar they ride through `WorkspaceChromePlacement`). `WorkspaceContent`
+  // attaches the group, because Info belongs to the inspector topology it owns.
 
   /// The scroll position, translated between what `ScrollView` deals in (a row id) and what
   /// survives the collapse (a photograph) — `GridScrollAnchor` carries the argument for why those

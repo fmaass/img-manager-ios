@@ -106,7 +106,7 @@ enum InspectorSlideOverMetrics {
 ///
 /// A VALUE, and the same "declare the decision, then render the declaration" discipline
 /// `GridChromeRows` and `InspectorPlacement` already follow: the answer is stated once, here,
-/// and `GridView.toolbarContent` renders the statement.
+/// and `ShellToolbarLayout` renders the statement.
 ///
 /// **There is deliberately no inspector-column case, and that is a platform finding rather than
 /// a preference.** IMGMGR-338 comment 3731 asked for the six to move to the inspector's own bar
@@ -133,7 +133,7 @@ enum WorkspaceChromeHost: Equatable, Sendable {
   /// Collapsed — the launch state since IMGMGR-390 — the grid is the wide pane, so all six are
   /// primary and directly hittable, which is the reach the owner's decision buys. Expanded, the
   /// grid is the ~209 pt content column and the OS folds three of the six into the overflow
-  /// chevron: the deviation main already declares on IMGMGR-293 (see `GridView.toolbarContent`),
+  /// chevron: the deviation main already declares on IMGMGR-293 (see `ShellToolbarLayout`),
   /// left standing here because the alternative placement is unreachable, not merely cramped.
   case gridColumn
 }

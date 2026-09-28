@@ -92,11 +92,12 @@ struct FolderTreeSection: View {
   /// one set of open rows, and a column swap no longer throws either away.
   @Bindable var treeState: FolderTreeState
   /// What the rows are narrowed by (`FolderSearchModel.text` where a search surface exists, ""
-  /// for the Compact Library tab, which is the unfiltered tree).
+  /// for the Compact Library tab, which is the unfiltered tree). WP28 P2 (IMGMGR-449): the tree
+  /// renders no search field of its own — the Compact Search tab's `.searchable` and the Regular
+  /// split's toolbar search are the two surfaces, one per shell, over one query (plan Decision 5).
+  /// Either way it searches the already-loaded folder NAMES, in memory: never `GridImagesQuery.q`
+  /// (an image-level browse filter, a different question) and never a second server call.
   let searchQuery: String
-  /// The inline field's text, or nil where the inline field is not rendered — at Compact the
-  /// Search tab's `.searchable` field is the one search surface (plan Decision 5).
-  let inlineSearchText: Binding<String>?
   let onSelect: (Int, GridSourceTier) -> Void
 
   var body: some View {
@@ -106,9 +107,6 @@ struct FolderTreeSection: View {
         // because a partial failure still renders a tree underneath it, and a note below rows the
         // reader has already started scanning is a note they will not read.
         failureNotice
-        if let inlineSearchText {
-          searchField(inlineSearchText)
-        }
         ForEach(FolderTreeTier.allCases, id: \.self) { tier in
           tierBranch(tier)
         }
@@ -245,34 +243,6 @@ struct FolderTreeSection: View {
       // reader flips the switch in either menu. `FolderTreeModel.tierItems` decides what the flag
       // means (archive only, before the fold); this view only says what the reader asked for.
       pruneMirroredArchive: preferences.pruneMirroredArchive)
-  }
-
-  /// Searching the 855 already-loaded folder NAMES, in memory. Never `GridImagesQuery.q` — that
-  /// one is an image-level browse filter and answers a different question — and never a second
-  /// call to the server for something the client is already holding.
-  private func searchField(_ text: Binding<String>) -> some View {
-    HStack(spacing: 6) {
-      Image(systemName: "magnifyingglass")
-        .foregroundStyle(.secondary)
-        .accessibilityHidden(true)
-      TextField("Search folders", text: text)
-        .textFieldStyle(.plain)
-        .autocorrectionDisabled()
-        .textInputAutocapitalization(.never)
-        .submitLabel(.search)
-        .accessibilityIdentifier("folderTreeSearchField")
-      if isSearching {
-        Button {
-          text.wrappedValue = ""
-        } label: {
-          Image(systemName: "xmark.circle.fill")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .accessibilityLabel("Clear the folder search")
-        .accessibilityIdentifier("folderTreeSearchClear")
-      }
-    }
   }
 
   @ViewBuilder
