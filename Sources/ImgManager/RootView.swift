@@ -173,6 +173,7 @@ struct RootView: View {
         routedBody
       #endif
     }
+    .overlay(alignment: .topLeading) { materialsSettingsProbe }
     .task { await auth.bootstrap() }
     .onOpenURL { url in
       NativeLoginCallbackInbox.shared.deliver(url)
@@ -404,6 +405,19 @@ struct RootView: View {
       }
     #endif
   }
+
+  /// WP28 P4 (IMGMGR-451): the materials suite's read-back of the REAL accessibility settings,
+  /// over whichever shell renders. Two declarations, no `#if` inside a builder — the shape of
+  /// `GridView.debugProbeElement`; in Release it is an `EmptyView`.
+  #if DEBUG
+    @ViewBuilder private var materialsSettingsProbe: some View {
+      if DebugStubLaunch.materialsProbe {
+        MaterialsSettingsProbe()
+      }
+    }
+  #else
+    private var materialsSettingsProbe: some View { EmptyView() }
+  #endif
 
   /// IMGMGR-255: the account item, declared ONCE and attached to the split view's own COLUMNS.
   /// WP8 P1 attached it to the `Group` that wraps the `NavigationSplitView` instead, and that

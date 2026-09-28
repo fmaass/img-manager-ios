@@ -1,0 +1,40 @@
+# WP28 P4 (IMGMGR-451): the named materials screenshot matrix, plan Phase 4 (18 per destination).
+# <dest>-<surface>-<mode>.png; bin/gate-lib.sh gate_check_materials_manifest resolves each name
+# from the UI legs' exported attachments and fails when one is missing, empty, or byte-identical
+# to its default-mode sibling. MaterialsScreenshotUITests names its attachments from this list.
+iphone-shoots-home-default.png
+iphone-shoots-home-reduce-transparency.png
+iphone-shoots-home-increase-contrast.png
+iphone-library-default.png
+iphone-library-reduce-transparency.png
+iphone-library-increase-contrast.png
+iphone-search-active-default.png
+iphone-search-active-reduce-transparency.png
+iphone-search-active-increase-contrast.png
+iphone-grid-pushed-default.png
+iphone-grid-pushed-reduce-transparency.png
+iphone-grid-pushed-increase-contrast.png
+iphone-inspector-sheet-default.png
+iphone-inspector-sheet-reduce-transparency.png
+iphone-inspector-sheet-increase-contrast.png
+iphone-summary-sheet-default.png
+iphone-summary-sheet-reduce-transparency.png
+iphone-summary-sheet-increase-contrast.png
+ipad-regular3-collapsed-default.png
+ipad-regular3-collapsed-reduce-transparency.png
+ipad-regular3-collapsed-increase-contrast.png
+ipad-regular3-inspector-default.png
+ipad-regular3-inspector-reduce-transparency.png
+ipad-regular3-inspector-increase-contrast.png
+ipad-regular2-grid-default.png
+ipad-regular2-grid-reduce-transparency.png
+ipad-regular2-grid-increase-contrast.png
+ipad-search-active-default.png
+ipad-search-active-reduce-transparency.png
+ipad-search-active-increase-contrast.png
+ipad-summary-sheet-default.png
+ipad-summary-sheet-reduce-transparency.png
+ipad-summary-sheet-increase-contrast.png
+ipad-select-bar-default.png
+ipad-select-bar-reduce-transparency.png
+ipad-select-bar-increase-contrast.png

@@ -788,7 +788,7 @@ struct GridOptionsRow: View {
     .truncationMode(.tail)
     .padding(.horizontal)
     .padding(.vertical, 6)
-    .background(.thinMaterial)
+    .chromeFill(.thinMaterial)
     // NO `.accessibilityIdentifier` on this HStack: an identifier set on a container OVERRIDES
     // its descendants'. Observed on the iPhone 17 Pro gate leg — both controls came back as
     // `identifier: 'gridOptionsRow'` and neither `gridGroupControl` nor `gridZoomControl`
@@ -815,6 +815,12 @@ struct GridShortcutHelpControl: View {
       store.showShortcutHelp()
     } label: {
       Label("Keyboard shortcuts", systemImage: "keyboard")
+        // WP28 P4 (IMGMGR-451): the keyboard glyph is short, so the bordered capsule — which IS
+        // the hit target — measured 46.7 × 27.7 pt on the Compact options row, under the 28 pt
+        // floor. A frame OUTSIDE the button (the `minHeight: 44` at the call site) does not
+        // grow it. 18 pt of label height brings the capsule to its text siblings' height
+        // (Group/Sort, 32-34 pt) and adds nothing at Regular, where the bar item is 36 pt.
+        .frame(minHeight: 18)
     }
     // Icon-only ON PURPOSE here, unlike Group/Zoom: it carries no value to read, and the row's
     // job is the two view options — this is the help affordance beside them, not a third one.
@@ -849,7 +855,7 @@ struct PickLockModeRow: View {
     }
     .padding(.horizontal)
     .padding(.vertical, 8)
-    .background(.thinMaterial)
+    .chromeFill(.thinMaterial)
   }
 }
 
@@ -878,12 +884,21 @@ struct SelectModeRow: View {
           .accessibilityIdentifier("selectModeEmptyHint")
       }
       Spacer()
-      Button("Done") { store.done() }
-        .frame(minWidth: 44, minHeight: 44)
+      // WP28 P4 (IMGMGR-451): the 44 pt sits on the LABEL, with a shape to hit — a frame outside
+      // a borderless button grows only its layout slot, and the census measured the text alone
+      // (40.5 × 20.5 pt, gate on bd47740). Nothing is drawn in it, so the row looks the same.
+      Button {
+        store.done()
+      } label: {
+        Text("Done")
+          .frame(minWidth: 44, minHeight: 44)
+          .contentShape(Rectangle())
+      }
+      .accessibilityIdentifier("selectModeDone")
     }
     .padding(.horizontal)
     .padding(.vertical, 8)
-    .background(.thinMaterial)
+    .chromeFill(.thinMaterial)
   }
 }
 
@@ -1085,7 +1100,7 @@ struct ActionBarView: View {
       }
     }
     .frame(maxWidth: .infinity)
-    .background(.bar)
+    .chromeFill(.bar)
     .sheet(isPresented: $store.isTagEntryPresented) {
       TagEntrySheet(store: store)
     }
@@ -1153,6 +1168,12 @@ struct ActionBarView: View {
           openShootWindow: openShootWindow)
       } label: {
         Label("More", systemImage: "ellipsis.circle")
+          // WP28 P4 (IMGMGR-451): this menu draws no capsule, so its hit target is the glyph
+          // alone unless the label itself is sized — the `.actionBarControlSize()` below sits
+          // OUTSIDE the control and grows only the layout slot. The same 44 pt, on the label,
+          // with a shape to hit: nothing is drawn in it, so the bar looks the same.
+          .actionBarControlSize()
+          .contentShape(Rectangle())
       }
       // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
       // secondaryAction toolbar items into an overflow control with the same label, and a UI
@@ -1274,7 +1295,7 @@ struct MarksCopyBanner: View {
       }
       .padding(.horizontal)
       .padding(.vertical, 6)
-      .background(.thinMaterial)
+      .chromeFill(.thinMaterial)
     }
   }
 }
@@ -1299,7 +1320,7 @@ struct ConflictRecoveryBanner: View {
       .padding(.horizontal)
       .padding(.vertical, 6)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(.thinMaterial)
+      .chromeFill(.thinMaterial)
       .accessibilityIdentifier("conflictRecoveryReading")
     case .identified:
       HStack(spacing: 12) {

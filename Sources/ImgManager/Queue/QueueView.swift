@@ -108,7 +108,9 @@ struct QueueView: View {
       if queueStore.isRefreshing {
         ProgressView()
           .padding(6)
-          .background(.thinMaterial, in: Capsule())
+          // WP28 P4 (IMGMGR-451): at Regular this list IS the glass sidebar, so the capsule is
+          // never a material there (glass on glass) — MaterialPolicy's `insideSystemGlass`.
+          .chromeFill(.insideSystemGlass, in: Capsule())
           .padding(.top, 4)
       }
     }

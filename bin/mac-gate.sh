@@ -113,7 +113,8 @@
 #                            `--legs <list>` overrides it. Known legs, in the order they run:
 #                            mirror, manifest, api-nullable-tests, xcodegen, build,
 #                            widget-embed, test-iphone, test-ipad, idiom-grep,
-#                            no-c-shortcut-grep, ui-orientation-base-grep, lint, pins.
+#                            no-c-shortcut-grep, ui-orientation-base-grep,
+#                            no-custom-glass-grep, lint, pins.
 #                            `mirror` is the rsync mirror step and is always included; it
 #                            RECORDS itself under its existing leg name, `rsync`. Prerequisites
 #                            (refused, never auto-added): build needs xcodegen; widget-embed
@@ -530,7 +531,7 @@ if want api-nullable-tests; then
   api_nullable_rc="$(printf '%s\n' "$summary" | tr ' ' '\n' | sed -n 's/^api-nullable-tests=//p')"
   if [ "$api_nullable_rc" != "0" ]; then
     echo "api-nullable-tests failed (exit $api_nullable_rc) — skipping every other SELECTED leg (fail-fast)"
-    for leg in xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep lint pins; do
+    for leg in xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep no-custom-glass-grep lint pins; do
       want "$leg" && summary="$summary $leg=skipped"
     done
     echo "MAC_GATE_REMOTE_SUMMARY:$summary"
@@ -626,9 +627,12 @@ if [ "$project_legs" = 1 ]; then
     ipad_udid=""
     want test-iphone && iphone_udid="$(xcrun simctl create "mac-gate-iphone-$$" "__IPHONE_TYPE__" com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
     want test-ipad && ipad_udid="$(xcrun simctl create "mac-gate-ipad-$$" "__IPAD_TYPE__" com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
+    # WP28 P4 (IMGMGR-451): the materials modes change accessibility settings on these two
+    # simulators; the reset runs here too, so a run that dies mid-mode leaves nothing behind.
+    # Each call names ONE device, this run's own — never `all` (lane rule).
     cleanup_sims() {
-      [ -z "$iphone_udid" ] || { xcrun simctl shutdown "$iphone_udid" >/dev/null 2>&1; xcrun simctl delete "$iphone_udid" >/dev/null 2>&1; }
-      [ -z "$ipad_udid" ] || { xcrun simctl shutdown "$ipad_udid" >/dev/null 2>&1; xcrun simctl delete "$ipad_udid" >/dev/null 2>&1; }
+      [ -z "$iphone_udid" ] || { gate_materials_reset "$iphone_udid" >/dev/null 2>&1; xcrun simctl shutdown "$iphone_udid" >/dev/null 2>&1; xcrun simctl delete "$iphone_udid" >/dev/null 2>&1; }
+      [ -z "$ipad_udid" ] || { gate_materials_reset "$ipad_udid" >/dev/null 2>&1; xcrun simctl shutdown "$ipad_udid" >/dev/null 2>&1; xcrun simctl delete "$ipad_udid" >/dev/null 2>&1; }
     }
     trap cleanup_sims EXIT
 
@@ -646,6 +650,15 @@ if [ "$project_legs" = 1 ]; then
         -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
       gate_export_screenshots test-iphone "$derived/Results/test-iphone.xcresult"
       summary="$summary screenshots-test-iphone=$?"
+      # WP28 P4 (IMGMGR-451): the leg's run above captured the materials matrix in the DEFAULT
+      # mode. Each extra mode sets its real setting on THIS leg's simulator and re-runs the
+      # materials suite alone (gate-lib.sh), then the manifest check resolves all 18 names.
+      for mode in $GATE_MATERIALS_MODES; do
+        gate_materials_mode_run test-iphone "$iphone_udid" "$mode" "$derived"
+        summary="$summary materials-test-iphone-$mode=$?"
+      done
+      gate_check_materials_manifest iphone test-iphone
+      summary="$summary materials-manifest-test-iphone=$?"
     fi
 
     if want test-ipad; then
@@ -662,6 +675,15 @@ if [ "$project_legs" = 1 ]; then
         -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
       gate_export_screenshots test-ipad "$derived/Results/test-ipad.xcresult"
       summary="$summary screenshots-test-ipad=$?"
+      # WP28 P4 (IMGMGR-451): the leg's run above captured the materials matrix in the DEFAULT
+      # mode. Each extra mode sets its real setting on THIS leg's simulator and re-runs the
+      # materials suite alone (gate-lib.sh), then the manifest check resolves all 18 names.
+      for mode in $GATE_MATERIALS_MODES; do
+        gate_materials_mode_run test-ipad "$ipad_udid" "$mode" "$derived"
+        summary="$summary materials-test-ipad-$mode=$?"
+      done
+      gate_check_materials_manifest ipad test-ipad
+      summary="$summary materials-manifest-test-ipad=$?"
     fi
   fi
 
@@ -732,6 +754,15 @@ if want ui-orientation-base-grep; then
     Tests/ImgManagerUITests/OrientationPinnedUITestCase.swift
   absence_leg ui-orientation-base-grep "UI test classes bypassing the orientation-pinned base" \
     "$ui_hits" "$ui_rc" "the base class's own declaration" "$scan_out" "$scan_rc"
+fi
+
+# WP28 P4 (IMGMGR-451): no custom glass (ADR-N1). Direct glass API calls in any file the app or
+# widget target compiles (the paths are read from project.yml), and UIDesignRequiresCompatibility
+# in the yml/plists. Same scan/absence_leg shape as the legs above — a scan error is red — with no
+# exclusion list; the implementation lives in bin/gate-lib.sh so bin/gate-lib-test.sh runs the
+# very function this calls against its fixtures.
+if want no-custom-glass-grep; then
+  gate_no_custom_glass_leg
 fi
 
 if want lint; then

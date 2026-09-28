@@ -277,7 +277,7 @@ gate_mirror_manifest() {
 # every gate summary in this estate's evidence already carries. One name for the selection, the
 # other for the record, and both are documented rather than reconciled — renaming the recorded
 # leg would invalidate the citations.
-GATE_LEGS_ALL='mirror manifest api-nullable-tests xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep lint pins'
+GATE_LEGS_ALL='mirror manifest api-nullable-tests xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep no-custom-glass-grep lint pins'
 
 # MANDATORY legs are in every selection whether they are named or not. Only `mirror` is: it is
 # not really a check, it is the transport — nothing can run on the Mac that was not copied there
@@ -409,4 +409,484 @@ gate_export_screenshots() {
   _ss_n="$(find "$_ss_dir" -type f ! -name manifest.json | wc -l | tr -d ' ')"
   echo "screenshots $1 exit=$_ss_rc files=$_ss_n"
   return "$_ss_rc"
+}
+
+# --- WP28 P4 (IMGMGR-451): the no-custom-glass leg ------------------------------------------
+#
+# ADR-N1: glass comes from system components only. The leg fails on any direct glass API call in
+# a file the APP or WIDGET target compiles, and on the one Info.plist key that would opt the app
+# out of the iOS 26 design. What the targets compile is read from project.yml — never a
+# hand-kept list beside it — so a new source path is scanned the moment a target names it.
+
+# The custom-glass spellings. `glassEffect` with any suffix (`glassEffectID`, `…Union`,
+# `…Transition`) followed by optional whitespace and the call's parenthesis — a space or a tab
+# before `(` still compiles, so it must still match. The two button styles are matched both as
+# the `.glass…` member and as the explicit type.
+GATE_CUSTOM_GLASS_PATTERN='glassEffect[[:alnum:]]*[[:space:]]*\(|GlassEffectContainer|buttonStyle[[:space:]]*\([[:space:]]*\.glass|Glass(Prominent)?ButtonStyle'
+
+# gate_glass_scan PATTERN PATH... — the source half of the leg, MULTI-LINE: each file is read
+# whole (perl slurp), so `[[:space:]]*` crosses newlines and a call split before its `(` —
+# `.glassEffect` on one line, `(.regular)` on the next — is still a hit. Walks each directory
+# like `grep -rI` (skips `.build` and binary files) and prints `file:line:match` per hit.
+# Exit: 0 a hit, 1 none, 2 a path that does not exist, a directory it cannot traverse, a file it
+# cannot open, read or close, any warning raised while walking, or a bad pattern — the grep contract `scan`/`absence_leg` read, so a scan error is a red leg.
+gate_glass_scan() {
+  ${GATE_PERL:-perl} -e '
+    use strict; use warnings; use File::Find;
+    my $re = shift @ARGV;
+    my $rx = eval { qr/$re/ } or do { print STDERR "gate-lib: bad pattern: $@"; exit 2 };
+    my ($hit, $err, @files) = (0, 0);
+    # Any warning (File::Find cannot open or stat a directory, an I/O warning) is a scan error.
+    local $SIG{__WARN__} = sub { print STDERR "gate-lib: $_[0]"; $err = 1 };
+    for my $p (@ARGV) {
+      if (-f $p) { push @files, $p; next }
+      unless (-d $p) { print STDERR "gate-lib: no such path $p\n"; $err = 1; next }
+      find({ no_chdir => 1, wanted => sub {
+        if (-d $_) {
+          if ($_ ne $p && m{(^|/)\.build$}) { $File::Find::prune = 1; return }
+          unless (-r $_ && -x $_) { print STDERR "gate-lib: cannot read $_\n"; $err = 1 }
+          return;
+        }
+        push @files, $_ if -f $_;
+      } }, $p);
+    }
+    for my $f (sort @files) {
+      next if -s $f && -B $f;
+      open(my $fh, "<:raw", $f) or do { print STDERR "gate-lib: cannot read $f: $!\n"; $err = 1; next };
+      my $size = (-s $fh) || 0;
+      my $text = do { local $/; <$fh> };
+      unless (defined $text) { print STDERR "gate-lib: cannot read $f: $!\n"; $err = 1; close $fh; next }
+      # A short read (an I/O error part-way) must not pass as a smaller, clean file.
+      unless (length($text) == $size) {
+        print STDERR "gate-lib: short read of $f: " . length($text) . " of $size bytes\n";
+        $err = 1; close $fh; next;
+      }
+      unless (close $fh) { print STDERR "gate-lib: cannot close $f: $!\n"; $err = 1; next }
+      while ($text =~ /$rx/g) {
+        my $line = 1 + (substr($text, 0, $-[0]) =~ tr/\n//);
+        (my $m = substr($text, $-[0], $+[0] - $-[0])) =~ s/\s+/ /g;
+        print "$f:$line:$m\n";
+        $hit = 1;
+      }
+    }
+    exit 2 if $err;
+    exit($hit ? 0 : 1);
+  ' "$@"
+}
+
+# gate_compiled_source_paths YML — print, one per line and without duplicates, every `sources:`
+# path of each target whose `type:` is `application` or `app-extension`, then every local
+# package path (a local package is compiled into the app). Returns 2, printing nothing, when YML
+# is unreadable, awk fails, or not one path is found: an empty list would scan nothing and pass.
+gate_compiled_source_paths() {
+  [ -r "$1" ] || { echo "gate-lib: cannot read $1" >&2; return 2; }
+  _gcsp_out="$(awk '
+    function clean(v) { sub(/[ \t]+#.*$/, "", v); gsub(/"/, "", v); sub(/[ \t]+$/, "", v); return v }
+    function emit(v) { if (v != "" && !(v in seen)) { seen[v] = 1; print v } }
+    function flush(  i) {
+      if (ttype == "application" || ttype == "app-extension") for (i = 1; i <= n; i++) emit(buf[i])
+      n = 0; ttype = ""; sec = ""
+    }
+    /^[ \t]*#/ || /^[ \t]*$/ { next }
+    /^[^ ]/ { flush(); top = $1; next }
+    top == "packages:" && /^    path:/ { v = $0; sub(/^    path:[ \t]*/, "", v); emit(clean(v)); next }
+    top != "targets:" { next }
+    /^  [^ ]/ { flush(); next }
+    /^    [^ -]/ { sec = $1; if ($1 == "type:") ttype = clean($2); next }
+    sec == "sources:" && /^      - / {
+      v = $0; sub(/^      - [ \t]*/, "", v); sub(/^path:[ \t]*/, "", v); buf[++n] = clean(v); next
+    }
+    END { flush() }
+  ' "$1")" || { echo "gate-lib: awk failed on $1" >&2; return 2; }
+  [ -n "$_gcsp_out" ] || { echo "gate-lib: no compiled source path found in $1" >&2; return 2; }
+  printf '%s\n' "$_gcsp_out"
+}
+
+# gate_design_config_files — print the files the UIDesignRequiresCompatibility scan reads: every
+# root-level *.yml (project.yml and the specs it includes) and every *.plist in the tree outside
+# the caches (the generated Support/*.plist included once xcodegen has run). Returns find's own
+# status, so a traversal error is not read as "no plist".
+gate_design_config_files() {
+  for _gdcf in *.yml; do [ -f "$_gdcf" ] && printf '%s\n' "$_gdcf"; done
+  find . \( -name .git -o -name DerivedData -o -name .build -o -name .gate-artifacts \
+    -o -name '*.xcodeproj' -o -name '*.xcresult' -o -name .tools \) -prune \
+    -o -type f -name '*.plist' -print
+}
+
+# The two ways an absence leg combines two scans. Hits: any scan error is 2, else any match is 0.
+# Controls: any scan error is 2, else BOTH must have matched for 0.
+gate_rc_any_hit() {
+  if [ "$1" -ge 2 ] || [ "$2" -ge 2 ]; then echo 2
+  elif [ "$1" -eq 0 ] || [ "$2" -eq 0 ]; then echo 0
+  else echo 1; fi
+}
+gate_rc_all_found() {
+  if [ "$1" -ge 2 ] || [ "$2" -ge 2 ]; then echo 2
+  elif [ "$1" -eq 0 ] && [ "$2" -eq 0 ]; then echo 0
+  else echo 1; fi
+}
+
+# gate_no_custom_glass_leg — the `no-custom-glass-grep` leg, run from the checkout root, in the
+# scan/absence_leg shape of every other absence leg: grep's own exit status is kept (a scan error
+# is rc 2, a red leg), and a positive control — a SwiftUI import in the scanned sources AND the
+# deploymentTarget line of project.yml — proves both halves read real content. There is no
+# exclusion list: a comment or string that spells a glass call is a hit too.
+gate_no_custom_glass_leg() {
+  _ncg_paths="$(gate_compiled_source_paths project.yml 2>>.gate-artifacts/scan-errors.log)"
+  _ncg_paths_rc=$?
+  if [ "$_ncg_paths_rc" -ne 0 ]; then
+    absence_leg no-custom-glass-grep "custom-glass hits (no compiled source path read from project.yml)" \
+      "" 2 "compiled source paths from project.yml" "" 2
+    return 0
+  fi
+  _ncg_cfg="$(gate_design_config_files 2>>.gate-artifacts/scan-errors.log)"
+  _ncg_cfg_rc=$?
+  _ncg_ifs=$IFS
+  IFS='
+'
+  scan gate_glass_scan "$GATE_CUSTOM_GLASS_PATTERN" $_ncg_paths
+  _ncg_src=$scan_out; _ncg_src_rc=$scan_rc
+  scan grep -rlI --include='*.swift' 'import SwiftUI' $_ncg_paths
+  _ncg_ctl=$scan_out; _ncg_ctl_rc=$scan_rc
+  scan grep -nIH 'UIDesignRequiresCompatibility' $_ncg_cfg
+  _ncg_opt=$scan_out; _ncg_opt_rc=$scan_rc
+  IFS=$_ncg_ifs
+  [ "$_ncg_cfg_rc" -eq 0 ] || _ncg_opt_rc=2
+  scan grep -nH 'deploymentTarget' project.yml
+  _ncg_hits_rc="$(gate_rc_any_hit "$_ncg_src_rc" "$_ncg_opt_rc")"
+  _ncg_ctl_all_rc="$(gate_rc_all_found "$_ncg_ctl_rc" "$scan_rc")"
+  absence_leg no-custom-glass-grep \
+    "custom-glass calls in the compiled sources ($(printf '%s' "$_ncg_paths" | tr '\n' ' ')) and UIDesignRequiresCompatibility in the yml/plists" \
+    "$_ncg_src$_ncg_opt" "$_ncg_hits_rc" \
+    "SwiftUI imports in the compiled sources, and project.yml's deploymentTarget" \
+    "$_ncg_ctl
+$scan_out" "$_ncg_ctl_all_rc"
+}
+
+# --- WP28 P4 (IMGMGR-451): the materials screenshot matrix under REAL accessibility settings ---
+#
+# The default mode's screenshots come from the UI leg itself (the suite is part of it). Each
+# extra mode then sets the real simulator setting on THAT leg's own simulator — never another
+# one, never `simctl … all` — and re-runs ONLY the materials suite without rebuilding. The suite
+# reads the setting back in the app (`materialsSettingsProbe`) before every capture and captures
+# nothing when it does not read back. GATE_XCRUN and GATE_XCODEBUILD replace the tools in
+# bin/gate-lib-test.sh; they are word-split on purpose, like GATE_XCRESULTTOOL.
+GATE_MATERIALS_SUITE='ImgManagerUITests/MaterialsScreenshotUITests'
+GATE_MATERIALS_MODES='reduce-transparency increase-contrast'
+GATE_MATERIALS_MANIFEST='Tests/ImgManagerUITests/MaterialsScreenshotManifest.txt'
+
+# gate_materials_set UDID MODE on|off|notify — one setting on one simulator. `notify` is the
+# plan's pivot for Reduce Transparency: the accessibility cache's own change notification.
+gate_materials_set() {
+  case "$2:$3" in
+    # Two keys: the Settings switch is stored as EnhancedBackgroundContrastEnabled (what
+    # UIAccessibility reads), ReduceTransparencyEnabled is the plan's name for it. Fold round 1:
+    # the plan's key alone never read back on iOS 26.5 (gate on 832e6f1), so both are written.
+    reduce-transparency:on)
+      ${GATE_XCRUN:-xcrun} simctl spawn "$1" defaults write com.apple.Accessibility ReduceTransparencyEnabled -bool true \
+        && ${GATE_XCRUN:-xcrun} simctl spawn "$1" defaults write com.apple.Accessibility EnhancedBackgroundContrastEnabled -bool true ;;
+    reduce-transparency:off)
+      ${GATE_XCRUN:-xcrun} simctl spawn "$1" defaults write com.apple.Accessibility ReduceTransparencyEnabled -bool false \
+        && ${GATE_XCRUN:-xcrun} simctl spawn "$1" defaults write com.apple.Accessibility EnhancedBackgroundContrastEnabled -bool false \
+        && gate_materials_set "$1" reduce-transparency notify ;;
+    reduce-transparency:notify)
+      ${GATE_XCRUN:-xcrun} simctl spawn "$1" notifyutil -p com.apple.accessibility.cache.reduce.transparency \
+        && ${GATE_XCRUN:-xcrun} simctl spawn "$1" notifyutil -p com.apple.accessibility.cache.enhance.background.contrast ;;
+    increase-contrast:on) ${GATE_XCRUN:-xcrun} simctl ui "$1" increase_contrast enabled ;;
+    increase-contrast:off) ${GATE_XCRUN:-xcrun} simctl ui "$1" increase_contrast disabled ;;
+    *) echo "gate-lib: unknown materials setting '$2:$3'" >&2; return 64 ;;
+  esac
+}
+
+# gate_materials_reset UDID — both settings off on that one simulator; returns the first failure.
+# Called after every mode AND from the UI legs' EXIT trap (bin/mac-gate.sh cleanup_sims), so a
+# run that dies mid-mode does not leave the setting behind.
+gate_materials_reset() {
+  [ -n "$1" ] || return 0
+  gate_materials_set "$1" reduce-transparency off; _gmr_a=$?
+  gate_materials_set "$1" increase-contrast off; _gmr_b=$?
+  [ "$_gmr_a" -eq 0 ] || return "$_gmr_a"
+  return "$_gmr_b"
+}
+
+# gate_materials_mode_run LEG UDID MODE DERIVED — one extra mode on LEG's own simulator: boot
+# status, set, run the materials suite alone (test-without-building, -only-testing), reset,
+# export. When the app does not read Reduce Transparency back the suite prints a line
+# `MATERIALS-UNRESOLVED dest=… mode=… run=…` and SKIPS its captures (plan Phase 4 fallback
+# rule: an UNRESOLVED mode is not a red leg). Only a run that exited 0 with that line triggers
+# the plan's one pivot — the cache notification, then ONE more run, a cold launch — so a retry
+# never replaces a failed run: a non-zero run is final. Any other read-back mismatch is a red
+# suite. Each run gets a fresh token (TEST_RUNNER_IMG_MATERIALS_RUN), recorded in
+# `.gate-artifacts/materials-LEG-MODE.run`; the suite writes it into its marker, which is how the
+# manifest check knows a marker came from THIS run. Prints `materials-LEG-MODE exit=RC (…)`,
+# plus ` UNRESOLVED …` when the last run still did not read back, and returns RC: the first
+# non-zero of set, run, reset and export, so a reset or export failure is never swallowed.
+gate_materials_mode_run() {
+  _gm_name="materials-$1-$3"
+  _gm_log=".gate-artifacts/$_gm_name.log"
+  _gm_bundle="$4/Results/$_gm_name.xcresult"
+  _gm_runfile=".gate-artifacts/$_gm_name.run"
+  : > "$_gm_log"
+  rm -f "$_gm_runfile"
+  ${GATE_XCRUN:-xcrun} simctl bootstatus "$2" -b >> "$_gm_log" 2>&1
+  _gm_rc=$?
+  if [ "$_gm_rc" -eq 0 ]; then
+    gate_materials_set "$2" "$3" on >> "$_gm_log" 2>&1
+    _gm_rc=$?
+  fi
+  _gm_try=0
+  while [ "$_gm_rc" -eq 0 ] && [ "$_gm_try" -lt 2 ]; do
+    _gm_try=$((_gm_try + 1))
+    rm -rf "$_gm_bundle"; mkdir -p "$4/Results"
+    echo "--- materials $3 run $_gm_try ---" >> "$_gm_log"
+    _gm_nonce="$1-$3-$$-$_gm_try-$(date +%s)"
+    printf '%s\n' "$_gm_nonce" > "$_gm_runfile"
+    env TEST_RUNNER_IMG_MATERIALS_MODE="$3" TEST_RUNNER_IMG_MATERIALS_RUN="$_gm_nonce" \
+      ${GATE_XCODEBUILD:-xcodebuild} test-without-building \
+      -project ImgManager.xcodeproj -scheme ImgManager \
+      -destination "id=$2" \
+      -derivedDataPath "$4" \
+      -resultBundlePath "$_gm_bundle" \
+      -only-testing:"$GATE_MATERIALS_SUITE" \
+      -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile >> "$_gm_log" 2>&1
+    _gm_run=$?
+    if [ "$_gm_run" -eq 0 ] && [ "$_gm_try" -eq 1 ] && [ "$3" = reduce-transparency ] \
+      && grep -q "^MATERIALS-UNRESOLVED .* run=$_gm_nonce " "$_gm_log"; then
+      echo "PIVOT: $3 did not read back after defaults write; posting the cache notification" >> "$_gm_log"
+      gate_materials_set "$2" "$3" notify >> "$_gm_log" 2>&1 || { _gm_rc=$?; break; }
+      continue
+    fi
+    _gm_rc=$_gm_run
+    break
+  done
+  gate_materials_set "$2" "$3" off >> "$_gm_log" 2>&1
+  _gm_reset=$?
+  gate_export_screenshots "$_gm_name" "$_gm_bundle" >> "$_gm_log"
+  _gm_export=$?
+  [ "$_gm_rc" -ne 0 ] || _gm_rc=$_gm_reset
+  [ "$_gm_rc" -ne 0 ] || _gm_rc=$_gm_export
+  _gm_unresolved=""
+  # Only the LAST run's section counts: a pivot that took leaves run 1's line behind.
+  if [ "$_gm_rc" -eq 0 ] && [ "$3" = reduce-transparency ] && sed -n "/^--- materials $3 run $_gm_try ---\$/,\$p" "$_gm_log" \
+    | grep -q "^MATERIALS-UNRESOLVED .* run=$_gm_nonce "; then
+    _gm_unresolved=" UNRESOLVED: the setting did not read back after the pivot; nothing captured"
+  fi
+  echo "$_gm_name exit=$_gm_rc (runs=$_gm_try reset=$_gm_reset export=$_gm_export)$_gm_unresolved"
+  return "$_gm_rc"
+}
+
+# gate_check_materials_manifest DEST LEG [MANIFEST] — resolve every manifest name for DEST
+# (`<dest>-<surface>-<mode>.png`) out of the exported manifest.json files of LEG and its extra
+# modes (matched by the attachment's name), copy each to .gate-artifacts/screenshots/materials/
+# under its manifest name for the owner, and fail when one is MISSING, EMPTY, or byte-IDENTICAL
+# to its default-mode sibling (a setting that changed nothing is not evidence).
+#
+# The ONE escape (plan Phase 4 fallback rule): Reduce Transparency's names may ALL be absent for
+# DEST when that mode is UNRESOLVED — the suite recorded `materials-unresolved-DEST-reduce-
+# transparency` (an attachment in THAT mode's own export; or, when none was exported, the
+# `MATERIALS-UNRESOLVED` line of that mode's LAST run in its log) naming DEST, the mode, the
+# run's token from `.gate-artifacts/materials-LEG-reduce-transparency.run` and a reading of
+# `"reduceTransparency": "0"`. Each name prints `UNRESOLVED <name>` and the marker is copied
+# beside the shots. BADMARKER (a failure): a marker for any other mode, one outside its mode's
+# export, one without this run's token (stale or copied in), one whose reading is not the
+# unread default. MIXED (a failure): a marker AND any captured shot of that mode.
+#
+# Prints one line `materials-manifest LEG exit=RC named=N[ unresolved=M]` and returns RC: 0 all
+# present and distinct (or UNRESOLVED as above), 1 a name failed, 2 a manifest.json could not be
+# read, 3 no manifest line for DEST, and the resolver's own code otherwise (127: no python3).
+# GATE_PYTHON replaces the interpreter in the test.
+gate_check_materials_manifest() {
+  _cm_manifest="${3:-$GATE_MATERIALS_MANIFEST}"
+  _cm_out=".gate-artifacts/screenshots/materials"
+  _cm_log=".gate-artifacts/materials-manifest-$2.log"
+  mkdir -p "$_cm_out" || { echo "materials-manifest $2 exit=4 named=0"; return 4; }
+  _cm_dirs=".gate-artifacts/screenshots/$2"
+  for _cm_mode in $GATE_MATERIALS_MODES; do
+    _cm_dirs="$_cm_dirs .gate-artifacts/screenshots/materials-$2-$_cm_mode"
+  done
+  # shellcheck disable=SC2086 # the directory list is word-split on purpose (no spaces in it)
+  ${GATE_PYTHON:-python3} - "$1" "$2" "$_cm_manifest" "$_cm_out" $_cm_dirs > "$_cm_log" 2>&1 <<'PY'
+import json, os, shutil, sys
+dest, leg, manifest, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+dirs = sys.argv[5:]
+MODES = ("default", "reduce-transparency", "increase-contrast")
+UNRESOLVABLE = ("reduce-transparency",)
+def matches(human, stem):
+    return human == stem or human.startswith(stem + "_") or human.startswith(stem + ".")
+def dir_mode(d):
+    base = os.path.basename(d.rstrip("/"))
+    prefix = "materials-%s-" % leg
+    return base[len(prefix):] if base.startswith(prefix) else "default"
+def run_token(mode):
+    path = os.path.join(".gate-artifacts", "materials-%s-%s.run" % (leg, mode))
+    if not os.path.isfile(path):
+        return None
+    with open(path) as fh:
+        token = fh.read().strip()
+    return token or None
+def mode_of(stem):
+    for mode in MODES:
+        if stem.endswith("-" + mode):
+            return mode
+    return None
+names = []
+with open(manifest) as fh:
+    for raw in fh:
+        line = raw.strip()
+        if line and not line.startswith("#") and line.startswith(dest + "-"):
+            names.append(line)
+if not names:
+    print("NO-LINES no manifest line for %s in %s" % (dest, manifest))
+    sys.exit(3)
+found = {}
+markers = {}
+def walk(node, base):
+    if isinstance(node, dict):
+        if "exportedFileName" in node:
+            yield node, base
+        for value in node.values():
+            for hit in walk(value, base):
+                yield hit
+    elif isinstance(node, list):
+        for value in node:
+            for hit in walk(value, base):
+                yield hit
+unreadable = False
+for d in dirs:
+    path = os.path.join(d, "manifest.json")
+    if not os.path.isfile(path):
+        print("NO-MANIFEST %s" % path)
+        continue
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        print("UNREADABLE %s: %s" % (path, exc))
+        unreadable = True
+        continue
+    for att, base in walk(data, d):
+        human = str(att.get("suggestedHumanReadableName") or att.get("name") or "")
+        for name in names:
+            stem = name[:-4] if name.endswith(".png") else name
+            if matches(human, stem):
+                found.setdefault(name, []).append(os.path.join(base, att["exportedFileName"]))
+        for mode in MODES:
+            if matches(human, "materials-unresolved-%s-%s" % (dest, mode)):
+                path = os.path.join(base, att["exportedFileName"])
+                markers.setdefault(mode, []).append((dir_mode(d), path))
+bad = 0
+for stale in os.listdir(out):
+    if stale.startswith("materials-unresolved-%s-" % dest):
+        os.remove(os.path.join(out, stale))
+# The log fallback: the LAST run's section of each extra mode's own log, and only when that log
+# has a run header at all.
+for mode in MODES[1:]:
+    if mode in markers:
+        continue
+    path = os.path.join(".gate-artifacts", "materials-%s-%s.log" % (leg, mode))
+    if not os.path.isfile(path):
+        continue
+    with open(path, errors="replace") as fh:
+        lines = fh.read().splitlines()
+    starts = [i for i, l in enumerate(lines) if l.startswith("--- materials %s run " % mode)]
+    if not starts:
+        continue
+    want = "MATERIALS-UNRESOLVED dest=%s mode=%s " % (dest, mode)
+    hit = [l for l in lines[starts[-1]:] if l.startswith(want)]
+    if hit:
+        markers[mode] = [(mode, ("log", hit[-1]))]
+unresolved = set()
+for mode, hits in sorted(markers.items()):
+    marker = "materials-unresolved-%s-%s" % (dest, mode)
+    if mode not in UNRESOLVABLE:
+        print("BADMARKER %s (only reduce-transparency may be UNRESOLVED; %s has no escape)" % (marker, mode))
+        bad += 1
+        continue
+    origin_mode, src = hits[-1]
+    if len(hits) > 1 or origin_mode != mode:
+        print("BADMARKER %s (%d marker(s); found in the %s export, not only in its own mode's)" % (marker, len(hits), origin_mode))
+        bad += 1
+        continue
+    if isinstance(src, tuple):
+        text, origin = src[1], "the mode's last-run log line"
+    elif os.path.isfile(src):
+        with open(src, errors="replace") as fh:
+            text = fh.read()
+        origin = "the suite's attachment"
+    else:
+        print("BADMARKER %s (its attachment file %s is missing)" % (marker, src))
+        bad += 1
+        continue
+    token = run_token(mode)
+    if token is None:
+        print("BADMARKER %s (no run record materials-%s-%s.run: not from this gate's run)" % (marker, leg, mode))
+        bad += 1
+        continue
+    if ("dest=%s mode=%s run=%s " % (dest, mode, token)) not in text + " ":
+        print("BADMARKER %s (does not carry this run's token %s: stale or copied in)" % (marker, token))
+        bad += 1
+        continue
+    if '"reduceTransparency": "0"' not in text or '"reduceTransparency": "1"' in text:
+        print("BADMARKER %s (its reading is not the unread default: %s)" % (marker, text.strip()[:200]))
+        bad += 1
+        continue
+    captured = [n for n in names if mode_of(n[:-4] if n.endswith(".png") else n) == mode and found.get(n)]
+    if captured:
+        print("MIXED %s: %d shot(s) of the mode were captured (%s); a mode is wholly captured or wholly UNRESOLVED" % (marker, len(captured), ", ".join(captured)))
+        bad += 1
+        continue
+    with open(os.path.join(out, marker + ".txt"), "w") as fh:
+        fh.write(text.rstrip("\n") + "\n")
+    unresolved.add(mode)
+    print("MARKER %s.txt from %s (run %s)" % (marker, origin, token))
+for name in names:
+    hits = found.get(name, [])
+    target = os.path.join(out, name)
+    if os.path.exists(target):
+        os.remove(target)
+    if not hits or not os.path.isfile(hits[-1]):
+        mode = mode_of(name[:-4] if name.endswith(".png") else name)
+        if not hits and mode in unresolved:
+            print("UNRESOLVED %s (the setting did not read back; materials-unresolved-%s-%s.txt)" % (name, dest, mode))
+            continue
+        print("MISSING %s" % name); bad += 1; continue
+    if len(hits) > 1:
+        print("DUPLICATE %s x%d (the last one is used)" % (name, len(hits)))
+    shutil.copyfile(hits[-1], target)
+    if os.path.getsize(target) == 0:
+        print("EMPTY %s" % name); bad += 1; continue
+    print("OK %s %d bytes" % (name, os.path.getsize(target)))
+for name in names:
+    stem = name[:-4] if name.endswith(".png") else name
+    if stem.endswith("-default"):
+        continue
+    sibling = None
+    for mode in ("-reduce-transparency", "-increase-contrast"):
+        if stem.endswith(mode):
+            sibling = os.path.join(out, stem[: -len(mode)] + "-default.png")
+    if sibling is None:
+        print("BADNAME %s (mode is not default, reduce-transparency or increase-contrast)" % name)
+        bad += 1
+        continue
+    target = os.path.join(out, name)
+    if os.path.isfile(target) and os.path.getsize(target) > 0 and os.path.isfile(sibling):
+        with open(target, "rb") as a, open(sibling, "rb") as b:
+            if a.read() == b.read():
+                print("IDENTICAL %s == %s" % (name, os.path.basename(sibling))); bad += 1
+if unreadable:
+    sys.exit(2)
+sys.exit(1 if bad else 0)
+PY
+  _cm_rc=$?
+  _cm_n="$(grep -c '^OK ' "$_cm_log" 2>/dev/null || true)"
+  _cm_u="$(grep -c '^UNRESOLVED ' "$_cm_log" 2>/dev/null || true)"
+  _cm_uline=""
+  [ "${_cm_u:-0}" -eq 0 ] || _cm_uline=" unresolved=$_cm_u"
+  echo "materials-manifest $2 exit=$_cm_rc named=${_cm_n:-0}$_cm_uline"
+  if [ "$_cm_rc" -ne 0 ]; then
+    grep -v '^OK ' "$_cm_log" | head -24
+  elif [ -n "$_cm_uline" ]; then
+    grep '^UNRESOLVED \|^MARKER ' "$_cm_log" | head -24
+  fi
+  return "$_cm_rc"
 }

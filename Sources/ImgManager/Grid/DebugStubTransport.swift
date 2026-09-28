@@ -749,6 +749,13 @@
       ProcessInfo.processInfo.arguments.contains("-UITestInspectorShown")
     }
 
+    /// WP28 P4 (IMGMGR-451): mounts `MaterialsSettingsProbe`, the element the materials suite
+    /// reads the real Reduce Transparency / Increase Contrast settings back from before each
+    /// capture. Renders nothing a reader sees; Debug-only like every flag here.
+    static var materialsProbe: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestMaterialsProbe")
+    }
+
     /// WP28 P3 (IMGMGR-450): which fixture folder the auto-select opens — the id that follows
     /// `-UITestSelectFolder` in the launch arguments, or folder 1 (the shipped default) when the
     /// flag is absent or its value is not an id. The Summary's cases need folders the fixture

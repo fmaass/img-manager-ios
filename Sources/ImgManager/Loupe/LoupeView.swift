@@ -416,7 +416,7 @@ struct LoupeMarkBar: View {
     .labelStyle(.iconOnly)
     .font(.title3)
     .padding()
-    .background(.bar)
+    .chromeFill(.bar)
     // IMGMGR-280: `.contain` FIRST, then the bar's own identifier. Without it this HStack is not
     // an accessibility element of its own, so an identifier put on it propagates DOWN and
     // overrides every child's — the 23:26 gate run dumped all four controls reporting
@@ -707,7 +707,7 @@ struct FilmstripView: View {
         .padding(.vertical, 4)
       }
       .frame(height: 72)
-      .background(.bar)
+      .chromeFill(.bar)
       .accessibilityIdentifier("loupeFilmstrip")
       .onChange(of: revealTarget(in: frames), initial: true) { _, target in
         reveal(target, through: proxy)
