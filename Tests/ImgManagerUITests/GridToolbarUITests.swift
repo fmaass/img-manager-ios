@@ -230,7 +230,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
       app.descendants(matching: .any)[$0].firstMatch
     }
     let infoX = info.frame.minX
-    let xs = declared.map(\.frame.minX)
+    let xs = declared.map { $0.frame.minX }
     let reading = zip(Self.declaredAfterSearch, xs).map { "\($0)=\($1)" }.joined(separator: " ")
     let searchX = regularToolbarSearchButton(app).frame.minX
     print("WP29-P1-ORDER \(state): info=\(infoX) search=\(searchX) \(reading)")
