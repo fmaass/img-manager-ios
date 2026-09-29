@@ -8,10 +8,9 @@ import XCTest
 ///     above the tree's tier rows;
 /// (b) nothing in the app is a navigation rail (no identifier or label contains "rail");
 /// (c) the toolbar search is a button that expands to a field, and typing filters the tree;
-/// (d) six named bar screenshots — search minimised and active at Regular-3 collapsed, Regular-3
-///     expanded and Regular-2 — for the independent glass-cluster count, plus the frames of every
-///     hittable bar element as DIAGNOSTIC log lines only. At Regular-3 collapsed all six chrome
-///     controls are asserted hittable (IMGMGR-390's collapsed contract).
+/// (d) moved to `GridToolbarUITests` by WP29 P1 (IMGMGR-452): the six named bar screenshots and
+///     the collapsed all-hittable contract now ride the bar's own acceptance tests, beside the
+///     order, cluster and title assertions the new bar adds.
 ///
 /// Layouts are reached the way `Regular3CollapsedChromeUITests` reaches them: landscape and the
 /// app's measured window width against the resolver's pin for Regular-3, portrait for Regular-2.
@@ -31,17 +30,6 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
   /// Mirrors `LayoutResolver.regular3Threshold` (joined by
   /// `LayoutPresentationTests.theRegular3WidthPinMatchesTheUITestLiteral`).
   private static let regular3WidthThreshold: CGFloat = 1197
-
-  /// The six grid-bar controls, in `ShellToolbarLayout.regularGridBar` order
-  /// (`ShellToolbarLayoutTests.shippedIdentifiers` is the join).
-  private static let barControlIdentifiers = [
-    "inspectorChromeButton",
-    "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
-    "gridShortcutHelpControl",
-  ]
 
   // MARK: - (a) Shoots and Library
 
@@ -177,42 +165,6 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
       "The toolbar search did not come back on the grid's bar after the loupe closed.")
   }
 
-  // MARK: - (d) Bar screenshots
-
-  func testRegular3CollapsedBarScreenshotsAndAllSixControlsHittable() throws {
-    let app = try launched(.regular3)
-    XCTAssertFalse(app.buttons["Stats"].exists, "Regular-3 did not launch collapsed.")
-
-    for identifier in Self.barControlIdentifiers {
-      let control = app.descendants(matching: .any)[identifier].firstMatch
-      XCTAssertTrue(
-        control.waitForExistence(timeout: 10),
-        "`\(identifier)` is not on the grid's bar at Regular-3 collapsed.")
-      XCTAssertTrue(
-        control.isHittable,
-        "`\(identifier)` exists but cannot be tapped at Regular-3 collapsed (IMGMGR-390): a "
-          + "control folded into the overflow chevron reads exactly like this.")
-    }
-    captureBar(app, name: "ipad-bar-regular3-collapsed-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular3-collapsed-search-active")
-  }
-
-  func testRegular3ExpandedBarScreenshots() throws {
-    let app = try launched(.regular3, inspectorShown: true)
-    XCTAssertTrue(
-      app.buttons["Stats"].waitForExistence(timeout: 10),
-      "`-UITestInspectorShown` did not take effect: the inspector is not expanded.")
-    captureBar(app, name: "ipad-bar-regular3-expanded-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular3-expanded-search-active")
-  }
-
-  func testRegular2BarScreenshots() throws {
-    let app = try launched(.regular2)
-    assertNoRailElement(in: app, context: "Regular-2")
-    captureBar(app, name: "ipad-bar-regular2-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular2-search-active")
-  }
-
   // MARK: - Helpers
 
   private enum Layout {
@@ -280,40 +232,6 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
       print("IMGMGR-449-RAIL \(context): \(rail.allElementsBoundByIndex.map(\.debugDescription))")
     }
     XCTAssertEqual(count, 0, "\(context): an element names itself a rail (p4128 draws none).")
-  }
-
-  /// Search minimised → the named screenshot, plus the diagnostic frame log.
-  private func captureBar(_ app: XCUIApplication, name: String) {
-    logBarFrames(app, state: name)
-    attach(named: name)
-  }
-
-  /// Expands the toolbar search, then captures. The active state is a requirement, so a search
-  /// that does not activate FAILS the test; the screen is still attached, under a DIFFERENT name,
-  /// because a minimised bar filed as `…-search-active` would be false evidence.
-  private func activateSearchAndCapture(
-    _ app: XCUIApplication, name: String, file: StaticString = #filePath, line: UInt = #line
-  ) {
-    guard expandRegularToolbarSearch(app, context: name) != nil else {
-      attach(named: "\(name)-NOT-EXPANDED")
-      XCTFail(
-        "\(name): the toolbar search did not activate (no hittable field taking typed text).",
-        file: file, line: line)
-      return
-    }
-    Thread.sleep(forTimeInterval: 1.0)
-    captureBar(app, name: name)
-  }
-
-  /// DIAGNOSTIC only (plan: the frame log never decides the glass-cluster budget): the frame of
-  /// every hittable element in every navigation bar.
-  private func logBarFrames(_ app: XCUIApplication, state: String) {
-    let elements = app.navigationBars.descendants(matching: .any).allElementsBoundByIndex
-    let lines = elements.compactMap { element -> String? in
-      guard element.elementType != .other, element.isHittable else { return nil }
-      return "id=\(element.identifier) label=\(element.label) frame=\(element.frame)"
-    }
-    print("IMGMGR-449-BAR \(state): window=\(app.frame.size) " + lines.joined(separator: " | "))
   }
 
   private func attach(named name: String) {

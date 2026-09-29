@@ -25,9 +25,9 @@ import XCTest
 ///
 /// Makes NO device-idiom decision (plan invariant (i)): every step keys off an OBSERVED element,
 /// so the same assertions run against Regular's `.primaryAction` toolbar and against Compact's
-/// persistent options row. The `gridShortcutHelpControl` leg is the "the row did not overflow"
-/// contract on Compact and the "the fifth toolbar item did not push anything into the chevron"
-/// contract on Regular — one assertion, both meanings, no branch.
+/// persistent options row. The displaced-control leg is `gridShortcutHelpControl` — "the row did
+/// not overflow" — on Compact, and since WP29 P1 `gridMoreMenu` — "nothing was pushed into the
+/// chevron" — on Regular; the branch keys off the observed shell (`rendersCompactShell`).
 final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
   /// Launched with the inspector off screen on purpose: decision 1 is about filtering WITHOUT the
@@ -90,9 +90,13 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
     // assertion was softened to match. Both are reverted: the pivot cost a shipped control its
     // only Regular route and failed `ViewOptionsScreenshotUITests`, while WP16 P2's two-column
     // Regular-3 is what actually gave the bar room.)
+    //
+    // WP29 P1 (IMGMGR-452, plan Decision 1): "?" left the REGULAR bar, so there the displaced-
+    // control check reads the bar's LAST app item, More — the first to fall into the chevron.
+    let lastOnSurface = rendersCompactShell(app) ? "gridShortcutHelpControl" : "gridMoreMenu"
     XCTAssertTrue(
-      app.descendants(matching: .any)["gridShortcutHelpControl"].isHittable,
-      "The shortcut-help control is no longer hittable once the funnel joined its surface — on "
+      app.descendants(matching: .any)[lastOnSurface].firstMatch.isHittable,
+      "'\(lastOnSurface)' is no longer hittable once the funnel joined its surface — on "
         + "Compact the options row overflowed, on Regular the toolbar collapsed. Either way a "
         + "shipped control was displaced by decision 1, which the parity table forbids.")
 

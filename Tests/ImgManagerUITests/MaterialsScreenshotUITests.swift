@@ -203,8 +203,8 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
           + "grid (Regular-2); the five captures above stand.")
     }
     try capture(portrait, "ipad", "regular2-grid")
-    // The app's own bars by identifier, as the Compact grid state measures them.
-    let appBars = (Self.gridViewOptionIdentifiers + Self.gridActionBarIdentifiers).map {
+    // The app's own bars by identifier — the Regular grid bar and action bar (WP29 P1).
+    let appBars = (Self.regularGridBarIdentifiers + Self.regularActionBarIdentifiers).map {
       (key: $0, element: anyElement(portrait, $0))
     }
     censusState(

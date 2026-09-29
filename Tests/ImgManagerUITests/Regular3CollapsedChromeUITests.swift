@@ -52,15 +52,17 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
   /// the two honest.
   private static let regular3WidthThreshold: CGFloat = 1197
 
-  /// The six items the owner called host chrome (IMGMGR-338): the five grid view-option controls
-  /// plus the inspector's own persistent chrome control. Declared ONCE, so "every one of them" is
-  /// one list rather than six copied assertions that can drift apart.
+  /// The items the owner called host chrome (IMGMGR-338): the grid's view-option controls plus
+  /// the inspector's own persistent chrome control. Declared ONCE, so "every one of them" is one
+  /// list rather than copied assertions that can drift apart. WP29 P1 (IMGMGR-452): "?" left the
+  /// Regular bar (its homes there are ⌘/ and the menu bar) and Select and More joined it.
   private static let hostChromeIdentifiers = [
+    "gridSelectCommand",
     "gridFilterControl",
     "gridSortControl",
     "gridGroupControl",
     "gridZoomControl",
-    "gridShortcutHelpControl",
+    "gridMoreMenu",
     "inspectorChromeButton",
   ]
 

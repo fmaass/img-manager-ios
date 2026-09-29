@@ -9,12 +9,30 @@ extension XCTestCase {
   /// `InspectorSummaryUITests.folderOneSummaryName` for why Compact can show either).
   static let materialsFolderOneNames = ["2026-08-27 — Stub Shoot", "stub"]
 
+  /// WP29 P1 (IMGMGR-452): the Regular breadcrumb's subtitle for fixture folder 1 — the server's
+  /// `image_count` for it (`DebugStubTransport`), which the system may fold into the title
+  /// trigger's label.
+  static let folderOneCountSubtitle = "12 photos"
+
+  /// Every label the grid's title-menu trigger is accepted under: the title, "<title>, Actions
+  /// Menu" (the iOS 26.5 Compact form), and the same two with the breadcrumb's count subtitle
+  /// between them (WP29 P1). Any other suffix is not the trigger.
+  static func titleMenuLabels(_ names: [String]) -> [String] {
+    names.flatMap { name in
+      [
+        name, "\(name), Actions Menu", "\(name), \(folderOneCountSubtitle)",
+        "\(name), \(folderOneCountSubtitle), Actions Menu",
+      ]
+    }
+  }
+
   /// The grid's title for a shown folder nobody names yet — the app's `WorkspaceTitle.fallback`
   /// (final audit F1). Spelled here because a UI-test bundle runs out of process and cannot
   /// import the app module.
   static let workspaceFallbackTitle = "Shoot"
 
-  /// The five grid view options, on the Compact options row or the Regular grid bar.
+  /// The five grid view options on the Compact options row. WP29 P1 (IMGMGR-452): at Regular
+  /// "?" left the bar — see `regularGridBarIdentifiers`.
   static let gridViewOptionIdentifiers = [
     "gridFilterControl",
     "gridSortControl",
@@ -23,13 +41,34 @@ extension XCTestCase {
     "gridShortcutHelpControl",
   ]
 
-  /// The bottom action bar, by identifier (Clear, which folds into More, is not listed).
+  /// The Compact bottom action bar, by identifier (Clear, which folds into More, is not listed).
   static let gridActionBarIdentifiers = [
     "gridPickButton",
     "gridDislikeButton",
     "gridUndoButton",
     "gridTagButton",
     "gridMoreMenu",
+  ]
+
+  /// WP29 P1 (IMGMGR-452): the Regular grid bar's own app items after Info (the system search
+  /// carries no identifier of the app's).
+  static let regularGridBarIdentifiers = [
+    "gridSelectCommand",
+    "gridFilterControl",
+    "gridSortControl",
+    "gridGroupControl",
+    "gridZoomControl",
+    "gridMoreMenu",
+  ]
+
+  /// WP29 P1: the Regular bottom action bar — More moved to the grid bar, and Clear never folds
+  /// there (`ActionBarMetrics.regularTiers`), so it is listed.
+  static let regularActionBarIdentifiers = [
+    "gridPickButton",
+    "gridDislikeButton",
+    "gridClearButton",
+    "gridUndoButton",
+    "gridTagButton",
   ]
 
   func anyElement(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
@@ -51,7 +90,7 @@ extension XCTestCase {
   func gridTitleMenuTrigger(
     _ app: XCUIApplication, names: [String], timeout: TimeInterval = 15
   ) -> XCUIElement {
-    let labels = names.flatMap { [$0, "\($0), Actions Menu"] }
+    let labels = Self.titleMenuLabels(names)
     let button = app.navigationBars.buttons
       .matching(NSPredicate(format: "label IN %@", labels)).firstMatch
     if button.waitForExistence(timeout: timeout) { return button }

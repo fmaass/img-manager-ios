@@ -55,7 +55,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     // with. "Download…" is deliberately absent (owner decision 3) and is asserted absent with
     // the five present entries above it as the positive control.
     let expected = [
-      "gridSelectCommand", "gridMoreMenu.more.copyForLightroom",
+      // WP29 P1 (IMGMGR-452): Select left More for the bar's own `gridSelectCommand`.
+      "gridMoreMenu.more.copyForLightroom",
       "gridMoreMenu.more.filenamePlates",
       // IMGMGR-261: the picks-in-groups switch lives in THIS menu — the app's existing
       // view-options surface — and never in a settings panel of its own.

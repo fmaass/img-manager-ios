@@ -27,8 +27,9 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
 
   private static let regular3WidthThreshold: CGFloat = 1197
 
-  /// Clear folds into More at the narrow tiers, so it is measured when it renders and not
-  /// required (the required bar is `gridActionBarIdentifiers`).
+  /// Clear folds into More at the narrow Compact tiers, so it is measured when it renders and not
+  /// required (the required bar is `gridActionBarIdentifiers`). At Regular it never folds (WP29
+  /// P1) and `regularActionBarIdentifiers` lists it.
   private static let optionalActionBarIdentifiers = ["gridClearButton"]
 
   /// The ownership rule's precedence, without a simulator: an app identifier wins over every
@@ -177,10 +178,10 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
     let census = chromeCensus(
       app, state: "regular3", titleMenu: true,
       requiring: ["accountToolbarButton", "folderTreeViewMenu", "Info"]
-        + Self.gridViewOptionIdentifiers)
+        + Self.regularGridBarIdentifiers)
     var rows = census.rows
     rows += measureAppBars(
-      app, state: "regular3", identifiers: Self.gridActionBarIdentifiers, already: rows)
+      app, state: "regular3", identifiers: Self.regularActionBarIdentifiers, already: rows)
     rows += measureTitleMenuTrigger(in: app, state: "regular3", already: rows)
     print("TOUCH-TARGET regular: the three tabs are Compact-only (no tab bar at Regular)")
     reportChromeTargets(rows, problems: census.problems, name: "regular3")
@@ -206,7 +207,8 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
     _ app: XCUIApplication, state: String, identifiers: [String], already rows: [ChromeTargetRow]
   ) -> [ChromeTargetRow] {
     var measured: [ChromeTargetRow] = []
-    let all = identifiers + Self.optionalActionBarIdentifiers
+    // Required first; an optional one the caller already requires is not measured twice.
+    let all = identifiers + Self.optionalActionBarIdentifiers.filter { !identifiers.contains($0) }
     for identifier in all where !rows.contains(where: { $0.identifier == identifier }) {
       let element = anyElement(app, identifier)
       let required = identifiers.contains(identifier)
