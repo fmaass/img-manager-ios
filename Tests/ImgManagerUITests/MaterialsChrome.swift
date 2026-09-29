@@ -32,13 +32,12 @@ extension XCTestCase {
   /// import the app module.
   static let workspaceFallbackTitle = "Shoot"
 
-  /// The five grid view options on the Compact options row. WP29 P1 (IMGMGR-452): at Regular
-  /// "?" left the bar — see `regularGridBarIdentifiers`.
+  /// The grid view options on the Compact options row. WP29 P1 (IMGMGR-452): at Regular "?"
+  /// left the bar — see `regularGridBarIdentifiers`. WP29 P2 (IMGMGR-453): Arrange replaced Sort,
+  /// Group and Zoom.
   static let gridViewOptionIdentifiers = [
+    "gridArrangeControl",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
     "gridShortcutHelpControl",
   ]
 
@@ -56,9 +55,7 @@ extension XCTestCase {
   static let regularGridBarIdentifiers = [
     "gridSelectCommand",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
+    "gridArrangeControl",
     "gridMoreMenu",
   ]
 

@@ -5,7 +5,7 @@ import XCTest
 /// [sidebar toggle] · breadcrumb · [Info · Search · Select · Filter · Arrange · More].
 ///
 /// Ticket acceptance probe: "toolbar groups render in the spec order, ≤ 3 groups, breadcrumb
-/// centred". Until P2 builds Arrange, Sort · Group · Zoom hold its slot (plan Phase 1).
+/// centred". WP29 P2 (IMGMGR-453) put Arrange (`gridArrangeControl`) in its slot.
 ///
 /// - (a) the bar's items in minX order; while the Regular-3 inspector is EXPANDED only Info must be
 ///   hittable (IMGMGR-390), and every folded item must be reachable through the system overflow.
@@ -32,11 +32,9 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
   /// Mirrors `LayoutResolver.regular3Threshold` (`LayoutPresentationTests` is the join).
   private static let regular3WidthThreshold: CGFloat = 1197
 
-  /// The app-declared items after the system search, in spec order. Sort holds the Arrange slot
-  /// (Group and Zoom sit beside it until P2 replaces the three).
+  /// The app-declared items after the system search, in spec order.
   private static let declaredAfterSearch = [
-    "gridSelectCommand", "gridFilterControl", "gridSortControl", "gridGroupControl",
-    "gridZoomControl", "gridMoreMenu",
+    "gridSelectCommand", "gridFilterControl", "gridArrangeControl", "gridMoreMenu",
   ]
 
   /// The at-rest action bar at Regular: More moved to the toolbar, Clear never folds there.
@@ -242,7 +240,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     XCTAssertEqual(
       appOrder, appOrder.sorted(),
       "\(state): the app-declared items are not in spec order Info · Select · Filter · Arrange "
-        + "(Sort · Group · Zoom) · More — \(reading), info=\(infoX).")
+        + "· More — \(reading), info=\(infoX).")
 
     let search = regularToolbarSearchButton(app)
     XCTAssertTrue(

@@ -62,8 +62,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       "gridMoreMenu.more.filenamePlates",
       // IMGMGR-261: the picks-in-groups switch lives in THIS menu — the app's existing
       // view-options surface — and never in a settings panel of its own.
-      "gridMoreMenu.more.picksInGroups", "gridMoreMenu.more.density",
-      "gridMoreMenu.more.status",
+      // WP29 P2 (IMGMGR-453): Density left for the Arrange popover.
+      "gridMoreMenu.more.picksInGroups", "gridMoreMenu.more.status",
       // WP13 P11 (IMGMGR-220): the multi-window entry point, rendered on BOTH idioms and in
       // every case — the built-product probe decided only whether project.yml needed the
       // capability key, never whether the affordance exists.
@@ -79,6 +79,13 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       XCTAssertTrue(
         entry.waitForExistence(timeout: 5),
         "The More menu does not render '\(identifier)'.")
+    }
+    // WP29 P2 (IMGMGR-453): Density and the archive prune left More; the rows above are the
+    // positive control that the menu is open.
+    for gone in ["gridMoreMenu.more.density", "gridMoreMenu.more.pruneMirroredArchive"] {
+      XCTAssertEqual(
+        app.descendants(matching: .any).matching(identifier: gone).count, 0,
+        "The More menu still renders '\(gone)'.")
     }
 
     // The Clear row's IDENTITY depends on whether this column folded the bar's Clear into the

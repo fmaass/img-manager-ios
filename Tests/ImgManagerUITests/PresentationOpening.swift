@@ -32,7 +32,7 @@ extension XCTestCase {
   /// asserting nothing, so the unused-result warning is what keeps the caller's assertion in the loop.
   ///
   /// - Parameters:
-  ///   - control: the opener (a funnel, a Sort/Group control, a More or View menu).
+  ///   - control: the opener (a funnel, the Arrange control, a More or View menu).
   ///   - expected: the first row/element the open presentation must render.
   ///   - timeout: the TOTAL budget for the whole open, shared by both waits.
   /// - Returns: `true` when `expected` exists before the deadline.

@@ -9,10 +9,10 @@ import XCTest
 /// different column, and "the tree re-renders when the flag flips" is a fact about SwiftUI
 /// observation that only a running app can answer.
 ///
-/// Reachability (the plan's Compact check): the More menu lives on the GRID's action bar
-/// (`GridView`), which the tree home does not show, so the SAME entry is rendered in the tree
-/// home's own View menu — one preference key, two entry points, never a second mechanism. This
-/// test drives the home's entry point, by the entry's own identifier, on both destinations.
+/// Reachability (the plan's Compact check): the tree home's own View menu renders the declared
+/// entry, on the one preference key. WP29 P2 (IMGMGR-453): it is the entry's ONE home — the
+/// grid's More menu no longer carries it (`TreeViewMenuPruneUITests`). This test drives it by
+/// the entry's own identifier, on both destinations.
 ///
 /// Launch fixture: `-UITestStubGrid` + `-UITestStubSkipAutoSelect`, so the app stops at the tree
 /// home. Its archive answer is the year container 20 over the real shoot 21 and the zero-count
@@ -123,10 +123,9 @@ final class ArchivePruneUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       openPresentation(menu, revealing: entry, timeout: 10),
       "The tree home's View menu does not render '\(toggle)'.")
-    // EXACTLY one, counted rather than `firstMatch`-ed: the entry is declared once and rendered
-    // in two places (this menu and the grid's More menu), so "two rows answering to one
-    // identifier are on screen together" is the failure this assertion exists to catch — on the
-    // iPad above all, where the sidebar and the grid are both mounted.
+    // EXACTLY one, counted rather than `firstMatch`-ed: "two rows answering to one identifier are
+    // on screen together" is the failure this assertion exists to catch — on the iPad above all,
+    // where the sidebar and the grid are both mounted.
     XCTAssertEqual(
       app.descendants(matching: .any).matching(identifier: toggle).count, 1,
       "More than one element answers to '\(toggle)' while the tree home's View menu is open — "

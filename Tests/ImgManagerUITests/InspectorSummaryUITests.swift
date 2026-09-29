@@ -30,9 +30,8 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
     "inspectorChromeButton",
     "gridSelectCommand",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
+    // WP29 P2 (IMGMGR-453): Arrange replaced Sort, Group and Zoom.
+    "gridArrangeControl",
     "gridMoreMenu",
   ]
 

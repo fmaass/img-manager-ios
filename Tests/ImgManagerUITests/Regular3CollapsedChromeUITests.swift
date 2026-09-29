@@ -59,9 +59,8 @@ final class Regular3CollapsedChromeUITests: OrientationPinnedUITestCase {
   private static let hostChromeIdentifiers = [
     "gridSelectCommand",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
+    // WP29 P2 (IMGMGR-453): Arrange replaced Sort, Group and Zoom.
+    "gridArrangeControl",
     "gridMoreMenu",
     "inspectorChromeButton",
   ]
