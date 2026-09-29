@@ -285,3 +285,110 @@ struct GridStoreMarkTargetReadoutTests {
     #expect(store.markTargetReadout == .uniform(.dislike))
   }
 }
+
+/// Review round 1: the SELECTED state differs from plain by FILL (not glyph and trait alone),
+/// and from LATCHED by style — `.bordered` over the colour vs `.borderedProminent` + caption.
+/// Plus the folded Clear row, which must carry the bar's readout when the bar gives Clear up.
+@MainActor
+@Suite("Action bar mark style + folded Clear row (IMGMGR-474 review round 1)")
+struct ActionBarMarkStyleTests {
+  @Test("Plain: neutral fill, the glyph keeps its own colour (WP16 P1 palette decision)")
+  func plainStyle() {
+    let pick = ActionBarMarkPresentation.for(.pick, lockState: .idle, readout: .uniform(.none))
+    #expect(pick.emphasis == .plain)
+    #expect(pick.fillTint == .neutral)
+    #expect(pick.glyphTint == .mark(.pick))
+    let dislike = ActionBarMarkPresentation.for(.dislike, lockState: .idle, readout: .noTarget)
+    #expect(dislike.emphasis == .plain)
+    #expect(dislike.fillTint == .neutral)
+    #expect(dislike.glyphTint == .mark(.dislike))
+    let clear = ActionBarMarkPresentation.for(.clear, lockState: .idle, readout: .uniform(.pick))
+    #expect(clear.emphasis == .plain)
+    #expect(clear.fillTint == .neutral)
+    #expect(clear.glyphTint == .accent)
+    // A mixed selection's badge is not a selection: the fill stays neutral.
+    let partial = ActionBarMarkPresentation.for(
+      .pick, lockState: .idle, readout: .mixed([.pick, .none]))
+    #expect(partial.emphasis == .plain)
+    #expect(partial.fillTint == .neutral)
+  }
+
+  @Test("Selected: the fill takes the control's own colour; Clear's is the neutral accent")
+  func selectedStyle() {
+    let pick = ActionBarMarkPresentation.for(.pick, lockState: .idle, readout: .uniform(.pick))
+    #expect(pick.emphasis == .selected)
+    #expect(pick.fillTint == .mark(.pick))
+    #expect(pick.glyphTint == .mark(.pick))
+    #expect(!pick.isProminent)
+    let dislike = ActionBarMarkPresentation.for(
+      .dislike, lockState: .idle, readout: .uniform(.dislike))
+    #expect(dislike.emphasis == .selected)
+    #expect(dislike.fillTint == .mark(.dislike))
+    let clear = ActionBarMarkPresentation.for(.clear, lockState: .idle, readout: .uniform(.none))
+    #expect(clear.emphasis == .selected)
+    #expect(clear.fillTint == .accent)
+    #expect(!clear.isProminent)
+  }
+
+  @Test("Latched: prominent solid fill, no glyph override, caption — never the selected style")
+  func latchedStyleIsDistinctFromSelected() {
+    for verb in LatchVerb.allCases {
+      let control = ActionBarMarkControl.control(for: verb)
+      let carried = verb.markState
+      let selected = ActionBarMarkPresentation.for(
+        control, lockState: .idle, readout: .uniform(carried))
+      let latched = ActionBarMarkPresentation.for(
+        control, lockState: .latched(verb), readout: .uniform(carried))
+      #expect(selected.emphasis == .selected)
+      #expect(latched.emphasis == .latched)
+      #expect(latched.isProminent && !selected.isProminent)
+      #expect(latched.glyphTint == nil)
+      #expect(latched.latch.modeRowCaption != nil && selected.latch.modeRowCaption == nil)
+      // The OTHER controls under that latch are plain, neutral-filled.
+      for other in ActionBarMarkControl.allCases where other != control {
+        let p = ActionBarMarkPresentation.for(
+          other, lockState: .latched(verb), readout: .uniform(other.state))
+        #expect(p.emphasis == .plain)
+        #expect(p.fillTint == .neutral)
+      }
+    }
+  }
+
+  @Test("Folded, the Clear row carries the bar's readout; unfolded and other rows carry none")
+  func foldedClearRowCarriesTheReadout() {
+    let folded = GridMoreMenu.markPresentation(
+      for: GridMoreMenu.clearMark, foldsClearIntoMore: true, lockState: .idle,
+      readout: .uniform(.none))
+    #expect(folded?.isSelected == true)
+    #expect(folded?.systemImage == "xmark.circle.fill")
+    #expect(folded?.accessibilityValue == "Unmarked")
+
+    let foldedMarked = GridMoreMenu.markPresentation(
+      for: GridMoreMenu.clearMark, foldsClearIntoMore: true, lockState: .idle,
+      readout: .uniform(.pick))
+    #expect(foldedMarked?.isSelected == false)
+    #expect(foldedMarked?.systemImage == "xmark.circle")
+    #expect(foldedMarked?.accessibilityValue == "Marked")
+
+    let foldedMixed = GridMoreMenu.markPresentation(
+      for: GridMoreMenu.clearMark, foldsClearIntoMore: true, lockState: .idle,
+      readout: .mixed([.pick, .none]))
+    #expect(foldedMixed?.accessibilityValue == "Some unmarked")
+
+    let foldedLatched = GridMoreMenu.markPresentation(
+      for: GridMoreMenu.clearMark, foldsClearIntoMore: true, lockState: .latched(.pick),
+      readout: .uniform(.none))
+    #expect(foldedLatched?.isSelected == false)
+
+    #expect(
+      GridMoreMenu.markPresentation(
+        for: GridMoreMenu.clearMark, foldsClearIntoMore: false, lockState: .idle,
+        readout: .uniform(.none)) == nil)
+    for entry in GridMoreMenu.entries where entry.id != GridMoreMenu.clearMark.id {
+      #expect(
+        GridMoreMenu.markPresentation(
+          for: entry, foldsClearIntoMore: true, lockState: .idle, readout: .uniform(.none))
+          == nil, "\(entry.id)")
+    }
+  }
+}

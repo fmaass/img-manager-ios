@@ -374,16 +374,27 @@ struct GridMoreMenuItem: View {
     GridMoreMenu.accessibilityIdentifier(for: entry, foldsClearIntoMore: foldsClearIntoMore)
   }
 
+  /// IMGMGR-474: folded, this row IS the bar's Clear control, so it carries the bar's readout
+  /// too — the filled glyph, the selected trait and the spoken value. `nil` for every other row.
+  private var markPresentation: ActionBarMarkPresentation? {
+    GridMoreMenu.markPresentation(
+      for: entry, foldsClearIntoMore: foldsClearIntoMore, lockState: store.pickLock.state,
+      readout: store.markTargetReadout)
+  }
+
   var body: some View {
     switch entry.surface {
     case .action(let run):
       Button {
         run(store)
       } label: {
-        Label(entry.title(store), systemImage: entry.systemImage)
+        Label(
+          entry.title(store), systemImage: markPresentation?.systemImage ?? entry.systemImage)
       }
       .disabled(!entry.isEnabled(store))
       .labelStyle(.titleAndIcon)
+      .accessibilityAddTraits(markPresentation?.isSelected == true ? .isSelected : [])
+      .accessibilityValue(markPresentation?.accessibilityValue ?? "")
       .accessibilityIdentifier(identifier)
 
     case .toggle(let isOn, let set):
