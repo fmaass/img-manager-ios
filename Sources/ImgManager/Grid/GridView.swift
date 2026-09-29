@@ -312,6 +312,8 @@ struct GridView: View {
   private func cell(for row: SceneDisplayRow, plan: TileRenderPlan) -> some View {
     switch row {
     case .image(let image):
+      // IMGMGR-475: the quick-pick corner, only where it leaves the tile's centre to the tile.
+      let hasMarkCorner = QuickPickCorner.isInstalled(plan: plan, missing: image.missing)
       TileView(
         image: image,
         plan: plan,
@@ -321,9 +323,16 @@ struct GridView: View {
         // WP13 P5a (IMGMGR-221): read here, in the one place that builds a tile, so the More
         // menu's toggle and what every tile draws are the same fact.
         showsFilenamePlate: store.preferences.filenamePlates,
-        store: store
+        store: store,
+        hasMarkCorner: hasMarkCorner
       )
       .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
+      .overlay(alignment: .topTrailing) {
+        if hasMarkCorner {
+          MarkCornerTarget(
+            imageID: image.id, mark: MarkStateValue(image.mark.state), store: store)
+        }
+      }
     case .stack(let stackRow, let isExpanded):
       SceneCardView(row: stackRow, plan: plan, isExpanded: isExpanded, store: store)
         // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
@@ -911,10 +920,14 @@ enum ActionBarMetrics {
   /// The narrow tier's gap and padding. Chosen so six full-size controls still fit 320 pt.
   static let tightSpacing: CGFloat = 8
   static let tightHorizontalPadding: CGFloat = 8
-  /// Pick, Dislike, Clear, Undo, Tag, More.
-  static let controlCount = 6
+  /// Pick, Tap to Pick, Dislike, Clear, Undo, Tag, More — IMGMGR-475 added Tap to Pick beside
+  /// Pick, which moved the 402-pt iPhone from the roomy tier to the tight one at rest.
+  static let controlCount = 7
   /// The same bar with Clear folded into the More menu.
-  static let foldedControlCount = 5
+  static let foldedControlCount = 6
+  /// IMGMGR-475: the narrowest gap any tier uses — six controls at it still fit the measured
+  /// 315-pt Regular-3 column (6×44 + 5×4 + 2×8 = 300).
+  static let narrowestSpacing: CGFloat = 4
 
   /// The width the bar needs for `controlCount` controls at `spacing`, all at their minimum
   /// side, including both paddings.
@@ -937,17 +950,23 @@ enum ActionBarMetrics {
   static let folded = ActionBarLayout(
     name: "folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
     controlCount: foldedControlCount, foldsClearIntoMore: true)
+  /// IMGMGR-475: 6×44 + 5×4 + 2×8 = 300 pt — the folded bar at the narrowest gap, so the Compact
+  /// bar still has a tier inside the measured 315-pt column (the folded tier alone is 320).
+  static let foldedTight = ActionBarLayout(
+    name: "folded-tight", spacing: narrowestSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: foldedControlCount, foldsClearIntoMore: true)
 
-  /// WP29 P1 (IMGMGR-452): Regular's bar without More — Pick, Dislike, Clear, Undo, Tag.
-  static let regularControlCount = 5
-  /// 5×44 + 4×16 + 2×16 = 316 pt.
+  /// WP29 P1 (IMGMGR-452): Regular's bar without More — Pick, Tap to Pick (IMGMGR-475),
+  /// Dislike, Clear, Undo, Tag.
+  static let regularControlCount = 6
+  /// 6×44 + 5×16 + 2×16 = 376 pt.
   static let regularRoomy = ActionBarLayout(
     name: "regular-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
     controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
-  /// 5×44 + 4×8 + 2×8 = 268 pt — inside the measured 315-pt Regular-3 column with the inspector
-  /// expanded, so no Regular tier ever needs to fold Clear.
+  /// 6×44 + 5×4 + 2×8 = 300 pt — inside the measured 315-pt Regular-3 column with the inspector
+  /// expanded, so no Regular tier ever needs to fold Clear (at the 8-pt gap it would be 320).
   static let regularTight = ActionBarLayout(
-    name: "regular-tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    name: "regular-tight", spacing: narrowestSpacing, horizontalPadding: tightHorizontalPadding,
     controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
 
   /// WP29 P4 (IMGMGR-455): the Select bar's tiers. Compact carries seven controls
@@ -958,7 +977,7 @@ enum ActionBarMetrics {
   static let regularSelectControlCount = 6
   /// The tight Regular Select tier's gap: 6×44 + 6×4 + 2×8 = 304 pt, inside the measured
   /// 315-pt Regular-3 column with the inspector expanded.
-  static let regularSelectTightSpacing: CGFloat = 4
+  static let regularSelectTightSpacing: CGFloat = narrowestSpacing
 
   /// 7×44 + 7×16 + 2×16 = 452 pt.
   static let selectRoomy = ActionBarLayout(
@@ -988,7 +1007,7 @@ enum ActionBarMetrics {
   /// Widest first. `ActionBarView` renders these in this order through `ViewThatFits`, and
   /// `layout(forWidth:)` walks the SAME list — so the arithmetic the tests assert and the tier
   /// the layout system actually picks cannot disagree.
-  static let tiers: [ActionBarLayout] = [roomy, tight, folded]
+  static let tiers: [ActionBarLayout] = [roomy, tight, folded, foldedTight]
 
   /// WP29 P1: the Regular tiers, widest first — the bar without More, and no fold.
   static let regularTiers: [ActionBarLayout] = [regularRoomy, regularTight]
@@ -1011,11 +1030,12 @@ enum ActionBarMetrics {
       + (layout.controls.contains(.spacer) ? layout.spacing : 0)
   }
 
-  /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
-  static var sixControlFloor: CGFloat { requiredWidth(for: tight) }
+  /// The narrowest width that still shows every at-rest Compact control, Clear included:
+  /// 7×44 + 6×8 + 2×8 = 372 pt (IMGMGR-475; 320 with six controls before Tap to Pick).
+  static var unfoldedFloor: CGFloat { requiredWidth(for: tight) }
 
-  /// The narrowest width the folded bar needs: 5×44 + 4×8 + 2×8 = 268 pt.
-  static var foldedFloor: CGFloat { requiredWidth(for: folded) }
+  /// The narrowest width the folded bar needs: 6×44 + 5×4 + 2×8 = 300 pt.
+  static var foldedFloor: CGFloat { requiredWidth(for: foldedTight) }
 
   /// The tier a given width selects — the arithmetic statement of what `ViewThatFits` decides
   /// at run time. Total: the narrowest tier is the answer when nothing fits, because a bar that
@@ -1174,6 +1194,8 @@ struct ActionBarView: View {
     switch control {
     case .pick:
       latchButton(.pick, readout: readout)
+    case .tapToPick:
+      tapToPickToggle()
     case .dislike:
       latchButton(.dislike, readout: readout)
     case .clear:
@@ -1368,6 +1390,47 @@ struct ActionBarView: View {
       Button(control.lockMenuTitle) { store.lockFromMenu(verb) }
         .disabled(store.pickLock.latchedVerb != nil || store.selection.mode == .select)
     }
+  }
+}
+
+extension ActionBarView {
+  /// IMGMGR-475 option 1: the visible "Tap to Pick" toggle — Pick Lock surfaced as a control of
+  /// its own beside Pick. It carries the same unmistakable pair the latched Pick does (solid
+  /// `.borderedProminent` fill + the selected trait) while on, and the mode row's caption and Done
+  /// appear exactly as for any Pick Lock. Disabled where it is inert (`TapToPickToggle.action`):
+  /// under a Dislike lock, whose Done exits it. Never on the Select bar (`SelectBarLayout`).
+  @ViewBuilder
+  func tapToPickToggle() -> some View {
+    let isOn = TapToPickToggle.isOn(store.pickLock.state)
+    let isInert =
+      TapToPickToggle.action(lockState: store.pickLock.state, mode: store.selection.mode) == .inert
+    let label = Label(
+      TapToPickToggle.title,
+      systemImage: isOn ? "\(TapToPickToggle.systemImage).fill" : TapToPickToggle.systemImage)
+    Group {
+      if isOn {
+        Button {
+          store.toggleTapToPick()
+        } label: {
+          label
+        }
+        .buttonStyle(.borderedProminent)
+      } else {
+        Button {
+          store.toggleTapToPick()
+        } label: {
+          label
+        }
+        .buttonStyle(.bordered)
+      }
+    }
+    .tint(MarkPalette.color(for: LatchVerb.pick.markRole))
+    .accessibilityLabel(TapToPickToggle.title)
+    .accessibilityAddTraits(isOn ? .isSelected : [])
+    .accessibilityValue(isOn ? "On" : "Off")
+    .disabled(isInert)
+    .actionBarControlSize()
+    .accessibilityIdentifier(TapToPickToggle.accessibilityIdentifier)
   }
 }
 

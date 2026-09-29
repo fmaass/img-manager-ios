@@ -37,9 +37,11 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     "gridSelectCommand", "gridFilterControl", "gridArrangeControl", "gridMoreMenu",
   ]
 
-  /// The at-rest action bar at Regular: More moved to the toolbar, Clear never folds there.
+  /// The at-rest action bar at Regular: More moved to the toolbar, Clear never folds there, and
+  /// Tap to Pick (IMGMGR-475) sits beside Pick.
   private static let regularActionBar = [
-    "gridPickButton", "gridDislikeButton", "gridClearButton", "gridUndoButton", "gridTagButton",
+    "gridPickButton", "gridTapToPickToggle", "gridDislikeButton", "gridClearButton",
+    "gridUndoButton", "gridTagButton",
   ]
 
   /// Folder 1's tree name, which the Regular sidebar has loaded, and its server count.

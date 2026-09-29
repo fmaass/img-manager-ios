@@ -5,6 +5,9 @@ import SwiftUI
 /// cannot see.
 enum SelectBarControl: String, CaseIterable, Sendable {
   case pick, dislike, clear, undo, tag, scene, more
+  /// IMGMGR-475: the visible "Tap to Pick" toggle surfacing Pick Lock, beside Pick — at rest
+  /// only. Lock entry is disabled in Select (pin e), so the Select bar never carries it.
+  case tapToPick
   /// The gap that puts Undo at the trailing edge in Select ("… ‖ Undo"). Not a control: it takes
   /// no hit region and no 44-pt slot.
   case spacer
@@ -12,7 +15,8 @@ enum SelectBarControl: String, CaseIterable, Sendable {
 
 /// WP29 P4 (IMGMGR-455): the action bar's order, per state and width class.
 ///
-/// - At rest, unchanged: Regular `Pick · Dislike · Clear · Undo · Tag`, Compact `… · More`.
+/// - At rest: Regular `Pick · Tap to Pick · Dislike · Clear · Undo · Tag`, Compact `… · More`
+///   (IMGMGR-475 put the toggle beside Pick; it never folds — More is at its 6-row budget).
 /// - Select at Regular: `Pick · Dislike · Clear · Tag · Scene ‖ Undo`.
 /// - Select at Compact: `Pick · Dislike · Clear · Tag · Scene · More ‖ Undo` — More keeps its only
 ///   Compact home, and the narrow tier still folds Clear into More under the same identifier.
@@ -27,7 +31,11 @@ enum SelectBarLayout {
     var marks: [SelectBarControl] = [.pick, .dislike]
     if !foldsClearIntoMore { marks.append(.clear) }
     let more: [SelectBarControl] = carriesMore ? [.more] : []
-    guard selecting else { return marks + [.undo, .tag] + more }
+    guard selecting else {
+      var atRest: [SelectBarControl] = [.pick, .tapToPick]
+      atRest += marks.dropFirst()
+      return atRest + [.undo, .tag] + more
+    }
     return marks + [.tag, .scene] + more + [.spacer, .undo]
   }
 }

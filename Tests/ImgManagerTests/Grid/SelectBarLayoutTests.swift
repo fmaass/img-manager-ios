@@ -9,17 +9,30 @@ import Testing
 @Suite("Select bar — layout (WP29 P4)")
 struct SelectBarLayoutTests {
 
-  @Test("At rest the order is the shipped one: Regular without More, Compact with it")
+  @Test("At rest: the shipped order with Tap to Pick beside Pick; Regular without More")
   func atRestTheOrderIsUnchanged() {
     #expect(
       SelectBarLayout.controls(selecting: false, carriesMore: false)
-        == [.pick, .dislike, .clear, .undo, .tag])
+        == [.pick, .tapToPick, .dislike, .clear, .undo, .tag])
     #expect(
       SelectBarLayout.controls(selecting: false, carriesMore: true)
-        == [.pick, .dislike, .clear, .undo, .tag, .more])
+        == [.pick, .tapToPick, .dislike, .clear, .undo, .tag, .more])
     #expect(
       SelectBarLayout.controls(selecting: false, carriesMore: true, foldsClearIntoMore: true)
-        == [.pick, .dislike, .undo, .tag, .more])
+        == [.pick, .tapToPick, .dislike, .undo, .tag, .more])
+  }
+
+  /// IMGMGR-475: the toggle never folds (More holds six rows) and never rides the Select bar,
+  /// where lock entry is disabled (pin e).
+  @Test("Tap to Pick is on every at-rest tier and on no Select tier")
+  func tapToPickIsAtRestOnly() {
+    for carriesMore in [false, true] {
+      let atRest = ActionBarMetrics.tiers(carriesMore: carriesMore, selecting: false)
+      #expect(atRest.allSatisfy { $0.controls.contains(.tapToPick) })
+      let selecting = ActionBarMetrics.tiers(carriesMore: carriesMore, selecting: true)
+      #expect(selecting.allSatisfy { !$0.controls.contains(.tapToPick) })
+    }
+    #expect(GridMoreMenu.entries.count == 6)
   }
 
   @Test("Select: Regular is Pick · Dislike · Clear · Tag · Scene ‖ Undo; Compact adds More")
@@ -93,9 +106,10 @@ struct SelectBarLayoutTests {
       ActionBarMetrics.selectTiers.filter(\.foldsClearIntoMore).map(\.name) == ["select-folded"])
   }
 
-  @Test("At-rest widths are unchanged by the spacer arithmetic")
+  @Test("At-rest widths carry Tap to Pick and are unchanged by the spacer arithmetic")
   func atRestWidthsAreUnchanged() {
-    #expect(ActionBarMetrics.tiers.map(ActionBarMetrics.requiredWidth(for:)) == [376, 320, 268])
-    #expect(ActionBarMetrics.regularTiers.map(ActionBarMetrics.requiredWidth(for:)) == [316, 268])
+    #expect(
+      ActionBarMetrics.tiers.map(ActionBarMetrics.requiredWidth(for:)) == [436, 372, 320, 300])
+    #expect(ActionBarMetrics.regularTiers.map(ActionBarMetrics.requiredWidth(for:)) == [376, 300])
   }
 }

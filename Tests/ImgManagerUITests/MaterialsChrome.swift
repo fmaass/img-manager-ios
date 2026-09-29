@@ -44,6 +44,7 @@ extension XCTestCase {
   /// The Compact bottom action bar, by identifier (Clear, which folds into More, is not listed).
   static let gridActionBarIdentifiers = [
     "gridPickButton",
+    "gridTapToPickToggle",
     "gridDislikeButton",
     "gridUndoButton",
     "gridTagButton",
@@ -63,6 +64,7 @@ extension XCTestCase {
   /// there (`ActionBarMetrics.regularTiers`), so it is listed.
   static let regularActionBarIdentifiers = [
     "gridPickButton",
+    "gridTapToPickToggle",
     "gridDislikeButton",
     "gridClearButton",
     "gridUndoButton",
