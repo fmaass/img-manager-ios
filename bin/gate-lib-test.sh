@@ -640,8 +640,43 @@ glass_case g-container 1 Sources/App/Shell/A.swift 'let c = GlassEffectContainer
 glass_case g-button 1 Sources/App/Shell/A.swift 'let b = Button("b") {}.buttonStyle(.glass)'
 glass_case g-button-space 1 Sources/App/Shell/A.swift 'let b = Button("b") {}.buttonStyle( .glassProminent )'
 glass_case g-button-type 1 Sources/App/Shell/A.swift 'let b = Button("b") {}.buttonStyle(GlassButtonStyle())'
-glass_case g-comment 1 Sources/App/Shell/A.swift '// never: .glassEffect(.clear) — a comment spelling the call is a hit too'
+# Comments are blanked (one space, their newlines kept) before matching, as Swift's lexer treats
+# them: a comment between the tokens of a real call hides nothing, and a call spelled only inside
+# a comment draws nothing, so it is green. String literals are scanned VERBATIM: a mention inside
+# one stays red (it may be interpolated code, and a lexer mistake there can then only add a hit,
+# never hide one) — reword the string.
+glass_case g-comment 0 Sources/App/Shell/A.swift '// never: .glassEffect(.clear) — a comment spelling the call draws nothing'
+glass_case g-block-comment-only 0 Sources/App/Shell/A.swift '/* .glassEffect(.clear), .buttonStyle(.glass), GlassButtonStyle() */ let a = 1'
+glass_case g-doc-comment-only 0 Sources/App/Shell/A.swift "$(printf '/// Never `.glassEffect(.regular)`:\n/// the bars are the system%ss.\nlet a = 1' "'")"
 glass_case g-string 1 Sources/App/Shell/A.swift 'let s = "glassEffect("'
+glass_case g-comment-button 1 Sources/App/Shell/A.swift 'let b = Button("b") {}.buttonStyle(/* note */ .glass)'
+glass_case g-comment-call 1 Sources/App/Shell/A.swift 'let v = Text("x").glassEffect /* note */ (.regular)'
+glass_case g-comment-nested 1 Sources/App/Shell/A.swift 'let v = Text("x").glassEffect /* a /* nested */ b */ (.regular)'
+glass_case g-comment-newline 1 Sources/App/Shell/A.swift "$(printf 'let v = Text("x").glassEffect // note\n  (.regular)')"
+glass_case g-comment-button-newline 1 Sources/Widget/W.swift "$(printf 'let b = Button("b") {}.buttonStyle( // note\n  /* more */ .glass)')"
+# A "//" or "/*" inside a literal is not a comment: the real call after it is still a hit.
+glass_case g-url-string 1 Sources/App/Shell/A.swift 'let u = "https://example.com"; let v = Text("x").glassEffect()'
+glass_case g-open-in-string 1 Sources/App/Shell/A.swift 'let s = "/*"; let v = Text("x").glassEffect(); let t = "*/"'
+glass_case g-escaped-quote 1 Sources/App/Shell/A.swift 'let s = "a\"//"; let v = Text("x").glassEffect()'
+glass_case g-raw-string 1 Sources/App/Shell/A.swift 'let s = #"a"b//"#; let v = Text("x").glassEffect()'
+glass_case g-interpolation 1 Sources/App/Shell/A.swift 'let s = "\("//")"; let v = Text("x").glassEffect()'
+glass_case g-multiline-string 1 Sources/App/Shell/A.swift "$(printf '%s\n' 'let s = """' '  a "q" // /* not comments' '  """' 'let v = Text("x").glassEffect()')"
+glass_case g-multiline-quote 1 Sources/App/Shell/A.swift "$(printf '%s\n' 'let s = """' '  a " b' '  """; let v = Text("x").glassEffect /* n */ (.regular)')"
+glass_case g-regex-extended 1 Sources/App/Shell/A.swift 'let r = #/a//b/#; let v = Text("x").glassEffect()'
+glass_case g-regex-quote 1 Sources/App/Shell/A.swift 'let r = /"/; let u = "http://x"; let v = Text("x").glassEffect()'
+glass_case g-regex-escaped-slash 1 Sources/App/Shell/A.swift 'let r = /a\//; let v = Text("x").glassEffect()'
+glass_case g-raw-identifier 1 Sources/App/Shell/A.swift 'func `a//b`() {}; let v = Text("x").glassEffect()'
+# A file the lexer cannot close cleanly (an unterminated comment or string, which Swift refuses)
+# is scanned raw as well: a lexer mistake widens the scan, it never narrows it.
+glass_case g-unclean-lex 1 Sources/App/Shell/A.swift "$(printf '/* never closed\nlet v = Text("x").glassEffect()')"
+glass_fixture
+printf '%s\n' 'let a = 1 /* one' 'two */' 'let v = Text("x")' '  .glassEffect /* x */ (.regular)' >> "$tmp/glass/Sources/App/Shell/A.swift"
+check g-comment-line-number 1 "$(glass_line)"
+if grep -q '^Sources/App/Shell/A.swift:7:glassEffect ($' "$tmp/glass/.gate-artifacts/no-custom-glass-grep.log"; then
+  gok g-comment-line-evidence "a blanked comment keeps its newlines: the hit names the call's own line"
+else
+  gfail g-comment-line-evidence "$(grep -m3 'glassEffect' "$tmp/glass/.gate-artifacts/no-custom-glass-grep.log" | tr '\n' '|')"
+fi
 glass_case g-widget-file 1 Sources/Shared/Model.swift 'let v = Text("x").glassEffect()'
 glass_case g-widget-dir 1 Sources/Widget/W.swift 'let v = GlassEffectContainer {}'
 glass_case g-package 1 Packages/API/Sources/API.swift 'let v = Text("x").glassEffect()'

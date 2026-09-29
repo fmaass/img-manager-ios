@@ -163,6 +163,22 @@ struct WorkspaceNavigationTests {
     nav.applyLayoutChange(from: .compact, to: .compact, hasSelectedShoot: true)
     #expect(nav.gridHost == .shoots)
   }
+
+  /// Final audit F4: `RootView`'s erase hook calls this beside the queue's and the tree's own
+  /// `endSession()`, so the next account starts where a launch does.
+  @Test("endSession returns to the launch state: Shoots, no host, every stack at its root")
+  func endSessionResetsToLaunchState() {
+    let nav = WorkspaceNavigation()
+    nav.open(folderID: 4, tier: nil, from: .search) { _, _ in }
+    #expect(nav.path(for: .search) == [.workspace])
+    nav.activeTab = .library
+    nav.endSession()
+    #expect(nav.activeTab == .shoots)
+    #expect(nav.gridHost == nil)
+    for tab in CompactTab.allCases {
+      #expect(nav.path(for: tab).isEmpty)
+    }
+  }
 }
 
 @MainActor
@@ -189,5 +205,14 @@ struct FolderSearchModelTests {
     #expect(search.text == "wandern")
     nav.applyLayoutChange(from: .compact, to: .regular2, hasSelectedShoot: true)
     #expect(search.text == "wandern")
+  }
+
+  /// Final audit F4: the previous account's query never carries into the next session.
+  @Test("endSession clears the query")
+  func endSessionClearsTheQuery() {
+    let search = FolderSearchModel()
+    search.text = "wandern"
+    search.endSession()
+    #expect(search.text.isEmpty)
   }
 }

@@ -55,9 +55,9 @@ struct RootView: View {
   /// is on and the `FolderTreeSection` that holds the load — and neither can reach the other.
   @State private var treeReloadToken = 0
   /// WP28 P1 (IMGMGR-448): the Compact shell's tabs and which one hosts the grid.
-  @State private var navigation = WorkspaceNavigation()
+  @State private var navigation: WorkspaceNavigation
   /// WP28 P1: the folder search text, hoisted so every search surface shares one query.
-  @State private var folderSearch = FolderSearchModel()
+  @State private var folderSearch: FolderSearchModel
   /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
   @State private var folderTree: FolderTreeState
   /// The inspector's one flag at every width (WP28 P3, IMGMGR-450: the system `.inspector` on
@@ -142,13 +142,21 @@ struct RootView: View {
     // to end with the session the same way the queue does (see `FolderTreeState.endSession`).
     let folderTree = FolderTreeState()
     _folderTree = State(initialValue: folderTree)
-    erasedBox.handler = { [weak queueStore, weak folderTree] in
+    // Final audit F4: the Compact tabs' paths and the folder search text are hoisted here too,
+    // so they end with the session at the same boundary, in the same synchronous run.
+    let navigation = WorkspaceNavigation()
+    _navigation = State(initialValue: navigation)
+    let folderSearch = FolderSearchModel()
+    _folderSearch = State(initialValue: folderSearch)
+    erasedBox.handler = { [weak queueStore, weak folderTree, weak navigation, weak folderSearch] in
       // FENCE FIRST, and synchronously — this closure is `@MainActor`, so nothing suspends
       // before this line. Clearing the file first (as this did) left a window between the two
       // awaits in which a fetch could resume against an un-advanced generation and write the
       // snapshot straight back, one await after the erasure had removed it.
       queueStore?.endSession()
       folderTree?.endSession()
+      navigation?.endSession()
+      folderSearch?.endSession()
       await queueSnapshotStore.clear()
     }
     _queueStore = State(initialValue: queueStore)
@@ -663,7 +671,7 @@ struct RootView: View {
     // WP28 P3: read here in the body, so the title follows the tree's and the queue's loads.
     let title = WorkspaceTitle.name(
       folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
-      summaries: queueStore.summaries)
+      cachedTreeFolders: queueStore.cachedTree?.foldersByTier, summaries: queueStore.summaries)
     return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
       folderSearch: folderSearch, queueStore: queueStore, title: title,

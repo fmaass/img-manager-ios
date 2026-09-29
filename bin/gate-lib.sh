@@ -426,7 +426,10 @@ GATE_CUSTOM_GLASS_PATTERN='glassEffect[[:alnum:]]*[[:space:]]*\(|GlassEffectCont
 
 # gate_glass_scan PATTERN PATH... — the source half of the leg, MULTI-LINE: each file is read
 # whole (perl slurp), so `[[:space:]]*` crosses newlines and a call split before its `(` —
-# `.glassEffect` on one line, `(.regular)` on the next — is still a hit. Walks each directory
+# `.glassEffect` on one line, `(.regular)` on the next — is still a hit. Comments are blanked
+# first (`blank`: each becomes one space plus its newlines, as Swift treats them), so a comment
+# between the tokens of a call hides nothing and a call spelled only in a comment draws nothing;
+# string and regex literals stay verbatim, so a mention inside one is still a hit. Walks each directory
 # like `grep -rI` (skips `.build` and binary files) and prints `file:line:match` per hit.
 # Exit: 0 a hit, 1 none, 2 a path that does not exist, a directory it cannot traverse, a file it
 # cannot open, read or close, any warning raised while walking, or a bad pattern — the grep contract `scan`/`absence_leg` read, so a scan error is a red leg.
@@ -435,6 +438,84 @@ gate_glass_scan() {
     use strict; use warnings; use File::Find;
     my $re = shift @ARGV;
     my $rx = eval { qr/$re/ } or do { print STDERR "gate-lib: bad pattern: $@"; exit 2 };
+    # blank(TEXT) -> (TEXT with every comment replaced by one space plus the newlines it held,
+    # clean). Swift lexing, as far as a comment is concerned: string literals (plain, multi-line,
+    # raw `#"…"#`, with `\(…)` interpolation holding code of their own), regex literals
+    # (`#/…/#`, and a bare `/…/` in operand position closed on its line), backtick identifiers
+    # and a `\` before a `/` are copied VERBATIM, so a "//" or "/*" inside them never opens a
+    # comment. `clean` is false when a comment or string is left open (Swift refuses such a
+    # file); the caller then scans the raw text as well.
+    sub blank {
+      my ($t) = @_;
+      my ($o, $clean) = ("", 1);
+      my @st = (["c", -1]);
+      pos($t) = 0;
+      while (pos($t) < length $t) {
+        my $f = $st[-1];
+        if ($f->[0] eq "c") {
+          if ($t =~ /\G([^\/"#\\`()]+)/gc) { $o .= $1; next }
+          if ($t =~ /\G\/\//gc) {
+            $t =~ /\G[^\n]*/gc;
+            $o .= " ";
+            next;
+          }
+          if ($t =~ /\G\/\*/gc) {
+            my ($d, $nl) = (1, 0);
+            while ($d > 0) {
+              if ($t =~ /\G\/\*/gc) { $d++ }
+              elsif ($t =~ /\G\*\//gc) { $d-- }
+              elsif ($t =~ /\G\n/gc) { $nl++ }
+              elsif ($t =~ /\G[^\/*\n]+|\G[\/*]/gc) { }
+              else { $clean = 0; last }
+            }
+            $o .= " " . ("\n" x $nl);
+            next;
+          }
+          if ($t =~ /\G(#*)("""|")/gc) {
+            push @st, ["s", length $1, length($2) == 3];
+            $o .= $1 . $2;
+            next;
+          }
+          if ($t =~ /\G(#+)\//gc) {
+            my $h = $1;
+            if ($t =~ /\G(.*?\/$h)/sgc) { $o .= $h . "/" . $1 } else { $o .= $h . "/"; $clean = 0 }
+            next;
+          }
+          if ($t =~ /\G(\/(?![\s\/*])(?:\\.|\[(?:\\.|[^\]\n])*\]|[^\/\\\n\[])+\/)/gc) {
+            # A bare regex literal only in operand position (after an operator, an opening
+            # bracket or a separator, or at the start); after an operand this is division.
+            my $lit = $1;
+            my $prev = length($o) ? substr($o, -1) : "";
+            if ($prev eq "" || $prev =~ /[\s(\[{,:=;!&|^~<>?+\-*%]/) { $o .= $lit; next }
+            pos($t) -= length($lit) - 1;
+            $o .= "/";
+            next;
+          }
+          if ($t =~ /\G(`[^`\n]*`)/gc) { $o .= $1; next }
+          if ($t =~ /\G(\\.?)/sgc) { $o .= $1; next }
+          if ($t =~ /\G\(/gc) { $f->[1]++ if $f->[1] >= 0; $o .= "("; next }
+          if ($t =~ /\G\)/gc) {
+            $o .= ")";
+            if ($f->[1] == 0) { pop @st } elsif ($f->[1] > 0) { $f->[1]-- }
+            next;
+          }
+          $t =~ /\G(.)/sgc;
+          $o .= $1;
+          next;
+        }
+        my ($n, $multi) = ($f->[1], $f->[2]);
+        my $h = "#" x $n;
+        my $close = ($multi ? "\"\"\"" : "\"") . $h;
+        if ($t =~ /\G\Q$close\E/gc) { $o .= $close; pop @st; next }
+        if ($t =~ /\G\\\Q$h\E\(/gc) { $o .= "\\" . $h . "("; push @st, ["c", 0]; next }
+        if ($t =~ /\G(\\\Q$h\E.)/sgc) { $o .= $1; next }
+        if (!$multi && $t =~ /\G\n/gc) { $o .= "\n"; pop @st; $clean = 0; next }
+        $t =~ /\G(.)/sgc;
+        $o .= $1;
+      }
+      $clean = 0 if @st > 1;
+      return ($o, $clean);
+    }
     my ($hit, $err, @files) = (0, 0);
     # Any warning (File::Find cannot open or stat a directory, an I/O warning) is a scan error.
     local $SIG{__WARN__} = sub { print STDERR "gate-lib: $_[0]"; $err = 1 };
@@ -462,11 +543,20 @@ gate_glass_scan() {
         $err = 1; close $fh; next;
       }
       unless (close $fh) { print STDERR "gate-lib: cannot close $f: $!\n"; $err = 1; next }
-      while ($text =~ /$rx/g) {
-        my $line = 1 + (substr($text, 0, $-[0]) =~ tr/\n//);
-        (my $m = substr($text, $-[0], $+[0] - $-[0])) =~ s/\s+/ /g;
-        print "$f:$line:$m\n";
-        $hit = 1;
+      my ($code, $clean) = blank($text);
+      my @views = ($code);
+      unless ($clean) {
+        print STDERR "gate-lib: $f leaves a comment or string open; scanning it raw as well\n";
+        push @views, $text;
+      }
+      my %seen;
+      for my $view (@views) {
+        while ($view =~ /$rx/g) {
+          my $line = 1 + (substr($view, 0, $-[0]) =~ tr/\n//);
+          (my $m = substr($view, $-[0], $+[0] - $-[0])) =~ s/\s+/ /g;
+          print "$f:$line:$m\n" unless $seen{"$line:$m"}++;
+          $hit = 1;
+        }
       }
     }
     exit 2 if $err;

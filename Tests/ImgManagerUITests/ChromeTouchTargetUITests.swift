@@ -54,6 +54,28 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
     XCTAssertNil(
       owner("", "Shoots", .button, "navigationBar", false),
       "A title that is not a fixture title, without the suffix, is the app's.")
+    // The declared state's OWN title, bare: the system labelled the Shoots root's trigger
+    // "Shoots" on one gate of c71718c and "Shoots, Actions Menu" on another.
+    XCTAssertEqual(
+      Self.owner(label: "Shoots", titleMenu: true, stateTitles: [CompactTabTitle.shoots]),
+      ChromeOwnership.titleMenuReason, "The Shoots root's own title, bare, is its title menu.")
+    XCTAssertNil(
+      Self.owner(label: "Shoots", titleMenu: false, stateTitles: [CompactTabTitle.shoots]),
+      "A state that declares no title menu has no bare title to excuse.")
+    XCTAssertNil(
+      Self.owner(
+        identifier: "shootsRefreshMenuRow", label: "Shoots", titleMenu: true,
+        stateTitles: [CompactTabTitle.shoots]),
+      "An app id labelled with the state's title is still the app's.")
+    XCTAssertNil(
+      Self.owner(label: "Library", titleMenu: true, stateTitles: [CompactTabTitle.shoots]),
+      "Only the declared state's own title counts, not another tab's.")
+    XCTAssertEqual(
+      owner("", "Shoot", .button, "navigationBar", false), ChromeOwnership.titleMenuReason,
+      "The workspace's neutral fallback title is a fixture-shaped title (final audit F1).")
+    XCTAssertNil(
+      Self.owner(label: "Shoot", titleMenu: false, stateTitles: []),
+      "The fallback title in a state without a title menu is the app's.")
     XCTAssertNil(
       ChromeOwnership.systemOwner(
         identifier: "", label: "Shoots, Actions Menu", type: .button, container: "navigationBar",
@@ -83,6 +105,15 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
     XCTAssertEqual(system.verdict, "WATCH")
   }
 
+  /// `ChromeOwnership.systemOwner` for a top-level, unidentified navigation-bar button.
+  private static func owner(
+    identifier: String = "", label: String, titleMenu: Bool, stateTitles: [String]
+  ) -> String? {
+    ChromeOwnership.systemOwner(
+      identifier: identifier, label: label, type: .button, container: "navigationBar",
+      insideSearch: false, titleMenu: titleMenu, stateTitles: stateTitles)
+  }
+
   /// `ChromeOwnership.systemOwner` for a top-level control in a state with a title menu.
   private static func ownerInTitleMenuState(
     _ id: String, _ label: String, _ type: XCUIElement.ElementType, _ bar: String, _ search: Bool
@@ -105,7 +136,7 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
       anyElement(roots, "needsReviewRow-1").waitForExistence(timeout: 30),
       "The Shoots root never rendered.")
     let shoots = chromeCensus(
-      roots, state: "shoots", titleMenu: true,
+      roots, state: "shoots", titleMenu: true, stateTitles: [CompactTabTitle.shoots],
       requiring: ["accountToolbarButton", "Shoots", "Library", "Search"])
     var rows = shoots.rows
     var problems = shoots.problems

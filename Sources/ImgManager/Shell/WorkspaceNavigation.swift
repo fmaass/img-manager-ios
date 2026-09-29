@@ -75,6 +75,16 @@ final class WorkspaceNavigation {
       for tab in CompactTab.allCases { paths[tab] = [] }
     }
   }
+
+  /// The session boundary (sign-out, erased credentials), called beside
+  /// `QueueStore.endSession()` and `FolderTreeState.endSession()`. This object is `RootView`'s
+  /// and outlives the session, so without it the next account would open on the previous one's
+  /// tab and on a stack still pushed onto a shoot it cannot see. Back to the launch state.
+  func endSession() {
+    activeTab = .shoots
+    gridHost = nil
+    paths = [:]
+  }
 }
 
 /// WP28 P1 (IMGMGR-448), plan Decision 5: the folder search text, hoisted out of
@@ -86,4 +96,10 @@ final class WorkspaceNavigation {
 @Observable
 final class FolderSearchModel {
   var text = ""
+
+  /// The session boundary, beside `WorkspaceNavigation.endSession()`: the previous account's
+  /// query names ITS folders, so it never carries into the next session.
+  func endSession() {
+    text = ""
+  }
 }

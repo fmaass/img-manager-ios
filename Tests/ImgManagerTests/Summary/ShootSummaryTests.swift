@@ -99,7 +99,8 @@ struct ShootSummaryTests {
 }
 
 /// WP28 P3: the grid's title reuses the names the sidebar already shows — the tree row's
-/// `node.name`, else the Needs-review row's `NeedsReview.shootName(for:)` — and nothing else.
+/// `node.name` (the mounted tree's, else the store's remembered one), else the Needs-review row's
+/// `NeedsReview.shootName(for:)` — and, for a shown folder nobody names yet, the neutral fallback.
 @Suite("Workspace title from existing display names (WP28 P3)")
 struct WorkspaceTitleTests {
 
@@ -122,21 +123,51 @@ struct WorkspaceTitleTests {
   @Test("The tree row's name wins over the summary's path leaf")
   func treeNameWins() {
     let row = summary(folderId: 1, path: "photo_incoming/stub")
-    let name = WorkspaceTitle.name(folderID: 1, treeFolders: tree, summaries: [row])
+    let name = WorkspaceTitle.name(
+      folderID: 1, treeFolders: tree, cachedTreeFolders: nil, summaries: [row])
     #expect(name == "2026-08-27 — Stub Shoot")
   }
 
   @Test("A folder the tree has not loaded takes the Needs-review row's name")
   func summaryFallback() {
     let row = summary(folderId: 3, path: "photo_incoming/2026/2026-09-14-wandern")
-    let name = WorkspaceTitle.name(folderID: 3, treeFolders: tree, summaries: [row])
+    let name = WorkspaceTitle.name(
+      folderID: 3, treeFolders: tree, cachedTreeFolders: nil, summaries: [row])
     #expect(name == NeedsReview.shootName(for: row))
     #expect(name == "2026-09-14-wandern")
   }
 
-  @Test("No folder, or a folder nobody names, has no title")
-  func noName() {
-    #expect(WorkspaceTitle.name(folderID: nil, treeFolders: tree, summaries: []) == nil)
-    #expect(WorkspaceTitle.name(folderID: 99, treeFolders: tree, summaries: []) == nil)
+  @Test("Before the tree mounts, the store's remembered tree names the folder")
+  func cachedTreeNames() {
+    let row = summary(folderId: 1, path: "photo_incoming/stub")
+    let name = WorkspaceTitle.name(
+      folderID: 1, treeFolders: [:], cachedTreeFolders: tree, summaries: [row])
+    #expect(name == "2026-08-27 — Stub Shoot")
+    let live: [FolderTreeTier: [Components.Schemas.FolderNode]] = [
+      .incoming: [
+        .init(
+          descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated", name: "Renamed",
+          path: "photo_incoming/stub")
+      ]
+    ]
+    let fresh = WorkspaceTitle.name(
+      folderID: 1, treeFolders: live, cachedTreeFolders: tree, summaries: [row])
+    #expect(fresh == "Renamed")
+  }
+
+  /// Final audit F1: a cold restore pushes the grid before the Library tree mounts, and the title
+  /// hosts the Summary entry — so a shown folder nobody names yet still gets a title.
+  @Test("A shown folder nobody names takes the neutral title; no folder has none")
+  func fallbackTitle() {
+    let none = WorkspaceTitle.name(
+      folderID: nil, treeFolders: tree, cachedTreeFolders: tree, summaries: [])
+    #expect(none == nil)
+    let unnamed = WorkspaceTitle.name(
+      folderID: 99, treeFolders: tree, cachedTreeFolders: tree, summaries: [])
+    #expect(unnamed == WorkspaceTitle.fallback)
+    #expect(unnamed?.isEmpty == false)
+    let cold = WorkspaceTitle.name(
+      folderID: 4, treeFolders: [:], cachedTreeFolders: nil, summaries: [])
+    #expect(cold == WorkspaceTitle.fallback)
   }
 }

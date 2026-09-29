@@ -35,11 +35,12 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
   ]
 
   private static let folderOneName = "2026-08-27 — Stub Shoot"
-  /// `WorkspaceTitle.name`'s second source for folder 1 — `NeedsReview.shootName(for:)`, the
+  /// `WorkspaceTitle.name`'s summary source for folder 1 — `NeedsReview.shootName(for:)`, the
   /// leaf of the fixture summary's path, which is also what the Shoots tab's row shows. Compact
   /// resolves to it because the tree loads only when the Library tab mounts, and the DEBUG
   /// auto-select pushes the grid on Shoots (gate on 0d2d057: the iPhone bar's identifier is
-  /// 'stub'). Regular shows the sidebar, so the tree has loaded and the first source wins.
+  /// 'stub') — unless a replayed snapshot's remembered tree names it first (final audit F1).
+  /// Regular shows the sidebar, so the tree has loaded and the tree name wins.
   private static let folderOneSummaryName = "stub"
 
   // MARK: - (a) Regular-3
@@ -266,18 +267,16 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
   /// (f), folder 4 (`template`): no `FolderSummary` exists, so "Counts unavailable", no counts and
   /// no banner.
   ///
-  /// At Compact the folder is opened the way a user reaches it — through the Library tree. The
-  /// DEBUG auto-select pushes the grid over the Library root before that root ever mounts, so the
-  /// tree never loads; with no summary either, `WorkspaceTitle` has no name, the bar has no title
-  /// and so no title menu (gate on 0d2d057, iPhone dump: the bar holds only `BackButton` and
-  /// `inspectorChromeButton`). A summary-less folder is reachable at Compact only from the
-  /// Library or Search tabs, both of which load the tree first.
+  /// Final audit F1: reached straight from the cold DEBUG auto-select, WITHOUT backing out to the
+  /// Library first. At Compact that auto-select pushes the grid over the Library root before the
+  /// root ever mounts, so the live tree never loads and no summary names the folder either; the
+  /// title is then the store's remembered tree name (a replayed snapshot) or
+  /// `WorkspaceTitle.fallback`, and it still hosts the Summary entry. Before the fix the bar had
+  /// no title and so no title menu (gate on 0d2d057, iPhone dump: only `BackButton` and
+  /// `inspectorChromeButton`).
   func testF3SummaryShowsCountsUnavailableForAFolderWithoutAServerSummary() throws {
     let app = launch(orientation: .portrait, extraArguments: ["-UITestSelectFolder", "4"])
-    if layout(of: app) == .compact {
-      reopenTheTemplateFolderThroughTheLibraryTree(in: app)
-    }
-    let sheetBar = openShootSummary(in: app, titleNames: ["template"])
+    let sheetBar = openShootSummary(in: app, titleNames: ["template", Self.workspaceFallbackTitle])
     XCTAssertTrue(
       app.descendants(matching: .any)["shootSummaryCountsUnavailable"]
         .waitForExistence(timeout: 10),
@@ -289,45 +288,6 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
       app.descendants(matching: .any)["shootSummaryBanner"].exists,
       "The banner shows without a server summary.")
     closeShootSummary(in: app, sheetBar: sheetBar)
-  }
-
-  /// Back to the Library root, which mounts the tree and loads it, then a tap on the fixture's
-  /// `template` leaf (id 4, handle `folderContainer-4`). No disclosure taps: the grid already
-  /// has folder 4 open, so the tree's IMGMGR-405 reveal (`FolderTreeSection
-  /// .revealHighlightedFolder`) has expanded the Incoming tier and every ancestor row. A walk
-  /// that taps them toggles them CLOSED — gate on b47aeac, iPhone dump: after the Incoming tap
-  /// only the three tier rows remained and `folderDisclose-2` matched nothing.
-  private func reopenTheTemplateFolderThroughTheLibraryTree(in app: XCUIApplication) {
-    let back = app.navigationBars.buttons["BackButton"].firstMatch
-    XCTAssertTrue(back.waitForExistence(timeout: 10), "The pushed grid has no Back button.")
-    back.tap()
-    let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
-    XCTAssertTrue(reveal(incoming, in: app), "The Library root's tree never loaded.")
-    let template = app.descendants(matching: .any)["folderContainer-4"].firstMatch
-    XCTAssertTrue(
-      reveal(template, in: app),
-      "The Library tree did not reveal the open `template` folder (IMGMGR-405 rule 6).")
-    template.tap()
-    XCTAssertTrue(
-      app.buttons["Dislike"].waitForExistence(timeout: 30),
-      "Tapping the `template` row did not reopen its grid.")
-  }
-
-  /// Scrolls until `element` is hittable, in both directions — `TierHomeUITests.reveal`, copied
-  /// for the reason that suite gives (extracting it would edit a shipped suite for no fix of its).
-  private func reveal(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 8) -> Bool {
-    if element.waitForExistence(timeout: 15), element.isHittable { return true }
-    let firstList = app.collectionViews.firstMatch
-    let scroller: XCUIElement = firstList.exists ? firstList : app
-    for _ in 0..<swipes {
-      scroller.swipeUp()
-      if element.exists, element.isHittable { return true }
-    }
-    for _ in 0..<(swipes * 2) {
-      scroller.swipeDown()
-      if element.exists, element.isHittable { return true }
-    }
-    return element.exists && element.isHittable
   }
 
   // MARK: - Launch and layout

@@ -9,6 +9,11 @@ extension XCTestCase {
   /// `InspectorSummaryUITests.folderOneSummaryName` for why Compact can show either).
   static let materialsFolderOneNames = ["2026-08-27 — Stub Shoot", "stub"]
 
+  /// The grid's title for a shown folder nobody names yet — the app's `WorkspaceTitle.fallback`
+  /// (final audit F1). Spelled here because a UI-test bundle runs out of process and cannot
+  /// import the app module.
+  static let workspaceFallbackTitle = "Shoot"
+
   /// The five grid view options, on the Compact options row or the Regular grid bar.
   static let gridViewOptionIdentifiers = [
     "gridFilterControl",

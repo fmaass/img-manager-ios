@@ -54,8 +54,11 @@ struct ChromeTargetRow {
 ///    anything inside one; the navigation title menu (`toolbarTitleMenu`) — ONLY in a state the
 ///    census declares as carrying one, and only for a navigation-bar button with no identifier
 ///    that sits in no other control and whose label ends with ", Actions Menu" (the suffix the
-///    system generates) or is exactly a fixture title (the bare form the gate on bd47740 showed
-///    at Regular-3 with the inspector shown).
+///    system generates), is exactly a fixture title or the workspace's neutral fallback title
+///    (the bare form the gate on bd47740 showed at Regular-3 with the inspector shown), or is
+///    exactly the declared state's OWN title (`stateTitles`: the Compact Shoots root read bare
+///    "Shoots" on one gate of c71718c and "Shoots, Actions Menu" on another — the system's
+///    label for the same trigger varies).
 /// 3. Everything else is app-owned. A label alone never makes a control the system's.
 enum ChromeOwnership {
   static let titleMenuReason = "system navigation title menu"
@@ -68,7 +71,8 @@ enum ChromeOwnership {
 
   static func systemOwner(
     identifier: String, label: String, type: XCUIElement.ElementType, container: String,
-    insideSearch: Bool, insideControl: Bool = false, titleMenu: Bool = false
+    insideSearch: Bool, insideControl: Bool = false, titleMenu: Bool = false,
+    stateTitles: [String] = []
   ) -> String? {
     if isAppIdentifier(identifier) { return nil }
     if identifier == "BackButton" { return "system back button" }
@@ -77,6 +81,7 @@ enum ChromeOwnership {
     if type == .searchField || insideSearch { return "system search field" }
     let titleShaped =
       label.hasSuffix(", Actions Menu") || XCTestCase.materialsFolderOneNames.contains(label)
+      || label == XCTestCase.workspaceFallbackTitle || stateTitles.contains(label)
     if titleMenu && container == "navigationBar" && type == .button && identifier.isEmpty
       && !insideControl && titleShaped
     {
@@ -92,6 +97,7 @@ private struct CensusWalk {
   let bar: String
   let window: CGRect
   let titleMenu: Bool
+  let stateTitles: [String]
 }
 
 extension XCTestCase {
@@ -107,12 +113,13 @@ extension XCTestCase {
   /// system bar, each measured unless a bar row already matches its key, and each required.
   /// Every key in `required` must match a row. `titleMenu` declares that this state carries a
   /// `toolbarTitleMenu`; only then can a control be the system title menu (`ChromeOwnership`).
+  /// `stateTitles` names that state's own navigation title, which the trigger may carry bare.
   /// Problems are RETURNED, not failed, so a caller can print every row before it fails
   /// (`reportChromeTargets`).
   @MainActor
   func chromeCensus(
     _ app: XCUIApplication, state: String, titleMenu: Bool = false,
-    requiring required: [String] = [],
+    stateTitles: [String] = [], requiring required: [String] = [],
     alsoMeasure extras: [(key: String, element: XCUIElement)] = []
   ) -> (rows: [ChromeTargetRow], problems: [String]) {
     let window = app.windows.firstMatch.frame
@@ -134,7 +141,9 @@ extension XCTestCase {
         }
         guard !snapshot.frame.isEmpty, window.intersects(snapshot.frame) else { continue }
         let before = rows.count
-        let walk = CensusWalk(state: state, bar: bar.kind, window: window, titleMenu: titleMenu)
+        let walk = CensusWalk(
+          state: state, bar: bar.kind, window: window, titleMenu: titleMenu,
+          stateTitles: stateTitles)
         collectControls(snapshot, walk, insideSearch: false, insideControl: false, into: &rows)
         let line = "TOUCH-TARGET BAR \(state) \(bar.kind)#\(index) controls=\(rows.count - before)"
         if rows.count > before {
@@ -186,7 +195,7 @@ extension XCTestCase {
           systemReason: ChromeOwnership.systemOwner(
             identifier: node.identifier, label: node.label, type: node.elementType,
             container: walk.bar, insideSearch: insideSearch, insideControl: insideControl,
-            titleMenu: walk.titleMenu),
+            titleMenu: walk.titleMenu, stateTitles: walk.stateTitles),
           size: node.frame.size))
     }
     let search = insideSearch || node.elementType == .searchField

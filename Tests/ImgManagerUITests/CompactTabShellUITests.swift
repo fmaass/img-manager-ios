@@ -226,6 +226,43 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
       "The Library root carries Account too — Compact has one Account home, the Shoots root.")
   }
 
+  /// Final audit F2: the Shoots title menu's Refresh row — the visible twin of the root's
+  /// pull-to-refresh — exists, is hittable, and really re-reads the queue: the fixture's served
+  /// `/api/folder-summaries` count (`debugProbe.summaries`) grows when it is tapped. The count is
+  /// read only once it has held still, so the first load cannot pass for the refresh.
+  func testTheShootsTitleMenuRefreshRowRereadsTheQueue() throws {
+    let app = launch()
+    try skipUnlessCompact(app)
+
+    let probe = element(app, "debugProbe.summaries")
+    XCTAssertTrue(
+      probe.waitForExistence(timeout: 30), "The Shoots root carries no summaries-request probe.")
+    let before = settledSummariesRequests(probe)
+    XCTAssertGreaterThan(before, 0, "The Shoots root never loaded its queue.")
+
+    let title = app.navigationBars.buttons
+      .matching(NSPredicate(format: "label IN %@", ["Shoots", "Shoots, Actions Menu"]))
+      .firstMatch
+    XCTAssertTrue(title.waitForExistence(timeout: 15), "The Shoots root's bar has no title.")
+    let row = app.buttons
+      .matching(NSPredicate(format: "identifier == 'shootsRefreshMenuRow' OR label == 'Refresh'"))
+      .firstMatch
+    XCTAssertTrue(
+      openPresentation(title, revealing: row, timeout: 20),
+      "The Shoots title menu did not offer \"Refresh\".")
+    XCTAssertTrue(row.isHittable, "The Shoots title menu's Refresh row cannot be tapped.")
+    row.tap()
+
+    let deadline = Date(timeIntervalSinceNow: 15)
+    var after = summariesRequests(probe)
+    while after <= before && Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.5)
+      after = summariesRequests(probe)
+    }
+    XCTAssertGreaterThan(
+      after, before, "Tapping Refresh did not re-fetch the queue's summaries (\(before) before).")
+  }
+
   // MARK: - Shared
 
   private func launch(extraArguments: [String] = []) -> XCUIApplication {
@@ -251,6 +288,30 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
       NSPredicate(format: "identifier BEGINSWITH %@", "gridTile-"))
     // An explicit closure, never `map(\.identifier)` (main-actor isolation under Swift 6).
     return tiles.allElementsBoundByIndex.map { $0.identifier }
+  }
+
+  /// The fixture's served summaries-request count, off `debugProbe.summaries`'s value.
+  private func summariesRequests(_ probe: XCUIElement) -> Int {
+    numbers(in: (probe.value as? String) ?? "").first ?? 0
+  }
+
+  /// The count once it is nonzero and has not moved for two seconds, or whatever it reads after
+  /// thirty — so a load still in flight is never mistaken for the refresh under test.
+  private func settledSummariesRequests(_ probe: XCUIElement) -> Int {
+    let deadline = Date(timeIntervalSinceNow: 30)
+    var last = summariesRequests(probe)
+    var stableSince = Date()
+    while Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.5)
+      let now = summariesRequests(probe)
+      if now != last {
+        last = now
+        stableSince = Date()
+      } else if now > 0 && Date().timeIntervalSince(stableSince) >= 2 {
+        break
+      }
+    }
+    return last
   }
 
   private func numbers(in text: String) -> [Int] {

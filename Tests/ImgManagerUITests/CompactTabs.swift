@@ -118,3 +118,11 @@ extension XCTestCase {
     return false
   }
 }
+
+/// The Compact tabs' titles — the app's `CompactTab.title` (`Shell/CompactTab.swift`), spelled
+/// ONCE here because a UI-test bundle runs out of process and cannot import the app module.
+enum CompactTabTitle {
+  static let shoots = "Shoots"
+  static let library = "Library"
+  static let search = "Search"
+}

@@ -49,6 +49,9 @@ enum ShootsHome {
 
   static let tierMenuIdentifier = "shootsTierMenu"
 
+  /// Final audit F2: the title menu's Refresh row, the pull-to-refresh's visible twin.
+  static let refreshMenuRowIdentifier = "shootsRefreshMenuRow"
+
   static func recentRowIdentifier(for folderID: Int) -> String { "recentRow-\(folderID)" }
 
   /// Every summary outside the Needs-review set whose tier is `tier`, most recently touched

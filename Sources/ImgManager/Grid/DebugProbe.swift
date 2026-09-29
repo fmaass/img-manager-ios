@@ -36,5 +36,10 @@
     /// drove the absorb has no other way to observe that the request was really made rather than
     /// that a sheet was dismissed.
     var absorbRequests = 0
+
+    /// Final audit F2: how many `/api/folder-summaries` requests the fixture transport has served
+    /// this launch — so a UI test observes that the Shoots title menu's Refresh row really
+    /// re-fetched, the same way the absorb counter above observes its request.
+    var summariesRequests = 0
   }
 #endif

@@ -80,8 +80,11 @@ whatever its label. A control without one is system-owned only on a closed list 
 identifiers `BackButton` and `ToggleSidebar`, a tab bar button, a search field and its contents,
 and the navigation title menu — only in a state the census declares as carrying one, for an
 unidentified navigation-bar button inside no other control whose label ends with ", Actions
-Menu" or is exactly a fixture title (fold round 3; the gate on bd47740 showed "Shoots, Actions
-Menu" on the Shoots root and the bare fixture title at Regular-3). A label alone never makes a control the system's, so
+Menu", is exactly a fixture title or the workspace's neutral fallback title "Shoot" (fold round
+3; the gate on bd47740 showed "Shoots, Actions Menu" on the Shoots root and the bare fixture
+title at Regular-3), or is exactly the declared state's own title (final audit: the Shoots root
+read bare "Shoots" on one gate of c71718c and "Shoots, Actions Menu" on another, so the census
+declares `stateTitles: ["Shoots"]` there). A label alone never makes a control the system's, so
 an app control reusing "More" or "Search" is judged against the floor
 (`testOwnershipIsByIdentifierFirst` proves the precedence). System-owned chrome is reported,
 never failed — growing it would need custom chrome, which ADR-N1 forbids. Measured on the gate
@@ -90,7 +93,7 @@ on 832e6f1; the title-menu rows are from the gate on 35ba839 (queue-lane-m-00404
 | Control | Owner | Frame | Verdict |
 |---|---|---|---|
 | Title menu trigger, Compact grid bar ("stub") | system | 36 × 20.7 pt (its title text) | **WATCH** — below 28 pt, system-owned |
-| Title menu trigger, Compact Shoots root ("Shoots, Actions Menu") | system | 56 × 20.7 pt (its title text) | **WATCH** — below 28 pt, system-owned |
+| Title menu trigger, Compact Shoots root ("Shoots, Actions Menu", or bare "Shoots") | system | 56 × 20.7 pt (its title text) | **WATCH** — below 28 pt, system-owned |
 | Title menu trigger, Regular-3 grid bar | system | 211 × 21 pt (its title text) | **WATCH** — below 28 pt, system-owned |
 | Account / View / Info, Compact bar | app | 36 × 36 pt | WATCH (≥ 28, < 44) |
 | Account / View / Info, Regular-3 bar | app | 50 × 36 / 51 × 36 / 40 × 36 pt | WATCH |

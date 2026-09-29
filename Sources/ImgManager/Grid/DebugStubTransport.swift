@@ -75,6 +75,10 @@
         // healthy — the exact split that used to blank the tree home.
         return (HTTPResponse(status: .internalServerError), nil)
       case Operations.FolderSummariesApiFolderSummariesGet.id:
+        // Final audit F2: counted BEFORE the answer goes back, through the same probe as the
+        // facets and absorb requests, so the Shoots Refresh row's re-fetch is observable.
+        let summariesProbe = self.probe
+        await MainActor.run { (summariesProbe ?? .shared).summariesRequests += 1 }
         return try jsonResponse(
           .ok, Components.Schemas.FolderSummaryList(items: Self.servedFixtureSummaries()))
       case Operations.ListImagesApiImagesGet.id:

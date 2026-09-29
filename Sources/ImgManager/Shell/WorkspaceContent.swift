@@ -26,8 +26,8 @@ struct WorkspaceContent: View {
   let folderSearch: FolderSearchModel
   /// WP28 P3: the queue the Summary sheet reads its server counts from.
   let queueStore: QueueStore
-  /// WP28 P3: the grid's navigation title (`WorkspaceTitle`), nil when the folder's name is not
-  /// known yet.
+  /// WP28 P3: the grid's navigation title (`WorkspaceTitle`), nil only when no folder is shown —
+  /// a shown folder always has one, so its title menu (the Summary entry) always exists.
   let title: String?
   /// The one inspector flag, at every width. Session-scoped, collapsed at launch (IMGMGR-390).
   @Binding var showInspector: Bool
