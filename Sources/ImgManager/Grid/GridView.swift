@@ -186,8 +186,10 @@ struct GridView: View {
   /// here scrolls except `restoreOrRecordScrollAnchor`'s one restore, so no later update can.
   ///
   /// The one-shot is per `ScrollView` lifetime (re-armed on disappear) and is consumed by the
-  /// FIRST visibility report, before that report is recorded: a fresh `ScrollView` reports its top
-  /// rows first, and recording them would overwrite the anchor it has yet to restore.
+  /// first visibility report that can act on it, before that report is recorded: a fresh
+  /// `ScrollView` reports its top rows first, and recording them would overwrite the anchor it has
+  /// yet to restore. While the saved photograph's page is still loading it stays armed
+  /// (`GridScrollAnchor.restoreStep`).
   @State private var scrollAnchorRestored = false
 
   private func restoreOrRecordScrollAnchor(
@@ -196,17 +198,39 @@ struct GridView: View {
     guard !visible.isEmpty else { return }
     let topmost = GridScrollAnchor.topmostPhotograph(visible: visible, frames: tileFrames)
     if !scrollAnchorRestored {
-      scrollAnchorRestored = true
-      if let target = GridScrollAnchor.row(containing: store.gridScrollAnchor, in: renderRows),
-        target != GridScrollAnchor.row(containing: topmost, in: renderRows)
-      {
+      let step = GridScrollAnchor.restoreStep(
+        saved: store.gridScrollAnchor, topmost: topmost, rows: renderRows,
+        isLoading: store.isLoadingPage)
+      switch step {
+      case .wait:
+        return
+      case .scroll(let target):
+        scrollAnchorRestored = true
         proxy.scrollTo(target, anchor: .top)
         return
+      case .record:
+        scrollAnchorRestored = true
       }
     }
     // A report with no tile row (headers only) keeps the last photograph, as the binding did.
     guard let topmost else { return }
     store.gridScrollAnchor = topmost
+  }
+
+  /// The packing inputs, and nothing a mark can move (`GridPackingKey`).
+  private var packingKey: GridPackingKey {
+    GridPackingKey(store: store, paneWidth: paneWidth, displayScale: displayScale)
+  }
+
+  /// A repack inside the same `ScrollView` (width, thumbnail size, sections) moves every row
+  /// break, so the remembered photograph is put back at the top of the viewport in the NEW
+  /// packing — what the old binding did by re-resolving on every pass, now done only when the
+  /// packing actually changed. Runs from `onChange`, inside the update that changed the key and
+  /// before the new layout's visibility report could record the rows now at the old offset.
+  private func restoreAfterRepack(proxy: ScrollViewProxy) {
+    let saved = store.gridScrollAnchor
+    guard let target = GridScrollAnchor.row(containing: saved, in: renderRows) else { return }
+    proxy.scrollTo(target, anchor: .top)
   }
 
   /// The scrollable justified grid, with the live pointer-drag gesture attached through
@@ -260,9 +284,12 @@ struct GridView: View {
         // WP16 P2 (IMGMGR-298): the offset is kept in STORE-owned state, so it survives this view
         // being rebuilt — see `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
         // IMGMGR-473: recorded here and restored once, never bound (see `scrollAnchorRestored`).
-        .onScrollTargetVisibilityChange(idType: GridRenderRowID.self) { visible in
+        // Near-zero threshold: a mostly clipped top row still counts as visible, so the recorded
+        // photograph is the topmost PARTIALLY visible row, as the binding reported it.
+        .onScrollTargetVisibilityChange(idType: GridRenderRowID.self, threshold: 0.01) { visible in
           restoreOrRecordScrollAnchor(visible: visible, proxy: scrollProxy)
         }
+        .onChange(of: packingKey) { _, _ in restoreAfterRepack(proxy: scrollProxy) }
         .onDisappear { scrollAnchorRestored = false }
         .coordinateSpace(name: "gridSpace")
         .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }

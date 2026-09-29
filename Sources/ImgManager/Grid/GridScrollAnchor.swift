@@ -75,3 +75,53 @@ enum GridScrollAnchor {
     return best
   }
 }
+
+extension GridScrollAnchor {
+  /// What the armed one-time restore does with a visibility report (IMGMGR-473 round 3).
+  enum RestoreStep: Equatable {
+    /// Scroll the saved photograph's row to the top; the restore is spent, the report is not
+    /// recorded (it describes the position being left).
+    case scroll(GridRenderRowID)
+    /// Nothing to restore, or already there, or the photograph is gone for good: the restore is
+    /// spent and the report is recorded as usual.
+    case record
+    /// The saved photograph is not rendered YET (its page is still loading): stay armed and do
+    /// not record, or the fresh view's top rows would overwrite the anchor still to be restored.
+    case wait
+  }
+
+  static func restoreStep(
+    saved: GridDisplayID?, topmost: GridDisplayID?, rows: [GridRenderRow], isLoading: Bool
+  ) -> RestoreStep {
+    guard let saved else { return .record }
+    guard let target = row(containing: saved, in: rows) else { return isLoading ? .wait : .record }
+    return target == row(containing: topmost, in: rows) ? .record : .scroll(target)
+  }
+}
+
+/// IMGMGR-473 round 3: the inputs that decide where the justified rows break, and nothing else.
+///
+/// With the anchor no longer bound, a repack inside the SAME `ScrollView` (the pane narrowing,
+/// the thumbnail size stepping, a grouping that splits the stream into sections) has to put the
+/// remembered photograph back by hand — `GridView` does that on a change of this key. A mark, a
+/// pick count or a re-elected cover is deliberately NOT in it: those are the changes that must
+/// leave the offset alone (the bug). Header keys are in, header counts are not, because a mark
+/// can move a count but never a section boundary. A filter, sort, shoot or mode change retires
+/// the anchor at the store (`GridStore.applyFilterChange` and its siblings), so the restore this
+/// key drives resolves nothing for those and the reader lands where the reload leaves them.
+struct GridPackingKey: Equatable {
+  var paneWidth: CGFloat
+  var rowHeight: GridRowHeight
+  var displayScale: CGFloat
+  var groupBy: GroupByKey?
+  var sectionKeys: Set<GroupKey>
+
+  @MainActor
+  init(store: GridStore, paneWidth: CGFloat, displayScale: CGFloat) {
+    self.paneWidth = paneWidth
+    self.rowHeight = store.rowHeight
+    self.displayScale = displayScale
+    self.groupBy = store.activeGrouping.groupByKey
+    self.sectionKeys = Set(store.groupHeaders.keys)
+  }
+}

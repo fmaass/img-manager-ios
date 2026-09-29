@@ -115,6 +115,29 @@ struct GridScrollAnchorTests {
         visible: [.tiles(.image(4)), .tiles(.image(7))],
         frames: [.image(7): CGRect(x: 0, y: 10, width: 1, height: 1)]) == .image(7))
   }
+
+  /// IMGMGR-473 round 3: the armed one-time restore, decided purely.
+  @Test("The one-time restore scrolls, records, or waits for the saved photograph's page")
+  func theRestoreStepTable() {
+    let rows = [tileRow([1, 2, 3]), tileRow([4, 5, 6]), tileRow([7, 8, 9])]
+    func step(_ saved: Int?, top: Int, in rows: [GridRenderRow], loading: Bool = false)
+      -> GridScrollAnchor.RestoreStep
+    {
+      GridScrollAnchor.restoreStep(
+        saved: saved.map { GridDisplayID.image($0) }, topmost: .image(top), rows: rows,
+        isLoading: loading)
+    }
+    // Nothing saved (first visit, or retired by a filter/shoot/mode change): record.
+    #expect(step(nil, top: 1, in: rows) == .record)
+    // Saved photograph mid-row in the current packing: its row goes to the top.
+    #expect(step(5, top: 1, in: rows) == .scroll(.tiles(.image(4))))
+    // Already the topmost row: nothing to scroll, the restore is spent.
+    #expect(step(5, top: 4, in: rows) == .record)
+    // Not rendered yet while its page loads: stay armed, record nothing.
+    #expect(step(42, top: 1, in: rows, loading: true) == .wait)
+    // Not rendered and nothing loading: gone for good, so the restore is spent.
+    #expect(step(42, top: 1, in: [], loading: false) == .record)
+  }
 }
 
 /// WP16 P2 (IMGMGR-298), Codex round-3 blocker. The anchor's LIFETIME, at the store, where the
@@ -134,6 +157,21 @@ struct GridScrollAnchorLifecycleTests {
   private func makeStore() -> GridStore {
     let client = ImgManagerAPIClient.make(transport: GridStubTransport())
     return GridStore(service: GridService(client: client))
+  }
+
+  /// IMGMGR-473 round 3: the key whose change re-places the anchor after a repack. Thumbnail
+  /// size and width are in it; the anchor itself and a mark are not (see
+  /// `SceneMarkScrollAnchorTests` for the mark leg).
+  @Test("The packing key moves with width and thumbnail size, not with the anchor")
+  func thePackingKeyTracksPackingInputsOnly() {
+    let store = makeStore()
+    let base = GridPackingKey(store: store, paneWidth: 402, displayScale: 3)
+    store.gridScrollAnchor = .image(42)
+    #expect(GridPackingKey(store: store, paneWidth: 402, displayScale: 3) == base)
+    #expect(GridPackingKey(store: store, paneWidth: 300, displayScale: 3) != base)
+    let other = GridRowHeight.allCases.first { $0 != store.rowHeight } ?? .step120
+    store.setRowHeight(other)
+    #expect(GridPackingKey(store: store, paneWidth: 402, displayScale: 3) != base)
   }
 
   @Test("An effective filter change retires the anchor")

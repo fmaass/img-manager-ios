@@ -99,6 +99,7 @@ struct SceneMarkScrollAnchorTests {
     await store.toggleSceneExpanded(5)
 
     let before = rendered(store)
+    let keyBefore = GridPackingKey(store: store, paneWidth: 300, displayScale: 2)
     // The reader is scrolled INTO the band: the anchor is the leading photograph of a row made
     // only of members, two rows down.
     #expect(before.count >= 4, "the fixture must pack into enough rows to anchor inside the band")
@@ -124,6 +125,7 @@ struct SceneMarkScrollAnchorTests {
     #expect(store.actionableImages.first { $0.id == 507 }?.mark.state == .pick)
     #expect(pickedCount(of: store) == 2)
     let optimistic = rendered(store)
+    let keyOptimistic = GridPackingKey(store: store, paneWidth: 300, displayScale: 2)
 
     await transport.releaseMarkState()
     let committed = await marked
@@ -132,11 +134,16 @@ struct SceneMarkScrollAnchorTests {
     // RE-READ half: the cover really was re-elected...
     #expect(representativeID(of: store) == 507)
     let after = rendered(store)
+    let keyAfter = GridPackingKey(store: store, paneWidth: 300, displayScale: 2)
 
     // ...and neither rebuild moved a single rendered row: same ids, same cells, same sizes.
     #expect(optimistic == before, "the optimistic rebuild repacked the open band")
     #expect(after == before, "the post-commit re-read (cover re-election) repacked the open band")
     #expect(GridScrollAnchor.row(containing: anchor, in: optimistic) == anchoredRowID)
     #expect(GridScrollAnchor.row(containing: anchor, in: after) == anchoredRowID)
+    // Round 3: the repack restore is keyed on `GridPackingKey`, so a mark must not move it —
+    // a moved key is exactly the scroll-to-top snap this ticket removed.
+    #expect(keyOptimistic == keyBefore, "the optimistic half changed the packing key")
+    #expect(keyAfter == keyBefore, "the post-commit re-read changed the packing key")
   }
 }
