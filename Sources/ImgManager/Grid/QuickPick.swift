@@ -6,8 +6,11 @@ import SwiftUI
 /// Where a tap on a tile's MARK CORNER goes. The corner is the badge area (top trailing), a
 /// 44-pt target laid over a tile; the rest of the tile keeps focus/open (`GridStore.tapTile`).
 enum MarkCornerRoute: Equatable, Sendable {
-  /// One-shot Pick toggle on that photograph: no latch, no focus move, no loupe.
-  case quickPick
+  /// Focus that photograph (never the loupe), then a one-shot Pick toggle on it, no latch. The
+  /// focus move is what makes the bar's Pick readout (IMGMGR-474) name the SAME photograph the
+  /// badge just changed on, in the same pass; a following tap on the tile body then opens the
+  /// loupe, as for any focused tile (review round 1, AC 3).
+  case focusAndQuickPick
   /// The tile's own tap, unchanged — Select keeps selecting, a latched lock applies its verb.
   case tile
 }
@@ -25,7 +28,7 @@ enum QuickPickCorner {
   /// one tile answer two ways.
   static func route(mode: GridInteractionMode, latchedVerb: LatchVerb?) -> MarkCornerRoute {
     guard latchedVerb == nil, mode == .browse else { return .tile }
-    return .quickPick
+    return .focusAndQuickPick
   }
 
   /// Pick <-> none: a picked photograph clears, anything else becomes picked.
@@ -43,14 +46,24 @@ enum QuickPickCorner {
     return size.width > 2 * side && size.height > 2 * side
   }
 
-  /// What the corner says to VoiceOver about the photograph's mark — it carries the tile's mark
-  /// badge's meaning, since the badges step out of the tree wherever a corner sits over them.
-  static func accessibilityValue(for mark: MarkStateValue) -> String {
+  /// What the corner says to VoiceOver — every status the tile's badges draw, because the badges
+  /// step out of the tree wherever a corner sits over them: the mark first, then Edited, Good and
+  /// Changed elsewhere when they apply. The Select tick is not repeated here: the tile itself
+  /// carries the selected trait.
+  static func accessibilityValue(
+    mark: MarkStateValue, isEdited: Bool = false, isGood: Bool = false,
+    isChangedElsewhere: Bool = false
+  ) -> String {
+    var words: [String]
     switch mark {
-    case .pick: return "Picked"
-    case .dislike: return "Disliked"
-    case .none: return "Not picked"
+    case .pick: words = ["Picked"]
+    case .dislike: words = ["Disliked"]
+    case .none: words = ["Not picked"]
     }
+    if isEdited { words.append("Edited") }
+    if isGood { words.append("Good") }
+    if isChangedElsewhere { words.append("Changed elsewhere") }
+    return words.joined(separator: ", ")
   }
 
   static let accessibilityLabel = "Quick Pick"
@@ -90,16 +103,19 @@ enum TapToPickToggle {
 }
 
 extension GridStore {
-  /// IMGMGR-475 option 2: a tap on a tile's mark corner. In browse with no lock on it toggles
-  /// Pick on THAT photograph through the shipped mark path (`applyMark`: optimistic, undoable,
-  /// one mutation lane — a second corner tap while the first is in flight is refused, never a
-  /// flip back) and moves neither focus nor the loupe. Everywhere else it is the tile's own tap.
+  /// IMGMGR-475 option 2: a tap on a tile's mark corner. In browse with no lock on it focuses
+  /// THAT photograph (never opening the loupe) and toggles Pick on it through the shipped mark
+  /// path (`applyMark`: optimistic, undoable, one mutation lane — a second corner tap while the
+  /// first is in flight is refused, never a flip back). Focus moves BEFORE the write's first
+  /// suspension, so the badge and the bar's readout change together. Everywhere else it is the
+  /// tile's own tap.
   func tapMarkCorner(_ imageID: Int) async {
     switch QuickPickCorner.route(mode: selection.mode, latchedVerb: pickLock.latchedVerb) {
     case .tile:
       await tapTile(imageID)
-    case .quickPick:
+    case .focusAndQuickPick:
       guard let image = actionableImages.first(where: { $0.id == imageID }) else { return }
+      focusedImageID = imageID
       let next = QuickPickCorner.toggledMark(from: MarkStateValue(image.mark.state))
       await applyMark(next, to: [imageID])
     }
@@ -121,7 +137,8 @@ extension GridStore {
 /// forwarded so pressing on the corner still enters Select, exactly as anywhere else on the tile.
 struct MarkCornerTarget: View {
   let imageID: Int
-  let mark: MarkStateValue
+  /// `QuickPickCorner.accessibilityValue(...)`, resolved by `GridView` where the tile is built.
+  let spokenValue: String
   let store: GridStore
 
   var body: some View {
@@ -132,7 +149,7 @@ struct MarkCornerTarget: View {
       .onLongPressGesture(minimumDuration: 0.5) { store.longPressCell(.image(imageID)) }
       .accessibilityElement()
       .accessibilityLabel(QuickPickCorner.accessibilityLabel)
-      .accessibilityValue(QuickPickCorner.accessibilityValue(for: mark))
+      .accessibilityValue(spokenValue)
       .accessibilityAddTraits(.isButton)
       .accessibilityIdentifier(QuickPickCorner.accessibilityIdentifier(imageID: imageID))
   }

@@ -11,9 +11,9 @@ import Testing
 @Suite("Quick pick — corner routing and the Tap to Pick toggle (IMGMGR-475)")
 struct QuickPickTests {
 
-  @Test("The corner quick-picks only in browse with no lock on; every other state is the tile's")
+  @Test("The corner focuses and quick-picks only in browse with no lock on; else it is the tile's")
   func cornerRoutingMatrix() {
-    #expect(QuickPickCorner.route(mode: .browse, latchedVerb: nil) == .quickPick)
+    #expect(QuickPickCorner.route(mode: .browse, latchedVerb: nil) == .focusAndQuickPick)
     // Select keeps selecting: the corner is part of the tile there.
     #expect(QuickPickCorner.route(mode: .select, latchedVerb: nil) == .tile)
     // A latched lock already applies on tap — the corner never adds a second, different write.
@@ -53,11 +53,18 @@ struct QuickPickTests {
     #expect(!QuickPickCorner.isInstalled(plan: .placeholder(reason: .pending), missing: false))
   }
 
-  @Test("The corner speaks the photograph's mark, as the badge it covers would")
-  func cornerSpeaksTheMark() {
-    #expect(QuickPickCorner.accessibilityValue(for: .pick) == "Picked")
-    #expect(QuickPickCorner.accessibilityValue(for: .dislike) == "Disliked")
-    #expect(QuickPickCorner.accessibilityValue(for: MarkStateValue.none) == "Not picked")
+  @Test("The corner speaks every status the badges it covers would draw")
+  func cornerSpeaksTheBadges() {
+    #expect(QuickPickCorner.accessibilityValue(mark: .pick) == "Picked")
+    #expect(QuickPickCorner.accessibilityValue(mark: .dislike) == "Disliked")
+    #expect(QuickPickCorner.accessibilityValue(mark: MarkStateValue.none) == "Not picked")
+    #expect(
+      QuickPickCorner.accessibilityValue(
+        mark: .pick, isEdited: true, isGood: true, isChangedElsewhere: true)
+        == "Picked, Edited, Good, Changed elsewhere")
+    #expect(
+      QuickPickCorner.accessibilityValue(mark: MarkStateValue.none, isGood: true)
+        == "Not picked, Good")
     #expect(QuickPickCorner.accessibilityIdentifier(imageID: 7) == "tileMarkCorner-7")
   }
 
@@ -118,16 +125,26 @@ struct GridStoreQuickPickTests {
     store.images.first(where: { $0.id == id }).map { MarkStateValue($0.mark.state) }
   }
 
-  @Test("Browse: the corner picks an unmarked photograph, undoably, without focusing or opening")
-  func cornerPicksWithoutFocusOrLoupe() async {
+  @Test("Browse: the corner focuses and picks in one pass, undoably, never opening the loupe")
+  func cornerFocusesAndPicksWithoutTheLoupe() async {
     let (store, transport) = await loadedStore()
     store.focusedImageID = 1
     await commits(transport, imageID: 2)
+    await transport.holdMarkStateRequests(true)
 
-    await store.tapMarkCorner(2)
+    let tap = Task { await store.tapMarkCorner(2) }
+    await transport.waitUntilMarkStateStarted()
+    // While the write is still out: the badge's source and the bar's readout already agree on
+    // photograph 2 (AC 3 — the same frame, not after the round trip).
+    #expect(store.focusedImageID == 2)
+    #expect(mark(store, 2) == .pick)
+    #expect(store.markTargetReadout == .uniform(.pick))
+    #expect(!store.isLoupeOpen)
+    await transport.releaseMarkState()
+    await tap.value
 
     #expect(mark(store, 2) == .pick)
-    #expect(store.focusedImageID == 1)
+    #expect(store.focusedImageID == 2)
     #expect(!store.isLoupeOpen)
     #expect(store.pickLock.latchedVerb == nil)
     #expect(store.undo.canUndo)

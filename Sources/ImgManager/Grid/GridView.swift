@@ -330,7 +330,12 @@ struct GridView: View {
       .overlay(alignment: .topTrailing) {
         if hasMarkCorner {
           MarkCornerTarget(
-            imageID: image.id, mark: MarkStateValue(image.mark.state), store: store)
+            imageID: image.id,
+            spokenValue: QuickPickCorner.accessibilityValue(
+              mark: MarkStateValue(image.mark.state), isEdited: image.hasEdit == true,
+              isGood: image.lightroom.good == true,
+              isChangedElsewhere: store.changedElsewhereImageIDs.contains(image.id)),
+            store: store)
         }
       }
     case .stack(let stackRow, let isExpanded):
@@ -876,6 +881,10 @@ struct ActionBarLayout: Equatable {
   var carriesMore: Bool = true
   /// WP29 P4 (IMGMGR-455): the Select bar — `… · Tag · Scene ‖ Undo` (`SelectBarLayout`).
   var selecting: Bool = false
+  /// IMGMGR-475 review round 1: whether Tap to Pick shows its title beside its icon. Only where
+  /// the width allows (`ActionBarMetrics.toggleTitleAllowance` is counted for it); icon-only on
+  /// every tight or folded tier.
+  var showsToggleTitle: Bool = false
 
   /// The controls this tier renders, in order — the one list `ActionBarView` walks.
   var controls: [SelectBarControl] {
@@ -956,9 +965,20 @@ enum ActionBarMetrics {
     name: "folded-tight", spacing: narrowestSpacing, horizontalPadding: tightHorizontalPadding,
     controlCount: foldedControlCount, foldsClearIntoMore: true)
 
+  /// IMGMGR-475 review round 1: the room Tap to Pick's visible title takes beyond its 44-pt
+  /// slot — "Tap to Pick" in `.subheadline` plus the icon gap, rounded up. `ViewThatFits` still
+  /// measures the real control, so an underestimate only ever picks a narrower tier.
+  static let toggleTitleAllowance: CGFloat = 96
+
   /// WP29 P1 (IMGMGR-452): Regular's bar without More — Pick, Tap to Pick (IMGMGR-475),
   /// Dislike, Clear, Undo, Tag.
   static let regularControlCount = 6
+  /// IMGMGR-475 review round 1: the roomy Regular bar with Tap to Pick's title shown —
+  /// 376 + 96 = 472 pt.
+  static let regularTitled = ActionBarLayout(
+    name: "regular-titled", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false,
+    showsToggleTitle: true)
   /// 6×44 + 5×16 + 2×16 = 376 pt.
   static let regularRoomy = ActionBarLayout(
     name: "regular-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
@@ -1010,7 +1030,7 @@ enum ActionBarMetrics {
   static let tiers: [ActionBarLayout] = [roomy, tight, folded, foldedTight]
 
   /// WP29 P1: the Regular tiers, widest first — the bar without More, and no fold.
-  static let regularTiers: [ActionBarLayout] = [regularRoomy, regularTight]
+  static let regularTiers: [ActionBarLayout] = [regularTitled, regularRoomy, regularTight]
 
   /// The tier list for a bar that does or does not carry More.
   static func tiers(carriesMore: Bool, selecting: Bool = false) -> [ActionBarLayout] {
@@ -1028,6 +1048,7 @@ enum ActionBarMetrics {
       controlCount: layout.controlCount, spacing: layout.spacing,
       horizontalPadding: layout.horizontalPadding)
       + (layout.controls.contains(.spacer) ? layout.spacing : 0)
+      + (layout.showsToggleTitle ? toggleTitleAllowance : 0)
   }
 
   /// The narrowest width that still shows every at-rest Compact control, Clear included:
@@ -1195,7 +1216,7 @@ struct ActionBarView: View {
     case .pick:
       latchButton(.pick, readout: readout)
     case .tapToPick:
-      tapToPickToggle()
+      tapToPickToggle(showsTitle: layout.showsToggleTitle)
     case .dislike:
       latchButton(.dislike, readout: readout)
     case .clear:
@@ -1400,7 +1421,7 @@ extension ActionBarView {
   /// appear exactly as for any Pick Lock. Disabled where it is inert (`TapToPickToggle.action`):
   /// under a Dislike lock, whose Done exits it. Never on the Select bar (`SelectBarLayout`).
   @ViewBuilder
-  func tapToPickToggle() -> some View {
+  func tapToPickToggle(showsTitle: Bool) -> some View {
     let isOn = TapToPickToggle.isOn(store.pickLock.state)
     let isInert =
       TapToPickToggle.action(lockState: store.pickLock.state, mode: store.selection.mode) == .inert
@@ -1424,6 +1445,8 @@ extension ActionBarView {
         .buttonStyle(.bordered)
       }
     }
+    // Innermost style wins over the bar's `.iconOnly`, so only this control can show its title.
+    .labelStyle(TapToPickLabelStyle(showsTitle: showsTitle))
     .tint(MarkPalette.color(for: LatchVerb.pick.markRole))
     .accessibilityLabel(TapToPickToggle.title)
     .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -1431,6 +1454,24 @@ extension ActionBarView {
     .disabled(isInert)
     .actionBarControlSize()
     .accessibilityIdentifier(TapToPickToggle.accessibilityIdentifier)
+  }
+}
+
+/// IMGMGR-475 review round 1: Tap to Pick's label — icon and visible title on a tier that
+/// counted room for it, the icon alone everywhere else. A system label style, no custom material.
+struct TapToPickLabelStyle: LabelStyle {
+  let showsTitle: Bool
+
+  @ViewBuilder
+  func makeBody(configuration: Configuration) -> some View {
+    if showsTitle {
+      HStack(spacing: 6) {
+        configuration.icon
+        configuration.title.font(.subheadline)
+      }
+    } else {
+      configuration.icon
+    }
   }
 }
 

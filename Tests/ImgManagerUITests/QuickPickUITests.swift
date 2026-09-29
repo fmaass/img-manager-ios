@@ -2,9 +2,9 @@ import XCTest
 
 /// IMGMGR-475 (owner, 2026-09-29, options 1 + 2): picking a photograph takes ONE gesture and never
 /// takes the second tap away from the loupe. Drives the DEBUG fixture (`DebugStubTransport`:
-/// photographs 2 and 3 are unmarked) through the shipped surfaces and reads what RENDERED — the
-/// corner's own spoken mark (it carries the badge's meaning, `QuickPickCorner`), the bar's Pick
-/// readout (IMGMGR-474) and the lock's mode row — never a re-derivation of them.
+/// photographs 2 and 3 are unmarked, not edited, not Good) through the shipped surfaces and reads
+/// what RENDERED — the corner's own spoken statuses (it carries the badges' meaning,
+/// `QuickPickCorner`), the bar's Pick readout (IMGMGR-474) and the lock's mode row.
 final class QuickPickUITests: OrientationPinnedUITestCase {
 
   private func launchedGrid() -> XCUIApplication {
@@ -25,7 +25,7 @@ final class QuickPickUITests: OrientationPinnedUITestCase {
     return XCTWaiter.wait(for: [done], timeout: timeout) == .completed
   }
 
-  func testMarkCornerPicksWithoutFocusingOrOpeningTheLoupe() throws {
+  func testMarkCornerFocusesAndPicksInOneTapWithoutOpeningTheLoupe() throws {
     let app = launchedGrid()
     let pick = app.buttons["gridPickButton"]
     XCTAssertTrue(
@@ -34,7 +34,7 @@ final class QuickPickUITests: OrientationPinnedUITestCase {
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
     let close = app.buttons["loupeClose"]
 
-    // Focus photograph 3 (unmarked) first, so "focus did not move" is readable off the bar.
+    // Focus photograph 3 (unmarked) first, so the corner tap has focus to MOVE.
     let other = element(app, "gridTile-3")
     XCTAssertTrue(other.waitForExistence(timeout: 15), "Fixture tile `gridTile-3` never appeared.")
     other.tap()
@@ -47,35 +47,35 @@ final class QuickPickUITests: OrientationPinnedUITestCase {
       "Photograph 2 carries no quick-pick corner (`tileMarkCorner-2`).")
     XCTAssertEqual(corner.value as? String, "Not picked")
 
+    // ONE gesture: the badge and the bar's Pick both say picked, and the loupe stays shut.
     corner.tap()
-
     XCTAssertTrue(
       waitFor("value == 'Picked'", corner),
       "One tap on the mark corner must pick photograph 2; the corner reads "
         + "\(String(describing: corner.value)).")
+    XCTAssertTrue(
+      waitFor("isSelected == true", pick),
+      "The corner tap must focus photograph 2, so the bar's Pick reads it as picked.")
+    XCTAssertEqual(pick.value as? String, "Picked")
     attach(name: "IMGMGR-475-corner-picked")
     XCTAssertFalse(close.exists, "The corner tap opened the loupe — it must never open it.")
-    XCTAssertEqual(
-      pick.value as? String, "Not picked",
-      "The corner tap moved focus: the bar now reads photograph 2 instead of the focused 3.")
     XCTAssertFalse(
       app.staticTexts["lockModeCaption"].exists, "A quick pick must never latch a lock.")
 
-    // Focusing photograph 2 shows its new mark on the bar's Pick (IMGMGR-474's readout).
-    element(app, "gridTile-2").tap()
-    XCTAssertTrue(
-      waitFor("isSelected == true", pick),
-      "The bar's Pick must read the quick-picked photograph as picked once it is focused.")
-    XCTAssertEqual(pick.value as? String, "Picked")
-    XCTAssertFalse(close.exists, "One tap on an unfocused tile only focuses it.")
-
-    // The FOCUSED tile's corner still toggles (pick -> none) and still leaves the loupe alone.
+    // The focused tile's corner still toggles (pick -> none) and still leaves the loupe alone.
     corner.tap()
     XCTAssertTrue(
       waitFor("isSelected == false", pick),
-      "A second corner tap must clear the pick, and the focused bar must say so.")
+      "A second corner tap must clear the pick, and the bar must say so.")
     XCTAssertEqual(corner.value as? String, "Not picked")
     XCTAssertFalse(close.exists, "The focused tile's corner opened the loupe.")
+
+    // The second tap still belongs to the loupe: the tile BODY of the focused photograph opens it.
+    element(app, "gridTile-2").tap()
+    XCTAssertTrue(
+      close.waitForExistence(timeout: 10),
+      "A tap on the focused tile's body must still open the loupe.")
+    close.tap()
   }
 
   func testTapToPickToggleLatchesAndATilePicks() throws {

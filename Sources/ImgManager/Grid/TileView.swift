@@ -22,7 +22,7 @@ struct TileView: View {
   var hoverEffectInstaller: HoverEffectInstaller = .live
   /// IMGMGR-475: whether `GridView` lays the quick-pick corner (`MarkCornerTarget`) over this
   /// tile's badges. When it does, the badges step out of the accessibility tree: the corner
-  /// speaks the mark instead, and a badge element — which answers to this tile's identifier —
+  /// speaks every status they draw instead, and a badge element — which answers to this tile's identifier —
   /// would otherwise sit inside the corner, so a tap aimed at "the tile" could land on it.
   var hasMarkCorner: Bool = false
 

@@ -110,6 +110,26 @@ struct SelectBarLayoutTests {
   func atRestWidthsAreUnchanged() {
     #expect(
       ActionBarMetrics.tiers.map(ActionBarMetrics.requiredWidth(for:)) == [436, 372, 320, 300])
-    #expect(ActionBarMetrics.regularTiers.map(ActionBarMetrics.requiredWidth(for:)) == [376, 300])
+    #expect(
+      ActionBarMetrics.regularTiers.map(ActionBarMetrics.requiredWidth(for:)) == [472, 376, 300])
+  }
+
+  /// IMGMGR-475 review round 1: the toggle's title shows only where its room is counted — the
+  /// widest Regular tier — and the arithmetic charges exactly that room.
+  @Test("Only the titled Regular tier shows Tap to Pick's title, and its width counts it")
+  func toggleTitleOnlyWhereCounted() {
+    let all =
+      ActionBarMetrics.tiers + ActionBarMetrics.regularTiers + ActionBarMetrics.selectTiers
+      + ActionBarMetrics.regularSelectTiers
+    let titled = all.filter { $0.showsToggleTitle }.map { $0.name }
+    #expect(titled == ["regular-titled"])
+    let titledWidth = ActionBarMetrics.requiredWidth(for: ActionBarMetrics.regularTitled)
+    let roomyWidth = ActionBarMetrics.requiredWidth(for: ActionBarMetrics.regularRoomy)
+    #expect(titledWidth - roomyWidth == ActionBarMetrics.toggleTitleAllowance)
+    #expect(ActionBarMetrics.regularTitled.controls == ActionBarMetrics.regularRoomy.controls)
+    // The measured 315-pt expanded column still takes the icon-only tight tier.
+    let column = ActionBarMetrics.layout(
+      forWidth: ActionBarMetrics.measuredRegular3GridColumn, carriesMore: false)
+    #expect(!column.showsToggleTitle)
   }
 }

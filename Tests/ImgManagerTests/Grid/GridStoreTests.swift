@@ -3632,7 +3632,7 @@ struct ActionBarMetricsTests {
     #expect(widths == widths.sorted(by: >))
     #expect(ActionBarMetrics.tiers.map(\.name) == ["roomy", "tight", "folded", "folded-tight"])
     #expect(
-      ActionBarMetrics.tiers.filter(\.foldsClearIntoMore).map(\.name)
+      ActionBarMetrics.tiers.filter { $0.foldsClearIntoMore }.map { $0.name }
         == ["folded", "folded-tight"])
     // Only the folded tiers drop a control, and each drops exactly one.
     #expect(
@@ -3658,11 +3658,11 @@ struct ActionBarMetricsTests {
   @Test("No Regular tier folds Clear, and the tightest Regular tier fits the 315-pt column")
   func regularTiersNeverFoldClear() {
     let regular = ActionBarMetrics.tiers(carriesMore: false)
-    #expect(regular.map(\.name) == ["regular-roomy", "regular-tight"])
+    #expect(regular.map(\.name) == ["regular-titled", "regular-roomy", "regular-tight"])
     #expect(regular.allSatisfy { !$0.foldsClearIntoMore && !$0.carriesMore })
     #expect(regular.allSatisfy { $0.controlCount == 6 })
     let widths = regular.map(ActionBarMetrics.requiredWidth(for:))
-    #expect(widths == [376, 300])
+    #expect(widths == [472, 376, 300])
     #expect(widths == widths.sorted(by: >))
     let tightest = regular[regular.count - 1]
     #expect(
