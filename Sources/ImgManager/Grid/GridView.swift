@@ -176,22 +176,37 @@ struct GridView: View {
   // attaches the group, because Info belongs to the inspector topology it owns.
 
   /// The scroll position, translated between what `ScrollView` deals in (a row id) and what
-  /// survives the collapse (a photograph) — `GridScrollAnchor` carries the argument for why those
-  /// are not the same thing. SwiftUI owns the ordering of the read and the write, which is why
-  /// this is a binding rather than a restore fired from `.task` or `.onAppear`: those race the
-  /// first preference pass, which would overwrite the anchor with the top of the fresh view
-  /// before anything could act on it.
+  /// survives a rebuild (a photograph) — `GridScrollAnchor` carries the argument for why those
+  /// are not the same thing.
   ///
-  /// Hand-built rather than `@Bindable`'s `$store.gridScrollAnchor` for a second reason: the
-  /// anchor is `@ObservationIgnored` (it is written on every scroll tick), and a binding that
-  /// does not depend on the observation machinery is what keeps that true.
-  private var scrollAnchorBinding: Binding<GridRenderRowID?> {
-    Binding(
-      get: { GridScrollAnchor.row(containing: store.gridScrollAnchor, in: renderRows) },
-      set: { rowID in
-        guard let displayID = GridScrollAnchor.displayID(of: rowID) else { return }
-        store.gridScrollAnchor = displayID
-      })
+  /// IMGMGR-473: RECORDED from the visible targets and RESTORED once, never bound. A
+  /// `.scrollPosition(id:)` binding hands SwiftUI an id it keeps re-applying, and a mark inside an
+  /// open scene was enough to make it re-snap the anchored row's top to the viewport's top — the
+  /// whole grid dropped by however much of that row was cut off (+43.33 pt at 402x874). Nothing
+  /// here scrolls except `restoreOrRecordScrollAnchor`'s one restore, so no later update can.
+  ///
+  /// The one-shot is per `ScrollView` lifetime (re-armed on disappear) and is consumed by the
+  /// FIRST visibility report, before that report is recorded: a fresh `ScrollView` reports its top
+  /// rows first, and recording them would overwrite the anchor it has yet to restore.
+  @State private var scrollAnchorRestored = false
+
+  private func restoreOrRecordScrollAnchor(
+    visible: [GridRenderRowID], proxy: ScrollViewProxy
+  ) {
+    guard !visible.isEmpty else { return }
+    let topmost = GridScrollAnchor.topmostPhotograph(visible: visible, frames: tileFrames)
+    if !scrollAnchorRestored {
+      scrollAnchorRestored = true
+      if let target = GridScrollAnchor.row(containing: store.gridScrollAnchor, in: renderRows),
+        target != GridScrollAnchor.row(containing: topmost, in: renderRows)
+      {
+        proxy.scrollTo(target, anchor: .top)
+        return
+      }
+    }
+    // A report with no tile row (headers only) keeps the last photograph, as the binding did.
+    guard let topmost else { return }
+    store.gridScrollAnchor = topmost
   }
 
   /// The scrollable justified grid, with the live pointer-drag gesture attached through
@@ -199,54 +214,59 @@ struct GridView: View {
   /// comment.
   private var scrollArea: some View {
     let content = AnyView(
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 2) {
-          // Rows are identified by their LEADING cell's display id, never by index: with
-          // index identity, a row-count shrink (entering/leaving Scene mode, collapsing a
-          // stack) can leave SwiftUI evaluating a stale row body whose index no longer
-          // exists, and the `packedRows[rowIndex]` subscript traps — the 0.7.0 (9) Scene
-          // crash (EXC_BREAKPOINT in ForEachChild.updateValue, GridView.swift:115). A
-          // leading-cell id is unique per layout (each cell packs into exactly one row)
-          // and moves with its row across repacks, so diffing stays coherent.
-          // WP13 P5b: the sequence is `GridRenderRow`, so a section header and a packed tile
-          // row are the SAME `ForEach`'s elements with their own stable, non-index identities
-          // (a header's is its group key; a tile row's stays its leading cell's display id).
-          ForEach(renderRows) { renderRow in
-            switch renderRow {
-            case .header(let header):
-              GroupSectionHeaderView(header: header)
-            case .tiles(let rowModel):
-              HStack(spacing: 2) {
-                ForEach(rowModel.cells, id: \.id) { packed in
-                  if let row = rowsByID[packed.id] {
-                    cell(for: row, plan: packed.plan)
-                      .background(
-                        GeometryReader { proxy in
-                          Color.clear.preference(
-                            key: TileFramePreferenceKey.self,
-                            value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+      ScrollViewReader { scrollProxy in
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 2) {
+            // Rows are identified by their LEADING cell's display id, never by index: with
+            // index identity, a row-count shrink (entering/leaving Scene mode, collapsing a
+            // stack) can leave SwiftUI evaluating a stale row body whose index no longer
+            // exists, and the `packedRows[rowIndex]` subscript traps — the 0.7.0 (9) Scene
+            // crash (EXC_BREAKPOINT in ForEachChild.updateValue, GridView.swift:115). A
+            // leading-cell id is unique per layout (each cell packs into exactly one row)
+            // and moves with its row across repacks, so diffing stays coherent.
+            // WP13 P5b: the sequence is `GridRenderRow`, so a section header and a packed tile
+            // row are the SAME `ForEach`'s elements with their own stable, non-index identities
+            // (a header's is its group key; a tile row's stays its leading cell's display id).
+            ForEach(renderRows) { renderRow in
+              switch renderRow {
+              case .header(let header):
+                GroupSectionHeaderView(header: header)
+              case .tiles(let rowModel):
+                HStack(spacing: 2) {
+                  ForEach(rowModel.cells, id: \.id) { packed in
+                    if let row = rowsByID[packed.id] {
+                      cell(for: row, plan: packed.plan)
+                        .background(
+                          GeometryReader { proxy in
+                            Color.clear.preference(
+                              key: TileFramePreferenceKey.self,
+                              value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+                          }
+                        )
+                        .onTapGesture { Task { await store.tapCell(packed.id) } }
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                          store.longPressCell(packed.id)
                         }
-                      )
-                      .onTapGesture { Task { await store.tapCell(packed.id) } }
-                      .onLongPressGesture(minimumDuration: 0.5) {
-                        store.longPressCell(packed.id)
-                      }
-                      .task(id: packed.id) { await page(from: packed.id) }
+                        .task(id: packed.id) { await page(from: packed.id) }
+                    }
                   }
                 }
               }
             }
           }
+          .scrollTargetLayout()
+          .padding(2)
         }
-        .scrollTargetLayout()
-        .padding(2)
+        // WP16 P2 (IMGMGR-298): the offset is kept in STORE-owned state, so it survives this view
+        // being rebuilt — see `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
+        // IMGMGR-473: recorded here and restored once, never bound (see `scrollAnchorRestored`).
+        .onScrollTargetVisibilityChange(idType: GridRenderRowID.self) { visible in
+          restoreOrRecordScrollAnchor(visible: visible, proxy: scrollProxy)
+        }
+        .onDisappear { scrollAnchorRestored = false }
+        .coordinateSpace(name: "gridSpace")
+        .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
       }
-      // WP16 P2 (IMGMGR-298): the offset is bound to STORE-owned state, so it survives this
-      // view being rebuilt when the Regular-3 collapse swaps the split view's shape — see
-      // `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
-      .scrollPosition(id: scrollAnchorBinding)
-      .coordinateSpace(name: "gridSpace")
-      .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
     )
     return pointerGestureInstaller.attach(
       content,

@@ -49,13 +49,14 @@ struct SceneMarkScrollAnchorTests {
   }
 
   /// The same packing `GridView.renderRows` runs, at a fixed pane — the rows the anchor
-  /// resolves against.
+  /// resolves against. A phone-width pane (300 pt, ~2.4 tiles per row): at 600 pt the fifteen
+  /// tiles packed into only three rows (gate on ea18cf7), too few to anchor inside the band.
   private func rendered(_ store: GridStore) -> [GridRenderRow] {
     GridSectionLayout.renderRows(
       rows: store.sceneDisplayRows,
       groupBy: store.activeGrouping.groupByKey,
       headers: store.groupHeaders, timezone: store.groupTimezone,
-      paneWidth: 600, targetRowHeight: 120, displayScale: 2,
+      paneWidth: 300, targetRowHeight: 120, displayScale: 2,
       availability: { _, _ in .ok(width: 4000, height: 4000) })
   }
 

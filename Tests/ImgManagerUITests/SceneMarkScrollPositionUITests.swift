@@ -14,6 +14,13 @@ import XCTest
 /// member is a plain tail member (601…), so the pick crosses the pick boundary and BOTH halves
 /// run. The Undo button turning enabled is the evidence the write committed, so a mark that never
 /// happened cannot pass as "nothing moved".
+///
+/// Round 2 (gate on ea18cf7): RED at 402x874 (+43.33 pt, exactly the cut-off part of the top
+/// row: the bound `.scrollPosition(id:)` re-snapped that row's top to the viewport), green at
+/// 1032x1376 only because that drag happened to end row-aligned, where a top-snap moves nothing.
+/// So the top row being CUT is now a stated precondition, nudged into place when a drag ends
+/// aligned, and the viewport's own frame is printed before and after, so chrome that grows above
+/// the grid is told apart from the content offset moving inside it.
 final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
 
   func testMarkingAMemberOfAnOpenSceneLeavesTheGridWhereItWas() throws {
@@ -48,6 +55,23 @@ final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
       lead.frame.minY, leadYBeforeDrag - 20,
       "The grid did not scroll, so an unmoved frame below would prove nothing.")
 
+    // A top-snap is only visible when the top edge cuts a row: nudge until it does.
+    var cut = tileCutByTopEdge(of: grid.frame, in: grid)
+    var nudges = 0
+    while cut == nil, nudges < 3 {
+      nudges += 1
+      let nudgeFrom = grid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+      let nudgeTo = grid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+      nudgeFrom.press(forDuration: 0.1, thenDragTo: nudgeTo)
+      Thread.sleep(forTimeInterval: 1.0)
+      cut = tileCutByTopEdge(of: grid.frame, in: grid)
+    }
+    guard cut != nil else {
+      attach(named: "IMGMGR-473-no-cut-row")
+      XCTFail("After \(nudges) nudges no tile is cut by the grid's top edge (\(grid.frame)).")
+      return
+    }
+
     let gridFrame = grid.frame
     guard let found = firstMemberFullyInside(gridFrame, app: app) else {
       attach(named: "IMGMGR-473-no-target")
@@ -66,7 +90,12 @@ final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
     XCTAssertFalse(undo.isEnabled, "Undo is already enabled before the mark — no clean baseline.")
     let targetBefore = target.frame.minY
     let neighbourBefore = neighbour.exists ? neighbour.frame.minY : nil
+    let viewportBefore = grid.frame
+    let cutBefore = tileCutByTopEdge(of: viewportBefore, in: grid)
     attach(named: "IMGMGR-473-before-mark")
+    XCTAssertNotNil(
+      cutBefore,
+      "Focusing the target left no row cut by the top edge — a top-snap would be invisible.")
 
     app.buttons["gridPickButton"].tap()
     let committed = XCTNSPredicateExpectation(
@@ -80,11 +109,16 @@ final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
     attach(named: "IMGMGR-473-after-mark")
 
     let targetAfter = target.frame.minY
+    let viewportAfter = grid.frame
     print(
       "IMGMGR473-SCROLL window=\(app.frame.size) target=\(targetID) "
         + "before=\(targetBefore) after=\(targetAfter) "
         + "neighbourBefore=\(String(describing: neighbourBefore)) "
-        + "neighbourAfter=\(neighbour.exists ? neighbour.frame.minY : -1)")
+        + "neighbourAfter=\(neighbour.exists ? neighbour.frame.minY : -1) "
+        + "nudges=\(nudges) cutBefore=\(String(describing: cutBefore)) "
+        + "cutAfter=\(String(describing: tileCutByTopEdge(of: viewportAfter, in: grid))) "
+        + "viewportBefore=\(viewportBefore) viewportAfter=\(viewportAfter) "
+        + "navBar=\(app.navigationBars.firstMatch.frame)")
     XCTAssertEqual(
       targetAfter, targetBefore, accuracy: 1.0,
       "Marking a member of an open scene moved the grid: the marked photograph's frame went from "
@@ -109,6 +143,30 @@ final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
       if frame.minY > viewport.minY + 40, frame.maxY < viewport.maxY - 40, tile.isHittable {
         return (id, tile)
       }
+    }
+    return nil
+  }
+
+  /// The tile the grid's top edge cuts through, and how many points of it lie above that edge —
+  /// nil when the top row sits flush. One snapshot of the grid, walked by hand (no key paths to
+  /// an element's properties: Swift 6 strict concurrency).
+  private func tileCutByTopEdge(of viewport: CGRect, in grid: XCUIElement) -> (String, CGFloat)? {
+    let root: any XCUIElementSnapshot
+    do {
+      root = try grid.snapshot()
+    } catch {
+      XCTFail("Could not snapshot the grid to find the cut row: \(error)")
+      return nil
+    }
+    var pending: [any XCUIElementSnapshot] = [root]
+    while let node = pending.popLast() {
+      let frame = node.frame
+      if node.identifier.hasPrefix("gridTile-"), frame.minY < viewport.minY - 2,
+        frame.maxY > viewport.minY + 2
+      {
+        return (node.identifier, viewport.minY - frame.minY)
+      }
+      pending.append(contentsOf: node.children)
     }
     return nil
   }

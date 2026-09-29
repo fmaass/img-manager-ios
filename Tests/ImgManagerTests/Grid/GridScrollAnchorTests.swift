@@ -80,6 +80,41 @@ struct GridScrollAnchorTests {
     // nil answers above are about the anchor and not about the search being broken.
     #expect(GridScrollAnchor.row(containing: .image(2), in: rows) == .tiles(.image(1)))
   }
+
+  /// IMGMGR-473: the anchor is now RECORDED from `onScrollTargetVisibilityChange`, which reports
+  /// which targets are visible but promises no order. The topmost row is decided by the measured
+  /// frames, so a report listing the lower row first must still record the upper one.
+  @Test("The recorded anchor is the topmost visible tile row by frame, whatever the report order")
+  func theRecordedAnchorIsTheTopmostVisibleRowByFrame() {
+    let frames: [GridDisplayID: CGRect] = [
+      .image(4): CGRect(x: 0, y: -30, width: 120, height: 80),
+      .image(7): CGRect(x: 0, y: 52, width: 120, height: 80),
+    ]
+    let reported: [GridRenderRowID] = [.tiles(.image(7)), .tiles(.image(4))]
+    #expect(GridScrollAnchor.topmostPhotograph(visible: reported, frames: frames) == .image(4))
+  }
+
+  @Test("A report with no tile row records nothing; unmeasured rows fall back to report order")
+  func theRecordedAnchorBoundaries() {
+    // Empty and header-only reports: nil, so the last recorded photograph is kept.
+    #expect(GridScrollAnchor.topmostPhotograph(visible: [], frames: [:]) == nil)
+    #expect(
+      GridScrollAnchor.topmostPhotograph(visible: [.header(.known("Camera A"))], frames: [:])
+        == nil)
+    // One row, a header above it: the header is skipped, the row is the anchor.
+    #expect(
+      GridScrollAnchor.topmostPhotograph(
+        visible: [.header(.known("Camera A")), .tiles(.image(1))], frames: [:]) == .image(1))
+    // No frames measured yet (the first report of a fresh view): the report's own order decides.
+    #expect(
+      GridScrollAnchor.topmostPhotograph(
+        visible: [.tiles(.image(4)), .tiles(.image(7))], frames: [:]) == .image(4))
+    // A measured row beats an unmeasured one listed before it.
+    #expect(
+      GridScrollAnchor.topmostPhotograph(
+        visible: [.tiles(.image(4)), .tiles(.image(7))],
+        frames: [.image(7): CGRect(x: 0, y: 10, width: 1, height: 1)]) == .image(7))
+  }
 }
 
 /// WP16 P2 (IMGMGR-298), Codex round-3 blocker. The anchor's LIFETIME, at the store, where the

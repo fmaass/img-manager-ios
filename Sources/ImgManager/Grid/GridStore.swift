@@ -670,7 +670,7 @@ final class GridStore {
   /// `@ObservationIgnored` on purpose: this is written on every scroll tick, and an observable
   /// write there would invalidate every view reading this store while the reader is dragging
   /// through a contact sheet. Nothing needs to REACT to it — the value only has to survive, and
-  /// the rebuilt `ScrollView` reads it through `GridView.scrollAnchorBinding`.
+  /// the rebuilt `ScrollView` reads it once to restore (`GridView.restoreOrRecordScrollAnchor`).
   ///
   /// A PHOTOGRAPH, never the row id `ScrollView` itself reports: the collapse changes the pane
   /// width, which repacks every justified row, so a remembered row id names a row that no longer
