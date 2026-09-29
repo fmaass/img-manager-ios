@@ -43,7 +43,8 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
 ///
 /// Sections are the menu's SINGLE inventory: `GridMoreMenu.entries` is DERIVED from them, so a
 /// grouping cannot drift from the set it groups — there is no second list to drift from. The
-/// partition is CONTIGUOUS over the owner's decided order, so grouping reorders nothing.
+/// partition is CONTIGUOUS over that one order — since WP29 P3 (IMGMGR-454),
+/// View · Actions · Shoot.
 struct GridMoreMenuSection: Identifiable, Sendable {
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
   let id: String
@@ -70,7 +71,8 @@ struct GridMoreMenuSection: Identifiable, Sendable {
 enum GridMoreMenu {
 
   /// WP16 P4 (IMGMGR-297): the labelled groups — three since WP29 P4 (IMGMGR-455) moved the
-  /// Scene group to the Select bar's Scene ▸ — and the menu's ONE inventory.
+  /// Scene group to the Select bar's Scene ▸ — and the menu's ONE inventory. Every row carries
+  /// an SF Symbol through the system `Label` (WP29 P3, IMGMGR-454).
   ///
   /// WP13 P11 (IMGMGR-220) APPENDED "Open in New Window"; it did not reorder the owner's decided
   /// set. WP14 P4 (IMGMGR-277) APPENDED the three scene-edit actions, in the plan's own order —
@@ -78,15 +80,11 @@ enum GridMoreMenu {
   /// was: the owner's decided set and its order are untouched, and a topology action is chrome by
   /// decision ("no new gestures", plan Decision 2).
   ///
-  /// Grouping keeps that promise structurally rather than by care: each section is a CONTIGUOUS
-  /// run of the shipped order, so flattening them reproduces it exactly — which is what
-  /// `entries` below does, and what `GridMoreMenuSectionsTests` asserts element-wise.
+  /// Each section is a CONTIGUOUS run of `entries`, which is these sections flattened — the one
+  /// order, asserted element-wise by `GridMoreMenuSectionsTests`. WP29 P3 (IMGMGR-454, ticket
+  /// scope + owner decision D-a) deliberately REORDERED the six rows into the ticket's shape:
+  /// View · Actions · Shoot. Same six rows, same identifiers, same fold rule.
   static let sections: [GridMoreMenuSection] = [
-    GridMoreMenuSection(
-      id: "more.section.marks", title: "Marks",
-      // WP29 P1 (IMGMGR-452): Select left this run for the grid's bar (`GridSelectCommand`),
-      // 13 → 12 rows. Nothing else in the menu moved.
-      entries: [clearMark, copyForLightroom]),
     GridMoreMenuSection(
       id: "more.section.view", title: "View",
       // WP29 P2 (IMGMGR-453): Density left for the Arrange popover's thumbnail sizes, and Hide
@@ -94,8 +92,14 @@ enum GridMoreMenu {
       // the same static `pruneMirroredArchive` entry. 12 → 10 rows.
       entries: [filenamePlates, picksInGroups]),
     GridMoreMenuSection(
+      id: "more.section.actions", title: "Actions",
+      // WP29 P1 (IMGMGR-452): Select left this run for the grid's bar (`GridSelectCommand`),
+      // 13 → 12 rows. WP29 P3 (IMGMGR-454): Clear mark STAYS — folded, this row is the bar's
+      // only Clear (`ActionBarLayout.foldsClearIntoMore`) — and Open in New Window joins it.
+      entries: [clearMark, copyForLightroom, openInNewWindow]),
+    GridMoreMenuSection(
       id: "more.section.shoot", title: "Shoot",
-      entries: [status, openInNewWindow]),
+      entries: [status]),
     // WP29 P4 (IMGMGR-455): the Scene section (Merge into…, Split here, Extract selected, Add to
     // scene…) left for its one touch home, the Select bar's Scene ▸ (`SelectBarSceneMenu`), which
     // now holds those four declarations. 10 → 6 rows in 3 groups.

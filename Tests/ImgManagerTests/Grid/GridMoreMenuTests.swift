@@ -41,23 +41,42 @@ struct GridViewMoreMenuTests {
     #expect(
       GridMoreMenu.entries.map(\.id) == [
         // WP29 P1 (IMGMGR-452): "more.select" left for the grid's bar (`GridSelectCommand`).
-        "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
         // WP29 P2 (IMGMGR-453): "more.density" left for the Arrange popover and
         // "more.pruneMirroredArchive" for the tree's View menu, its one home.
-        "more.picksInGroups", "more.status", "more.openInNewWindow",
         // WP29 P4 (IMGMGR-455): the four scene edits left for the Select bar's Scene ▸.
+        // WP29 P3 (IMGMGR-454): the ticket's order — View · Actions · Shoot.
+        "more.filenamePlates", "more.picksInGroups",
+        "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
+        "more.status",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups", "Status",
-        "Open in New Window",
+        "Filename plates", "Picks in groups", "Clear mark", "Copy for Lightroom",
+        "Open in New Window", "Status",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
     // Owner decision 3: downloads stay loupe-Share-only; no grid or bulk download natively.
     #expect(!titles.contains { $0.lowercased().contains("download") })
+  }
+
+  /// WP29 P3 (IMGMGR-454) acceptance probe: six rows, exactly three groups, an icon on every row,
+  /// no duplicate title, and Hide mirrored archive absent (its one home is the tree's View menu).
+  @Test("More: 6 rows in exactly 3 groups, every row an icon, no duplicate title, no prune")
+  func moreMenuMeetsTheTicketShape() {
+    let (store, _, _, _) = makeStore()
+    #expect(GridMoreMenu.sections.count == 3)
+    #expect(GridMoreMenu.entries.count == 6)
+    #expect(GridMoreMenu.entries.allSatisfy { !$0.systemImage.isEmpty })
+    let titles = GridMoreMenu.entries.map { $0.title(store) }
+    // Positive control: the titles really were read, so uniqueness is not about an empty list.
+    #expect(titles.contains("Clear mark"))
+    #expect(Set(titles).count == titles.count)
+    #expect(Set(GridMoreMenu.sections.map(\.title)).count == GridMoreMenu.sections.count)
+    #expect(!titles.contains(GridMoreMenu.pruneMirroredArchive.title(store)))
+    #expect(!GridMoreMenu.entries.contains { $0.id == GridMoreMenu.pruneMirroredArchive.id })
   }
 
   /// The P1 merge contract (IMGMGR-212 x IMGMGR-221): the decided set always renders SIX rows,
@@ -551,9 +570,11 @@ struct GridMoreMenuSectionsTests {
   /// into the View section's own run, which moved no existing pair). Grouping is a
   /// CONTIGUOUS partition over exactly this sequence, so a reorder, a drop or a duplicate fails
   /// element-wise here.
+  /// WP29 P3 (IMGMGR-454) reordered the same six ids into the ticket's shape.
   private let shippedOrder = [
-    "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-    "more.picksInGroups", "more.status", "more.openInNewWindow",
+    "more.filenamePlates", "more.picksInGroups",
+    "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
+    "more.status",
   ]
 
   @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
@@ -604,15 +625,17 @@ struct GridMoreMenuSectionsTests {
   func eachSectionCarriesItsDecidedLabelAndRun() {
     let decided: [(id: String, title: String, entries: [String])] = [
       (
-        "more.section.marks", "Marks",
-        ["more.clearMark", "more.copyForLightroom"]
-      ),
-      (
         "more.section.view", "View",
         // WP29 P2 (IMGMGR-453): Density and the archive prune left this run.
         ["more.filenamePlates", "more.picksInGroups"]
       ),
-      ("more.section.shoot", "Shoot", ["more.status", "more.openInNewWindow"]),
+      (
+        // WP29 P3 (IMGMGR-454): was "more.section.marks" / "Marks"; Clear mark stays (folded,
+        // it is the bar's only Clear) and Open in New Window joins it.
+        "more.section.actions", "Actions",
+        ["more.clearMark", "more.copyForLightroom", "more.openInNewWindow"]
+      ),
+      ("more.section.shoot", "Shoot", ["more.status"]),
       // WP29 P4 (IMGMGR-455): the Scene group left for the Select bar's Scene ▸.
     ]
     // Closures rather than key paths on the right: Swift has no key path to a tuple element.
@@ -627,23 +650,25 @@ struct GridMoreMenuSectionsTests {
   }
 
   /// The Clear-folds-into-More rule (WP13 P1) is untouched by the grouping: folded, the Clear row
-  /// still answers to the bar's identifier, and it does so from INSIDE the Marks section.
-  @Test("The folded Clear row keeps its identity, inside the Marks section")
-  func theFoldedClearRowKeepsItsIdentityInsideTheMarksSection() {
-    guard let marks = GridMoreMenu.sections.first(where: { $0.id == "more.section.marks" }) else {
-      Issue.record("there is no Marks section to fold the bar's Clear into")
+  /// still answers to the bar's identifier, and it does so from INSIDE the Actions section
+  /// (the Marks section until WP29 P3, IMGMGR-454).
+  @Test("The folded Clear row keeps its identity, inside the Actions section")
+  func theFoldedClearRowKeepsItsIdentityInsideTheActionsSection() {
+    guard let marks = GridMoreMenu.sections.first(where: { $0.id == "more.section.actions" })
+    else {
+      Issue.record("there is no Actions section to fold the bar's Clear into")
       return
     }
     let folded = marks.entries.map {
       GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true)
     }
     #expect(folded.filter { $0 == ActionBarMarkControl.clear.accessibilityIdentifier }.count == 1)
-    // Positive control: the Marks section really was enumerated, so the count above is a fact
+    // Positive control: the Actions section really was enumerated, so the count above is a fact
     // about the fold and not about an empty section.
     #expect(folded.contains("gridMoreMenu.more.copyForLightroom"))
     // And no OTHER section grew a Clear on the way.
     let elsewhere = GridMoreMenu.sections
-      .filter { $0.id != "more.section.marks" }
+      .filter { $0.id != "more.section.actions" }
       .flatMap(\.entries)
       .map { GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true) }
     #expect(!elsewhere.contains(ActionBarMarkControl.clear.accessibilityIdentifier))
@@ -656,18 +681,18 @@ struct GridMoreMenuSectionsTests {
   func noEntryIdentifierChangedWhenTheSectionsArrived() {
     #expect(
       GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
-        "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
-        "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
         // WP29 P2 (IMGMGR-453): Density and the archive prune left; the prune keeps its
-        // identifier in the tree's View menu.
-        "gridMoreMenu.more.status",
+        // identifier in the tree's View menu. WP29 P3 (IMGMGR-454): reordered, none renamed.
+        "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
+        "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.openInNewWindow",
+        "gridMoreMenu.more.status",
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
-        ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
-        "textformat", "checkmark.square", "info.circle",
-        "macwindow.badge.plus",
+        "textformat", "checkmark.square",
+        ActionBarMarkControl.clear.systemImage, "doc.on.clipboard", "macwindow.badge.plus",
+        "info.circle",
       ])
   }
 }

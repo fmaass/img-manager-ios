@@ -238,16 +238,17 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
   /// (`GridMoreMenuSectionsTests`); this proves the labels reach the menu a reader opens, which a
   /// correct declaration the body never renders would not.
   ///
-  /// "Marks" is asserted rather than any of the four because it is the one section title that is
-  /// not a word this app already puts on screen ("Scene" is a grouping row title,
-  /// `GridView.rowTitle(for:)`), so the before/after pair below attributes the hit to THIS menu.
+  /// "Actions" (the "Marks" group until WP29 P3, IMGMGR-454) is asserted rather than any of the
+  /// three because it is the one section title that is not a word this app already puts on
+  /// screen ("View" is the tree's menu, "Shoot" the workspace title), so the before/after pair
+  /// below attributes the hit to THIS menu.
   ///
   /// If SwiftUI presents a `Menu`'s `Section` headers headerless on an idiom, this fails there.
   /// That failure is the phase's declared-deviation pivot (plan §Phase 4 "Known unknown"), to be
   /// named in the report and ticketed — never relaxed here, and never faked with a disabled row.
   func testMoreMenuGroupsItsEntriesUnderSectionHeaders() throws {
     let app = launchedApp()
-    let header = "Marks"
+    let header = "Actions"
 
     XCTAssertEqual(
       headerCount(header, in: app), 0,
@@ -263,7 +264,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
         + "vacuous.")
 
     // WP29 P4 (IMGMGR-455): three groups — the Scene group left for Scene ▸.
-    let observed = ["Marks", "View", "Shoot"]
+    // WP29 P3 (IMGMGR-454): View · Actions · Shoot.
+    let observed = ["View", "Actions", "Shoot"]
       .map { "\($0)=\(headerCount($0, in: app))" }
       .joined(separator: ", ")
     XCTAssertGreaterThan(
