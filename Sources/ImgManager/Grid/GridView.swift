@@ -1059,6 +1059,9 @@ struct ActionBarView: View {
   /// fits — so there is no first pass with a default width, no state to arrive late, and no way
   /// for the bar to paint wider than what it was handed.
   var body: some View {
+    // IMGMGR-474: read ONCE per render and handed to every tier, rather than re-derived per
+    // control per tier — it walks the actionable projection.
+    let readout = store.markTargetReadout
     ViewThatFits(in: .horizontal) {
       // Derived FROM the list, never a hand-written copy of it beside the list: adding,
       // removing or reordering a tier changes what renders, by construction. Keyed by the
@@ -1068,7 +1071,7 @@ struct ActionBarView: View {
           carriesMore: carriesMore, selecting: store.selection.mode == .select),
         id: \.name
       ) { tier in
-        bar(tier)
+        bar(tier, readout: readout)
       }
     }
     .frame(maxWidth: .infinity)
@@ -1103,12 +1106,12 @@ struct ActionBarView: View {
   /// time. Its ideal width is its content, which is exactly what has to be compared with the
   /// column.
   @ViewBuilder
-  private func bar(_ layout: ActionBarLayout) -> some View {
+  private func bar(_ layout: ActionBarLayout, readout: MarkTargetReadout) -> some View {
     HStack(spacing: layout.spacing) {
       // WP29 P4 (IMGMGR-455): the tier's own control list (`SelectBarLayout`), in order — at
       // rest exactly the shipped order, in Select `… · Tag · Scene (· More) ‖ Undo`.
       ForEach(layout.controls, id: \.self) { control in
-        barControl(control, layout: layout)
+        barControl(control, layout: layout, readout: readout)
       }
     }
     .labelStyle(.iconOnly)
@@ -1118,14 +1121,16 @@ struct ActionBarView: View {
   }
 
   @ViewBuilder
-  private func barControl(_ control: SelectBarControl, layout: ActionBarLayout) -> some View {
+  private func barControl(
+    _ control: SelectBarControl, layout: ActionBarLayout, readout: MarkTargetReadout
+  ) -> some View {
     switch control {
     case .pick:
-      latchButton(.pick)
+      latchButton(.pick, readout: readout)
     case .dislike:
-      latchButton(.dislike)
+      latchButton(.dislike, readout: readout)
     case .clear:
-      markControl(.clear)
+      markControl(.clear, readout: readout)
     case .spacer:
       Spacer(minLength: 0)
     case .scene:
@@ -1223,16 +1228,45 @@ struct ActionBarView: View {
   /// (see `latchButton`) — all three still take their title, symbol and STATE from the same
   /// table.
   @ViewBuilder
-  private func markControl(_ control: ActionBarMarkControl) -> some View {
+  private func markControl(_ control: ActionBarMarkControl, readout: MarkTargetReadout)
+    -> some View
+  {
+    let presentation = ActionBarMarkPresentation.for(
+      control, lockState: store.pickLock.state, readout: readout)
     Button {
       Task { await store.applyMarkToTarget(control.state) }
     } label: {
-      Label(control.title, systemImage: control.systemImage)
+      markLabel(control, presentation)
     }
     .buttonStyle(.bordered)
+    // IMGMGR-474: Clear is selected when the target is unmarked. No palette tint — "no mark" has
+    // no mark colour — so its readout is the filled glyph, the trait and the value.
+    .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
+    .accessibilityValue(presentation.accessibilityValue)
     .disabled(store.isMarkActionUnavailable)
     .accessibilityIdentifier(control.accessibilityIdentifier)
     .actionBarControlSize()
+  }
+
+  /// IMGMGR-474: the icon a mark control draws for its presentation — the filled glyph while the
+  /// target carries this mark, and a small badge while only part of a mixed selection does. The
+  /// title stays the accessibility label; the state rides the control's value and trait.
+  private func markLabel(
+    _ control: ActionBarMarkControl, _ presentation: ActionBarMarkPresentation
+  ) -> some View {
+    Label {
+      Text(control.title)
+    } icon: {
+      Image(systemName: presentation.systemImage)
+        .overlay(alignment: .topTrailing) {
+          if presentation.showsMixedBadge {
+            Image(systemName: ActionBarMarkPresentation.mixedBadgeSymbol)
+              .font(.caption2.weight(.bold))
+              .offset(x: 6, y: -6)
+              .accessibilityHidden(true)
+          }
+        }
+    }
   }
 
   /// The identifier goes on the node that CARRIES THE FRAME — after `.actionBarControlSize()`,
@@ -1252,22 +1286,25 @@ struct ActionBarView: View {
   /// control is added to the bar — `ActionBarMetrics` is untouched and the six-control tiers are
   /// unchanged; Dislike simply stops being a plain button.
   @ViewBuilder
-  private func latchButton(_ verb: LatchVerb) -> some View {
+  private func latchButton(_ verb: LatchVerb, readout: MarkTargetReadout) -> some View {
     let control = ActionBarMarkControl.control(for: verb)
-    let presentation = PickButtonPresentation.for(store.pickLock.state, control: verb)
+    // IMGMGR-474: the latch half is `PickButtonPresentation` unchanged; the readout half says
+    // what the target already carries (filled glyph + selected, or the mixed badge).
+    let presentation = ActionBarMarkPresentation.for(
+      control, lockState: store.pickLock.state, readout: readout)
     Group {
       if presentation.isProminent {
         Button {
           Task { await store.activateLatchButton(verb) }
         } label: {
-          Label(control.title, systemImage: control.systemImage)
+          markLabel(control, presentation)
         }
         .buttonStyle(.borderedProminent)
       } else {
         Button {
           Task { await store.activateLatchButton(verb) }
         } label: {
-          Label(control.title, systemImage: control.systemImage)
+          markLabel(control, presentation)
         }
         .buttonStyle(.bordered)
       }
@@ -1276,7 +1313,8 @@ struct ActionBarView: View {
     // mark palette, for these two verbs only — Clear and Undo are not verdicts and keep theirs.
     // What each button STYLE does with a tint stays the system's business.
     .tint(MarkPalette.color(for: verb.markRole))
-    .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
+    .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
+    .accessibilityValue(presentation.accessibilityValue)
     // Select mode alone no longer disables these — it is P1's whole point. What stays disabled
     // is LOCK entry, in the context menu below and in the store's own guard.
     .disabled(store.isLatchControlDisabled)
