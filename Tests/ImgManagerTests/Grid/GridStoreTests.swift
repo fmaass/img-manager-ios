@@ -3667,7 +3667,7 @@ struct ActionBarMetricsTests {
   @Test("Compact's tiers are unchanged and every one carries More")
   func compactTiersUnchanged() {
     #expect(ActionBarMetrics.tiers(carriesMore: true).map(\.name) == ["roomy", "tight", "folded"])
-    #expect(ActionBarMetrics.tiers(carriesMore: true).allSatisfy(\.carriesMore))
+    #expect(ActionBarMetrics.tiers(carriesMore: true).allSatisfy { $0.carriesMore })
     #expect(
       ActionBarMetrics.layout(forWidth: ActionBarMetrics.narrowestCompactWidth)
         == ActionBarMetrics.layout(
