@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// IMGMGR-474 (owner report, iPad, build 19): "on the pick/unpick menu at the bottom there should
 /// always be visual feedback that an option is selected". The grid bar's Pick/Dislike/Clear drew
@@ -19,6 +20,37 @@ enum MarkTargetReadout: Equatable, Sendable {
     let distinct = Set(states)
     guard let only = distinct.first else { return .noTarget }
     return distinct.count == 1 ? .uniform(only) : .mixed(distinct)
+  }
+}
+
+/// Which of the three visual states a bar mark control draws — each a SYSTEM button style plus a
+/// tint, never a custom material. Review round 1 (IMGMGR-474): a glyph and a trait alone were
+/// not visible enough; the SELECTED state must differ by FILL, and still never read as a latch.
+enum MarkControlEmphasis: Equatable, Sendable {
+  /// `.bordered` over a neutral fill — nothing to report.
+  case plain
+  /// `.bordered` over the control's own colour (the mark colour; accent for Clear) — the target
+  /// carries this mark.
+  case selected
+  /// `.borderedProminent`, solid, plus the mode-row caption — a lock is on. A mode, not a state.
+  case latched
+}
+
+/// A colour named as DATA so the style outcome is unit-testable; the view maps it to a `Color`.
+enum MarkControlTint: Equatable, Sendable {
+  case neutral
+  case accent
+  case mark(MarkRole)
+}
+
+extension MarkControlTint {
+  var color: Color {
+    switch self {
+    // A neutral fill that still reads as a button on both appearances.
+    case .neutral: return .gray
+    case .accent: return .accentColor
+    case .mark(let role): return MarkPalette.color(for: role)
+    }
   }
 }
 
@@ -53,9 +85,27 @@ struct ActionBarMarkPresentation: Equatable {
   /// The mixed-selection badge drawn on a `.partial` control's glyph.
   static let mixedBadgeSymbol = "minus.circle.fill"
 
+  /// The colour this control is identified by: its mark colour (the WP16 P1 palette decision,
+  /// p3332 decision 5), or the accent for Clear, which is not a verdict and has no mark colour.
+  var ownTint: MarkControlTint
+
   var isProminent: Bool { latch.isProminent }
   var isSelected: Bool { latch.accessibilitySelected || indication == .on }
   var showsMixedBadge: Bool { indication == .partial }
+
+  var emphasis: MarkControlEmphasis {
+    if latch.isProminent { return .latched }
+    return indication == .on ? .selected : .plain
+  }
+
+  /// The `.tint` the button STYLE draws its fill with: neutral until the control is selected or
+  /// latched, then the control's own colour.
+  var fillTint: MarkControlTint { emphasis == .plain ? .neutral : ownTint }
+
+  /// The glyph's own colour, overriding the style's: the control's own colour in both bordered
+  /// states, so Pick and Dislike stay mark-coloured whatever the fill. `nil` while latched — the
+  /// prominent style draws its own contrasting foreground on the solid fill.
+  var glyphTint: MarkControlTint? { emphasis == .latched ? nil : ownTint }
 
   static func `for`(
     _ control: ActionBarMarkControl, lockState: PickLockState.LockState,
@@ -72,7 +122,8 @@ struct ActionBarMarkPresentation: Equatable {
     return ActionBarMarkPresentation(
       latch: latch, indication: shown,
       systemImage: shown == .on ? "\(control.systemImage).fill" : control.systemImage,
-      accessibilityValue: hasTarget ? spokenValue(control, shown) : "")
+      accessibilityValue: hasTarget ? spokenValue(control, shown) : "",
+      ownTint: control.latchVerb.map { .mark($0.markRole) } ?? .accent)
   }
 
   static func indication(of state: MarkStateValue, in readout: MarkTargetReadout)
@@ -110,6 +161,19 @@ extension ActionBarMarkControl {
     case .dislike: return .dislike
     case .clear: return nil
     }
+  }
+}
+
+extension GridMoreMenu {
+  /// The folded Clear row's readout (IMGMGR-474 review round 1): when the bar gives Clear up to
+  /// the More menu, that row is the only Clear there is, so it must say what the bar's Clear
+  /// would. Unfolded, the bar's own Clear says it, and the menu row stays a plain command.
+  static func markPresentation(
+    for entry: GridMoreMenuEntry, foldsClearIntoMore: Bool,
+    lockState: PickLockState.LockState, readout: MarkTargetReadout
+  ) -> ActionBarMarkPresentation? {
+    guard foldsClearIntoMore, entry.id == clearMark.id else { return nil }
+    return ActionBarMarkPresentation.for(.clear, lockState: lockState, readout: readout)
   }
 }
 

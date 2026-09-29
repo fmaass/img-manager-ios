@@ -1239,8 +1239,9 @@ struct ActionBarView: View {
       markLabel(control, presentation)
     }
     .buttonStyle(.bordered)
-    // IMGMGR-474: Clear is selected when the target is unmarked. No palette tint — "no mark" has
-    // no mark colour — so its readout is the filled glyph, the trait and the value.
+    // IMGMGR-474: Clear is selected when the target is unmarked. "No mark" has no mark colour, so
+    // its selected fill is the accent it always carried; unselected, the fill is neutral.
+    .tint(presentation.fillTint.color)
     .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
     .accessibilityValue(presentation.accessibilityValue)
     .disabled(store.isMarkActionUnavailable)
@@ -1254,19 +1255,7 @@ struct ActionBarView: View {
   private func markLabel(
     _ control: ActionBarMarkControl, _ presentation: ActionBarMarkPresentation
   ) -> some View {
-    Label {
-      Text(control.title)
-    } icon: {
-      Image(systemName: presentation.systemImage)
-        .overlay(alignment: .topTrailing) {
-          if presentation.showsMixedBadge {
-            Image(systemName: ActionBarMarkPresentation.mixedBadgeSymbol)
-              .font(.caption2.weight(.bold))
-              .offset(x: 6, y: -6)
-              .accessibilityHidden(true)
-          }
-        }
-    }
+    MarkControlLabel(title: control.title, presentation: presentation)
   }
 
   /// The identifier goes on the node that CARRIES THE FRAME — after `.actionBarControlSize()`,
@@ -1312,7 +1301,11 @@ struct ActionBarView: View {
     // WP16 P1 (p3332 decision 5): the tint SOURCE moves from the implicit accent colour to the
     // mark palette, for these two verbs only — Clear and Undo are not verdicts and keep theirs.
     // What each button STYLE does with a tint stays the system's business.
-    .tint(MarkPalette.color(for: verb.markRole))
+    // IMGMGR-474 review round 1: the FILL now says whether the control is selected — neutral
+    // while plain, the mark colour while selected (`.bordered`) or latched (`.borderedProminent`,
+    // solid). The glyph keeps the mark colour in both bordered states (`MarkControlLabel`), so
+    // decision 5 still holds for the verb itself.
+    .tint(presentation.fillTint.color)
     .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
     .accessibilityValue(presentation.accessibilityValue)
     // Select mode alone no longer disables these — it is P1's whole point. What stays disabled
@@ -1327,6 +1320,38 @@ struct ActionBarView: View {
       // exclusion made visible rather than merely enforced.
       Button(control.lockMenuTitle) { store.lockFromMenu(verb) }
         .disabled(store.pickLock.latchedVerb != nil || store.selection.mode == .select)
+    }
+  }
+}
+
+/// IMGMGR-474: a bar mark control's label — the filled glyph while the target carries this mark,
+/// a small badge while only part of a mixed selection does, and the control's own colour on the
+/// glyph in both bordered states. The title stays the accessibility label; the state rides the
+/// control's value and trait. The colour override is dropped while DISABLED so the system's own
+/// dimming still reads, exactly as it did before the override existed.
+struct MarkControlLabel: View {
+  let title: String
+  let presentation: ActionBarMarkPresentation
+  @Environment(\.isEnabled) private var isEnabled
+
+  var body: some View {
+    let label = Label {
+      Text(title)
+    } icon: {
+      Image(systemName: presentation.systemImage)
+        .overlay(alignment: .topTrailing) {
+          if presentation.showsMixedBadge {
+            Image(systemName: ActionBarMarkPresentation.mixedBadgeSymbol)
+              .font(.caption2.weight(.bold))
+              .offset(x: 6, y: -6)
+              .accessibilityHidden(true)
+          }
+        }
+    }
+    if isEnabled, let glyph = presentation.glyphTint {
+      label.foregroundStyle(glyph.color)
+    } else {
+      label
     }
   }
 }
