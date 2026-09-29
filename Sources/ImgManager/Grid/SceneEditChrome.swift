@@ -27,6 +27,11 @@ struct SceneMergePicker: View {
 
   let store: GridStore
   var kind: Kind = .mergeFocusedScene
+  /// WP29 P4 (IMGMGR-455, plan gate r4 R4-B1): read LIVE inside the submission task, immediately
+  /// before the unchanged shipped call — false submits nothing. Scene ▸ passes
+  /// `SceneSelectionAgreement.pickerGuard(for:)`; the default keeps the shipped behaviour for any
+  /// other opener.
+  var submissionGuard: @MainActor @Sendable (GridStore) -> Bool = { _ in true }
   @Environment(\.dismiss) private var dismiss
 
   private var targets: [SceneMergeTarget] {
@@ -51,11 +56,27 @@ struct SceneMergePicker: View {
   }
 
   private func choose(_ target: SceneMergeTarget) {
+    let kind = self.kind
+    let store = self.store
+    let submissionGuard = self.submissionGuard
+    Task {
+      await Self.submit(
+        kind: kind, targetStackID: target.stackID, store: store, submissionGuard: submissionGuard)
+    }
+  }
+
+  /// The submission, as one function a test can drive: the guard, then the SHIPPED call,
+  /// unchanged.
+  static func submit(
+    kind: Kind, targetStackID: Int, store: GridStore,
+    submissionGuard: @MainActor @Sendable (GridStore) -> Bool
+  ) async {
+    guard submissionGuard(store) else { return }
     switch kind {
     case .mergeFocusedScene:
-      Task { await store.mergeFocusedScene(into: target.stackID) }
+      await store.mergeFocusedScene(into: targetStackID)
     case .absorbLoosePhotograph:
-      Task { await store.absorbFocusedPhoto(into: target.stackID) }
+      await store.absorbFocusedPhoto(into: targetStackID)
     }
   }
 

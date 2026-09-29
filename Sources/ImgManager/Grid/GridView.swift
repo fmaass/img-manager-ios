@@ -152,6 +152,16 @@ struct GridView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.absorb")
           .accessibilityValue("absorbRequests=\(DebugProbe.shared.absorbRequests)")
+        // WP29 P4 (IMGMGR-455): the split/extract wire calls, on an element of their own for the
+        // same reason as the absorb probe above.
+        Text("debugProbeSceneEdit")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.sceneEdit")
+          .accessibilityValue(
+            "sceneEdits=\(DebugProbe.shared.sceneEdits.joined(separator: "; "))")
       }
     }
   #else
@@ -808,6 +818,14 @@ struct ActionBarLayout: Equatable {
   /// WP29 P1 (IMGMGR-452): whether this bar renders More. False on every Regular tier, where
   /// More is the grid bar's own item (`WorkspaceChromePlacement.actionBarCarriesMore`).
   var carriesMore: Bool = true
+  /// WP29 P4 (IMGMGR-455): the Select bar — `… · Tag · Scene ‖ Undo` (`SelectBarLayout`).
+  var selecting: Bool = false
+
+  /// The controls this tier renders, in order — the one list `ActionBarView` walks.
+  var controls: [SelectBarControl] {
+    SelectBarLayout.controls(
+      selecting: selecting, carriesMore: carriesMore, foldsClearIntoMore: foldsClearIntoMore)
+  }
 }
 
 /// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
@@ -885,6 +903,41 @@ enum ActionBarMetrics {
     name: "regular-tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
     controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
 
+  /// WP29 P4 (IMGMGR-455): the Select bar's tiers. Compact carries seven controls
+  /// (`Pick · Dislike · Clear · Tag · Scene · More ‖ Undo`), six with Clear folded; Regular six,
+  /// without More. The spacer before Undo is one more HStack child, so one more gap.
+  static let selectControlCount = 7
+  static let selectFoldedControlCount = 6
+  static let regularSelectControlCount = 6
+  /// The tight Regular Select tier's gap: 6×44 + 6×4 + 2×8 = 304 pt, inside the measured
+  /// 315-pt Regular-3 column with the inspector expanded.
+  static let regularSelectTightSpacing: CGFloat = 4
+
+  /// 7×44 + 7×16 + 2×16 = 452 pt.
+  static let selectRoomy = ActionBarLayout(
+    name: "select-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: selectControlCount, foldsClearIntoMore: false, selecting: true)
+  /// 7×44 + 7×8 + 2×8 = 380 pt — inside the 402-pt iPhone.
+  static let selectTight = ActionBarLayout(
+    name: "select-tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: selectControlCount, foldsClearIntoMore: false, selecting: true)
+  /// 6×44 + 6×8 + 2×8 = 328 pt, Clear in More under its bar identifier.
+  static let selectFolded = ActionBarLayout(
+    name: "select-folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: selectFoldedControlCount, foldsClearIntoMore: true, selecting: true)
+  /// 6×44 + 6×16 + 2×16 = 392 pt.
+  static let regularSelectRoomy = ActionBarLayout(
+    name: "regular-select-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: regularSelectControlCount, foldsClearIntoMore: false, carriesMore: false,
+    selecting: true)
+  static let regularSelectTight = ActionBarLayout(
+    name: "regular-select-tight", spacing: regularSelectTightSpacing,
+    horizontalPadding: tightHorizontalPadding, controlCount: regularSelectControlCount,
+    foldsClearIntoMore: false, carriesMore: false, selecting: true)
+
+  static let selectTiers: [ActionBarLayout] = [selectRoomy, selectTight, selectFolded]
+  static let regularSelectTiers: [ActionBarLayout] = [regularSelectRoomy, regularSelectTight]
+
   /// Widest first. `ActionBarView` renders these in this order through `ViewThatFits`, and
   /// `layout(forWidth:)` walks the SAME list — so the arithmetic the tests assert and the tier
   /// the layout system actually picks cannot disagree.
@@ -894,14 +947,21 @@ enum ActionBarMetrics {
   static let regularTiers: [ActionBarLayout] = [regularRoomy, regularTight]
 
   /// The tier list for a bar that does or does not carry More.
-  static func tiers(carriesMore: Bool) -> [ActionBarLayout] {
-    carriesMore ? tiers : regularTiers
+  static func tiers(carriesMore: Bool, selecting: Bool = false) -> [ActionBarLayout] {
+    switch (carriesMore, selecting) {
+    case (true, false): return tiers
+    case (false, false): return regularTiers
+    case (true, true): return selectTiers
+    case (false, true): return regularSelectTiers
+    }
   }
 
+  /// The spacer before Undo (Select only) is one more HStack child, so it adds one gap.
   static func requiredWidth(for layout: ActionBarLayout) -> CGFloat {
     requiredWidth(
       controlCount: layout.controlCount, spacing: layout.spacing,
       horizontalPadding: layout.horizontalPadding)
+      + (layout.controls.contains(.spacer) ? layout.spacing : 0)
   }
 
   /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
@@ -913,8 +973,10 @@ enum ActionBarMetrics {
   /// The tier a given width selects — the arithmetic statement of what `ViewThatFits` decides
   /// at run time. Total: the narrowest tier is the answer when nothing fits, because a bar that
   /// must overflow should at least overflow least.
-  static func layout(forWidth width: CGFloat, carriesMore: Bool = true) -> ActionBarLayout {
-    let list = tiers(carriesMore: carriesMore)
+  static func layout(
+    forWidth width: CGFloat, carriesMore: Bool = true, selecting: Bool = false
+  ) -> ActionBarLayout {
+    let list = tiers(carriesMore: carriesMore, selecting: selecting)
     return list.first { requiredWidth(for: $0) <= width } ?? list[list.count - 1]
   }
 }
@@ -1001,7 +1063,11 @@ struct ActionBarView: View {
       // Derived FROM the list, never a hand-written copy of it beside the list: adding,
       // removing or reordering a tier changes what renders, by construction. Keyed by the
       // tier's own name, never by index (IMGMGR-210).
-      ForEach(ActionBarMetrics.tiers(carriesMore: carriesMore), id: \.name) { tier in
+      ForEach(
+        ActionBarMetrics.tiers(
+          carriesMore: carriesMore, selecting: store.selection.mode == .select),
+        id: \.name
+      ) { tier in
         bar(tier)
       }
     }
@@ -1017,12 +1083,17 @@ struct ActionBarView: View {
     }
     // WP14 P4: hosted here for the same reason the two above are — on the OUTER body, never on a
     // `ViewThatFits` child, which would declare each of them once per tier.
+    // WP29 P4 (IMGMGR-455): Scene ▸ is the only opener of both pickers, so both re-check the
+    // selection's agreement right before their shipped submit (R4-B1).
     .sheet(isPresented: $store.isSceneMergePickerPresented) {
-      SceneMergePicker(store: store)
+      SceneMergePicker(
+        store: store, submissionGuard: SceneSelectionAgreement.pickerGuard(for: .mergeFocusedScene))
     }
     // IMGMGR-347: the absorb's own target sheet, hosted beside its sibling for the same reason.
     .sheet(isPresented: $store.isSceneAbsorbPickerPresented) {
-      SceneMergePicker(store: store, kind: .absorbLoosePhotograph)
+      SceneMergePicker(
+        store: store, kind: .absorbLoosePhotograph,
+        submissionGuard: SceneSelectionAgreement.pickerGuard(for: .absorbLoosePhotograph))
     }
     .sceneEditAlert(store: store)
   }
@@ -1034,12 +1105,32 @@ struct ActionBarView: View {
   @ViewBuilder
   private func bar(_ layout: ActionBarLayout) -> some View {
     HStack(spacing: layout.spacing) {
-      latchButton(.pick)
-      latchButton(.dislike)
-      if !layout.foldsClearIntoMore {
-        markControl(.clear)
+      // WP29 P4 (IMGMGR-455): the tier's own control list (`SelectBarLayout`), in order — at
+      // rest exactly the shipped order, in Select `… · Tag · Scene (· More) ‖ Undo`.
+      ForEach(layout.controls, id: \.self) { control in
+        barControl(control, layout: layout)
       }
+    }
+    .labelStyle(.iconOnly)
+    .font(.title3)
+    .padding(.horizontal, layout.horizontalPadding)
+    .padding(.vertical, ActionBarMetrics.verticalPadding)
+  }
 
+  @ViewBuilder
+  private func barControl(_ control: SelectBarControl, layout: ActionBarLayout) -> some View {
+    switch control {
+    case .pick:
+      latchButton(.pick)
+    case .dislike:
+      latchButton(.dislike)
+    case .clear:
+      markControl(.clear)
+    case .spacer:
+      Spacer(minLength: 0)
+    case .scene:
+      sceneMenu()
+    case .undo:
       Button {
         Task { await store.undoLastMark() }
       } label: {
@@ -1050,6 +1141,7 @@ struct ActionBarView: View {
       .accessibilityIdentifier("gridUndoButton")
       .actionBarControlSize()
 
+    case .tag:
       Button {
         store.handleTagShortcut()
       } label: {
@@ -1060,6 +1152,7 @@ struct ActionBarView: View {
       .accessibilityIdentifier("gridTagButton")
       .actionBarControlSize()
 
+    case .more:
       // WP29 P1 (IMGMGR-452): only where the bar carries More — Compact. At Regular More is
       // the grid bar's own item (`GridToolbarMoreMenu`), never rendered twice.
       if layout.carriesMore {
@@ -1095,10 +1188,24 @@ struct ActionBarView: View {
         .actionBarControlSize()
       }
     }
-    .labelStyle(.iconOnly)
-    .font(.title3)
-    .padding(.horizontal, layout.horizontalPadding)
-    .padding(.vertical, ActionBarMetrics.verticalPadding)
+  }
+
+  /// WP29 P4 (IMGMGR-455): Scene ▸ — the scene edits' one touch home, rendered from
+  /// `SelectBarSceneMenu.entries` through the More menu's own row view. The label is sized like
+  /// More's (it draws no capsule either), so its hit region is the full 44 pt.
+  private func sceneMenu() -> some View {
+    Menu {
+      ForEach(SelectBarSceneMenu.entries) { entry in
+        GridMoreMenuItem(
+          entry: entry, store: store, foldsClearIntoMore: false, openShootWindow: openShootWindow)
+      }
+    } label: {
+      Label(SelectBarSceneMenu.title, systemImage: SelectBarSceneMenu.systemImage)
+        .actionBarControlSize()
+        .contentShape(Rectangle())
+    }
+    .accessibilityIdentifier(SelectBarSceneMenu.accessibilityIdentifier)
+    .actionBarControlSize()
   }
 
   /// Empty outside the DEBUG screenshot fixture, so nothing about production accessibility

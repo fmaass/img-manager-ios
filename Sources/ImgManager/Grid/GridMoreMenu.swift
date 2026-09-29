@@ -69,7 +69,8 @@ struct GridMoreMenuSection: Identifiable, Sendable {
 /// requires an observable effect — so a deleted entry and a no-oped entry both turn it RED.
 enum GridMoreMenu {
 
-  /// WP16 P4 (IMGMGR-297): the four labelled groups, and the menu's ONE inventory.
+  /// WP16 P4 (IMGMGR-297): the labelled groups — three since WP29 P4 (IMGMGR-455) moved the
+  /// Scene group to the Select bar's Scene ▸ — and the menu's ONE inventory.
   ///
   /// WP13 P11 (IMGMGR-220) APPENDED "Open in New Window"; it did not reorder the owner's decided
   /// set. WP14 P4 (IMGMGR-277) APPENDED the three scene-edit actions, in the plan's own order —
@@ -95,11 +96,9 @@ enum GridMoreMenu {
     GridMoreMenuSection(
       id: "more.section.shoot", title: "Shoot",
       entries: [status, openInNewWindow]),
-    GridMoreMenuSection(
-      id: "more.section.scene", title: "Scene",
-      // IMGMGR-347 APPENDED the absorb, in the same spirit the two rows before it were appended:
-      // the decided set and its order are untouched, and a topology action stays chrome.
-      entries: [mergeScene, splitScene, extractScene, absorbScene]),
+    // WP29 P4 (IMGMGR-455): the Scene section (Merge into…, Split here, Extract selected, Add to
+    // scene…) left for its one touch home, the Select bar's Scene ▸ (`SelectBarSceneMenu`), which
+    // now holds those four declarations. 10 → 6 rows in 3 groups.
   ]
 
   /// DERIVED, never declared: the menu has one inventory and this is a view onto it. Every
@@ -240,63 +239,6 @@ enum GridMoreMenu {
       let value = ShootSceneValue.from(query: store.query)
       ShootWindowAction.open(value, using: opener)
     })
-
-  /// WP14 P4 (IMGMGR-277). All three rows follow P11's single-predicate discipline: the
-  /// `isEnabled` closure and the action read the SAME store derivation, so "the control is
-  /// enabled" and "the action has a subject" cannot drift apart, and a disabled row that somehow
-  /// fired would be a no-op rather than a trap (each store method re-derives its own guard).
-  ///
-  /// The subject is always the FOCUSED member's scene (plan Decision 2) — several scenes can be
-  /// open at once (`sceneExpanded` is a Set), so "the open scene" is not a thing that exists.
-  static let mergeScene = GridMoreMenuEntry(
-    id: "more.mergeScene",
-    accessibilityIdentifier: "gridMoreMenu.more.mergeScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "arrow.triangle.merge",
-    title: { _ in "Merge into…" },
-    isEnabled: { $0.canMergeFocusedScene },
-    surface: .action { store in store.presentSceneMergePicker() })
-
-  static let splitScene = GridMoreMenuEntry(
-    id: "more.splitScene",
-    accessibilityIdentifier: "gridMoreMenu.more.splitScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "scissors",
-    title: { _ in "Split here" },
-    isEnabled: { $0.canSplitFocusedScene },
-    surface: .action { store in
-      Task { await store.splitFocusedScene() }
-    })
-
-  static let extractScene = GridMoreMenuEntry(
-    id: "more.extractScene",
-    accessibilityIdentifier: "gridMoreMenu.more.extractScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "square.on.square.dashed",
-    title: { _ in "Extract selected" },
-    isEnabled: { $0.canExtractSelectionFromScene },
-    surface: .action { store in
-      Task { await store.extractSelectionFromFocusedScene() }
-    })
-
-  /// IMGMGR-347: the row for the photograph that is in no scene — the gesture the family was
-  /// missing, and the one the owner went looking for on the device ("i dont think this works im
-  /// missing a menu basically to do so", TestFlight 0.11.0 (14)).
-  ///
-  /// Its subject is the one the other three cannot have, so it is enabled exactly where they are
-  /// disabled, and vice versa. The TITLE is a function of the same derivation as the enablement
-  /// (`sceneAbsorbUnavailability`): while it cannot act it says which thing is missing, because a
-  /// row that only greys out is what sent the owner looking in the first place — and because this
-  /// menu's idiom is present-and-disabled, a row's title is the only surface a reason can appear
-  /// on.
-  static let absorbScene = GridMoreMenuEntry(
-    id: "more.absorbScene",
-    accessibilityIdentifier: "gridMoreMenu.more.absorbScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "rectangle.stack.badge.plus",
-    title: { SceneAbsorbCopy.title(for: $0.sceneAbsorbUnavailability) },
-    isEnabled: { $0.canAbsorbFocusedPhoto },
-    surface: .action { store in store.presentSceneAbsorbPicker() })
 }
 
 /// The menu's rendered body: EXACTLY `GridMoreMenu.sections`, in order, with no second list —

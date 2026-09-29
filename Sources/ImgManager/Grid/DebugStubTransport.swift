@@ -138,6 +138,21 @@
           .ok,
           Components.Schemas.StackEditResult(
             dissolvedStackIds: [], loosenedImageIds: [], stackIds: [Self.fixtureStackID]))
+      // WP29 P4 (IMGMGR-455): the split and extract Scene ▸ drives. Recorded as the WIRE call —
+      // the stack id off the path, the payload off the body — BEFORE the answer goes back, so a
+      // UI test reads what was sent. The result names the fixture's own scene, which the topology
+      // coordinator then reopens exactly as it does after an absorb.
+      case Operations.SplitStackApiStacksStackIdSplitPost.id,
+        Operations.ExtractFromStackApiStacksStackIdExtractPost.id:
+        let record = await Self.sceneEditRecord(
+          isSplit: operationID == Operations.SplitStackApiStacksStackIdSplitPost.id,
+          path: request.path, body: body)
+        let sceneEditProbe = self.probe
+        await MainActor.run { (sceneEditProbe ?? .shared).sceneEdits.append(record) }
+        return try jsonResponse(
+          .ok,
+          Components.Schemas.StackEditResult(
+            dissolvedStackIds: [], loosenedImageIds: [], stackIds: [Self.fixtureStackID]))
       // IMGMGR-348: the one-tap share's master lane needs bytes in the fixture composition —
       // `fixtureImages()` marks every third stub image `hasEdit`, and those are exactly the ones
       // whose share takes the master path, so without this the UI test would be measuring a
@@ -272,6 +287,32 @@
       case 4...7: return "FUJIFILM X-T2"
       default: return nil
       }
+    }
+
+    /// `split(stackID: S, atImageID: I)` / `extract(stackID: S, imageIDs: [I, …])` — the wire
+    /// fields in the order the request carried them. A body that does not decode records its
+    /// absence (`?`) rather than a plausible value.
+    private static func sceneEditRecord(isSplit: Bool, path: String?, body: HTTPBody?) async
+      -> String
+    {
+      let stackID = path.flatMap { URLComponents(string: $0)?.path }
+        .flatMap { path -> String? in
+          let parts = path.split(separator: "/")
+          guard let index = parts.firstIndex(of: "stacks"), index + 1 < parts.count else {
+            return nil
+          }
+          return String(parts[index + 1])
+        } ?? "?"
+      var object: [String: Any] = [:]
+      if let body, let data = try? await Data(collecting: body, upTo: 1 << 16) {
+        object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+      }
+      if isSplit {
+        let at = (object["at_image_id"] as? Int).map(String.init) ?? "?"
+        return "split(stackID: \(stackID), atImageID: \(at))"
+      }
+      let ids = (object["image_ids"] as? [Int]).map { $0.map(String.init).joined(separator: ", ") }
+      return "extract(stackID: \(stackID), imageIDs: [\(ids ?? "?")])"
     }
 
     /// The fixture scene's id. One scene is enough and two would only make the screenshot
