@@ -580,6 +580,40 @@ struct GridStoreSceneTests {
     #expect(store.sceneMembers[5]?.map(\.id) == [501])
   }
 
+  /// IMGMGR-474: the bar's readout survives the post-commit card re-read. The refresh rewrites
+  /// the scene ROW (cover, counts) and must not blank or revert the member's own mark, which is
+  /// what the bar reads through the actionable projection.
+  @Test("The bar's mark readout survives the post-commit scene refresh (IMGMGR-474)")
+  func markReadoutSurvivesTheSceneRefresh() async {
+    let (store, transport) = await loadedSceneStore()
+    await transport.setStackMemberPage(
+      .init(
+        items: [makeImage(id: 501, revision: "m-rev-1"), makeImage(id: 502, mark: .dislike)],
+        limit: 100, nextCursor: nil, stackId: 5),
+      forStack: 5)
+    await store.toggleSceneExpanded(5)
+    store.focusedImageID = 501
+    #expect(store.markTargetReadout == .uniform(.none))
+
+    await transport.setStackRow(
+      makeStackRow(
+        id: 5, memberCount: 2, hasPick: true, matchedCount: 2,
+        representative: makeImage(id: 501, mark: .pick, revision: "m-rev-2")),
+      forStack: 5)
+    await transport.setMarkStateOutcome(
+      .success(
+        .init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "m-rev-2")])))
+
+    await store.applyMarkToTarget(.pick)
+
+    // The refresh really ran — otherwise this would only prove the optimistic write.
+    #expect(await transport.callCount(Operations.GetStackApiStacksStackIdGet.id) == 1)
+    #expect(store.markTargetReadout == .uniform(.pick))
+    #expect(
+      ActionBarMarkPresentation.for(.pick, lockState: .idle, readout: store.markTargetReadout)
+        .isSelected)
+  }
+
   @Test("A write touching NO member of any open scene re-reads no card at all")
   func coverRefreshIsScopedToTouchedScenes() async {
     let (store, transport) = await loadedSceneStore()
