@@ -72,23 +72,15 @@ struct WorkspaceContent: View {
           // the one search surface there.
           .modifier(RegularFolderSearch(search: folderSearch, isEnabled: layoutMode != .compact))
           // WP28 P3 (IMGMGR-450), Decision 1: the folder's name in the grid's principal slot, and
-          // its title menu's one row, "Shoot Summary". WP29 P1 (IMGMGR-452, plan Decision 3): at
-          // Regular the slot is p4128's breadcrumb — the name plus the server's count as the
-          // system subtitle; Compact keeps its pushed title alone.
+          // its title menu's one row, "Shoot Summary". WP29 P1 (IMGMGR-452): at Regular the slot
+          // is p4128's breadcrumb (`GridBreadcrumbTitle`); Compact keeps its pushed title alone.
           .navigationTitle(title ?? "")
-          .modifier(
-            RegularBreadcrumbSubtitle(
-              subtitle: breadcrumb?.subtitle, isEnabled: layoutMode != .compact)
-          )
           .navigationBarTitleDisplayMode(.inline)
-          .toolbarTitleMenu {
-            Button {
-              showSummary = true
-            } label: {
-              Label(ShootSummarySheet.sheetTitle, systemImage: "chart.bar.doc.horizontal")
-            }
-            .accessibilityIdentifier("shootSummaryTitleMenuRow")
-          }
+          .modifier(
+            GridBreadcrumbTitle(
+              breadcrumb: breadcrumb, isRegular: layoutMode != .compact,
+              openSummary: { showSummary = true })
+          )
           .sheet(isPresented: $showSummary) {
             ShootSummarySheet(
               queueStore: queueStore, folderID: store.query.folderID, title: title,
@@ -155,20 +147,48 @@ struct WorkspaceContent: View {
 
 }
 
-/// WP29 P1 (IMGMGR-452): the breadcrumb's count, as the system navigation subtitle, at Regular
-/// only. Keyed on the WIDTH alone (like `RegularFolderSearch`), never on whether a count is known,
-/// so a folder whose count arrives later does not swap the grid's view identity: an unknown count
-/// is an empty subtitle.
-struct RegularBreadcrumbSubtitle: ViewModifier {
-  let subtitle: String?
-  let isEnabled: Bool
+/// WP29 P1 (IMGMGR-452): the grid's title slot. At Regular it is p4128's breadcrumb — the
+/// shoot's name over the server's count — as a PRINCIPAL toolbar item holding the Summary row in
+/// a `Menu`. That is the plan's named pivot: the system title with `.navigationSubtitle` and
+/// `.toolbarTitleMenu` lead-aligned on iPadOS 26.5 (gate on c96429a: title minX 340, off its
+/// bar's midX by -81 pt at Regular-2 and -253 pt at Regular-3). Compact keeps the system title
+/// menu. Keyed on the WIDTH alone (like `RegularFolderSearch`), so a count that arrives later
+/// never swaps the grid's view identity; the Summary row keeps its one identifier either way.
+struct GridBreadcrumbTitle: ViewModifier {
+  let breadcrumb: GridBreadcrumb?
+  let isRegular: Bool
+  let openSummary: () -> Void
 
   func body(content: Content) -> some View {
-    if isEnabled {
-      content.navigationSubtitle(subtitle ?? "")
+    if isRegular {
+      content.toolbar {
+        if let breadcrumb {
+          ToolbarItem(placement: .principal) {
+            Menu {
+              summaryRow
+            } label: {
+              VStack(spacing: 0) {
+                Text(breadcrumb.title).font(.headline).lineLimit(1)
+                if let subtitle = breadcrumb.subtitle {
+                  Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+              }
+            }
+          }
+        }
+      }
     } else {
-      content
+      content.toolbarTitleMenu {
+        summaryRow
+      }
     }
+  }
+
+  private var summaryRow: some View {
+    Button(action: openSummary) {
+      Label(ShootSummarySheet.sheetTitle, systemImage: "chart.bar.doc.horizontal")
+    }
+    .accessibilityIdentifier("shootSummaryTitleMenuRow")
   }
 }
 
