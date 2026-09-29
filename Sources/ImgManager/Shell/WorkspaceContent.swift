@@ -32,6 +32,9 @@ struct WorkspaceContent: View {
   let breadcrumb: GridBreadcrumb?
   /// The one inspector flag, at every width. Session-scoped, collapsed at launch (IMGMGR-390).
   @Binding var showInspector: Bool
+  /// IMGMGR-478: the Regular split's visibility, so the grid's bar can bring a hidden sidebar
+  /// back (`GridBarSidebarToggle`). At Compact the toggle is never built.
+  @Binding var columnVisibility: NavigationSplitViewVisibility
   /// WP28 P3: the Summary sheet, opened only from the title menu (Decision 1, no auto-trigger).
   @State private var showSummary = false
   /// WP29 P1: the scene's window action, for the Regular bar's More ("Open in New Window"). Copied
@@ -66,6 +69,9 @@ struct WorkspaceContent: View {
                 for: layoutMode,
                 inspectorUsesChromeControl: inspectorPresentation.usesChromeControl),
               store: store, info: inspectorChromeButton, openShootWindow: shootWindowOpener)
+            // IMGMGR-478: the bar's leading slot, while the Regular sidebar is hidden — a visible
+            // way back that is not the system toggle alone.
+            GridBarSidebarToggle(layoutMode: layoutMode, columnVisibility: $columnVisibility)
           }
           // WP28 P2: the Regular folder search, on the grid only — the docked loupe branch above
           // carries none, so its chrome is unchanged — and never at Compact, whose Search tab is

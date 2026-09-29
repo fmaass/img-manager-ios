@@ -35,6 +35,12 @@ struct RootView: View {
   // grid" bug this same phase fixes in `LayoutResolver`.
   @State private var columnVisibility: NavigationSplitViewVisibility =
     LayoutResolver.columnVisibility(for: .compact)
+  /// IMGMGR-478: whether the reader left the Regular sidebar hidden, across launches
+  /// (`SidebarVisibilityMemory` says why a `UserDefaults` boolean). Read only when a width
+  /// resolves to Regular (`applyWidth`) and written only from a Regular split, so the Compact
+  /// launch value above stays the resolver's.
+  @AppStorage(SidebarVisibilityMemory.hiddenKey) private var regularSidebarHidden =
+    SidebarVisibilityMemory.hiddenDefault
   @State private var connectivity: ConnectivityState
   @State private var auth: AuthSession
   @State private var showAccountSheet = false
@@ -273,6 +279,16 @@ struct RootView: View {
     } action: { width in
       applyWidth(width)
     }
+    // IMGMGR-478: remember what the reader did to the Regular sidebar — the system toggle, the
+    // grid bar's toggle or the edge swipe all write this one binding. The action runs after
+    // `applyWidth` has returned, so `layoutMode` is already the new mode and the resolver's value
+    // on a change into Compact is never recorded. Windows share the one flag; each reads it on its
+    // next resolve to Regular.
+    .onChange(of: columnVisibility) { _, visibility in
+      if let hidden = SidebarVisibilityMemory.recordedHidden(visibility, in: layoutMode) {
+        regularSidebarHidden = hidden
+      }
+    }
     .task {
       await connectivity.check()
       // WP13 P11: the restored/opened window's own shoot, applied through the ONE entry point —
@@ -402,8 +418,10 @@ struct RootView: View {
       from: previous, to: mode, hasSelectedShoot: gridStore.query.folderID != nil)
     // WP28 P3 (IMGMGR-450): one 2-column split at every Regular width, so the visibility is the
     // resolver's own answer — the sidebar beside the grid (IMGMGR-390) whatever the inspector
-    // is doing, because the inspector no longer takes a split column.
-    columnVisibility = LayoutResolver.columnVisibility(for: mode)
+    // is doing, because the inspector no longer takes a split column. IMGMGR-478: unless the
+    // reader left it hidden, which a Regular width restores; Compact ignores the flag.
+    columnVisibility = SidebarVisibilityMemory.columnVisibility(
+      for: mode, sidebarHidden: regularSidebarHidden)
     #if DEBUG
       if mode == .regular3, DebugStubLaunch.startsWithInspectorShown,
         !hasAppliedDebugInspectorStart
@@ -675,7 +693,7 @@ struct RootView: View {
     return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
       folderSearch: folderSearch, queueStore: queueStore, breadcrumb: breadcrumb,
-      showInspector: $showInspector)
+      showInspector: $showInspector, columnVisibility: $columnVisibility)
   }
 }
 

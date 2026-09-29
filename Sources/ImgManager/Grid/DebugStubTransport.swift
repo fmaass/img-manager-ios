@@ -801,6 +801,24 @@
       ProcessInfo.processInfo.arguments.contains("-UITestMaterialsProbe")
     }
 
+    /// IMGMGR-478: the Regular sidebar's visibility is REMEMBERED across launches
+    /// (`SidebarVisibilityMemory.hiddenKey`, standard `UserDefaults`), and the simulator keeps it
+    /// from one test to the next — so a fixture launch forgets it (`ImgManagerApp.init`) and every
+    /// suite starts on the shown sidebar it was written against, whatever an earlier or
+    /// interrupted test left. `-UITestKeepSidebarMemory` keeps it: the relaunch half of
+    /// `RegularSidebarShellUITests` passes it to read back what its previous launch stored, through
+    /// the same `@AppStorage` read a shipped launch makes.
+    static var keepsSidebarMemory: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestKeepSidebarMemory")
+    }
+
+    /// The fixture launch's reset described above; `ImgManagerApp.init` calls it once per process,
+    /// before any `RootView` reads the flag.
+    static func resetSidebarMemoryUnlessKept(defaults: UserDefaults = .standard) {
+      guard isActive, !keepsSidebarMemory else { return }
+      defaults.removeObject(forKey: SidebarVisibilityMemory.hiddenKey)
+    }
+
     /// WP28 P3 (IMGMGR-450): which fixture folder the auto-select opens — the id that follows
     /// `-UITestSelectFolder` in the launch arguments, or folder 1 (the shipped default) when the
     /// flag is absent or its value is not an id. The Summary's cases need folders the fixture
