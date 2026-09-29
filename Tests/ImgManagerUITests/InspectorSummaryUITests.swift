@@ -530,9 +530,10 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
   /// A fresh predicate per query, as every other UI test builds them: `matching(_:)` takes the
   /// non-Sendable `NSPredicate` as a `sending` argument (gate on 45e2dfc).
   private func titleElement(in elements: XCUIElementQuery, names: [String]) -> XCUIElement {
-    // WP29 P1 (IMGMGR-452): plus the breadcrumb's count-subtitle forms (`titleMenuLabels`).
-    let labels = Self.titleMenuLabels(names)
-    return elements.matching(NSPredicate(format: "label IN %@", labels)).firstMatch
+    // WP29 P1 (IMGMGR-452): plus the breadcrumb's count-subtitle forms, for whichever folder is
+    // shown — folders 3 and 4 count 9 and 3 (`titleMenuLabelPattern`).
+    let pattern = Self.titleMenuLabelPattern(names)
+    return elements.matching(NSPredicate(format: "label MATCHES %@", pattern)).firstMatch
   }
 
   /// Finds the grid's title (asserting it shows one of `titleNames`), opens its title menu with

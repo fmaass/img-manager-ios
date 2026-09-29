@@ -9,21 +9,22 @@ extension XCTestCase {
   /// `InspectorSummaryUITests.folderOneSummaryName` for why Compact can show either).
   static let materialsFolderOneNames = ["2026-08-27 — Stub Shoot", "stub"]
 
-  /// WP29 P1 (IMGMGR-452): the Regular breadcrumb's subtitle for fixture folder 1 — the server's
-  /// `image_count` for it (`DebugStubTransport`), which the system may fold into the title
-  /// trigger's label.
-  static let folderOneCountSubtitle = "12 photos"
+  /// WP29 P1 (IMGMGR-452): every label the grid's title-menu trigger is accepted under, as one
+  /// ICU pattern (matched whole by `MATCHES`): one of `names`, then optionally the Regular
+  /// breadcrumb's count subtitle ("1 photo", "12 photos" — `GridBreadcrumb.countText`, for ANY
+  /// folder's count, since the system may fold the subtitle into the trigger's label), then
+  /// optionally ", Actions Menu" (the iOS 26.5 Compact form). Any other suffix is not the
+  /// trigger. No names matches nothing.
+  static func titleMenuLabelPattern(_ names: [String]) -> String {
+    guard !names.isEmpty else { return "(?!)" }
+    let alternatives = names.map { NSRegularExpression.escapedPattern(for: $0) }
+    return "(?:\(alternatives.joined(separator: "|")))(?:, [0-9]+ photos?)?(?:, Actions Menu)?"
+  }
 
-  /// Every label the grid's title-menu trigger is accepted under: the title, "<title>, Actions
-  /// Menu" (the iOS 26.5 Compact form), and the same two with the breadcrumb's count subtitle
-  /// between them (WP29 P1). Any other suffix is not the trigger.
-  static func titleMenuLabels(_ names: [String]) -> [String] {
-    names.flatMap { name in
-      [
-        name, "\(name), Actions Menu", "\(name), \(folderOneCountSubtitle)",
-        "\(name), \(folderOneCountSubtitle), Actions Menu",
-      ]
-    }
+  /// `titleMenuLabelPattern` for a label already read (the census walks snapshots).
+  static func isTitleMenuLabel(_ label: String, names: [String]) -> Bool {
+    let pattern = "^" + titleMenuLabelPattern(names) + "$"
+    return label.range(of: pattern, options: .regularExpression) != nil
   }
 
   /// The grid's title for a shown folder nobody names yet — the app's `WorkspaceTitle.fallback`
@@ -90,12 +91,12 @@ extension XCTestCase {
   func gridTitleMenuTrigger(
     _ app: XCUIApplication, names: [String], timeout: TimeInterval = 15
   ) -> XCUIElement {
-    let labels = Self.titleMenuLabels(names)
+    let pattern = Self.titleMenuLabelPattern(names)
     let button = app.navigationBars.buttons
-      .matching(NSPredicate(format: "label IN %@", labels)).firstMatch
+      .matching(NSPredicate(format: "label MATCHES %@", pattern)).firstMatch
     if button.waitForExistence(timeout: timeout) { return button }
     return app.navigationBars.staticTexts
-      .matching(NSPredicate(format: "label IN %@", labels)).firstMatch
+      .matching(NSPredicate(format: "label MATCHES %@", pattern)).firstMatch
   }
 
   /// The title menu's "Shoot Summary" row.

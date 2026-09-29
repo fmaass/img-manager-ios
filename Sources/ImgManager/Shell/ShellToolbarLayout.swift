@@ -86,11 +86,57 @@ enum ShellToolbarLayout {
   }
 }
 
-/// Renders a `ShellToolbarLayout` list. The app's own controls are `ToolbarItemGroup`s; the
-/// system search is a `DefaultToolbarItem`, which is toolbar content rather than a view, so the
-/// list is rendered as the run BEFORE `.search`, the search item, and the run AFTER it — the
-/// declared order either way. Whether the system draws them as one glass cluster is decided by
-/// the gate's screenshots, not here: system components only, no background of its own (ADR-N1).
+/// WP29 P1 (IMGMGR-452): a `ShellToolbarLayout` list cut where the toolbar renders it. Two
+/// members are toolbar items of their own and never a view inside a group: the system search
+/// (`DefaultToolbarItem`, toolbar content rather than a view) and Filter (its own `ToolbarItem`,
+/// so the count it carries belongs to that item alone — plan Phase 1, "Filter: its own
+/// `ToolbarItem`"). Everything else rides the group runs between them. Pure, so a unit test pins
+/// that the rendered order IS the declared order (`flattened == controls`) at every width.
+struct ShellToolbarRuns: Equatable, Sendable {
+  /// The app's controls before the search item — Info at every width.
+  private(set) var leading: [ShellToolbarControl] = []
+  private(set) var search = false
+  /// Between the search item and Filter's item — Select at Regular.
+  private(set) var middle: [ShellToolbarControl] = []
+  private(set) var filter = false
+  /// After Filter's item — Arrange's slot and More at Regular.
+  private(set) var trailing: [ShellToolbarControl] = []
+
+  init(_ controls: [ShellToolbarControl]) {
+    // 0: before search, 1: after search, 2: after Filter. A Filter declared AHEAD of the search
+    // would be rendered after it; `flattened` then differs from the declaration, which is what
+    // the unit test catches.
+    var stage = 0
+    for control in controls {
+      switch control {
+      case .search:
+        search = true
+        stage = max(stage, 1)
+      case .filter:
+        filter = true
+        stage = 2
+      default:
+        switch stage {
+        case 0: leading.append(control)
+        case 1: middle.append(control)
+        default: trailing.append(control)
+        }
+      }
+    }
+  }
+
+  /// The order the toolbar renders: leading group, search item, middle group, Filter's item,
+  /// trailing group.
+  var flattened: [ShellToolbarControl] {
+    leading + (search ? [.search] : []) + middle + (filter ? [.filter] : []) + trailing
+  }
+}
+
+/// Renders a `ShellToolbarLayout` list as `ShellToolbarRuns` cuts it: the app's runs are
+/// `ToolbarItemGroup`s, the system search a `DefaultToolbarItem` and Filter a `ToolbarItem` —
+/// the declared order either way. Whether the system draws them as one glass cluster is decided
+/// by the gate's screenshots, not here: system components only, no background of its own
+/// (ADR-N1).
 struct ShellToolbarGroup<Info: View>: ToolbarContent {
   let controls: [ShellToolbarControl]
   let store: GridStore
@@ -99,28 +145,32 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
   /// WP29 P1: handed to the bar's More, whose "Open in New Window" row needs it.
   let openShootWindow: ShootWindowOpener
 
-  private var leading: [ShellToolbarControl] {
-    guard let index = controls.firstIndex(of: .search) else { return controls }
-    return Array(controls[..<index])
-  }
-
-  private var trailing: [ShellToolbarControl] {
-    guard let index = controls.firstIndex(of: .search) else { return [] }
-    return Array(controls[controls.index(after: index)...])
-  }
+  private var runs: ShellToolbarRuns { ShellToolbarRuns(controls) }
 
   var body: some ToolbarContent {
     ToolbarItemGroup(placement: .primaryAction) {
-      ForEach(leading, id: \.self) { control in
+      ForEach(runs.leading, id: \.self) { control in
         rendered(control)
       }
     }
-    if controls.contains(.search) {
+    if runs.search {
       DefaultToolbarItem(kind: .search, placement: .primaryAction)
     }
-    if !trailing.isEmpty {
+    if !runs.middle.isEmpty {
       ToolbarItemGroup(placement: .primaryAction) {
-        ForEach(trailing, id: \.self) { control in
+        ForEach(runs.middle, id: \.self) { control in
+          rendered(control)
+        }
+      }
+    }
+    if runs.filter {
+      ToolbarItem(placement: .primaryAction) {
+        filterControl
+      }
+    }
+    if !runs.trailing.isEmpty {
+      ToolbarItemGroup(placement: .primaryAction) {
+        ForEach(runs.trailing, id: \.self) { control in
           rendered(control)
         }
       }
@@ -134,16 +184,26 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
     // Rendered by `DefaultToolbarItem` in `body`; never a view of the app's.
     case .search: EmptyView()
     case .select: GridSelectControl(store: store)
-    // WP29 P1 (plan Decision 1): the count as a badge. SDK 26.5 declares no `badge` on
-    // `ToolbarItem`, so the one spelling it has is `View.badge` on the item's control; the dot
-    // stays until a screenshot shows the bar drawing this.
-    case .filter: GridFilterControl(store: store).badge(filterCount)
+    // `ShellToolbarRuns` never puts Filter in a run; the one rendering is `filterControl`.
+    case .filter: filterControl
     case .sort: GridSortControl(store: store)
     case .group: GridGroupControl(store: store)
     case .zoom: GridZoomControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
     case .more: GridToolbarMoreMenu(store: store, openShootWindow: openShootWindow)
     }
+  }
+
+  /// WP29 P1 (plan Decision 1): Filter's count on its own item. SDK 26.5 declares no `badge` on
+  /// `ToolbarItem` or `ToolbarContent` (`SDKSurfaceProbe`), so the plan's `ToolbarItem{}.badge`
+  /// is UNRESOLVED and this is the probed fallback: `View.badge` on the ONE control of a
+  /// `ToolbarItem` of its own — the exact shape the probe compiles. Inside a group the system
+  /// re-hosts each control as a bar button and the count had no item to belong to. The
+  /// funnel's dot stays (the plan's fallback) until a screenshot shows the bar drawing the
+  /// count (`GridToolbarUITests` (d), `grid-filter-badge-*`); the spoken count is the
+  /// control's own label either way.
+  private var filterControl: some View {
+    GridFilterControl(store: store).badge(filterCount)
   }
 
   private var filterCount: Int {

@@ -86,7 +86,7 @@ extension XCTestCase {
     let more = app.descendants(matching: .any)["gridMoreMenu"]
     XCTAssertTrue(
       more.waitForExistence(timeout: 10),
-      "Nothing named 'gridMoreMenu' is on the action bar.", file: file, line: line)
+      "No 'gridMoreMenu' on the grid bar or the action bar.", file: file, line: line)
     return openPresentation(more, revealing: expected, timeout: timeout)
   }
 

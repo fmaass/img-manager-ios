@@ -11,10 +11,13 @@ import XCTest
 ///   hittable (IMGMGR-390), and every folded item must be reachable through the system overflow.
 /// - (b) at most three clusters, from frames (a gap over 16 pt starts one). DIAGNOSTIC as much as
 ///   verdict: the independent verifier counts the glass clusters in `ipad-bar-p1-<r3|r3x|r2>`.
-/// - (c) the title's midX within ±24 pt of its bar's midX, collapsed and at Regular-2.
+/// - (c) the title's midX within ±24 pt of its bar's midX, collapsed and at Regular-2; the
+///   breadcrumb states the server's count, as the subtitle or inside the title's label.
 /// - (d) the Filter control states the active count ("Filters, 1 filter active"), plus a badge
 ///   screenshot.
-/// - (e) Select enters Select mode; More opens with Clear mark and without Select.
+/// - (e) Select enters Select mode; More opens with its Clear row and without Select. At Regular
+///   that row is the menu's own Clear mark; a Compact tier that folds Clear carries the folded
+///   bar control instead (the tier More publishes decides, never the destination).
 /// - (f) with the inspector expanded, Clear and every at-rest action-bar control stay hittable:
 ///   removing the Regular Clear fold lost nothing.
 ///
@@ -185,10 +188,16 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     exit.tap()
     XCTAssertTrue(caption.waitForNonExistence(timeout: 10), "Select did not exit Select mode.")
 
-    let clearMark = app.descendants(matching: .any)["gridMoreMenu.more.clearMark"]
+    // Which Clear row More carries is a width fact (`GridMoreMenuUITests` reads it the same
+    // way): a Compact action bar that folded Clear stamps `tier=…folded…` on its More and the
+    // menu then carries THAT control (`gridClearButton`); every other bar — Regular's never
+    // folds — leaves the menu its own Clear mark row.
+    let tier = (app.descendants(matching: .any)["gridMoreMenu"].firstMatch.value as? String) ?? ""
+    let clearID = tier.contains("folded") ? "gridClearButton" : "gridMoreMenu.more.clearMark"
+    let clearMark = app.descendants(matching: .any)[clearID].firstMatch
     XCTAssertTrue(
       openMoreMenu(in: app, revealing: clearMark, timeout: 15),
-      "More did not open with its Clear mark row.")
+      "More did not open with its Clear row (tier=\(tier), \(layoutName(app))).")
     let selects = app.descendants(matching: .any).matching(identifier: "gridSelectCommand")
     XCTAssertEqual(
       selects.count, 1,
@@ -269,10 +278,18 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
       abs(offset), Self.titleTolerance,
       "\(state): the title's midX is \(offset) pt off its bar's midX (title \(title.frame), bar "
         + "\(bar.frame)) — the breadcrumb is not centred.")
+    // The breadcrumb's COUNT: the system draws the navigation subtitle as its own text, or
+    // folds it into the title trigger's label ("<title>, 12 photos[, Actions Menu]"). Either
+    // form states the server's count; neither is a breadcrumb without it.
     let subtitle = app.navigationBars.staticTexts[Self.folderOneCount]
+    let inTitle = title.label.contains(Self.folderOneCount)
     print(
-      "WP29-P1-SUBTITLE \(state): exists=\(subtitle.exists) "
+      "WP29-P1-SUBTITLE \(state): exists=\(subtitle.exists) inTitle=\(inTitle) "
         + "frame=\(subtitle.exists ? String(describing: subtitle.frame) : "-")")
+    XCTAssertTrue(
+      subtitle.exists || inTitle,
+      "\(state): the breadcrumb does not state the count '\(Self.folderOneCount)' — no such "
+        + "subtitle on the bar and the title reads \"\(title.label)\".")
   }
 
   // MARK: - Bar geometry

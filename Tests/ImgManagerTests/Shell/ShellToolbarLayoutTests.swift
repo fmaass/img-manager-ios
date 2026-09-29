@@ -147,6 +147,29 @@ struct ShellToolbarLayoutTests {
     #expect(ShellToolbarControl.search.accessibilityIdentifier == nil)
   }
 
+  @Test("Filter is an item of its own, and the rendered order is the declared order")
+  func filterRendersAsItsOwnItemInDeclaredOrder() {
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      for chrome in [true, false] {
+        let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: chrome)
+        let runs = ShellToolbarRuns(bar)
+        #expect(runs.flattened == bar, "At \(mode) the bar renders \(runs.flattened), not \(bar)")
+        let grouped = runs.leading + runs.middle + runs.trailing
+        #expect(!grouped.contains(.filter), "Filter rides a group at \(mode)")
+        #expect(!grouped.contains(.search), "The search item rides a group at \(mode)")
+      }
+    }
+    let regular = ShellToolbarRuns(ShellToolbarLayout.regularGridBar)
+    #expect(regular.leading == [.info])
+    #expect(regular.search && regular.filter)
+    #expect(regular.middle == [.select])
+    #expect(regular.trailing == [.sort, .group, .zoom, .more])
+    // Boundaries: nothing, and a Filter declared ahead of the search, which cannot render in
+    // declared order — `flattened` says so rather than hiding it.
+    #expect(ShellToolbarRuns([]).flattened == [])
+    #expect(ShellToolbarRuns([.filter, .search]).flattened != [.filter, .search])
+  }
+
   @Test("The Regular sidebar's section names and identifiers")
   func sidebarSectionHeaders() {
     #expect(SidebarSectionHeader.allCases.map(\.title) == ["Shoots", "Library"])

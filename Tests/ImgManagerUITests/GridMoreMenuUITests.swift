@@ -48,6 +48,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     let app = launchedApp()
     // Read BEFORE presenting: the More control publishes which `ActionBarMetrics` tier
     // `ViewThatFits` actually chose, so this test states the width fact instead of inferring it.
+    // WP29 P1 (IMGMGR-452): at Regular More is the grid bar's item, which stamps no tier — the
+    // empty reading is "not folded", which is Regular's contract (its bar never folds Clear).
     let tier = (app.descendants(matching: .any)["gridMoreMenu"].value as? String) ?? ""
     let folded = tier.contains("folded")
 
