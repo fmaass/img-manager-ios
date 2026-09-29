@@ -28,11 +28,22 @@ struct WorkspaceContent: View {
   let queueStore: QueueStore
   /// WP28 P3: the grid's navigation title (`WorkspaceTitle`), nil only when no folder is shown —
   /// a shown folder always has one, so its title menu (the Summary entry) always exists.
-  let title: String?
+  /// WP29 P1 (IMGMGR-452): carried by the breadcrumb, which adds the server count.
+  let breadcrumb: GridBreadcrumb?
   /// The one inspector flag, at every width. Session-scoped, collapsed at launch (IMGMGR-390).
   @Binding var showInspector: Bool
   /// WP28 P3: the Summary sheet, opened only from the title menu (Decision 1, no auto-trigger).
   @State private var showSummary = false
+  /// WP29 P1: the scene's window action, for the Regular bar's More ("Open in New Window"). Copied
+  /// into a local before the opener's closure is formed, as `GridView.openShootWindow` does.
+  @Environment(\.openWindow) private var openWindow
+
+  private var title: String? { breadcrumb?.title }
+
+  private var shootWindowOpener: ShootWindowOpener {
+    let open = openWindow
+    return ShootWindowOpener { value in open(value: value) }
+  }
 
   var body: some View {
     Group {
@@ -54,16 +65,21 @@ struct WorkspaceContent: View {
               controls: ShellToolbarLayout.gridBar(
                 for: layoutMode,
                 inspectorUsesChromeControl: inspectorPresentation.usesChromeControl),
-              store: store, info: inspectorChromeButton)
+              store: store, info: inspectorChromeButton, openShootWindow: shootWindowOpener)
           }
           // WP28 P2: the Regular folder search, on the grid only — the docked loupe branch above
           // carries none, so its chrome is unchanged — and never at Compact, whose Search tab is
           // the one search surface there.
           .modifier(RegularFolderSearch(search: folderSearch, isEnabled: layoutMode != .compact))
           // WP28 P3 (IMGMGR-450), Decision 1: the folder's name in the grid's principal slot, and
-          // its title menu's one row, "Shoot Summary". p4128's breadcrumb and count for this slot
-          // are NOT part of this phase.
+          // its title menu's one row, "Shoot Summary". WP29 P1 (IMGMGR-452, plan Decision 3): at
+          // Regular the slot is p4128's breadcrumb — the name plus the server's count as the
+          // system subtitle; Compact keeps its pushed title alone.
           .navigationTitle(title ?? "")
+          .modifier(
+            RegularBreadcrumbSubtitle(
+              subtitle: breadcrumb?.subtitle, isEnabled: layoutMode != .compact)
+          )
           .navigationBarTitleDisplayMode(.inline)
           .toolbarTitleMenu {
             Button {
@@ -137,6 +153,23 @@ struct WorkspaceContent: View {
     .accessibilityIdentifier("inspectorChromeButton")
   }
 
+}
+
+/// WP29 P1 (IMGMGR-452): the breadcrumb's count, as the system navigation subtitle, at Regular
+/// only. Keyed on the WIDTH alone (like `RegularFolderSearch`), never on whether a count is known,
+/// so a folder whose count arrives later does not swap the grid's view identity: an unknown count
+/// is an empty subtitle.
+struct RegularBreadcrumbSubtitle: ViewModifier {
+  let subtitle: String?
+  let isEnabled: Bool
+
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content.navigationSubtitle(subtitle ?? "")
+    } else {
+      content
+    }
+  }
 }
 
 /// WP28 P2 (IMGMGR-449), plan Decision 5: the Regular shell's folder search — a toolbar search

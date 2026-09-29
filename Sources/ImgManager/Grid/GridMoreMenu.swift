@@ -84,7 +84,9 @@ enum GridMoreMenu {
   static let sections: [GridMoreMenuSection] = [
     GridMoreMenuSection(
       id: "more.section.marks", title: "Marks",
-      entries: [select, clearMark, copyForLightroom]),
+      // WP29 P1 (IMGMGR-452): Select left this run for the grid's bar (`GridSelectCommand`),
+      // 13 → 12 rows. Nothing else in the menu moved.
+      entries: [clearMark, copyForLightroom]),
     GridMoreMenuSection(
       id: "more.section.view", title: "View",
       // IMGMGR-362 APPENDED the archive prune to THIS section's own run — a view option beside
@@ -105,25 +107,6 @@ enum GridMoreMenu {
   /// existing reader (`GridMoreMenuContent`, `GridMoreMenuTests`, `ScenePicksInGroupsTests`,
   /// `ShootSceneValueTests`) keeps working because the shape and the order are unchanged.
   static let entries: [GridMoreMenuEntry] = sections.flatMap(\.entries)
-
-  /// Already shipped as the menu's one item; unchanged, and now declared beside its five
-  /// siblings rather than written inline in `ActionBarView`.
-  static let select = GridMoreMenuEntry(
-    id: "more.select",
-    // P1's identifier, kept verbatim: its label changes with the mode, and a menu item inside a
-    // popover is not addressable by label on every idiom (Regular-3, SelectModeScreenshotUITests).
-    accessibilityIdentifier: "gridSelectCommand",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "checkmark.circle",
-    title: { $0.selection.mode == .select ? "Exit Select" : "Select" },
-    isEnabled: { _ in true },
-    surface: .action { store in
-      if store.selection.mode == .select {
-        store.done()
-      } else {
-        store.enterSelectExplicitly()
-      }
-    })
 
   /// A SECOND ENTRY POINT to the store's one clear action, never a second implementation: the
   /// menu entry, the `U` key equivalent and the View menu's Clear all dispatch into

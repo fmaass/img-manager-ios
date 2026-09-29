@@ -3639,6 +3639,44 @@ struct ActionBarMetricsTests {
     #expect(Set(ActionBarMetrics.tiers.map(\.name)).count == ActionBarMetrics.tiers.count)
   }
 
+  /// WP29 P1 (IMGMGR-452): at Regular More is the grid bar's own item, so the action bar is
+  /// five controls and never folds Clear — the measured 315-pt expanded column included.
+  @Test("No Regular tier folds Clear, and the tightest Regular tier fits the 315-pt column")
+  func regularTiersNeverFoldClear() {
+    let regular = ActionBarMetrics.tiers(carriesMore: false)
+    #expect(regular.map(\.name) == ["regular-roomy", "regular-tight"])
+    #expect(regular.allSatisfy { !$0.foldsClearIntoMore && !$0.carriesMore })
+    #expect(regular.allSatisfy { $0.controlCount == 5 })
+    let widths = regular.map(ActionBarMetrics.requiredWidth(for:))
+    #expect(widths == [316, 268])
+    #expect(widths == widths.sorted(by: >))
+    let tightest = regular[regular.count - 1]
+    #expect(
+      ActionBarMetrics.requiredWidth(for: tightest)
+        <= ActionBarMetrics.measuredRegular3GridColumn)
+    let column = ActionBarMetrics.layout(
+      forWidth: ActionBarMetrics.measuredRegular3GridColumn, carriesMore: false)
+    #expect(column.name == "regular-tight")
+    #expect(!column.foldsClearIntoMore)
+    // Narrower than any tier: the narrowest Regular tier, still without a fold.
+    #expect(!ActionBarMetrics.layout(forWidth: 100, carriesMore: false).foldsClearIntoMore)
+    // Names are ForEach identities — unique within the list the bar renders.
+    #expect(Set(regular.map(\.name)).count == regular.count)
+  }
+
+  @Test("Compact's tiers are unchanged and every one carries More")
+  func compactTiersUnchanged() {
+    #expect(ActionBarMetrics.tiers(carriesMore: true).map(\.name) == ["roomy", "tight", "folded"])
+    #expect(ActionBarMetrics.tiers(carriesMore: true).allSatisfy(\.carriesMore))
+    #expect(
+      ActionBarMetrics.layout(forWidth: ActionBarMetrics.narrowestCompactWidth)
+        == ActionBarMetrics.layout(
+          forWidth: ActionBarMetrics.narrowestCompactWidth, carriesMore: true))
+    #expect(WorkspaceChromePlacement.actionBarCarriesMore(for: .compact))
+    #expect(!WorkspaceChromePlacement.actionBarCarriesMore(for: .regular2))
+    #expect(!WorkspaceChromePlacement.actionBarCarriesMore(for: .regular3))
+  }
+
   @Test("A seventh control would not fit the roomy tier — the guard covers the count too")
   func aSeventhControlWouldNotFit() {
     #expect(

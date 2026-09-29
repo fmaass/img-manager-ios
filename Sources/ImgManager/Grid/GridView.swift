@@ -113,7 +113,9 @@ struct GridView: View {
       ConflictRecoveryBanner(store: store)
       GridNoticeBanner(store: store)
       MarksCopyBanner(store: store)
-      ActionBarView(store: store, openShootWindow: openShootWindow)
+      ActionBarView(
+        store: store, openShootWindow: openShootWindow,
+        carriesMore: WorkspaceChromePlacement.actionBarCarriesMore(for: layoutMode))
     }
   }
 
@@ -757,26 +759,18 @@ struct GridOptionsRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      // Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
+      // WP29 P1 (IMGMGR-452): the row renders `ShellToolbarLayout.compactOptionsRow` and holds
+      // no second list, so "no identifier twice across the bar, this row and More" is a unit
+      // test. Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
       // already follows — never a single frame on the containing `HStack`.
-      GridSortControl(store: store)
-        .frame(minHeight: 44)
-      GridGroupControl(store: store)
-        .frame(minHeight: 44)
-      GridZoomControl(store: store)
-        .frame(minHeight: 44)
-      // WP16 P3 (IMGMGR-295): Compact's copy of the funnel, the FOURTH control in this row's
-      // leading cluster and the fifth on the row. Icon-only like the help button, so it adds one
-      // 44 pt hit region and no value label to a row whose three value-carrying controls already
-      // truncate at the tail — the measurement the phase was told to make before letting another
-      // control onto this row. (Compact's bar is not the six-item case: `RootView` puts Info and
-      // the account item on the NAV BAR there, not on this row.) `FilterPopoverUITests` asserts
-      // the help button is still hittable here — the "the row did not overflow" contract.
-      GridFilterControl(store: store)
-        .frame(minHeight: 44)
-      Spacer(minLength: 0)
-      GridShortcutHelpControl(store: store)
-        .frame(minHeight: 44)
+      ForEach(ShellToolbarLayout.compactOptionsRow, id: \.self) { control in
+        // The trailing "?" sits after a spacer, as it always has.
+        if control == .shortcutHelp {
+          Spacer(minLength: 0)
+        }
+        optionControl(control)
+          .frame(minHeight: 44)
+      }
     }
     .buttonStyle(.bordered)
     .font(.subheadline)
@@ -794,6 +788,60 @@ struct GridOptionsRow: View {
     // `identifier: 'gridOptionsRow'` and neither `gridGroupControl` nor `gridZoomControl`
     // existed, so the row's own two controls were unaddressable. The controls are what anything
     // needs to name; the row is just where they sit on Compact.
+  }
+
+  /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only like the help button,
+  /// so it adds one 44 pt hit region and no value label to a row whose three value-carrying
+  /// controls already truncate at the tail; `FilterPopoverUITests` asserts the help button is
+  /// still hittable here — the "the row did not overflow" contract.
+  @ViewBuilder
+  private func optionControl(_ control: ShellToolbarControl) -> some View {
+    switch control {
+    case .sort: GridSortControl(store: store)
+    case .group: GridGroupControl(store: store)
+    case .zoom: GridZoomControl(store: store)
+    case .filter: GridFilterControl(store: store)
+    case .shortcutHelp: GridShortcutHelpControl(store: store)
+    // Not options-row members (`ShellToolbarLayout.compactOptionsRow`).
+    case .info, .search, .select, .more: EmptyView()
+    }
+  }
+}
+
+/// WP29 P1 (IMGMGR-452): Select, as a bar command — the same title, action and identifier the
+/// More menu's Select row shipped with (`gridSelectCommand`), declared once here now that the
+/// row is gone. Its title states the way OUT while Select is on, never a second "Select".
+enum GridSelectCommand {
+  static let accessibilityIdentifier = "gridSelectCommand"
+  static let systemImage = "checkmark.circle"
+
+  @MainActor
+  static func title(_ store: GridStore) -> String {
+    store.selection.mode == .select ? "Exit Select" : "Select"
+  }
+
+  @MainActor
+  static func run(_ store: GridStore) {
+    if store.selection.mode == .select {
+      store.done()
+    } else {
+      store.enterSelectExplicitly()
+    }
+  }
+}
+
+/// WP29 P1 (IMGMGR-452): the bar's Select — Regular's trailing group, Compact's navigation bar
+/// beside Info (`ShellToolbarLayout`).
+struct GridSelectControl: View {
+  let store: GridStore
+
+  var body: some View {
+    Button {
+      GridSelectCommand.run(store)
+    } label: {
+      Label(GridSelectCommand.title(store), systemImage: GridSelectCommand.systemImage)
+    }
+    .accessibilityIdentifier(GridSelectCommand.accessibilityIdentifier)
   }
 }
 
@@ -926,6 +974,9 @@ struct ActionBarLayout: Equatable {
   /// its own identifier and disabled rule, never a gesture-only action, and never a control
   /// squeezed under 44 pt.
   var foldsClearIntoMore: Bool
+  /// WP29 P1 (IMGMGR-452): whether this bar renders More. False on every Regular tier, where
+  /// More is the grid bar's own item (`WorkspaceChromePlacement.actionBarCarriesMore`).
+  var carriesMore: Bool = true
 }
 
 /// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
@@ -991,10 +1042,30 @@ enum ActionBarMetrics {
     name: "folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
     controlCount: foldedControlCount, foldsClearIntoMore: true)
 
+  /// WP29 P1 (IMGMGR-452): Regular's bar without More — Pick, Dislike, Clear, Undo, Tag.
+  static let regularControlCount = 5
+  /// 5×44 + 4×16 + 2×16 = 316 pt.
+  static let regularRoomy = ActionBarLayout(
+    name: "regular-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
+  /// 5×44 + 4×8 + 2×8 = 268 pt — inside the measured 315-pt Regular-3 column with the inspector
+  /// expanded, so no Regular tier ever needs to fold Clear.
+  static let regularTight = ActionBarLayout(
+    name: "regular-tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
+
   /// Widest first. `ActionBarView` renders these in this order through `ViewThatFits`, and
   /// `layout(forWidth:)` walks the SAME list — so the arithmetic the tests assert and the tier
   /// the layout system actually picks cannot disagree.
   static let tiers: [ActionBarLayout] = [roomy, tight, folded]
+
+  /// WP29 P1: the Regular tiers, widest first — the bar without More, and no fold.
+  static let regularTiers: [ActionBarLayout] = [regularRoomy, regularTight]
+
+  /// The tier list for a bar that does or does not carry More.
+  static func tiers(carriesMore: Bool) -> [ActionBarLayout] {
+    carriesMore ? tiers : regularTiers
+  }
 
   static func requiredWidth(for layout: ActionBarLayout) -> CGFloat {
     requiredWidth(
@@ -1011,8 +1082,9 @@ enum ActionBarMetrics {
   /// The tier a given width selects — the arithmetic statement of what `ViewThatFits` decides
   /// at run time. Total: the narrowest tier is the answer when nothing fits, because a bar that
   /// must overflow should at least overflow least.
-  static func layout(forWidth width: CGFloat) -> ActionBarLayout {
-    tiers.first { requiredWidth(for: $0) <= width } ?? folded
+  static func layout(forWidth width: CGFloat, carriesMore: Bool = true) -> ActionBarLayout {
+    let list = tiers(carriesMore: carriesMore)
+    return list.first { requiredWidth(for: $0) <= width } ?? list[list.count - 1]
   }
 }
 
@@ -1077,6 +1149,9 @@ struct ActionBarView: View {
   /// WP13 P11: forwarded straight through to `GridMoreMenuContent` — the bar itself never opens
   /// a window, it only carries the menu that does.
   let openShootWindow: ShootWindowOpener
+  /// WP29 P1 (IMGMGR-452): `WorkspaceChromePlacement.actionBarCarriesMore` — true at Compact,
+  /// false at Regular, where More is the grid bar's own item.
+  var carriesMore: Bool = true
 
   /// Widest tier first — straight out of `ActionBarMetrics.tiers` — and the LAYOUT SYSTEM
   /// picks, not a measurement this view took. Every per-tier difference (its gap, its padding,
@@ -1095,7 +1170,7 @@ struct ActionBarView: View {
       // Derived FROM the list, never a hand-written copy of it beside the list: adding,
       // removing or reordering a tier changes what renders, by construction. Keyed by the
       // tier's own name, never by index (IMGMGR-210).
-      ForEach(ActionBarMetrics.tiers, id: \.name) { tier in
+      ForEach(ActionBarMetrics.tiers(carriesMore: carriesMore), id: \.name) { tier in
         bar(tier)
       }
     }
@@ -1154,36 +1229,40 @@ struct ActionBarView: View {
       .accessibilityIdentifier("gridTagButton")
       .actionBarControlSize()
 
-      // WP13 P5a (IMGMGR-221): the decided set, rendered from `GridMoreMenu.entries` and from
-      // nothing else — this view holds no second list of what the menu contains. It stays the
-      // OVERFLOW: the action bar is at its 6-control limit (`ActionBarMetrics`) and Regular's
-      // toolbar already carries three `.primaryAction` items, so no entry here becomes a bar
-      // control.
-      Menu {
-        // WP13 P5a (IMGMGR-221) + P1 (IMGMGR-212), resolved as ONE composition: the decided
-        // More set renders from `GridMoreMenu.entries`, and the fold is what the Clear ROW's
-        // identity keys off — never a second Clear row beside it.
-        GridMoreMenuContent(
-          store: store, foldsClearIntoMore: layout.foldsClearIntoMore,
-          openShootWindow: openShootWindow)
-      } label: {
-        Label("More", systemImage: "ellipsis.circle")
-          // WP28 P4 (IMGMGR-451): this menu draws no capsule, so its hit target is the glyph
-          // alone unless the label itself is sized — the `.actionBarControlSize()` below sits
-          // OUTSIDE the control and grows only the layout slot. The same 44 pt, on the label,
-          // with a shape to hit: nothing is drawn in it, so the bar looks the same.
-          .actionBarControlSize()
-          .contentShape(Rectangle())
+      // WP29 P1 (IMGMGR-452): only where the bar carries More — Compact. At Regular More is
+      // the grid bar's own item (`GridToolbarMoreMenu`), never rendered twice.
+      if layout.carriesMore {
+        // WP13 P5a (IMGMGR-221): the decided set, rendered from `GridMoreMenu.entries` and from
+        // nothing else — this view holds no second list of what the menu contains. It stays the
+        // OVERFLOW: the action bar is at its 6-control limit (`ActionBarMetrics`) and Regular's
+        // toolbar already carries three `.primaryAction` items, so no entry here becomes a bar
+        // control.
+        Menu {
+          // WP13 P5a (IMGMGR-221) + P1 (IMGMGR-212), resolved as ONE composition: the decided
+          // More set renders from `GridMoreMenu.entries`, and the fold is what the Clear ROW's
+          // identity keys off — never a second Clear row beside it.
+          GridMoreMenuContent(
+            store: store, foldsClearIntoMore: layout.foldsClearIntoMore,
+            openShootWindow: openShootWindow)
+        } label: {
+          Label("More", systemImage: "ellipsis.circle")
+            // WP28 P4 (IMGMGR-451): this menu draws no capsule, so its hit target is the glyph
+            // alone unless the label itself is sized — the `.actionBarControlSize()` below sits
+            // OUTSIDE the control and grows only the layout slot. The same 44 pt, on the label,
+            // with a shape to hit: nothing is drawn in it, so the bar looks the same.
+            .actionBarControlSize()
+            .contentShape(Rectangle())
+        }
+        // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
+        // secondaryAction toolbar items into an overflow control with the same label, and a UI
+        // test that matched on the label alone could drive the wrong one.
+        .accessibilityIdentifier("gridMoreMenu")
+        // EVIDENCE, fixture-only: whichever tier `ViewThatFits` chose is the one that renders, so
+        // the chosen child stamps its own name here and a gate attachment can report the tier
+        // instead of inferring it from pixel deltas. Never set outside the DEBUG fixture launch.
+        .accessibilityValue(tierProbeValue(layout))
+        .actionBarControlSize()
       }
-      // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
-      // secondaryAction toolbar items into an overflow control with the same label, and a UI
-      // test that matched on the label alone could drive the wrong one.
-      .accessibilityIdentifier("gridMoreMenu")
-      // EVIDENCE, fixture-only: whichever tier `ViewThatFits` chose is the one that renders, so
-      // the chosen child stamps its own name here and a gate attachment can report the tier
-      // instead of inferring it from pixel deltas. Never set outside the DEBUG fixture launch.
-      .accessibilityValue(tierProbeValue(layout))
-      .actionBarControlSize()
     }
     .labelStyle(.iconOnly)
     .font(.title3)

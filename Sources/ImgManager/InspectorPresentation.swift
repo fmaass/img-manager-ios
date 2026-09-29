@@ -81,4 +81,12 @@ enum WorkspaceChromePlacement {
   static func host(for mode: LayoutMode) -> WorkspaceChromeHost {
     mode == .compact ? .compactOptionsRow : .gridColumn
   }
+
+  /// WP29 P1 (IMGMGR-452, plan Decision 2): whether the bottom action bar carries More. At
+  /// Regular More is the grid bar's own item (`ShellToolbarControl.more`); at Compact the action
+  /// bar is More's only home, at rest and in Select. One width rule for both, so More is never
+  /// rendered in two places or in none.
+  static func actionBarCarriesMore(for mode: LayoutMode) -> Bool {
+    host(for: mode) == .compactOptionsRow
+  }
 }

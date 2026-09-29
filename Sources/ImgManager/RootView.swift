@@ -669,12 +669,13 @@ struct RootView: View {
   /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).
   private var contentColumn: some View {
     // WP28 P3: read here in the body, so the title follows the tree's and the queue's loads.
-    let title = WorkspaceTitle.name(
+    // WP29 P1 (IMGMGR-452): the breadcrumb carries that title plus the tree's server count.
+    let breadcrumb = GridBreadcrumb.make(
       folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
       cachedTreeFolders: queueStore.cachedTree?.foldersByTier, summaries: queueStore.summaries)
     return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
-      folderSearch: folderSearch, queueStore: queueStore, title: title,
+      folderSearch: folderSearch, queueStore: queueStore, breadcrumb: breadcrumb,
       showInspector: $showInspector)
   }
 }

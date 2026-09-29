@@ -40,7 +40,8 @@ struct GridViewMoreMenuTests {
     let (store, _, _, _) = makeStore()
     #expect(
       GridMoreMenu.entries.map(\.id) == [
-        "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
+        // WP29 P1 (IMGMGR-452): "more.select" left for the grid's bar (`GridSelectCommand`).
+        "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
         "more.picksInGroups", "more.density",
         // IMGMGR-362 (WP21 P3): the archive prune, APPENDED to the View section's own run — an
         // insertion between two sections, never a reorder of the decided set.
@@ -55,7 +56,7 @@ struct GridViewMoreMenuTests {
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
+        "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
         "Density: 200 pt", "Hide mirrored archive", "Status", "Open in New Window",
         "Merge into…", "Split here", "Extract selected",
         // IMGMGR-347: the absorb row's title IS its reason while it cannot act, and this store
@@ -89,8 +90,9 @@ struct GridViewMoreMenuTests {
     // The SET of rows never changes with the fold — only that one identifier does.
     #expect(folded.count == unfolded.count && folded.count == GridMoreMenu.entries.count)
     #expect(zip(folded, unfolded).filter { $0 != $1 }.count == 1)
-    // P1's own identifier for Select survives the merge, so its menu tests keep resolving it.
-    #expect(unfolded.contains("gridSelectCommand"))
+    // WP29 P1 (IMGMGR-452): Select is the bar's now — no row answers to its identifier.
+    #expect(!unfolded.contains("gridSelectCommand"))
+    #expect(!folded.contains("gridSelectCommand"))
   }
 
   /// One Clear row, whatever the fold: the decided set has exactly one, and it is the same row
@@ -117,10 +119,27 @@ struct GridViewMoreMenuTests {
 
   @Test("Select's title states the way OUT while Select is on, not a second 'Select'")
   func selectEntryNamesTheExit() {
+    // WP29 P1 (IMGMGR-452): TRANSFERRED from the More row to the bar's `GridSelectCommand`.
     let (store, _, _, _) = makeStore()
-    #expect(GridMoreMenu.select.title(store) == "Select")
+    #expect(GridSelectCommand.title(store) == "Select")
     store.enterSelectExplicitly()
-    #expect(GridMoreMenu.select.title(store) == "Exit Select")
+    #expect(GridSelectCommand.title(store) == "Exit Select")
+  }
+
+  @Test("The bar's Select enters Select mode, and pressed again leaves it")
+  func barSelectEntersAndLeavesSelectMode() async {
+    // WP29 P1 (IMGMGR-452): the observable effect the More row's own closure was held to, now
+    // on the bar command that replaced it — plus the exit, which the title promises.
+    let (store, transport, _, _) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .pick)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    #expect(store.selection.mode != .select)
+    GridSelectCommand.run(store)
+    #expect(store.selection.mode == .select, "Select did not enter Select mode")
+    GridSelectCommand.run(store)
+    #expect(store.selection.mode != .select, "Exit Select did not leave Select mode")
+    #expect(GridSelectCommand.accessibilityIdentifier == "gridSelectCommand")
   }
 
   /// The "no placeholder rows" AC, as a test that fails for a DELETED entry (the switch's
@@ -136,15 +155,6 @@ struct GridViewMoreMenuTests {
       store.focusedImageID = 1
 
       switch entry.id {
-      case "more.select":
-        guard case .action(let run) = entry.surface else {
-          Issue.record("more.select is not an action entry")
-          continue
-        }
-        #expect(store.selection.mode != .select)
-        run(store)
-        #expect(store.selection.mode == .select, "Select did not enter Select mode")
-
       case "more.clearMark":
         guard case .action(let run) = entry.surface else {
           Issue.record("more.clearMark is not an action entry")
@@ -545,13 +555,14 @@ struct GridViewMoreMenuTests {
 @Suite("Grid More menu — the grouped sections (WP16 P4)")
 struct GridMoreMenuSectionsTests {
 
-  /// The thirteen ids, in the order the owner decided (WP13 kickoff decision 2, epic
+  /// The twelve ids (WP29 P1 took "more.select" to the bar), in the order the owner decided
+  /// (WP13 kickoff decision 2, epic
   /// IMGMGR-211 comment 2106; P11, WP14 P4, IMGMGR-347 and IMGMGR-362 APPENDED — the last of them
   /// into the View section's own run, which moved no existing pair). Grouping is a
   /// CONTIGUOUS partition over exactly this sequence, so a reorder, a drop or a duplicate fails
   /// element-wise here.
   private let shippedOrder = [
-    "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
+    "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
     "more.picksInGroups", "more.density", "more.pruneMirroredArchive", "more.status",
     "more.openInNewWindow", "more.mergeScene", "more.splitScene", "more.extractScene",
     "more.absorbScene",
@@ -565,10 +576,11 @@ struct GridMoreMenuSectionsTests {
     // Positive control for the equalities above: there really are sections and entries to
     // compare, so neither line can pass on two empty arrays.
     #expect(GridMoreMenu.sections.count == 4)
-    #expect(GridMoreMenu.entries.count == 13)
+    // WP29 P1 (IMGMGR-452): 13 → 12, Select having left for the bar.
+    #expect(GridMoreMenu.entries.count == 12)
   }
 
-  @Test("Grouping changed nothing about the set: the thirteen ids, in the shipped order")
+  @Test("Grouping changed nothing about the set: the twelve ids, in the shipped order")
   func groupingKeptTheDecidedSetAndItsOrder() {
     #expect(GridMoreMenu.sections.flatMap(\.entries).map(\.id) == shippedOrder)
     #expect(GridMoreMenu.entries.map(\.id) == shippedOrder)
@@ -582,7 +594,7 @@ struct GridMoreMenuSectionsTests {
     let decided: [(id: String, title: String, entries: [String])] = [
       (
         "more.section.marks", "Marks",
-        ["more.select", "more.clearMark", "more.copyForLightroom"]
+        ["more.clearMark", "more.copyForLightroom"]
       ),
       (
         "more.section.view", "View",
@@ -622,7 +634,7 @@ struct GridMoreMenuSectionsTests {
     #expect(folded.filter { $0 == ActionBarMarkControl.clear.accessibilityIdentifier }.count == 1)
     // Positive control: the Marks section really was enumerated, so the count above is a fact
     // about the fold and not about an empty section.
-    #expect(folded.contains("gridSelectCommand"))
+    #expect(folded.contains("gridMoreMenu.more.copyForLightroom"))
     // And no OTHER section grew a Clear on the way.
     let elsewhere = GridMoreMenu.sections
       .filter { $0.id != "more.section.marks" }
@@ -638,7 +650,7 @@ struct GridMoreMenuSectionsTests {
   func noEntryIdentifierChangedWhenTheSectionsArrived() {
     #expect(
       GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
-        "gridSelectCommand", "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
+        "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
         "gridMoreMenu.more.density",
         // IMGMGR-362: the archive prune's own identifier, in the View section's run. The tree
@@ -651,7 +663,7 @@ struct GridMoreMenuSectionsTests {
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
-        "checkmark.circle", ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
+        ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
         "textformat", "checkmark.square", "square.grid.2x2", "eye.slash", "info.circle",
         "macwindow.badge.plus", "arrow.triangle.merge", "scissors", "square.on.square.dashed",
         "rectangle.stack.badge.plus",
