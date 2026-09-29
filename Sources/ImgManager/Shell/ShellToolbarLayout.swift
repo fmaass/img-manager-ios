@@ -15,10 +15,9 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
   case select
   /// WP16 P3 (IMGMGR-295), decision 1: filtering reaches the grid's own chrome.
   case filter
-  /// WP13 P5b: how the stream is arranged. WP29 P1: the three hold Arrange's slot until P2.
-  case sort
-  case group
-  case zoom
+  /// WP29 P2 (IMGMGR-453): how the stream is arranged — sort, direction, grouping and thumbnail
+  /// size in one popover (`GridArrangeControl`). It replaced the Sort, Group and Zoom controls.
+  case arrange
   /// The shortcut help sheet's chrome route. WP29 P1 (plan Decision 1) takes it off the REGULAR
   /// bar — its homes there are ⌘/ and the menu bar's "Keyboard Shortcuts" — and keeps it on
   /// Compact's options row, because an iPhone has no menu bar.
@@ -34,9 +33,7 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
     case .search: nil
     case .select: "gridSelectCommand"
     case .filter: "gridFilterControl"
-    case .sort: "gridSortControl"
-    case .group: "gridGroupControl"
-    case .zoom: "gridZoomControl"
+    case .arrange: GridArrangeControl.accessibilityIdentifier
     case .shortcutHelp: "gridShortcutHelpControl"
     case .more: "gridMoreMenu"
     }
@@ -54,21 +51,21 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
 ///   fold takes several items; Info is the escape hatch that collapses it, so the fold must never
 ///   reach it (IMGMGR-390, `Regular3CollapsedChromeUITests`).
 /// - WP29 P1 (IMGMGR-452): then the spec's trailing group, in p4128's order — Search · Select ·
-///   Filter · Arrange · More. Sort · Group · Zoom hold Arrange's slot until P2 replaces them.
+///   Filter · Arrange · More. WP29 P2 (IMGMGR-453) put Arrange in its slot.
 enum ShellToolbarLayout {
   /// Every Regular width, both inspector states (`WorkspaceChromeHost.gridColumn`).
   static let regularGridBar: [ShellToolbarControl] = [
-    .info, .search, .select, .filter, .sort, .group, .zoom, .more,
+    .info, .search, .select, .filter, .arrange, .more,
   ]
 
   /// WP29 P1: Compact's navigation bar — Info, and Select beside it. Search is the Search tab
   /// there and More stays on the bottom action bar.
   static let compactGridBar: [ShellToolbarControl] = [.info, .select]
 
-  /// Compact's persistent options row (`GridOptionsRow`), in its shipped order: the three
-  /// value-carrying controls, the funnel, and "?" at the trailing end.
+  /// Compact's persistent options row (`GridOptionsRow`): Arrange, the funnel, and "?" at the
+  /// trailing end (WP29 P2).
   static let compactOptionsRow: [ShellToolbarControl] = [
-    .sort, .group, .zoom, .filter, .shortcutHelp,
+    .arrange, .filter, .shortcutHelp,
   ]
 
   /// The controls the grid's bar carries at `mode`. `inspectorUsesChromeControl` is
@@ -100,7 +97,7 @@ struct ShellToolbarRuns: Equatable, Sendable {
   /// The app's controls before the search item — Info at every width.
   private(set) var leading: [ShellToolbarControl] = []
   private(set) var search = false
-  /// After the search item — Select, Filter, Arrange's slot and More at Regular.
+  /// After the search item — Select, Filter, Arrange and More at Regular.
   private(set) var trailing: [ShellToolbarControl] = []
 
   init(_ controls: [ShellToolbarControl]) {
@@ -162,9 +159,7 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
     case .select: GridSelectControl(store: store)
     // The shipped funnel and its dot, unchanged (see `ShellToolbarRuns` for the badge).
     case .filter: GridFilterControl(store: store)
-    case .sort: GridSortControl(store: store)
-    case .group: GridGroupControl(store: store)
-    case .zoom: GridZoomControl(store: store)
+    case .arrange: GridArrangeControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
     case .more: GridToolbarMoreMenu(store: store, openShootWindow: openShootWindow)
     }

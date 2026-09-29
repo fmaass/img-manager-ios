@@ -42,10 +42,9 @@ struct GridViewMoreMenuTests {
       GridMoreMenu.entries.map(\.id) == [
         // WP29 P1 (IMGMGR-452): "more.select" left for the grid's bar (`GridSelectCommand`).
         "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-        "more.picksInGroups", "more.density",
-        // IMGMGR-362 (WP21 P3): the archive prune, APPENDED to the View section's own run — an
-        // insertion between two sections, never a reorder of the decided set.
-        "more.pruneMirroredArchive", "more.status", "more.openInNewWindow",
+        // WP29 P2 (IMGMGR-453): "more.density" left for the Arrange popover and
+        // "more.pruneMirroredArchive" for the tree's View menu, its one home.
+        "more.picksInGroups", "more.status", "more.openInNewWindow",
         // WP14 P4 (IMGMGR-277): the three scene-edit actions, APPENDED — the owner's decided set
         // and its order above are untouched, exactly as P11's row left them.
         "more.mergeScene", "more.splitScene", "more.extractScene",
@@ -56,8 +55,8 @@ struct GridViewMoreMenuTests {
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
-        "Density: 200 pt", "Hide mirrored archive", "Status", "Open in New Window",
+        "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups", "Status",
+        "Open in New Window",
         "Merge into…", "Split here", "Extract selected",
         // IMGMGR-347: the absorb row's title IS its reason while it cannot act, and this store
         // has nothing focused at all — a plain "Add to scene…" here would be the inert control
@@ -203,28 +202,6 @@ struct GridViewMoreMenuTests {
         #expect(isOn(store), "the picks-in-groups toggle did not turn on")
         #expect(store.preferences.picksInGroups, "the toggle did not reach the preference")
 
-      case "more.pruneMirroredArchive":
-        guard case .toggle(let isOn, let set) = entry.surface else {
-          Issue.record("more.pruneMirroredArchive is not a toggle entry")
-          continue
-        }
-        // IMGMGR-362: default OFF, and the row reaches the ONE persisted property — the tree
-        // reads that same property, so a toggle that wrote anywhere else would hide nothing.
-        #expect(isOn(store) == false)
-        set(store, true)
-        #expect(isOn(store), "the mirrored-archive toggle did not turn on")
-        #expect(
-          store.preferences.pruneMirroredArchive, "the toggle did not reach the preference")
-
-      case "more.density":
-        guard case .rowHeightSteps(let set, let isCurrent) = entry.surface else {
-          Issue.record("more.density is not a row-height entry")
-          continue
-        }
-        set(store, .step400)
-        #expect(store.rowHeight == .step400, "the Density entry did not move the row height")
-        #expect(isCurrent(store, .step400))
-
       case "more.status":
         guard case .action(let run) = entry.surface else {
           Issue.record("more.status is not an action entry")
@@ -335,36 +312,29 @@ struct GridViewMoreMenuTests {
     #expect(isOn(store), "the menu toggle did not turn the plates on")
   }
 
-  /// The plan's named test. Density is the SAME six-step row height the Zoom control and
-  /// ⌘1…⌘6 move — one state, two entry points — and it brought no second persisted property
-  /// with it.
-  @Test("The Density entry mutates the same row-height state the Zoom control mutates")
-  func theDensityEntryMutatesTheSameRowHeightStateTheZoomControlMutates() {
+  /// WP29 P2 (IMGMGR-453): Density and Hide mirrored archive left the More menu. Density's
+  /// state is the Arrange popover's thumbnail size (`ArrangeModelTests`); the prune's entry stays
+  /// declared, and the tree's View menu renders it (`RootView.folderTreeViewMenuItem`).
+  @Test("More carries neither Density nor the prune; the prune entry still reaches its key")
+  func moreCarriesNeitherDensityNorThePrune() {
+    let ids = GridMoreMenu.entries.map(\.id)
+    // Positive control: the entries really were read.
+    #expect(ids.contains("more.status"))
+    #expect(!ids.contains("more.density"))
+    #expect(!ids.contains(GridMoreMenu.pruneMirroredArchive.id))
+
     let (store, _, _, _) = makeStore()
-    guard case .rowHeightSteps(let set, let isCurrent) = GridMoreMenu.density.surface else {
-      Issue.record("Density is not a row-height entry")
+    guard case .toggle(let isOn, let set) = GridMoreMenu.pruneMirroredArchive.surface else {
+      Issue.record("more.pruneMirroredArchive is not a toggle entry")
       return
     }
-    #expect(store.rowHeight == .step200)
-
-    set(store, .step400)
-    #expect(store.rowHeight == .step400)
-    #expect(isCurrent(store, .step400))
-    // The other entry point onto the SAME state — the Zoom control's own call target.
-    #expect(GridZoomControl.title(for: store.rowHeight) == "Zoom: 400 pt")
-    #expect(GridMoreMenu.density.title(store) == "Density: 400 pt")
-
-    store.setRowHeight(.step120)
-    #expect(store.rowHeight == .step120)
-    #expect(isCurrent(store, .step120))
-    #expect(isCurrent(store, .step400) == false)
-
-    // No SECOND persisted density property: the row-height steps are the one density state.
-    // Positive control first, so the 0-hit assertion below proves something (LSN-0033).
-    #expect(GridPreferences.persistedKeys.contains(GridPreferences.filenamePlatesKey))
-    #expect(
-      GridPreferences.persistedKeys.allSatisfy { !$0.lowercased().contains("density") },
-      "a second persisted density key exists: \(GridPreferences.persistedKeys)")
+    // IMGMGR-362: default OFF, and the entry reaches the ONE persisted property the tree reads.
+    #expect(isOn(store) == false)
+    set(store, true)
+    #expect(isOn(store), "the mirrored-archive toggle did not turn on")
+    #expect(store.preferences.pruneMirroredArchive, "the toggle did not reach the preference")
+    let pruneIdentifier = GridMoreMenu.pruneMirroredArchive.accessibilityIdentifier
+    #expect(pruneIdentifier == "gridMoreMenu.more.pruneMirroredArchive")
   }
 
   /// The Clear entry is a SECOND ENTRY POINT into the store's one clear action, never a second
@@ -555,7 +525,9 @@ struct GridViewMoreMenuTests {
 @Suite("Grid More menu — the grouped sections (WP16 P4)")
 struct GridMoreMenuSectionsTests {
 
-  /// The twelve ids (WP29 P1 took "more.select" to the bar), in the order the owner decided
+  /// The ten ids (WP29 P1 took "more.select" to the bar; WP29 P2 took "more.density" to the
+  /// Arrange popover and "more.pruneMirroredArchive" to the tree's View menu), in the order the
+  /// owner decided
   /// (WP13 kickoff decision 2, epic
   /// IMGMGR-211 comment 2106; P11, WP14 P4, IMGMGR-347 and IMGMGR-362 APPENDED — the last of them
   /// into the View section's own run, which moved no existing pair). Grouping is a
@@ -563,9 +535,8 @@ struct GridMoreMenuSectionsTests {
   /// element-wise here.
   private let shippedOrder = [
     "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-    "more.picksInGroups", "more.density", "more.pruneMirroredArchive", "more.status",
-    "more.openInNewWindow", "more.mergeScene", "more.splitScene", "more.extractScene",
-    "more.absorbScene",
+    "more.picksInGroups", "more.status", "more.openInNewWindow", "more.mergeScene",
+    "more.splitScene", "more.extractScene", "more.absorbScene",
   ]
 
   @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
@@ -576,11 +547,12 @@ struct GridMoreMenuSectionsTests {
     // Positive control for the equalities above: there really are sections and entries to
     // compare, so neither line can pass on two empty arrays.
     #expect(GridMoreMenu.sections.count == 4)
-    // WP29 P1 (IMGMGR-452): 13 → 12, Select having left for the bar.
-    #expect(GridMoreMenu.entries.count == 12)
+    // WP29 P1 (IMGMGR-452): 13 → 12, Select having left for the bar. WP29 P2 (IMGMGR-453):
+    // 12 → 10, Density and the archive prune having left.
+    #expect(GridMoreMenu.entries.count == 10)
   }
 
-  @Test("Grouping changed nothing about the set: the twelve ids, in the shipped order")
+  @Test("Grouping changed nothing about the set: the ten ids, in the shipped order")
   func groupingKeptTheDecidedSetAndItsOrder() {
     #expect(GridMoreMenu.sections.flatMap(\.entries).map(\.id) == shippedOrder)
     #expect(GridMoreMenu.entries.map(\.id) == shippedOrder)
@@ -598,10 +570,8 @@ struct GridMoreMenuSectionsTests {
       ),
       (
         "more.section.view", "View",
-        // IMGMGR-362 (WP21 P3) APPENDED the archive prune INSIDE this run, which is what keeps
-        // the partition contiguous: the row a reader flips to hide mirrored folders is a view
-        // option, so it belongs to the section the other view options are in.
-        ["more.filenamePlates", "more.picksInGroups", "more.density", "more.pruneMirroredArchive"]
+        // WP29 P2 (IMGMGR-453): Density and the archive prune left this run.
+        ["more.filenamePlates", "more.picksInGroups"]
       ),
       ("more.section.shoot", "Shoot", ["more.status", "more.openInNewWindow"]),
       (
@@ -652,11 +622,9 @@ struct GridMoreMenuSectionsTests {
       GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
         "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
-        "gridMoreMenu.more.density",
-        // IMGMGR-362: the archive prune's own identifier, in the View section's run. The tree
-        // home's View menu renders the SAME entry, so this string is also the handle
-        // `ArchivePruneUITests` drives there — one identifier, two entry points.
-        "gridMoreMenu.more.pruneMirroredArchive", "gridMoreMenu.more.status",
+        // WP29 P2 (IMGMGR-453): Density and the archive prune left; the prune keeps its
+        // identifier in the tree's View menu.
+        "gridMoreMenu.more.status",
         "gridMoreMenu.more.openInNewWindow", "gridMoreMenu.more.mergeScene",
         "gridMoreMenu.more.splitScene", "gridMoreMenu.more.extractScene",
         "gridMoreMenu.more.absorbScene",
@@ -664,7 +632,7 @@ struct GridMoreMenuSectionsTests {
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
         ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
-        "textformat", "checkmark.square", "square.grid.2x2", "eye.slash", "info.circle",
+        "textformat", "checkmark.square", "info.circle",
         "macwindow.badge.plus", "arrow.triangle.merge", "scissors", "square.on.square.dashed",
         "rectangle.stack.badge.plus",
       ])

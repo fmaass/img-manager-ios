@@ -639,12 +639,11 @@ struct RootView: View {
   /// top of it — a reader standing in front of the folder tree has no way to reach a view option
   /// about the folder tree.
   ///
-  /// So the tree home gets its own View menu, and what it renders is the SAME
-  /// `GridMoreMenuEntry` value the grid's menu renders (`GridMoreMenu.pruneMirroredArchive`),
-  /// through the same `GridMoreMenuItem` row: the same identifier, the same title, the same
-  /// binding onto the same `GridPreferences` property. One key, two entry points, and no second
-  /// mechanism — a divergence between the two menus is not something to keep in step, it is
-  /// impossible.
+  /// So the tree home gets its own View menu, and what it renders is the declared
+  /// `GridMoreMenuEntry` value `GridMoreMenu.pruneMirroredArchive`, through the shared
+  /// `GridMoreMenuItem` row: its identifier, title and binding onto the one `GridPreferences`
+  /// property. WP29 P2 (IMGMGR-453): the grid's More menu no longer renders it, so this menu is
+  /// the switch's ONE home (Regular sidebar and Compact Library tab).
   ///
   /// `foldsClearIntoMore: false` because that fold is the grid ACTION BAR's width rule (WP13 P1)
   /// and applies to the Clear row alone; this menu holds neither.

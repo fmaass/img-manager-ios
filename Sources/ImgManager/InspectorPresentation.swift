@@ -47,7 +47,8 @@ enum InspectorColumnMetrics {
 /// IMGMGR-390: which surface carries the six controls the owner called host chrome — the five
 /// grid view-option controls (`gridFilterControl`, `gridSortControl`, `gridGroupControl`,
 /// `gridZoomControl`, `gridShortcutHelpControl`) and the inspector's own persistent control
-/// (`inspectorChromeButton`).
+/// (`inspectorChromeButton`). WP29 P2 (IMGMGR-453) replaced Sort, Group and Zoom with one
+/// `gridArrangeControl`.
 ///
 /// A VALUE, and the same "declare the decision, then render the declaration" discipline
 /// `GridChromeRows` and `InspectorPlacement` already follow: the answer is stated once, here,

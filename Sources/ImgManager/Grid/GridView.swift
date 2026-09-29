@@ -561,90 +561,11 @@ struct GridNoticeBanner: View {
   }
 }
 
-/// WP13 P4 (IMGMGR-215): the Group control — ONE definition, rendered either as a Regular
-/// `.primaryAction` toolbar item or inside Compact's persistent options row. Its label carries
-/// the CURRENT VALUE ("Group: Scene"), which is the discoverability half of this ticket: an
-/// icon-only menu behind an overflow chevron is exactly what the owner could not find.
-///
-/// Scene is a MODE, not a `group_by` wire value (ADR-0005 decision 6) — it calls a different
-/// endpoint with a different row vocabulary. It lives in a Group menu anyway because that is
-/// where a reader looks for "how is this stream arranged", and because the two entries are
-/// mutually exclusive by construction when they share one single-select list.
-struct GridGroupControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Menu {
-      // WP13 P5b: ONE single-select list over `GroupingChoice` — None, Scene, then the six
-      // offered `group_by` dimensions. Exclusivity is structural: `GroupingChoice` cannot
-      // express "Scene and Camera", and every row calls the same coordinator, which is what
-      // makes choosing a dimension while Scene is on actually LEAVE Scene (ADR-0005 decision 6)
-      // instead of setting a wire parameter the stacks endpoint never reads.
-      ForEach(SortGroupOptions.groupingChoices, id: \.self) { choice in
-        Button {
-          Task { await store.selectGrouping(choice) }
-        } label: {
-          if store.activeGrouping == choice {
-            Label(Self.rowTitle(for: choice), systemImage: "checkmark")
-          } else {
-            Text(Self.rowTitle(for: choice))
-          }
-        }
-      }
-    } label: {
-      Label(
-        Self.title(for: store.activeGrouping),
-        systemImage: Self.isHighlighted(for: store.activeGrouping)
-          ? "square.stack.fill" : "square.stack")
-    }
-    // IMGMGR-256: the control itself is now the "you are in an arrangement" signal — the Scene
-    // caption row it replaces is gone. The treatment is VALUE-driven inside one view type (a
-    // filled symbol variant, a semibold label, an accent ring drawn as an overlay), never an
-    // `if/else` over two different view types: SwiftUI would tear the `Menu` down and rebuild it
-    // on every grouping change, closing it mid-interaction. Nothing here changes the control's
-    // size, at rest or highlighted.
-    .modifier(GroupControlHighlight(isHighlighted: Self.isHighlighted(for: store.activeGrouping)))
-    // The value has to stay VISIBLE, not just present in the accessibility label: a nav-bar
-    // `Label` renders icon-only by default, and an icon-only menu is precisely what the owner
-    // could not find (gap audit /link/3282, owner feedback (c)). Observed on the iPad Pro 13"
-    // simulator before this line existed — the two toolbar items showed a box and a 2x2 grid
-    // and nothing else. No effect on Compact's options row, where a `Label` in a plain HStack
-    // already draws both.
-    .labelStyle(.titleAndIcon)
-    .accessibilityIdentifier("gridGroupControl")
-    // Machine-readable highlight state, and a genuine VoiceOver improvement rather than a probe:
-    // "Group: Camera, Active" states in words what the tint states in pixels.
-    .accessibilityValue(
-      Self.isHighlighted(for: store.activeGrouping) ? "Active" : "Off")
-  }
-
-  /// IMGMGR-256: the control renders highlighted whenever ANY arrangement is in force — Scene or
-  /// one of the six dimensions — and plain under None. A pure function, so the state is a value
-  /// test rather than a screenshot reading.
-  static func isHighlighted(for choice: GroupingChoice) -> Bool {
-    choice != .none
-  }
-
-  /// A pure function so the value-in-label contract is testable without a render host.
-  static func title(for choice: GroupingChoice) -> String {
-    "Group: \(rowTitle(for: choice))"
-  }
-
-  /// One menu row's own words — the same string the label above wraps, so the row a reader
-  /// picked and the value they then read back cannot be spelled differently.
-  static func rowTitle(for choice: GroupingChoice) -> String {
-    switch choice {
-    case .none: return "None"
-    case .scene: return "Scene"
-    case .key(let key): return key.title
-    }
-  }
-}
-
 /// Applies the prominent (tinted) button style only while an arrangement is in force. A
-/// `ViewModifier` rather than a `@ViewBuilder if/else` on the whole `Menu`, because the two
-/// branches of such an `if` are DIFFERENT view types to SwiftUI: the menu would be torn down and
-/// rebuilt on every grouping change, closing itself mid-interaction.
+/// `ViewModifier` rather than a `@ViewBuilder if/else` on the whole control, because the two
+/// branches of such an `if` are DIFFERENT view types to SwiftUI: the control would be torn down
+/// and rebuilt on every grouping change, dismissing what it presents. WP29 P2 (IMGMGR-453): worn
+/// by `GridArrangeControl`, which took over the removed Group control's IMGMGR-256 signal.
 struct GroupControlHighlight: ViewModifier {
   let isHighlighted: Bool
 
@@ -656,102 +577,16 @@ struct GroupControlHighlight: ViewModifier {
           .strokeBorder(Color.accentColor.opacity(isHighlighted ? 0.9 : 0), lineWidth: 2)
           // Negative padding on an OVERLAY's own content: an overlay is laid out inside the
           // parent's frame and never propagates a size back, so the ring can sit just outside
-          // the label without the control changing width — which is what keeps
-          // `SortGroupScreenshotUITests`' no-overflow assertion answering the same question.
+          // the label without the control changing width, so the highlight never reflows the bar.
           .padding(-3)
       )
   }
 }
 
-/// WP13 P5b (IMGMGR-221 part 2): the Sort control — the same shape as `GridGroupControl`, and
-/// rendered in the same two places (a Regular `.primaryAction` toolbar item, Compact's persistent
-/// options row). Its label carries the CURRENT key AND direction ("Sort: Rating ↓"), because the
-/// ticket's own words are "nothing gesture-only" and an icon-only control behind an overflow
-/// chevron is what the owner could not find (gap audit /link/3282, owner feedback (c)).
-///
-/// Six of the server's fifteen keys and both directions (`SortGroupOptions`) — the offered subset
-/// is data, so a different six is a one-line change here and in its subset test, never a rework.
-struct GridSortControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Menu {
-      Section("Sort by") {
-        ForEach(SortGroupOptions.sortKeys, id: \.self) { key in
-          Button {
-            Task { await store.setSortKey(key) }
-          } label: {
-            if store.activeSortKey == key {
-              Label(key.title, systemImage: "checkmark")
-            } else {
-              Text(key.title)
-            }
-          }
-        }
-      }
-      Section("Direction") {
-        ForEach(SortGroupOptions.directions, id: \.self) { direction in
-          Button {
-            Task { await store.setSortDirection(direction) }
-          } label: {
-            if store.activeDirection == direction {
-              Label(direction.title, systemImage: "checkmark")
-            } else {
-              Text(direction.title)
-            }
-          }
-        }
-      }
-    } label: {
-      Label(
-        Self.title(for: store.activeSortKey, direction: store.activeDirection),
-        systemImage: "arrow.up.arrow.down")
-    }
-    .labelStyle(.titleAndIcon)
-    .accessibilityIdentifier("gridSortControl")
-  }
-
-  static func title(for key: SortKey, direction: SortDirection) -> String {
-    "Sort: \(key.title) \(direction.arrow)"
-  }
-}
-
-/// WP13 P4 (IMGMGR-215): the Zoom control, the same shape as `GridGroupControl` above and the
-/// six native row-height steps' one real UI call site (diff-gate round 2, blocker 2). The
-/// menu-bar View menu declares the same six steps as ⌘1…⌘6 (`AppCommands.zoomDeclarations`),
-/// dispatching to this same `GridStore.setRowHeight`.
-struct GridZoomControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Menu {
-      ForEach(GridRowHeight.allCases, id: \.self) { step in
-        Button {
-          store.setRowHeight(step)
-        } label: {
-          if store.rowHeight == step {
-            Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
-          } else {
-            Text("\(Int(step.rawValue)) pt")
-          }
-        }
-      }
-    } label: {
-      Label(Self.title(for: store.rowHeight), systemImage: "square.grid.2x2")
-    }
-    .labelStyle(.titleAndIcon)
-    .accessibilityIdentifier("gridZoomControl")
-  }
-
-  static func title(for step: GridRowHeight) -> String {
-    "Zoom: \(Int(step.rawValue)) pt"
-  }
-}
-
-/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row — one row, two menu buttons
-/// each labelled with its current value so the state is readable without opening anything, and
-/// (diff-gate r1 blocker 3) the trailing shortcut-help button that is Compact's only route into
-/// the help sheet.
+/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row. Since WP29 P2 (IMGMGR-453) it
+/// reads Arrange · Filter · "?": the Arrange control (whose popover holds sort, grouping and
+/// thumbnail size), the funnel, and (diff-gate r1 blocker 3) the trailing shortcut-help button
+/// that is Compact's only route into the help sheet.
 /// Deliberately NOT a dense icon filter row (p3220 §2.2 must-not-copy #1) and deliberately not
 /// a filter surface: filters live in the Stats segment (`InspectorView`), never in chrome.
 struct GridOptionsRow: View {
@@ -774,10 +609,9 @@ struct GridOptionsRow: View {
     }
     .buttonStyle(.bordered)
     .font(.subheadline)
-    // WP13 P5b: Sort joined Group and Zoom on this one row, so three value-carrying labels now
-    // share a phone's width. One line each, truncating at the tail, keeps every control's
-    // 44 pt hit region and its checkmarked menu reachable — the alternative (a label wrapping
-    // to two lines) grows the row and pushes the help button off it.
+    // One line each, truncating at the tail, keeps every control's 44 pt hit region reachable —
+    // the alternative (a label wrapping to two lines) grows the row and pushes the help button
+    // off it.
     .lineLimit(1)
     .truncationMode(.tail)
     .padding(.horizontal)
@@ -785,21 +619,18 @@ struct GridOptionsRow: View {
     .chromeFill(.thinMaterial)
     // NO `.accessibilityIdentifier` on this HStack: an identifier set on a container OVERRIDES
     // its descendants'. Observed on the iPhone 17 Pro gate leg — both controls came back as
-    // `identifier: 'gridOptionsRow'` and neither `gridGroupControl` nor `gridZoomControl`
-    // existed, so the row's own two controls were unaddressable. The controls are what anything
+    // `identifier: 'gridOptionsRow'` and the row's own controls did not exist by their names,
+    // so they were unaddressable. The controls are what anything
     // needs to name; the row is just where they sit on Compact.
   }
 
-  /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only like the help button,
-  /// so it adds one 44 pt hit region and no value label to a row whose three value-carrying
-  /// controls already truncate at the tail; `FilterPopoverUITests` asserts the help button is
-  /// still hittable here — the "the row did not overflow" contract.
+  /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only like the help button;
+  /// `FilterPopoverUITests` asserts the help button is still hittable here — the "the row did
+  /// not overflow" contract.
   @ViewBuilder
   private func optionControl(_ control: ShellToolbarControl) -> some View {
     switch control {
-    case .sort: GridSortControl(store: store)
-    case .group: GridGroupControl(store: store)
-    case .zoom: GridZoomControl(store: store)
+    case .arrange: GridArrangeControl(store: store)
     case .filter: GridFilterControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
     // Not options-row members (`ShellToolbarLayout.compactOptionsRow`).

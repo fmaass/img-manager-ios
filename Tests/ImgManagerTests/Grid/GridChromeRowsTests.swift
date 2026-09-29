@@ -82,24 +82,25 @@ struct GridChromeRowsTests {
   }
 }
 
-/// The other half of IMGMGR-256: the Group control carries the state the banner used to.
+/// The other half of IMGMGR-256: the Group control carried the state the banner used to; since
+/// WP29 P2 (IMGMGR-453) the Arrange control carries it (`ArrangeModel.isHighlighted`).
 @MainActor
-@Suite("Group control — highlighted exactly while an arrangement is in force (IMGMGR-256)")
+@Suite("Arrange control — highlighted exactly while an arrangement is in force (IMGMGR-256)")
 struct GridGroupControlHighlightTests {
 
   @Test("The highlight is on for Scene and for every dimension, and off for None")
   func theHighlightTracksTheGroupingChoice() {
-    #expect(GridGroupControl.isHighlighted(for: .none) == false)
-    #expect(GridGroupControl.isHighlighted(for: .scene), "Scene does not highlight the control")
+    #expect(ArrangeModel.isHighlighted(for: .none) == false)
+    #expect(ArrangeModel.isHighlighted(for: .scene), "Scene does not highlight the control")
     for key in SortGroupOptions.groupKeys {
       #expect(
-        GridGroupControl.isHighlighted(for: .key(key)),
+        ArrangeModel.isHighlighted(for: .key(key)),
         "grouping by \(key.rawValue) does not highlight the control")
     }
     // Every offered choice is covered by the two rules above — asserted, not assumed, so a
     // seventh choice cannot slip in unhighlighted.
     for choice in SortGroupOptions.groupingChoices {
-      #expect(GridGroupControl.isHighlighted(for: choice) == (choice != .none))
+      #expect(ArrangeModel.isHighlighted(for: choice) == (choice != .none))
     }
   }
 }

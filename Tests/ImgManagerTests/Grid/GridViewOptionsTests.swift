@@ -17,20 +17,24 @@ struct GridViewOptionsTests {
     return GridStore(service: GridService(client: client))
   }
 
-  @Test("Each control's label carries its CURRENT value, never a bare icon word")
-  func controlsCarryTheirCurrentValueInTheLabel() {
-    // WP13 P5b: the Group control's value space widened from the two display MODES to the one
-    // single-select `GroupingChoice` — None, Scene, and the six offered `group_by` dimensions.
-    #expect(GridGroupControl.title(for: .none) == "Group: None")
-    #expect(GridGroupControl.title(for: .scene) == "Group: Scene")
-    #expect(GridGroupControl.title(for: .key(.camera)) == "Group: Camera")
+  /// WP29 P2 (IMGMGR-453): the Sort, Group and Zoom controls, whose labels carried the current
+  /// value, are gone. The current value is now the checked row of the Arrange popover
+  /// (`ArrangeModelTests` round-trips every row), and each row names its value in the words the
+  /// removed labels used.
+  @Test("Each Arrange row names its value in the words the removed controls' labels used")
+  func arrangeRowsNameTheirValues() {
+    let titles = Dictionary(uniqueKeysWithValues: ArrangeModel.rows.map { ($0.id, $0.title) })
+    #expect(titles["arrange.group.none"] == "None")
+    #expect(titles["arrange.group.scene"] == "Scene")
     for key in SortGroupOptions.groupKeys {
-      #expect(GridGroupControl.title(for: .key(key)) == "Group: \(key.title)")
+      #expect(titles["arrange.group.\(key.rawValue)"] == key.title)
     }
-    #expect(GridSortControl.title(for: .rating, direction: .desc) == "Sort: Rating ↓")
-    #expect(GridSortControl.title(for: .dateTaken, direction: .asc) == "Sort: Date ↑")
+    for key in SortGroupOptions.sortKeys {
+      #expect(titles["arrange.sort.\(key.rawValue)"] == key.title)
+    }
+    #expect(titles["arrange.direction.desc"] == "Descending")
     for step in GridRowHeight.allCases {
-      #expect(GridZoomControl.title(for: step) == "Zoom: \(Int(step.rawValue)) pt")
+      #expect(titles["arrange.size.\(Int(step.rawValue))"] == "\(Int(step.rawValue)) pt")
     }
   }
 
@@ -42,7 +46,9 @@ struct GridViewOptionsTests {
 
     actions.setRowHeight(.step400)
     #expect(store.rowHeight == .step400)
-    #expect(GridZoomControl.title(for: store.rowHeight) == "Zoom: 400 pt")
+    // The on-screen twin reads the same state: the Arrange popover's 400 pt row is checked.
+    let size400 = ArrangeModel.rows.first { $0.id == "arrange.size.400" }
+    #expect(size400.map { ArrangeModel(store: store).isChecked($0) } == true)
 
     actions.setRowHeight(.step120)
     #expect(store.rowHeight == .step120)

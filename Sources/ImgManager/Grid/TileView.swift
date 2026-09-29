@@ -137,7 +137,7 @@ struct TileView: View {
   }
 
   /// A pure function so "the plate says the filename, and says nothing when it is off" is
-  /// testable without a render host — the same posture `GridGroupControl.title(for:)` uses.
+  /// testable without a render host — the same posture `ArrangeModel.groupTitle(for:)` uses.
   static func plateText(
     for image: Components.Schemas.ImageSummary, showsPlate: Bool
   ) -> String? {

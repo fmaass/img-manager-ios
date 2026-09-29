@@ -2132,7 +2132,7 @@ final class GridStore {
   /// WP13 P4 (IMGMGR-215): raise the shortcut help sheet. ONE method rather than two call sites
   /// setting the flag, because both surfaces that open it — the `?`/⌘/ key equivalents through
   /// `GridKeyboardActions`, and Compact's options-row button (`GridShortcutHelpControl`) — must
-  /// stay the same action, the same rule `GridGroupControl`/`AppCommands` already follow for
+  /// stay the same action, the same rule `ArrangeModel`/`AppCommands` already follow for
   /// the view options themselves.
   func showShortcutHelp() {
     isShortcutHelpPresented = true

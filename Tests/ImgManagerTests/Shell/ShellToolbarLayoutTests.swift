@@ -18,17 +18,15 @@ struct ShellToolbarLayoutTests {
     "inspectorChromeButton",
     "gridSelectCommand",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
+    "gridArrangeControl",
     "gridMoreMenu",
   ]
 
-  @Test("Regular: Info, then Search · Select · Filter · Arrange's slot · More, in that order")
+  @Test("Regular: Info, then Search · Select · Filter · Arrange · More, in that order")
   func regularOrderIsTheSpecOrder() {
     #expect(
       ShellToolbarLayout.regularGridBar == [
-        .info, .search, .select, .filter, .sort, .group, .zoom, .more,
+        .info, .search, .select, .filter, .arrange, .more,
       ])
     for mode in [LayoutMode.regular2, .regular3] {
       let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
@@ -38,13 +36,13 @@ struct ShellToolbarLayoutTests {
     }
   }
 
-  @Test("Compact: Info and Select on the navigation bar; the options row is unchanged")
+  @Test("Compact: Info and Select on the navigation bar; the options row is Arrange · Filter · ?")
   func compactCarriesInfoAndSelect() {
     #expect(
       ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
         == [.info, .select])
     #expect(
-      ShellToolbarLayout.compactOptionsRow == [.sort, .group, .zoom, .filter, .shortcutHelp])
+      ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .shortcutHelp])
   }
 
   @Test("\"?\" leaves the Regular bar and stays on the Compact options row")
@@ -161,7 +159,7 @@ struct ShellToolbarLayoutTests {
     let regular = ShellToolbarRuns(ShellToolbarLayout.regularGridBar)
     #expect(regular.leading == [.info])
     #expect(regular.search)
-    #expect(regular.trailing == [.select, .filter, .sort, .group, .zoom, .more])
+    #expect(regular.trailing == [.select, .filter, .arrange, .more])
     #expect(ShellToolbarRuns([]).flattened == [])
     #expect(ShellToolbarRuns([.info, .select]).trailing == [])
   }

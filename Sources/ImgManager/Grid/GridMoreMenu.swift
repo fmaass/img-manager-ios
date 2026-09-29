@@ -7,17 +7,14 @@ import SwiftUI
 /// comment. Deleting an entry means deleting a row here, and `GridMoreMenuTests` reads these
 /// rows and invokes each row's own closure.
 struct GridMoreMenuEntry: Identifiable, Sendable {
-  /// What activating the entry offers. Three shapes, because the decided set has three: a
-  /// command, a persisted on/off, and a single-select list of the grid's row-height steps.
+  /// What activating the entry offers: a command, a persisted on/off, or a scene window. WP29 P2
+  /// (IMGMGR-453) removed the row-height list with the Density row; thumbnail size lives in the
+  /// Arrange popover (`ArrangeModel`).
   enum Surface: Sendable {
     case action(@MainActor @Sendable (GridStore) -> Void)
     case toggle(
       isOn: @MainActor @Sendable (GridStore) -> Bool,
       set: @MainActor @Sendable (GridStore, Bool) -> Void)
-    /// Density. NOT a second property — see `GridMoreMenu.density`.
-    case rowHeightSteps(
-      set: @MainActor @Sendable (GridStore, GridRowHeight) -> Void,
-      isCurrent: @MainActor @Sendable (GridStore, GridRowHeight) -> Bool)
     /// WP13 P11 (IMGMGR-220): the one entry whose action needs a capability the STORE cannot
     /// hold — SwiftUI's scene-level `openWindow`. It therefore takes the injected
     /// `ShootWindowOpener` alongside the store, which is also what lets a test substitute a spy
@@ -59,7 +56,9 @@ struct GridMoreMenuSection: Identifiable, Sendable {
 
 /// WP13 P5a (IMGMGR-221): the More menu's decided set — **Select · Clear mark ·
 /// Copy for Lightroom · Filename plates · Density · Status** (owner decision 2, 2026-08-30
-/// kickoff, epic comment 2106).
+/// kickoff, epic comment 2106). Select moved to the grid's bar in WP29 P1; Density moved to the
+/// Arrange popover's thumbnail sizes in WP29 P2 (IMGMGR-453), which also gave Hide mirrored
+/// archive its one home in the tree's View menu.
 ///
 /// **"Download…" is deliberately absent** (owner decision 3): downloads stay loupe-Share-only
 /// natively, bulk/zip stays on the web. `ShareControls.swift` remains the app's one export
@@ -89,10 +88,10 @@ enum GridMoreMenu {
       entries: [clearMark, copyForLightroom]),
     GridMoreMenuSection(
       id: "more.section.view", title: "View",
-      // IMGMGR-362 APPENDED the archive prune to THIS section's own run — a view option beside
-      // the other view options. The decided order is untouched: every pair that was ordered
-      // before is ordered the same now, and the section stays one contiguous run.
-      entries: [filenamePlates, picksInGroups, density, pruneMirroredArchive]),
+      // WP29 P2 (IMGMGR-453): Density left for the Arrange popover's thumbnail sizes, and Hide
+      // mirrored archive left for its one home, the tree's View menu (`RootView`), which renders
+      // the same static `pruneMirroredArchive` entry. 12 → 10 rows.
+      entries: [filenamePlates, picksInGroups]),
     GridMoreMenuSection(
       id: "more.section.shoot", title: "Shoot",
       entries: [status, openInNewWindow]),
@@ -178,10 +177,10 @@ enum GridMoreMenu {
   /// view-options surface (the web sibling puts its twin next to the tier row instead; that is
   /// covered-differently, not divergence).
   ///
-  /// The tree home renders THIS SAME VALUE in its own View menu (`RootView.sidebar`), because the
-  /// More menu is on the grid's action bar and the surface that shows the tree is not the grid.
-  /// One entry, one identifier, one preference key, two places a reader can reach it — never a
-  /// second switch that could disagree with this one.
+  /// WP29 P2 (IMGMGR-453): no longer a More row. Its one home is the tree's View menu
+  /// (`RootView.folderTreeViewMenuItem`), which renders THIS value — the switch is about the tree,
+  /// and the tree's own surface is where it belongs. The entry stays declared here so the row
+  /// keeps its identifier, title and binding onto the one `GridPreferences` key.
   static let pruneMirroredArchive = GridMoreMenuEntry(
     id: "more.pruneMirroredArchive",
     accessibilityIdentifier: "gridMoreMenu.more.pruneMirroredArchive",
@@ -192,28 +191,6 @@ enum GridMoreMenu {
     surface: .toggle(
       isOn: { $0.preferences.pruneMirroredArchive },
       set: { store, isOn in store.preferences.pruneMirroredArchive = isOn }))
-
-  /// DENSITY, mapped onto the grid's EXISTING six row-height steps (`GridRowHeight`) rather
-  /// than a second persisted property. The native grid already has six measured zoom steps
-  /// which are exactly what the web's density control approximates on a phone; a second density
-  /// knob would give one visual property two owners that can disagree. One state, two entry
-  /// points — this menu and `GridZoomControl` (and ⌘1…⌘6), all calling `GridStore.setRowHeight`.
-  ///
-  /// This is a deliberate DEVIATION from the literal decided list (plan §P5a Approach) and is
-  /// flagged for the owner to overrule; the warrant is "companion value through native
-  /// capability, never web parity" (IMGMGR-114 comment 1949) plus the duplicated-functionality
-  /// rule. `GridMoreMenuTests` asserts `GridPreferences.persistedKeys` holds no density key, so
-  /// a future second property fails the gate rather than shipping quietly.
-  static let density = GridMoreMenuEntry(
-    id: "more.density",
-    accessibilityIdentifier: "gridMoreMenu.more.density",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "square.grid.2x2",
-    title: { "Density: \(Int($0.rowHeight.rawValue)) pt" },
-    isEnabled: { _ in true },
-    surface: .rowHeightSteps(
-      set: { store, step in store.setRowHeight(step) },
-      isCurrent: { store, step in store.rowHeight == step }))
 
   /// READ ONLY (`StatusSheet`): maintenance state, last indexed, store health, coverage, recent
   /// runs. `POST /api/reindex` is in the vendored spec and stays unwired (plan invariant viii).
@@ -385,27 +362,6 @@ struct GridMoreMenuItem: View {
         Label(entry.title(store), systemImage: entry.systemImage)
       }
       .disabled(!entry.isEnabled(store))
-      .labelStyle(.titleAndIcon)
-      .accessibilityIdentifier(identifier)
-
-    case .rowHeightSteps(let set, let isCurrent):
-      Menu {
-        // Identified by the STEP, never by its position (IMGMGR-210) — the same identity
-        // `GridZoomControl` uses over the same six cases.
-        ForEach(GridRowHeight.allCases, id: \.self) { step in
-          Button {
-            set(store, step)
-          } label: {
-            if isCurrent(store, step) {
-              Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
-            } else {
-              Text("\(Int(step.rawValue)) pt")
-            }
-          }
-        }
-      } label: {
-        Label(entry.title(store), systemImage: entry.systemImage)
-      }
       .labelStyle(.titleAndIcon)
       .accessibilityIdentifier(identifier)
     }
