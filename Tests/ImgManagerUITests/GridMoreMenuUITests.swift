@@ -82,7 +82,12 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     }
     // WP29 P2 (IMGMGR-453): Density and the archive prune left More; the rows above are the
     // positive control that the menu is open.
-    for gone in ["gridMoreMenu.more.density", "gridMoreMenu.more.pruneMirroredArchive"] {
+    // WP29 P4 (IMGMGR-455): the four scene edits left for the Select bar's Scene ▸.
+    for gone in [
+      "gridMoreMenu.more.density", "gridMoreMenu.more.pruneMirroredArchive",
+      "gridMoreMenu.more.mergeScene", "gridMoreMenu.more.splitScene",
+      "gridMoreMenu.more.extractScene", "gridMoreMenu.more.absorbScene",
+    ] {
       XCTAssertEqual(
         app.descendants(matching: .any).matching(identifier: gone).count, 0,
         "The More menu still renders '\(gone)'.")
@@ -257,7 +262,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       "The More menu did not present its Status row, so the section-header check would be "
         + "vacuous.")
 
-    let observed = ["Marks", "View", "Shoot", "Scene"]
+    // WP29 P4 (IMGMGR-455): three groups — the Scene group left for Scene ▸.
+    let observed = ["Marks", "View", "Shoot"]
       .map { "\($0)=\(headerCount($0, in: app))" }
       .joined(separator: ", ")
     XCTAssertGreaterThan(

@@ -92,6 +92,21 @@ extension XCTestCase {
 
   /// What is left of a budget, never negative — `waitForExistence` treats a negative timeout as
   /// an error rather than as "already out of time".
+  /// WP29 P4 (IMGMGR-455): the Select bar's Scene ▸, opened through the same shared opener.
+  func openSceneMenu(
+    in app: XCUIApplication,
+    revealing expected: XCUIElement,
+    timeout: TimeInterval,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> Bool {
+    let scene = app.descendants(matching: .any)["selectBarSceneMenu"].firstMatch
+    XCTAssertTrue(
+      scene.waitForExistence(timeout: 10),
+      "No 'selectBarSceneMenu' on the Select bar.", file: file, line: line)
+    return openPresentation(scene, revealing: expected, timeout: timeout)
+  }
+
   private static func remaining(until deadline: Date) -> TimeInterval {
     max(0, deadline.timeIntervalSinceNow)
   }
