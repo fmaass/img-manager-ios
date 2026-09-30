@@ -755,19 +755,21 @@ fi
 
 # --- WP28 P4 (IMGMGR-451): the materials matrix. The manifest's own shape, the check over
 # exported attachments (stub manifest.json files), and the mode runner against stub tools.
+# WP30 P1 (IMGMGR-456) added the loupe to both destinations: 21 per destination, 42 names.
 man="$here/../Tests/ImgManagerUITests/MaterialsScreenshotManifest.txt"
 man_shape=1
 for dest in iphone ipad; do
-  [ "$(grep -c "^$dest-.*\.png$" "$man")" = 18 ] || man_shape=0
+  [ "$(grep -c "^$dest-.*\.png$" "$man")" = 21 ] || man_shape=0
 done
-for s in shoots-home library search-active grid-pushed inspector-sheet summary-sheet; do
+for s in shoots-home library search-active grid-pushed inspector-sheet summary-sheet loupe; do
   for m in default reduce-transparency increase-contrast; do grep -qx "iphone-$s-$m.png" "$man" || man_shape=0; done
 done
-for s in regular3-collapsed regular3-inspector regular2-grid search-active summary-sheet select-bar; do
+for s in regular3-collapsed regular3-inspector regular2-grid search-active summary-sheet select-bar \
+  regular2-loupe; do
   for m in default reduce-transparency increase-contrast; do grep -qx "ipad-$s-$m.png" "$man" || man_shape=0; done
 done
-[ "$(grep -vc '^#' "$man")" = 36 ] || man_shape=0
-if [ "$man_shape" = 1 ]; then gok ms-manifest "36 names, 18 per destination, every surface in all three modes"; else gfail ms-manifest "the manifest is not the plan's 36-name matrix"; fi
+[ "$(grep -vc '^#' "$man")" = 42 ] || man_shape=0
+if [ "$man_shape" = 1 ]; then gok ms-manifest "42 names, 21 per destination, every surface in all three modes"; else gfail ms-manifest "the manifest is not the plan's 42-name matrix"; fi
 ms_fixture() {
   rm -rf "$tmp/ms"; mkdir -p "$tmp/ms/.gate-artifacts/screenshots/test-iphone" \
     "$tmp/ms/.gate-artifacts/screenshots/materials-test-iphone-reduce-transparency" \

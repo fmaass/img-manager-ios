@@ -139,6 +139,12 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
     censusState(
       grid, "iphone", "summary-sheet", titleMenu: true, requiring: ["shootSummaryDone|Done"])
     closeSummary(sheetBar)
+
+    // WP30 P1 (IMGMGR-456): the loupe — its system toolbar, bottom-bar mark group and content
+    // filmstrip. Read back first: the probe sits under the Compact cover once it is up.
+    try assertSettingReadsBack(grid, "iphone", before: "loupe")
+    openLoupe(grid)
+    try capture(grid, "iphone", "loupe", readBack: false)
   }
 
   // MARK: - iPad (Regular)
@@ -210,9 +216,27 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
     censusState(
       portrait, "ipad", "regular2-grid", titleMenu: true, requiring: ["Info"],
       alsoMeasure: appBars)
+
+    // WP30 P1 (IMGMGR-456): the docked Regular-2 loupe, same launch.
+    try assertSettingReadsBack(portrait, "ipad", before: "regular2-loupe")
+    openLoupe(portrait)
+    try capture(portrait, "ipad", "regular2-loupe", readBack: false)
   }
 
   // MARK: - Launch, read-back, capture
+
+  /// WP30 P1: opens the loupe on the fixture's first tile — the first tap focuses, the second
+  /// opens (`GridStore.tapTile`), so tap until Back is on screen.
+  private func openLoupe(_ app: XCUIApplication) {
+    let back = app.buttons["loupeBack"]
+    for _ in 0..<3 where !back.exists {
+      let tile = anyElement(app, "gridTile-1")
+      guard tile.waitForExistence(timeout: 15) else { break }
+      tile.tap()
+      _ = back.waitForExistence(timeout: 3)
+    }
+    XCTAssertTrue(back.exists, "The loupe never opened from a tile tap.")
+  }
 
   private func launch(
     extraArguments: [String], orientation: UIDeviceOrientation

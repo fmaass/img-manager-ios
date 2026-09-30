@@ -19,7 +19,7 @@ struct MaterialPolicyTests {
 
   @Test("Reduce Transparency: opaque secondarySystemBackground, no stroke")
   func reduceTransparencyIsOpaque() {
-    for base in MaterialPolicy.Base.allCases {
+    for base in MaterialPolicy.Base.allCases where base != .content {
       #expect(
         MaterialPolicy.resolve(base, reduceTransparency: true, increasedContrast: false)
           == .init(fill: .opaqueSecondaryBackground, strokesSeparator: false))
@@ -38,7 +38,7 @@ struct MaterialPolicyTests {
 
   @Test("Both settings: opaque AND stroked")
   func bothSettingsCombine() {
-    for base in MaterialPolicy.Base.allCases {
+    for base in MaterialPolicy.Base.allCases where base != .content {
       #expect(
         MaterialPolicy.resolve(base, reduceTransparency: true, increasedContrast: true)
           == .init(fill: .opaqueSecondaryBackground, strokesSeparator: true))
@@ -55,5 +55,28 @@ struct MaterialPolicyTests {
       increasedContrast: increasedContrast)
     #expect(resolution.fill == .opaqueSecondaryBackground)
     #expect(resolution.strokesSeparator == increasedContrast)
+  }
+
+  // MARK: - WP30 P1 (IMGMGR-456): the loupe's filmstrip is content, not chrome
+
+  @Test(
+    "Content: no material and no stroke under default, Reduce Transparency, Increase Contrast",
+    arguments: [false, true], [false, true])
+  func contentIsNeverAMaterial(reduceTransparency: Bool, increasedContrast: Bool) {
+    let resolution = MaterialPolicy.resolve(
+      .content, reduceTransparency: reduceTransparency, increasedContrast: increasedContrast)
+    #expect(resolution == .init(fill: .noFill, strokesSeparator: false))
+    #expect(resolution.surfaceRole == .content)
+    #expect(resolution.surfaceRole.rawValue == "content")
+  }
+
+  @Test("Every chrome base resolves to the chrome role, in every mode", arguments: [false, true])
+  func chromeBasesStayChrome(reduceTransparency: Bool) {
+    for base in MaterialPolicy.Base.allCases where base != .content {
+      let resolution = MaterialPolicy.resolve(
+        base, reduceTransparency: reduceTransparency, increasedContrast: false)
+      #expect(resolution.fill != .noFill)
+      #expect(resolution.surfaceRole == .chrome)
+    }
   }
 }

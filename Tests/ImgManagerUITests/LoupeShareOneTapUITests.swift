@@ -69,10 +69,17 @@ final class LoupeShareOneTapUITests: OrientationPinnedUITestCase {
   /// so it includes the whole prepare-then-present path the phase had to bound.
   @discardableResult
   private func tapShareAndWaitForSheet(_ app: XCUIApplication, name: String) -> Double? {
+    // WP30 P1 (IMGMGR-456): Share is the More menu's row — the header became a system toolbar
+    // and Share moved into More (p4128 D4). One tap on the ROW still prepares and presents.
+    let more = app.descendants(matching: .any).matching(identifier: "loupeMoreMenu").firstMatch
+    XCTAssertTrue(
+      more.waitForExistence(timeout: 10),
+      "The loupe's More menu is missing — Share's home in persistent chrome.")
+    more.tap()
     let share = app.buttons["loupeShare"]
     XCTAssertTrue(
       share.waitForExistence(timeout: 10),
-      "The loupe's share control is missing — sharing must be reachable from persistent chrome.")
+      "More carries no Share row — sharing must be reachable from persistent chrome.")
 
     let started = Date()
     share.tap()
@@ -111,7 +118,7 @@ final class LoupeShareOneTapUITests: OrientationPinnedUITestCase {
       "Action bar (Dislike button) never appeared — expected the DEBUG fixture composition's "
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     let target = app.descendants(matching: .any).matching(identifier: "gridTile-\(tile)").firstMatch
     XCTAssertTrue(
       target.waitForExistence(timeout: 15),

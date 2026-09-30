@@ -61,6 +61,8 @@ struct LoupeView: View {
   /// full-screen presentations of this same loupe (they are mutually exclusive but swap freely,
   /// and a prepared export must not be lost — or leaked — across that swap).
   let share: ShareExportStore
+  /// WP30 P1 (IMGMGR-456): the shoot's name and the inspector toggle, from the host shell.
+  let chrome: LoupeChrome
 
   /// The production reset adapter; a test substitutes a spy (see the type's own doc comment for
   /// why it is a value and not a view-wrapping closure).
@@ -80,16 +82,20 @@ struct LoupeView: View {
   /// in the object and end it from the outside.
   @State private var pagingLifetime: LoupePagingLifetime
   @State private var imageViewport: CGSize = .zero
+  /// The Share row's prepare and sheet (WP30 P1): owned here, because the row lives in a menu.
+  @State private var shareLauncher = ShareLauncher()
   @Environment(\.displayScale) private var displayScale
 
   init(
     store: GridStore, layoutMode: LayoutMode, share: ShareExportStore,
+    chrome: LoupeChrome = .none,
     zoomModel: LoupeZoomModel = LoupeZoomModel(),
     pagingLifetime: LoupePagingLifetime = LoupePagingLifetime()
   ) {
     self.store = store
     self.layoutMode = layoutMode
     self.share = share
+    self.chrome = chrome
     _zoomModel = State(initialValue: zoomModel)
     _pagingLifetime = State(initialValue: pagingLifetime)
   }
@@ -147,7 +153,6 @@ struct LoupeView: View {
   var body: some View {
     let zoomToggle = zoomToggleAction
     return VStack(spacing: 0) {
-      header()
       ShareStatusBar(share: share)
       mainImageArea(zoomToggle: zoomToggle)
       // IMGMGR-406: on a loose photograph in Scene mode the strip is not built at all, so the
@@ -157,8 +162,21 @@ struct LoupeView: View {
         filmstrip.make(store)
       }
       ConflictRecoveryBanner(store: store)
-      LoupeMarkBar(store: store)
     }
+    // The loupe's own accessible subtree, one container a UI test can scope to (its bars are the
+    // host's navigation bar and bottom toolbar). `.contain` FIRST, then the identifier — the
+    // IMGMGR-280 order, so the identifier never propagates down onto the children.
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("loupeContent")
+    // WP30 P1 (IMGMGR-456): the header is a system toolbar of exactly three groups, built from
+    // `LoupeChromeLayout`, and the mark group rides the system bottom bar. Both hosts give it a
+    // bar: the Regular split's detail column, and the Compact cover's own `NavigationStack`.
+    .toolbar {
+      LoupeToolbar(layout: chromeLayout) { chromeItem($0) }
+      LoupeMarkGroup(store: store)
+    }
+    .navigationBarTitleDisplayMode(.inline)
+    .modifier(ShareLauncherPresentation(launcher: shareLauncher, share: share))
     // NOT `.task(id:)` (Codex round 2): that binds the page load to this frame's view lifetime,
     // so the next focus change CANCELS a page still on the wire — and `GridService` maps every
     // thrown error, `CancellationError` included, to `.unreachable`, which the pagers record as
@@ -233,40 +251,84 @@ struct LoupeView: View {
   }
 
   /// IMGMGR-348, owner device pass 2026-09-02: the zoom ("100 %"), auto-advance ("play") and
-  /// full-screen ("expand") controls that used to sit here are gone, verbatim — "i think we can
-  /// get rid of those altogether … its not necessary". What is left is what the loupe is for:
-  /// close, the fidelity label, and share. Zoom itself is UNCHANGED as a gesture (pinch and
-  /// double-tap, `mainImageArea`); advance-after-marking keeps its keyboard form (`A`/⌘⇧A) and
-  /// its account-sheet row; the full-screen MODE had no other way in and went with its control.
-  private func header() -> some View {
-    HStack {
+  /// full-screen ("expand") controls that used to sit in the header are gone, verbatim — "i think
+  /// we can get rid of those altogether … its not necessary". Zoom itself is UNCHANGED as a
+  /// gesture (pinch and double-tap, `mainImageArea`); advance-after-marking keeps its keyboard
+  /// form (`A`/⌘⇧A) and its account-sheet row; the full-screen MODE had no other way in and went
+  /// with its control. WP30 P1 (IMGMGR-456) keeps it that way: `LoupeChromeLayout` has no zoom
+  /// item, and the bar is Back · title · Compare, Info, More.
+  var chromeLayout: LoupeChromeLayout {
+    LoupeChromeLayout.make(layoutMode: layoutMode, hasInfo: chrome.info != nil)
+  }
+
+  /// "<shoot name> · n of N" over the filmstrip's own scope (`LoupeTitle`).
+  var titleText: String {
+    LoupeTitle.text(
+      shootTitle: chrome.shootTitle, scope: FilmstripScope.resolve(for: store),
+      focusedImageID: store.focusedImageID)
+  }
+
+  /// One toolbar control, by item. Identifiers come from `LoupeChromeItem`, so the value the
+  /// layout test pins and the identifiers the UI test reads are one table.
+  @ViewBuilder
+  private func chromeItem(_ item: LoupeChromeItem) -> some View {
+    switch item {
+    case .back:
+      // Replaces Close and does exactly what it did; ⎋ and the store's other close paths are
+      // untouched.
       Button {
         store.closeLoupe()
       } label: {
-        Image(systemName: "xmark")
+        Label(item.title, systemImage: "chevron.backward")
       }
-      .frame(minWidth: 44, minHeight: 44)
-      .accessibilityIdentifier("loupeClose")
-
-      Spacer()
-
-      // Always visible, in every loupe state (spec) — including when `focusedImage` is nil
-      // (nothing loaded yet), which `LoupeFidelityLabel.label(sourceKind:)`'s own `nil` branch
-      // already renders as the SAME visible fallback a present-but-unrecognized value would.
-      Text(LoupeFidelityLabel.label(sourceKind: focusedImage?.sourceKind))
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .accessibilityIdentifier("loupeFidelityLabel")
-
-      Spacer()
-
-      // Both idioms — on Compact this is the only trailing control, which is exactly the point:
-      // sharing is reachable from persistent chrome on the phone too, not just where there is
-      // room for a toolbar full of things.
-      ShareControl(share: share, image: focusedImage)
+      .accessibilityIdentifier(item.accessibilityIdentifier)
+    case .title:
+      VStack(spacing: 0) {
+        Text(titleText)
+          .font(.headline)
+          .lineLimit(1)
+          .accessibilityIdentifier(item.accessibilityIdentifier)
+        // The fidelity label's home is now the title's subtitle — always visible, in every loupe
+        // state (spec), including when `focusedImage` is nil (nothing loaded yet), which
+        // `LoupeFidelityLabel.label(sourceKind:)`'s own `nil` branch renders as the SAME visible
+        // fallback a present-but-unrecognized value would.
+        Text(LoupeFidelityLabel.label(sourceKind: focusedImage?.sourceKind))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .accessibilityIdentifier("loupeFidelityLabel")
+      }
+    case .compare:
+      // P1 places the control; P3 (IMGMGR-458) wires it. Present, disabled, and saying why.
+      Button(item.title, systemImage: "rectangle.split.2x1", action: compareIsNotWiredYet)
+        .disabled(true)
+        .accessibilityHint("Compare is not available yet.")
+        .accessibilityIdentifier(item.accessibilityIdentifier)
+    case .info:
+      if let info = chrome.info {
+        // The SAME inspector flag the grid bar's Info toggles (`inspectorChromeButton`).
+        Button {
+          info.toggle()
+        } label: {
+          Label(item.title, systemImage: "info.circle")
+        }
+        .accessibilityAddTraits(info.isPresented ? [.isSelected] : [])
+        .accessibilityIdentifier(item.accessibilityIdentifier)
+      }
+    case .more:
+      // P1 holds Share alone, moved off the header so it never loses its home; P2 (IMGMGR-457)
+      // adds the rest of the Cull More.
+      Menu {
+        ShareMenuRow(launcher: shareLauncher, share: share, image: focusedImage)
+      } label: {
+        Label(item.title, systemImage: "ellipsis.circle")
+      }
+      .accessibilityIdentifier(item.accessibilityIdentifier)
     }
-    .padding(.horizontal)
   }
+
+  /// Compare's action until P3 (IMGMGR-458): the control is disabled, so this never runs.
+  private func compareIsNotWiredYet() {}
 
   private func mainImageArea(zoomToggle: @escaping () -> Void) -> some View {
     let zoom = resolvedZoom
@@ -311,11 +373,15 @@ struct LoupeView: View {
         Button {
           store.loupePrevious()
         } label: {
-          Image(systemName: "chevron.left")
-            .padding()
-            .background(.black.opacity(0.35), in: Circle())
-            .foregroundStyle(.white)
+          Label("Previous", systemImage: "chevron.left")
+            .labelStyle(.iconOnly)
+            .padding(6)
         }
+        // WP30 P1: a system-styled button, not a hand-painted circle. Not `.glass`: the gate's
+        // no-custom-glass-grep leg bans that style spelling (ADR-N1), so the plan's own fallback,
+        // the system bordered style, is what renders.
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
         .disabled(!store.canLoupeGoPrevious)
         .frame(minWidth: 44, minHeight: 44)
         .accessibilityIdentifier("loupePrevious")
@@ -325,16 +391,27 @@ struct LoupeView: View {
         Button {
           Task { await store.loupeNext() }
         } label: {
-          Image(systemName: "chevron.right")
-            .padding()
-            .background(.black.opacity(0.35), in: Circle())
-            .foregroundStyle(.white)
+          Label("Next", systemImage: "chevron.right")
+            .labelStyle(.iconOnly)
+            .padding(6)
         }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
         .disabled(!store.canLoupeGoNext)
         .frame(minWidth: 44, minHeight: 44)
         .accessibilityIdentifier("loupeNext")
       }
       .padding(.horizontal, 8)
+
+      // IMGMGR-348's one piece of share feedback, now that Share is a More row (WP30 P1): the
+      // prepare shows on the loupe until the sheet presents or the refusal row says why not.
+      if share.isPreparing {
+        ProgressView()
+          .controlSize(.small)
+          .accessibilityIdentifier("loupeSharePreparing")
+          .padding()
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+      }
     }
     .frame(maxHeight: .infinity)
   }
@@ -384,13 +461,34 @@ struct LoupeView: View {
 /// button here while a mutation is in flight is the view-layer half of that same guard, same
 /// "disabled visually, guarded at the store independent of that" posture `ActionBarView`'s Pick
 /// button already uses for Select-mode exclusion.
+///
+/// WP30 P1 (IMGMGR-456, p4128 D7): the group reads Dislike · Clear · Pick, a fixed gap, then
+/// Undo, on the system bottom bar (`LoupeMarkGroup`) — the glass is the system's, never ours. A
+/// verdict tints its icon rather than filling a pill.
+struct LoupeMarkGroup: ToolbarContent {
+  let store: GridStore
+
+  var body: some ToolbarContent {
+    ToolbarSpacer(.flexible, placement: .bottomBar)
+    ToolbarItem(placement: .bottomBar) {
+      LoupeMarkBar(store: store)
+    }
+    ToolbarSpacer(.fixed, placement: .bottomBar)
+    ToolbarItem(placement: .bottomBar) {
+      LoupeUndoButton(store: store)
+    }
+    ToolbarSpacer(.flexible, placement: .bottomBar)
+  }
+}
+
+/// Dislike · Clear · Pick, as one bottom-bar item whose container keeps the `loupeMarkBar`
+/// identifier.
 struct LoupeMarkBar: View {
   @Bindable var store: GridStore
 
   var body: some View {
     let markState = store.focusedMarkState
-    return HStack(spacing: 24) {
-      markButton(.pick, state: markState)
+    return HStack(spacing: 16) {
       markButton(.dislike, state: markState)
 
       Button {
@@ -398,31 +496,23 @@ struct LoupeMarkBar: View {
       } label: {
         Label("Clear", systemImage: "xmark.circle")
       }
-      .buttonStyle(.bordered)
+      .buttonStyle(.borderless)
+      .foregroundStyle(.primary)
       .disabled(store.focusedImageID == nil || store.isMutatingMark)
       .frame(minWidth: 44, minHeight: 44)
       .accessibilityIdentifier("loupeClearButton")
 
-      Button {
-        Task { await store.undoLastMark() }
-      } label: {
-        Label("Undo", systemImage: "arrow.uturn.backward")
-      }
-      .buttonStyle(.bordered)
-      .disabled(!store.undo.canUndo || store.isMutatingMark)
-      .frame(minWidth: 44, minHeight: 44)
-      .accessibilityIdentifier("loupeUndoButton")
+      markButton(.pick, state: markState)
     }
     .labelStyle(.iconOnly)
     .font(.title3)
-    .padding()
-    .chromeFill(.bar)
+    .padding(.horizontal, 8)
     // IMGMGR-280: `.contain` FIRST, then the bar's own identifier. Without it this HStack is not
     // an accessibility element of its own, so an identifier put on it propagates DOWN and
     // overrides every child's — the 23:26 gate run dumped all four controls reporting
     // `loupeMarkBar`, `loupeClearButton` included, and a per-button identifier that never
     // surfaces is a lie no test could catch. As a container the bar keeps its own identifier and
-    // the four buttons keep theirs.
+    // the buttons keep theirs.
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("loupeMarkBar")
   }
@@ -438,20 +528,41 @@ struct LoupeMarkBar: View {
     state: Components.Schemas.MarkView.StatePayload?
   ) -> some View {
     let isActive = LoupeMarkPresentation.isActive(control, state: state)
+    let verdictColor = MarkPalette.color(for: control.markRole)
     Button {
       Task { await store.applyLoupeMark(control.appliedState) }
     } label: {
       Label(control.title, systemImage: LoupeMarkPresentation.symbol(for: control, state: state))
     }
-    .buttonStyle(.bordered)
-    // WP16 P1 (p3332 decision 5): an ACTIVE verdict reads in its own colour rather than the
-    // accent colour. Inactive stays `nil` — an always-tinted bar states nothing.
-    .tint(isActive ? MarkPalette.color(for: control.markRole) : nil)
+    .buttonStyle(.borderless)
+    // WP16 P1 (p3332 decision 5): an ACTIVE verdict reads in its own colour; inactive stays
+    // neutral — an always-tinted bar states nothing. WP30 P1: the colour tints the icon itself
+    // (Pick green, Dislike red) instead of filling a bordered pill.
+    .foregroundStyle(isActive ? AnyShapeStyle(verdictColor) : AnyShapeStyle(.primary))
     .disabled(store.focusedImageID == nil || store.isMutatingMark)
     .frame(minWidth: 44, minHeight: 44)
     .accessibilityIdentifier(control.accessibilityIdentifier)
     .accessibilityValue(LoupeMarkPresentation.accessibilityValue(for: control, state: state))
     .accessibilityAddTraits(isActive ? [.isSelected] : [])
+  }
+}
+
+/// Undo, after the group's fixed gap: reverts the last mark (`undoLastMark`), the same path the
+/// grid's own Undo uses.
+struct LoupeUndoButton: View {
+  @Bindable var store: GridStore
+
+  var body: some View {
+    Button {
+      Task { await store.undoLastMark() }
+    } label: {
+      Label("Undo", systemImage: "arrow.uturn.backward")
+    }
+    .labelStyle(.iconOnly)
+    .font(.title3)
+    .disabled(!store.undo.canUndo || store.isMutatingMark)
+    .frame(minWidth: 44, minHeight: 44)
+    .accessibilityIdentifier("loupeUndoButton")
   }
 }
 
@@ -707,8 +818,16 @@ struct FilmstripView: View {
         .padding(.vertical, 4)
       }
       .frame(height: 72)
-      .chromeFill(.bar)
+      // WP30 P1 (IMGMGR-456): the strip is CONTENT, not chrome (ADR-N1 "content carries no
+      // glass") — no fill in any mode, and the resolved role rides its accessibility value.
+      .materialSurface(.content)
       .accessibilityIdentifier("loupeFilmstrip")
+      // WP30 P1 round 2: the strip must not TOUCH the bottom safe-area edge. With the mark group
+      // on the system bottom bar the strip became the stack's last view, and a scroll view that
+      // abuts the safe-area edge extends itself under the bar and the home indicator (gate
+      // d3bd8aa: 146 pt on iPad, 158 pt on iPhone, the bar inside its frame, so a swipe on the
+      // strip landed on the bar). A gap below it keeps it a 72 pt band above the bar.
+      .padding(.bottom, 4)
       .onChange(of: revealTarget(in: frames), initial: true) { _, target in
         reveal(target, through: proxy)
       }

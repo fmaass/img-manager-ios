@@ -148,7 +148,7 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
       search.waitForExistence(timeout: 10),
       "Positive control failed: the grid's bar carries no toolbar search before the loupe opens.")
 
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     let tile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
     XCTAssertTrue(tile.waitForExistence(timeout: 15), "The fixture's first tile never appeared.")
     // `GridStore.tapTile`: a tap on an unfocused tile moves focus, a tap on the focused one opens.
@@ -164,7 +164,7 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
 
     close.tap()
     XCTAssertTrue(
-      close.waitForNonExistence(timeout: 10), "The docked loupe did not close from loupeClose.")
+      close.waitForNonExistence(timeout: 10), "The docked loupe did not close from loupeBack.")
     XCTAssertTrue(
       search.waitForExistence(timeout: 10),
       "The toolbar search did not come back on the grid's bar after the loupe closed.")

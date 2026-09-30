@@ -139,7 +139,7 @@ final class LoupeZoomScreenshotUITests: OrientationPinnedUITestCase {
       "Action bar (Dislike button) never appeared — expected the DEBUG fixture composition's "
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     let tile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
     XCTAssertTrue(
       tile.waitForExistence(timeout: 15),

@@ -3,7 +3,7 @@ import UIKit
 
 /// WP28 P4 (IMGMGR-451): the one place that decides how the app's OWN drawn chrome is filled — the
 /// capsules and rows this app paints itself (the options row, the mode rows, the banners, the
-/// action bar, the loupe's mark bar and filmstrip, the refresh capsule). System bars, the sidebar,
+/// action bar, the refresh capsule). System bars, the sidebar,
 /// the tab bar and sheets are the system's and are not touched here (ADR-N1: system components
 /// only, no custom glass).
 ///
@@ -24,10 +24,22 @@ enum MaterialPolicy {
   enum Base: Equatable, Sendable, CaseIterable {
     /// `.thinMaterial` — the rows and capsules over the grid.
     case thinMaterial
-    /// `.bar` — the action bar, the loupe's mark bar and its filmstrip.
+    /// `.bar` — the action bar. (The loupe's mark group moved to the system bottom bar and its
+    /// filmstrip is `content`, WP30 P1.)
     case bar
     /// Inside system glass (the Regular sidebar): opaque, never a material.
     case insideSystemGlass
+    /// WP30 P1 (IMGMGR-456): content, not chrome — the loupe's filmstrip. No fill and no stroke
+    /// in any mode: ADR-N1 "content carries no glass", and Reduce Transparency / Increase
+    /// Contrast adjust chrome, not the photographs the chrome sits over.
+    case content
+  }
+
+  /// What a resolved surface IS, as the rendered accessibility value states it
+  /// (`materialSurface(_:)`), so a UI test reads the role the view actually applied.
+  enum SurfaceRole: String, Equatable, Sendable {
+    case chrome
+    case content
   }
 
   enum Fill: Equatable, Sendable {
@@ -35,17 +47,22 @@ enum MaterialPolicy {
     case bar
     /// `Color(uiColor: .secondarySystemBackground)`.
     case opaqueSecondaryBackground
+    /// No fill at all: the surface is content (`Base.content`).
+    case noFill
   }
 
   struct Resolution: Equatable, Sendable {
     let fill: Fill
     /// A `separator` stroke along the fill's edge.
     let strokesSeparator: Bool
+
+    var surfaceRole: SurfaceRole { fill == .noFill ? .content : .chrome }
   }
 
   static func resolve(
     _ base: Base, reduceTransparency: Bool, increasedContrast: Bool
   ) -> Resolution {
+    if base == .content { return Resolution(fill: .noFill, strokesSeparator: false) }
     let fill: Fill
     if reduceTransparency {
       fill = .opaqueSecondaryBackground
@@ -54,6 +71,7 @@ enum MaterialPolicy {
       case .thinMaterial: fill = .thinMaterial
       case .bar: fill = .bar
       case .insideSystemGlass: fill = .opaqueSecondaryBackground
+      case .content: fill = .noFill
       }
     }
     return Resolution(fill: fill, strokesSeparator: increasedContrast)
@@ -64,6 +82,7 @@ enum MaterialPolicy {
     case .thinMaterial: AnyShapeStyle(.thinMaterial)
     case .bar: AnyShapeStyle(.bar)
     case .opaqueSecondaryBackground: AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
+    case .noFill: AnyShapeStyle(Color.clear)
     }
   }
 }
@@ -79,6 +98,35 @@ extension View {
   /// A chrome capsule or other shape, as `.background(_:in:)` drew it.
   func chromeFill<S: InsettableShape>(_ base: MaterialPolicy.Base, in shape: S) -> some View {
     modifier(ChromeShapeFill(base: base, shape: shape))
+  }
+
+  /// WP30 P1 (IMGMGR-456): `chromeFill(_:)` for a surface whose role a UI test reads back — the
+  /// resolved `SurfaceRole` rides the accessibility value, derived from the same resolution
+  /// that decides the fill, never written as a literal at the call site.
+  func materialSurface(_ base: MaterialPolicy.Base) -> some View {
+    modifier(MaterialSurfaceRole(base: base))
+  }
+}
+
+private struct MaterialSurfaceRole: ViewModifier {
+  let base: MaterialPolicy.Base
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+  func body(content: Content) -> some View {
+    let resolution = MaterialPolicy.resolve(
+      base, reduceTransparency: reduceTransparency,
+      increasedContrast: colorSchemeContrast == .increased)
+    // Content draws NO background layer at all — not even a clear one: a `.background` ignores
+    // the safe area, so on a surface that touches the bottom bar it would reach under it.
+    Group {
+      if resolution.fill == .noFill {
+        content
+      } else {
+        content.chromeFill(base)
+      }
+    }
+    .accessibilityValue(resolution.surfaceRole.rawValue)
   }
 }
 

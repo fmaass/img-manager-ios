@@ -32,7 +32,7 @@ final class QuickPickUITests: OrientationPinnedUITestCase {
       pick.waitForExistence(timeout: 30),
       "Action bar (gridPickButton) never appeared — expected the DEBUG fixture composition's "
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
 
     // Focus photograph 3 (unmarked) first, so the corner tap has focus to MOVE.
     let other = element(app, "gridTile-3")
@@ -106,7 +106,7 @@ final class QuickPickUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       waitFor("value == 'Picked'", corner),
       "With Tap to Pick on, one tap on a tile must pick it.")
-    XCTAssertFalse(app.buttons["loupeClose"].exists, "A latched tap opened the loupe.")
+    XCTAssertFalse(app.buttons["loupeBack"].exists, "A latched tap opened the loupe.")
     attach(name: "IMGMGR-475-tap-to-pick")
 
     toggle.tap()

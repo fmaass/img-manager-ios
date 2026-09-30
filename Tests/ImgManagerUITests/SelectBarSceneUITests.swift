@@ -183,7 +183,7 @@ final class SelectBarSceneUITests: OrientationPinnedUITestCase {
     let tile = element(app, "gridTile-\(imageID)")
     XCTAssertTrue(tile.waitForExistence(timeout: 10), "gridTile-\(imageID) is not on screen.")
     tile.tap()
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     if close.waitForExistence(timeout: 1) { close.tap() }
   }
 

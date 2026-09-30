@@ -25,7 +25,7 @@ final class ActionBarMarkReadoutUITests: OrientationPinnedUITestCase {
     let tile = app.descendants(matching: .any).matching(identifier: "gridTile-2").firstMatch
     XCTAssertTrue(tile.waitForExistence(timeout: 15), "Fixture tile `gridTile-2` never appeared.")
     tile.tap()
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     if close.waitForExistence(timeout: 2) { close.tap() }
     XCTAssertTrue(pick.waitForExistence(timeout: 10), "The bar is gone after focusing a tile.")
 

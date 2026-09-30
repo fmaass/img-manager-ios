@@ -377,7 +377,14 @@ struct RootView: View {
           if !presented { gridStore.closeLoupe() }
         })
     ) {
-      LoupeView(store: gridStore, layoutMode: layoutMode, share: shareExport)
+      // WP30 P1 (IMGMGR-456): a stack of its own, so the loupe's system toolbar has a bar to
+      // render on. No Info here: the Compact inspector is a sheet of the workspace UNDER this
+      // cover, so the cover has no inspector path and its trailing group is More alone.
+      NavigationStack {
+        LoupeView(
+          store: gridStore, layoutMode: layoutMode, share: shareExport,
+          chrome: LoupeChrome(shootTitle: currentBreadcrumb?.title ?? "", info: nil))
+      }
     }
     // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
     // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
@@ -682,14 +689,19 @@ struct RootView: View {
     }
   }
 
+  /// The grid's breadcrumb for the current folder — also the Compact loupe's shoot title.
+  private var currentBreadcrumb: GridBreadcrumb? {
+    GridBreadcrumb.make(
+      folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
+      cachedTreeFolders: queueStore.cachedTree?.foldersByTier, summaries: queueStore.summaries)
+  }
+
   /// WP28 P1 (IMGMGR-448): the shared workspace destination — the split's detail at Regular and
   /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).
   private var contentColumn: some View {
     // WP28 P3: read here in the body, so the title follows the tree's and the queue's loads.
     // WP29 P1 (IMGMGR-452): the breadcrumb carries that title plus the tree's server count.
-    let breadcrumb = GridBreadcrumb.make(
-      folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
-      cachedTreeFolders: queueStore.cachedTree?.foldersByTier, summaries: queueStore.summaries)
+    let breadcrumb = currentBreadcrumb
     return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
       folderSearch: folderSearch, queueStore: queueStore, breadcrumb: breadcrumb,

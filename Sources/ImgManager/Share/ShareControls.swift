@@ -2,10 +2,16 @@ import ImgManagerAPI
 import SwiftUI
 import UIKit
 
-/// The share entry, in the loupe's persistent header chrome, in BOTH idioms — the chrome rule
-/// carried from the web unchanged ("every action is reachable from persistent chrome; gestures
-/// and pointer affordances are additions", functional spec p3231) — with the same 44-pt
-/// treatment every other header control has (`Loupe/LoupeView.swift:63-73`).
+/// The share entry. WP30 P1 (IMGMGR-456): it is the Share row of the loupe's More menu — the
+/// header became a system toolbar (p4128 D4) and Share moved off it into More, so it keeps its
+/// one home in persistent chrome, in BOTH idioms — the chrome rule carried from the web unchanged
+/// ("every action is reachable from persistent chrome; gestures and pointer affordances are
+/// additions", functional spec p3231).
+///
+/// A menu row lives only while its menu is open, so the prepare, the presented sheet and their
+/// lifetime cannot sit on the row the way they sat on the old header control: they live in a
+/// `ShareLauncher` the LOUPE owns, whose sheet and cancel-on-disappear hang off the loupe's root
+/// (`ShareLauncherPresentation`). Closing the loupe mid-prepare still cancels the prepare.
 ///
 /// AND NOWHERE ELSE, deliberately. There is no context menu on a grid tile: a tile's touch
 /// long-press ALREADY means "enter Select mode" (`Grid/GridView.swift:97-100` →
@@ -25,68 +31,25 @@ import UIKit
 /// same invocation: all seven `func contextMenu` overloads were listed, so the interface really
 /// was read. The constraint STANDS and the entry stays unbuilt, now on evidence rather than on
 /// inheritance.
-struct ShareControl: View {
-  @Bindable var share: ShareExportStore
-  let image: Components.Schemas.ImageSummary?
-  /// Captured when the sheet is presented, not when it is dismissed: dismissal can arrive long
-  /// after the export it belongs to stopped being the current one, and this is what lets the
-  /// store tell those apart (see `ShareExportStore.finish`).
-  @State private var presentedToken: ShareExportToken?
-  @State private var isSharePresented = false
-  /// The in-flight prepare, held so the VIEW owns its lifetime. A share belongs to the loupe
-  /// that asked for it: if this control goes away mid-fetch there is nothing left that could
-  /// present the result or dismiss it, so the task is cancelled and the store ends the export
-  /// through its own `finish(_:)` path (diff-gate BLOCKING, IMGMGR-348).
-  @State private var prepareTask: Task<Void, Never>?
+@MainActor
+@Observable
+final class ShareLauncher {
+  /// The export the presented sheet was made from; ended with `finish` when the sheet goes.
+  private(set) var presentedToken: ShareExportToken?
+  var isSharePresented = false
+  @ObservationIgnored private var prepareTask: Task<Void, Never>?
 
-  var body: some View {
-    // A STACK, not a `Group`, and that distinction is the whole of a diff-gate regression: a
-    // `Group`'s modifiers are applied to each CHILD, so when `isPreparing` flipped and the
-    // button branch was replaced by the spinner, the button's own `onDisappear` fired and
-    // cancelled the very prepare it had just started — an ordinary share that took longer than
-    // one render never opened its sheet. A stack is one view that outlives the branch switch, so
-    // the lifetime modifiers below are about THIS CONTROL leaving the loupe, which is what they
-    // were always meant to mean.
-    ZStack {
-      if share.isPreparing {
-        // The whole of the feedback, in the control the user just touched: no status row, no
-        // second surface to read, and nothing that needs dismissing if the export refuses.
-        ProgressView()
-          .controlSize(.small)
-          .accessibilityIdentifier("loupeSharePreparing")
-      } else {
-        Button {
-          guard let image else { return }
-          prepareTask?.cancel()
-          prepareTask = Task { await presentShare(for: image) }
-        } label: {
-          Label("Share", systemImage: "square.and.arrow.up")
-        }
-        .disabled(image == nil)
-        .accessibilityIdentifier("loupeShare")
-      }
-    }
-    .labelStyle(.iconOnly)
-    .frame(minWidth: 44, minHeight: 44)
-    .onDisappear {
-      // Closing the loupe mid-prepare is the case this exists for, and on the STACK it is the
-      // only case it fires for: cancelling here is what makes the store's cancellation path run
-      // at all, so no prepared bytes outlive a share that can no longer be presented.
-      prepareTask?.cancel()
-      prepareTask = nil
-    }
-    .sheet(
-      isPresented: $isSharePresented,
-      onDismiss: {
-        if let presentedToken { share.finish(presentedToken) }
-      },
-      content: {
-        // Re-read from state rather than capturing: by presentation time this is still the
-        // same `.ready` file, and if anything superseded it there is nothing to present.
-        if case .ready(let file) = share.state, let presentedToken {
-          ShareSheet(file: file, share: share, token: presentedToken)
-        }
-      })
+  func start(share: ShareExportStore, image: Components.Schemas.ImageSummary) {
+    prepareTask?.cancel()
+    prepareTask = Task { await self.present(share: share, image: image) }
+  }
+
+  /// The loupe is gone: a prepare still running must never present anything. Cancelling here is
+  /// what makes the store's cancellation path run at all, so no prepared bytes outlive a share
+  /// that can no longer be presented.
+  func cancel() {
+    prepareTask?.cancel()
+    prepareTask = nil
   }
 
   /// ONE TAP (IMGMGR-348). Owner device pass on 0.11.0 (14), verbatim: "the sharing is weird: on
@@ -104,10 +67,10 @@ struct ShareControl: View {
   ///
   /// A refusal is NOT presented: nothing is on disk, so there is nothing to hand to a sheet, and
   /// `ShareStatusBar` renders the refusal inline exactly as it always did.
-  private func presentShare(for image: Components.Schemas.ImageSummary) async {
+  private func present(share: ShareExportStore, image: Components.Schemas.ImageSummary) async {
     await share.prepare(ShareExportPlan.variant(hasEdit: image.hasEdit), for: image)
-    // A prepare that finishes AFTER this control is gone must not present anything. The store
-    // has already ended that export (its cancellation path), so `.ready` is not reachable here
+    // A prepare that finishes AFTER the loupe is gone must not present anything. The store has
+    // already ended that export (its cancellation path), so `.ready` is not reachable here
     // either — this is the second half of the same statement, said where the presentation
     // actually happens rather than inferred from the store's state.
     guard !Task.isCancelled else { return }
@@ -117,16 +80,59 @@ struct ShareControl: View {
   }
 }
 
+/// The launcher's sheet and lifetime, attached to the loupe's root — the one view that outlives
+/// the More menu the Share row sits in.
+struct ShareLauncherPresentation: ViewModifier {
+  @Bindable var launcher: ShareLauncher
+  let share: ShareExportStore
+
+  func body(content: Content) -> some View {
+    content
+      .onDisappear { launcher.cancel() }
+      .sheet(
+        isPresented: $launcher.isSharePresented,
+        onDismiss: {
+          if let token = launcher.presentedToken { share.finish(token) }
+        },
+        content: {
+          // Re-read from state rather than capturing: by presentation time this is still the
+          // same `.ready` file, and if anything superseded it there is nothing to present.
+          if case .ready(let file) = share.state, let token = launcher.presentedToken {
+            ShareSheet(file: file, share: share, token: token)
+          }
+        })
+  }
+}
+
+/// The More menu's Share row (identifier `loupeShare`, kept from the header control): one tap on
+/// the row prepares and presents, as the header control did (IMGMGR-348).
+struct ShareMenuRow: View {
+  let launcher: ShareLauncher
+  @Bindable var share: ShareExportStore
+  let image: Components.Schemas.ImageSummary?
+
+  var body: some View {
+    Button {
+      guard let image else { return }
+      launcher.start(share: share, image: image)
+    } label: {
+      Label("Share", systemImage: "square.and.arrow.up")
+    }
+    .disabled(image == nil || share.isPreparing)
+    .accessibilityIdentifier("loupeShare")
+  }
+}
+
 /// The share lane's inline, non-modal REFUSAL row, directly under the loupe header — the same
 /// posture `ConflictRecoveryBanner` already uses for the 409 lane: no alerts, no server text, no
 /// modality anywhere in this flow.
 ///
 /// It renders one state and one only (IMGMGR-348). The "Preparing the export…" row and the
 /// ready-filename button it used to draw were the second and third interactions the owner did
-/// not want, and both are gone: preparation shows in the share control itself, and a prepared
-/// export presents its sheet without being asked again. What remains is the one thing a share
-/// can still need to say — that it could not happen, and why — which no system sheet can say for
-/// this app.
+/// not want, and both are gone: preparation shows on the loupe itself (`loupeSharePreparing`),
+/// and a prepared export presents its sheet without being asked again. What remains is the one
+/// thing a share can still need to say — that it could not happen, and why — which no system
+/// sheet can say for this app.
 struct ShareStatusBar: View {
   @Bindable var share: ShareExportStore
 

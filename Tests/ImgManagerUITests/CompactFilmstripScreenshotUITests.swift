@@ -142,7 +142,7 @@ final class CompactFilmstripScreenshotUITests: OrientationPinnedUITestCase {
       "Action bar (Dislike button) never appeared — expected the DEBUG fixture composition's "
         + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
 
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     let columns: [CGFloat] = [0.5, 0.4, 0.6, 0.7, 0.3, 0.8, 0.25, 0.85]
     let rows: [CGFloat] = [0.35, 0.45, 0.55, 0.28]
     for dy in rows {

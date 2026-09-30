@@ -171,7 +171,7 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
   private func openLoupe(_ app: XCUIApplication, onTile identifier: String) {
     XCTAssertTrue(
       element(app, identifier).waitForExistence(timeout: 20), "\(identifier) is not on screen.")
-    let close = app.buttons["loupeClose"]
+    let close = app.buttons["loupeBack"]
     // `GridStore.tapTile`: the SECOND tap on the focused tile opens; a first tap on an unfocused
     // tile only moves focus. Which of the two a tile needs depends on where focus already is.
     for _ in 0..<3 where !close.exists {

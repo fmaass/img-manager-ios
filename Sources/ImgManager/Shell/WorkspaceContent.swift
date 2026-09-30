@@ -55,7 +55,10 @@ struct WorkspaceContent: View {
       // as a filmstrip"). Compact never takes this branch (its loupe is always the full-screen
       // cover on `RootView`). The docked loupe carries no title and no title menu.
       if store.isLoupeOpen && layoutMode != .compact {
-        LoupeView(store: store, layoutMode: layoutMode, share: share)
+        // WP30 P1 (IMGMGR-456): the loupe's own toolbar (`LoupeToolbar`) renders on this
+        // column's bar; the grid's `.toolbar` below is attached only in the `else` branch, so no
+        // grid item is mounted while the loupe is open.
+        LoupeView(store: store, layoutMode: layoutMode, share: share, chrome: loupeChrome)
       } else {
         GridView(store: store, layoutMode: layoutMode)
           .toolbar {
@@ -100,6 +103,19 @@ struct WorkspaceContent: View {
           min: InspectorColumnMetrics.minWidth, ideal: InspectorColumnMetrics.idealWidth,
           max: InspectorColumnMetrics.maxWidth)
     }
+  }
+
+  /// WP30 P1: the loupe's title and Info, from the SAME breadcrumb title and inspector flag the
+  /// grid bar uses — so the loupe's Info toggles the one inspector.
+  private var loupeChrome: LoupeChrome {
+    guard inspectorPresentation.usesChromeControl else {
+      return LoupeChrome(shootTitle: title ?? "", info: nil)
+    }
+    let binding = $showInspector
+    let info = LoupeChrome.Info(isPresented: showInspector) {
+      withAnimation(.snappy(duration: 0.25)) { binding.wrappedValue.toggle() }
+    }
+    return LoupeChrome(shootTitle: title ?? "", info: info)
   }
 
   /// The inspector's presentation at the CURRENT layout mode — read by the toolbar condition.
