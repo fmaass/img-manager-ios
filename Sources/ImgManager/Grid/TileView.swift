@@ -20,6 +20,11 @@ struct TileView: View {
   /// `GridView.pointerGestureInstaller` so a spy can prove this cell really installs the effect.
   /// Pointer presence is a RUNTIME fact — nothing here branches on the device idiom.
   var hoverEffectInstaller: HoverEffectInstaller = .live
+  /// IMGMGR-475: whether `GridView` lays the quick-pick corner (`MarkCornerTarget`) over this
+  /// tile's badges. When it does, the badges step out of the accessibility tree: the corner
+  /// speaks every status they draw instead, and a badge element — which answers to this tile's identifier —
+  /// would otherwise sit inside the corner, so a tap aimed at "the tile" could land on it.
+  var hasMarkCorner: Bool = false
 
   var body: some View {
     hoverEffectInstaller.apply(cell)
@@ -40,6 +45,13 @@ struct TileView: View {
       }
       badges
     }
+    // ONE accessibility element per photograph (the `SceneCardView` precedent): the photo and its
+    // badges merge into the element that answers to `gridTile-<id>`. Left as separate children,
+    // every badge — and the empty badge row of a tile with none — surfaced as a further element
+    // under the same identifier, so a query for "the tile" matched several elements and could
+    // never resolve to one (it read as not hittable while the tile sat in full view). The plate
+    // below stays its own element (`tileFilenamePlate`).
+    .accessibilityElement(children: .combine)
     // An OVERLAY, never an extra row in a stack: the justified layout renders exactly the size
     // `packWithTierPlan` computed for this tile, so a plate that added height would put a second
     // size computation in the grid (`GridView`'s own doc comment forbids exactly that).
@@ -53,9 +65,10 @@ struct TileView: View {
     // A stable, non-positional handle for the UI-test lane (WP13 P1's retained Select-mode
     // screenshots): the tiles are otherwise unnamed, and a screenshot test that selects
     // photographs by screen COORDINATE proves nothing reproducibly. Keyed by IMAGE ID, not
-    // shared: one tile surfaces as SEVERAL accessibility elements, so a shared identifier makes
-    // "tap element 0, then element 1" tap the same photograph twice — selecting it and then
-    // deselecting it, which is exactly how the first version of that test read "0 selected".
+    // shared: one tile surfaces as more than one element (the photograph and, when shown, its
+    // filename plate), so a shared identifier makes "tap element 0, then element 1" tap the same
+    // photograph twice — selecting it and then deselecting it, which is exactly how the first
+    // version of that test read "0 selected".
     .accessibilityIdentifier("gridTile-\(image.id)")
     // ≥44×44pt hit region (fold item 4) even for a tile whose rendered/reflowed size is
     // smaller — the tap target is never shrunk along with a capped/placeholder tile.
@@ -137,7 +150,7 @@ struct TileView: View {
   }
 
   /// A pure function so "the plate says the filename, and says nothing when it is off" is
-  /// testable without a render host — the same posture `GridGroupControl.title(for:)` uses.
+  /// testable without a render host — the same posture `ArrangeModel.groupTitle(for:)` uses.
   static func plateText(
     for image: Components.Schemas.ImageSummary, showsPlate: Bool
   ) -> String? {
@@ -161,6 +174,7 @@ struct TileView: View {
       }
     }
     .padding(3)
+    .accessibilityHidden(hasMarkCorner)
   }
 
   private func badgeItems() -> [TileBadgeItem] {

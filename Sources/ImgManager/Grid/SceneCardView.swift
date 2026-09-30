@@ -207,7 +207,7 @@ struct SceneCardView: View {
 }
 
 /// What the collapsed card's verdict cluster SAYS, as values rather than as a view (WP21 P2,
-/// IMGMGR-339). The same posture `TileView.plateText` and `GridGroupControl.title(for:)` take:
+/// IMGMGR-339). The same posture `TileView.plateText` and `ArrangeModel.groupTitle(for:)` take:
 /// "the pencil states the number, and states nothing at zero" is then a test that reads strings
 /// instead of a screenshot somebody has to look at.
 ///

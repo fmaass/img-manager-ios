@@ -7,6 +7,10 @@ import XCTest
 ///
 /// Makes NO device-idiom decision (plan invariant (i)): every step keys off an observed element,
 /// so the same test runs on Compact's options row and on Regular's `.primaryAction` toolbar.
+///
+/// WP29 P2 (IMGMGR-453): the Sort and Group menus became sections of the Arrange popover
+/// (`gridArrangeControl`), so every step opens Arrange and names its rows by identifier —
+/// "Camera" is both a sort key and a grouping there.
 final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
 
   private func launchedApp() -> XCUIApplication {
@@ -21,75 +25,53 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
     return app
   }
 
-  func testSortControlIsOnAPrimarySurfaceAndItsMenuOpens() throws {
+  func testSortRowsAreOneArrangeTapAwayOnAPrimarySurface() throws {
     let app = launchedApp()
 
-    let sort = app.descendants(matching: .any)["gridSortControl"]
+    let arrange = arrangeControl(app)
     XCTAssertTrue(
-      sort.waitForExistence(timeout: 10),
-      "The Sort control is not on a primary surface — nothing named 'gridSortControl' is in the "
-        + "hierarchy without opening an overflow menu.")
-    XCTAssertTrue(sort.isHittable, "The Sort control exists but cannot be tapped where it is.")
-    // Value-in-label: the current key and direction must be readable at rest, without opening
-    // anything — the discoverability half of IMGMGR-221 (gap audit, owner feedback (c)).
-    XCTAssertTrue(
-      sort.label.contains("Sort:"),
-      "Sort control label '\(sort.label)' does not carry its current value.")
+      arrange.waitForExistence(timeout: 10),
+      "The Arrange control is not on a primary surface — nothing named 'gridArrangeControl' is "
+        + "in the hierarchy without opening an overflow menu.")
+    XCTAssertTrue(arrange.isHittable, "The Arrange control exists but cannot be tapped.")
 
-    // The Sort control joined three others on the same primary surface, so "did anything get
-    // pushed into the overflow" is a real question here rather than a formality. Positive
-    // control in the same check (LSN-0033).
+    // "Did anything get pushed into the overflow" — with a positive control (LSN-0033).
     XCTAssertTrue(
       app.buttons["Dislike"].exists,
       "Positive control failed: the Dislike button is gone, so the 0-hit overflow check below "
         + "would pass vacuously.")
     XCTAssertFalse(
       app.buttons["OverflowBarButtonItem"].exists,
-      "A toolbar overflow chevron appeared once Sort joined the primary surface — one of the "
-        + "view-option controls is now reachable only behind it, which is exactly the state "
-        + "IMGMGR-221 exists to end.")
+      "A toolbar overflow chevron appeared — a view-option control is reachable only behind it, "
+        + "which is exactly the state IMGMGR-221 exists to end.")
 
-    // The six offered keys plus both directions, as menu rows a finger can reach. Names come
-    // from `SortKey.title`/`SortDirection.title`; this test holds the only copy outside the app
-    // on purpose — a renamed row that never reached the menu fails here.
-    let titles = ["Date", "Filename", "Rating", "ISO", "Camera", "Lens"]
-    // The open itself (IMGMGR-404): the first row is what says the menu presented at all, so it
-    // is waited for through the shared opener — the run that went red here tapped a Sort control
-    // that never presented anything. The loop below is unchanged and still owns every row.
+    // The six offered keys plus both directions, by identifier and by the words on the row.
+    let keys = [
+      ("date_taken", "Date"), ("filename", "Filename"), ("rating", "Rating"), ("iso", "ISO"),
+      ("camera", "Camera"), ("lens", "Lens"),
+    ]
+    let first = row(app, "arrange.sort.date_taken")
     XCTAssertTrue(
-      openPresentation(sort, revealing: app.buttons[titles[0]], timeout: 5),
-      "The open Sort menu has no row named '\(titles[0])'.")
-    for title in titles {
-      XCTAssertTrue(
-        app.buttons[title].waitForExistence(timeout: 5),
-        "The open Sort menu has no row named '\(title)'.")
+      openPresentation(arrange, revealing: first, timeout: 5),
+      "The open Arrange popover has no 'Date' sort row.")
+    for (raw, title) in keys {
+      let element = row(app, "arrange.sort.\(raw)")
+      XCTAssertTrue(element.waitForExistence(timeout: 5), "No sort row for '\(title)'.")
+      XCTAssertEqual(element.label, title, "The '\(raw)' sort row reads '\(element.label)'.")
     }
-    XCTAssertTrue(app.buttons["Ascending"].exists, "The Sort menu offers no direction rows.")
-    XCTAssertTrue(app.buttons["Descending"].exists, "The Sort menu offers no Descending row.")
+    XCTAssertTrue(row(app, "arrange.direction.asc").exists, "Arrange offers no Ascending row.")
+    XCTAssertTrue(row(app, "arrange.direction.desc").exists, "Arrange offers no Descending row.")
 
     let screenshot = XCUIScreen.main.screenshot()
     let attachment = XCTAttachment(screenshot: screenshot)
     attachment.name = "sort-menu-open"
     attachment.lifetime = .keepAlways
     add(attachment)
-    XCTContext.runActivity(
-      named: "Sort label: '\(sort.label)' · captured \(screenshot.image.size)"
-    ) { _ in }
   }
 
   func testGroupingByCameraRendersServerVouchedSectionHeaders() throws {
     let app = launchedApp()
-
-    let group = app.descendants(matching: .any)["gridGroupControl"]
-    XCTAssertTrue(
-      group.waitForExistence(timeout: 10),
-      "Nothing named 'gridGroupControl' is on a primary surface.")
-
-    let camera = app.buttons["Camera"]
-    XCTAssertTrue(
-      openPresentation(group, revealing: camera, timeout: 5),
-      "The Group menu offers no 'Camera' dimension — the group-by half of IMGMGR-221 is missing.")
-    camera.tap()
+    chooseCameraGrouping(in: app)
 
     // The headers the SERVER vouched for. The fixture's `/api/image-groups` answer carries the
     // live endpoint's own counts (36,568 · 280 · 213) against a page of twelve photographs, so
@@ -118,10 +100,11 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
       labels.contains { $0.contains("SONY ILCE-7RM5") },
       "No header carries the server's own label. Headers read: \(labels).")
 
-    // The Group control's own label reports the value back, so the state is readable at rest.
-    XCTAssertTrue(
-      group.label.contains("Camera"),
-      "Group control label '\(group.label)' does not report the chosen dimension.")
+    // WP29 P2: the chosen dimension reads back as Arrange's arrangement signal; the checked row
+    // itself is asserted in `chooseCameraGrouping` and on reopen in `ArrangePopoverUITests`.
+    XCTAssertEqual(
+      arrangeControl(app).value as? String, "Active",
+      "Arrange does not report the Camera grouping as an arrangement in force.")
 
     let screenshot = XCUIScreen.main.screenshot()
     let attachment = XCTAttachment(screenshot: screenshot)
@@ -129,31 +112,28 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
     attachment.lifetime = .keepAlways
     add(attachment)
     XCTContext.runActivity(
-      named: "Headers: \(labels) · Group label: '\(group.label)' · captured "
-        + "\(screenshot.image.size)"
+      named: "Headers: \(labels) · captured \(screenshot.image.size)"
     ) { _ in }
   }
 
-  /// IMGMGR-256 (folded into WP13 P11): the Scene-view caption row is gone, and the Group control
-  /// itself carries the "you are in an arrangement" state. Runs on both idioms the gate gates —
-  /// Compact's options row and Regular's `.primaryAction` toolbar — because the control is one
-  /// definition rendered in two places and the state must read the same in both.
+  /// IMGMGR-256 (folded into WP13 P11): the Scene-view caption row is gone, and the arrangement
+  /// control itself carries the "you are in an arrangement" state — the Group control until WP29
+  /// P2, the Arrange control since. Runs on both destinations.
   ///
   /// The load-bearing proof that Scene adds no banner row is `GridChromeRowsTests`, which drives
   /// a real Scene page; the fixture transport here serves no `/api/browse/stacks`, so this test
   /// takes the reachable arrangement (a dimension) and asserts the caption identifier is absent
   /// with a positive control beside it.
-  func testGroupControlHighlightsWhileAnArrangementIsInForceAndNoSceneBannerExists() throws {
+  func testArrangeHighlightsWhileAnArrangementIsInForceAndNoSceneBannerExists() throws {
     let app = launchedApp()
 
-    let group = app.descendants(matching: .any)["gridGroupControl"]
+    let arrange = arrangeControl(app)
     XCTAssertTrue(
-      group.waitForExistence(timeout: 10),
-      "Nothing named 'gridGroupControl' is on a primary surface.")
-
+      arrange.waitForExistence(timeout: 10),
+      "Nothing named 'gridArrangeControl' is on a primary surface.")
     XCTAssertEqual(
-      group.value as? String, "Off",
-      "The Group control reports itself active under Group: None (label '\(group.label)').")
+      arrange.value as? String, "Off",
+      "The Arrange control reports itself active under Group: None.")
 
     let before = XCUIScreen.main.screenshot()
     let beforeAttachment = XCTAttachment(screenshot: before)
@@ -161,18 +141,13 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
     beforeAttachment.lifetime = .keepAlways
     add(beforeAttachment)
 
-    let camera = app.buttons["Camera"]
-    XCTAssertTrue(
-      openPresentation(group, revealing: camera, timeout: 5),
-      "The Group menu offers no 'Camera' row.")
-    camera.tap()
+    chooseCameraGrouping(in: app)
 
-    let grouped = app.descendants(matching: .any)["gridGroupControl"]
-    XCTAssertTrue(grouped.waitForExistence(timeout: 10))
+    let active = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", "Active"), object: arrangeControl(app))
     XCTAssertEqual(
-      grouped.value as? String, "Active",
-      "The Group control does not report itself active while grouping by Camera "
-        + "(label '\(grouped.label)').")
+      XCTWaiter().wait(for: [active], timeout: 10), .completed,
+      "The Arrange control does not report itself active while grouping by Camera.")
 
     // Positive control for the 0-hit assertion below (LSN-0033): the grid really is on screen,
     // so "no caption row" cannot pass vacuously on a blank or crashed screen.
@@ -189,9 +164,56 @@ final class SortGroupScreenshotUITests: OrientationPinnedUITestCase {
     afterAttachment.name = "group-control-highlighted-under-camera"
     afterAttachment.lifetime = .keepAlways
     add(afterAttachment)
-    XCTContext.runActivity(
-      named: "Group control: '\(grouped.label)' value='\(grouped.value as? String ?? "")' · "
-        + "captured \(after.image.size)"
-    ) { _ in }
+  }
+
+  // MARK: - Arrange
+
+  private func arrangeControl(_ app: XCUIApplication) -> XCUIElement {
+    app.descendants(matching: .any)["gridArrangeControl"].firstMatch
+  }
+
+  private func row(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+    app.descendants(matching: .any)[identifier].firstMatch
+  }
+
+  /// Opens Arrange, chooses Group Camera, waits for the row to read Checked, and closes the
+  /// popover with Done, so what follows reads the grid rather than the popover or sheet.
+  private func chooseCameraGrouping(in app: XCUIApplication) {
+    let arrange = arrangeControl(app)
+    XCTAssertTrue(
+      arrange.waitForExistence(timeout: 10),
+      "Nothing named 'gridArrangeControl' is on a primary surface.")
+    let camera = row(app, "arrange.group.camera")
+    XCTAssertTrue(
+      openPresentation(arrange, revealing: camera, timeout: 5),
+      "The Arrange popover offers no Group Camera row — the group-by half of IMGMGR-221 is "
+        + "missing.")
+    XCTAssertTrue(reveal(camera, in: app), "The Group Camera row is not reachable.")
+    camera.tap()
+    let checked = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", "Checked"),
+      object: row(app, "arrange.group.camera"))
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [checked], timeout: 10), .completed,
+      "Group Camera did not read Checked after it was tapped.")
+    let done = row(app, "arrangeDone")
+    XCTAssertTrue(reveal(done, in: app), "The Arrange popover's Done is not reachable.")
+    done.tap()
+    XCTAssertTrue(camera.waitForNonExistence(timeout: 5), "Done did not close Arrange.")
+  }
+
+  /// Scrolls the popover's own scroll view until `element` is hittable, down then up.
+  private func reveal(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+    if element.exists && element.isHittable { return true }
+    let scrollers = app.scrollViews.containing(.any, identifier: "arrange.sort.date_taken")
+    let scroller = scrollers.firstMatch
+    guard scroller.exists else { return false }
+    for _ in 0..<5 where !(element.exists && element.isHittable) {
+      scroller.swipeUp()
+    }
+    for _ in 0..<5 where !(element.exists && element.isHittable) {
+      scroller.swipeDown()
+    }
+    return element.exists && element.isHittable
   }
 }

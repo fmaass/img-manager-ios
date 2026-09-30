@@ -48,6 +48,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     let app = launchedApp()
     // Read BEFORE presenting: the More control publishes which `ActionBarMetrics` tier
     // `ViewThatFits` actually chose, so this test states the width fact instead of inferring it.
+    // WP29 P1 (IMGMGR-452): at Regular More is the grid bar's item, which stamps no tier — the
+    // empty reading is "not folded", which is Regular's contract (its bar never folds Clear).
     let tier = (app.descendants(matching: .any)["gridMoreMenu"].value as? String) ?? ""
     let folded = tier.contains("folded")
 
@@ -55,12 +57,13 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     // with. "Download…" is deliberately absent (owner decision 3) and is asserted absent with
     // the five present entries above it as the positive control.
     let expected = [
-      "gridSelectCommand", "gridMoreMenu.more.copyForLightroom",
+      // WP29 P1 (IMGMGR-452): Select left More for the bar's own `gridSelectCommand`.
+      "gridMoreMenu.more.copyForLightroom",
       "gridMoreMenu.more.filenamePlates",
       // IMGMGR-261: the picks-in-groups switch lives in THIS menu — the app's existing
       // view-options surface — and never in a settings panel of its own.
-      "gridMoreMenu.more.picksInGroups", "gridMoreMenu.more.density",
-      "gridMoreMenu.more.status",
+      // WP29 P2 (IMGMGR-453): Density left for the Arrange popover.
+      "gridMoreMenu.more.picksInGroups", "gridMoreMenu.more.status",
       // WP13 P11 (IMGMGR-220): the multi-window entry point, rendered on BOTH idioms and in
       // every case — the built-product probe decided only whether project.yml needed the
       // capability key, never whether the affordance exists.
@@ -76,6 +79,18 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       XCTAssertTrue(
         entry.waitForExistence(timeout: 5),
         "The More menu does not render '\(identifier)'.")
+    }
+    // WP29 P2 (IMGMGR-453): Density and the archive prune left More; the rows above are the
+    // positive control that the menu is open.
+    // WP29 P4 (IMGMGR-455): the four scene edits left for the Select bar's Scene ▸.
+    for gone in [
+      "gridMoreMenu.more.density", "gridMoreMenu.more.pruneMirroredArchive",
+      "gridMoreMenu.more.mergeScene", "gridMoreMenu.more.splitScene",
+      "gridMoreMenu.more.extractScene", "gridMoreMenu.more.absorbScene",
+    ] {
+      XCTAssertEqual(
+        app.descendants(matching: .any).matching(identifier: gone).count, 0,
+        "The More menu still renders '\(gone)'.")
     }
 
     // The Clear row's IDENTITY depends on whether this column folded the bar's Clear into the
@@ -223,16 +238,17 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
   /// (`GridMoreMenuSectionsTests`); this proves the labels reach the menu a reader opens, which a
   /// correct declaration the body never renders would not.
   ///
-  /// "Marks" is asserted rather than any of the four because it is the one section title that is
-  /// not a word this app already puts on screen ("Scene" is a grouping row title,
-  /// `GridView.rowTitle(for:)`), so the before/after pair below attributes the hit to THIS menu.
+  /// "Actions" (the "Marks" group until WP29 P3, IMGMGR-454) is asserted rather than any of the
+  /// three because it is the one section title that is not a word this app already puts on
+  /// screen ("View" is the tree's menu, "Shoot" the workspace title), so the before/after pair
+  /// below attributes the hit to THIS menu.
   ///
   /// If SwiftUI presents a `Menu`'s `Section` headers headerless on an idiom, this fails there.
   /// That failure is the phase's declared-deviation pivot (plan §Phase 4 "Known unknown"), to be
   /// named in the report and ticketed — never relaxed here, and never faked with a disabled row.
   func testMoreMenuGroupsItsEntriesUnderSectionHeaders() throws {
     let app = launchedApp()
-    let header = "Marks"
+    let header = "Actions"
 
     XCTAssertEqual(
       headerCount(header, in: app), 0,
@@ -247,7 +263,9 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       "The More menu did not present its Status row, so the section-header check would be "
         + "vacuous.")
 
-    let observed = ["Marks", "View", "Shoot", "Scene"]
+    // WP29 P4 (IMGMGR-455): three groups — the Scene group left for Scene ▸.
+    // WP29 P3 (IMGMGR-454): View · Actions · Shoot.
+    let observed = ["View", "Actions", "Shoot"]
       .map { "\($0)=\(headerCount($0, in: app))" }
       .joined(separator: ", ")
     XCTAssertGreaterThan(

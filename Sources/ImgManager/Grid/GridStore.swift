@@ -670,7 +670,7 @@ final class GridStore {
   /// `@ObservationIgnored` on purpose: this is written on every scroll tick, and an observable
   /// write there would invalidate every view reading this store while the reader is dragging
   /// through a contact sheet. Nothing needs to REACT to it — the value only has to survive, and
-  /// the rebuilt `ScrollView` reads it through `GridView.scrollAnchorBinding`.
+  /// the rebuilt `ScrollView` reads it once to restore (`GridView.restoreOrRecordScrollAnchor`).
   ///
   /// A PHOTOGRAPH, never the row id `ScrollView` itself reports: the collapse changes the pane
   /// width, which repacks every justified row, so a remembered row id names a row that no longer
@@ -2132,7 +2132,7 @@ final class GridStore {
   /// WP13 P4 (IMGMGR-215): raise the shortcut help sheet. ONE method rather than two call sites
   /// setting the flag, because both surfaces that open it — the `?`/⌘/ key equivalents through
   /// `GridKeyboardActions`, and Compact's options-row button (`GridShortcutHelpControl`) — must
-  /// stay the same action, the same rule `GridGroupControl`/`AppCommands` already follow for
+  /// stay the same action, the same rule `ArrangeModel`/`AppCommands` already follow for
   /// the view options themselves.
   func showShortcutHelp() {
     isShortcutHelpPresented = true

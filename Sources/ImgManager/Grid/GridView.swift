@@ -113,7 +113,9 @@ struct GridView: View {
       ConflictRecoveryBanner(store: store)
       GridNoticeBanner(store: store)
       MarksCopyBanner(store: store)
-      ActionBarView(store: store, openShootWindow: openShootWindow)
+      ActionBarView(
+        store: store, openShootWindow: openShootWindow,
+        carriesMore: WorkspaceChromePlacement.actionBarCarriesMore(for: layoutMode))
     }
   }
 
@@ -150,6 +152,16 @@ struct GridView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.absorb")
           .accessibilityValue("absorbRequests=\(DebugProbe.shared.absorbRequests)")
+        // WP29 P4 (IMGMGR-455): the split/extract wire calls, on an element of their own for the
+        // same reason as the absorb probe above.
+        Text("debugProbeSceneEdit")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.sceneEdit")
+          .accessibilityValue(
+            "sceneEdits=\(DebugProbe.shared.sceneEdits.joined(separator: "; "))")
       }
     }
   #else
@@ -164,22 +176,61 @@ struct GridView: View {
   // attaches the group, because Info belongs to the inspector topology it owns.
 
   /// The scroll position, translated between what `ScrollView` deals in (a row id) and what
-  /// survives the collapse (a photograph) — `GridScrollAnchor` carries the argument for why those
-  /// are not the same thing. SwiftUI owns the ordering of the read and the write, which is why
-  /// this is a binding rather than a restore fired from `.task` or `.onAppear`: those race the
-  /// first preference pass, which would overwrite the anchor with the top of the fresh view
-  /// before anything could act on it.
+  /// survives a rebuild (a photograph) — `GridScrollAnchor` carries the argument for why those
+  /// are not the same thing.
   ///
-  /// Hand-built rather than `@Bindable`'s `$store.gridScrollAnchor` for a second reason: the
-  /// anchor is `@ObservationIgnored` (it is written on every scroll tick), and a binding that
-  /// does not depend on the observation machinery is what keeps that true.
-  private var scrollAnchorBinding: Binding<GridRenderRowID?> {
-    Binding(
-      get: { GridScrollAnchor.row(containing: store.gridScrollAnchor, in: renderRows) },
-      set: { rowID in
-        guard let displayID = GridScrollAnchor.displayID(of: rowID) else { return }
-        store.gridScrollAnchor = displayID
-      })
+  /// IMGMGR-473: RECORDED from the visible targets and RESTORED once, never bound. A
+  /// `.scrollPosition(id:)` binding hands SwiftUI an id it keeps re-applying, and a mark inside an
+  /// open scene was enough to make it re-snap the anchored row's top to the viewport's top — the
+  /// whole grid dropped by however much of that row was cut off (+43.33 pt at 402x874). Nothing
+  /// here scrolls except `restoreOrRecordScrollAnchor`'s one restore, so no later update can.
+  ///
+  /// The one-shot is per `ScrollView` lifetime (re-armed on disappear) and is consumed by the
+  /// first visibility report that can act on it, before that report is recorded: a fresh
+  /// `ScrollView` reports its top rows first, and recording them would overwrite the anchor it has
+  /// yet to restore. While the saved photograph's page is still loading it stays armed
+  /// (`GridScrollAnchor.restoreStep`).
+  @State private var scrollAnchorRestored = false
+
+  private func restoreOrRecordScrollAnchor(
+    visible: [GridRenderRowID], proxy: ScrollViewProxy
+  ) {
+    guard !visible.isEmpty else { return }
+    let topmost = GridScrollAnchor.topmostPhotograph(visible: visible, frames: tileFrames)
+    if !scrollAnchorRestored {
+      let step = GridScrollAnchor.restoreStep(
+        saved: store.gridScrollAnchor, topmost: topmost, rows: renderRows,
+        isLoading: store.isLoadingPage)
+      switch step {
+      case .wait:
+        return
+      case .scroll(let target):
+        scrollAnchorRestored = true
+        proxy.scrollTo(target, anchor: .top)
+        return
+      case .record:
+        scrollAnchorRestored = true
+      }
+    }
+    // A report with no tile row (headers only) keeps the last photograph, as the binding did.
+    guard let topmost else { return }
+    store.gridScrollAnchor = topmost
+  }
+
+  /// The packing inputs, and nothing a mark can move (`GridPackingKey`).
+  private var packingKey: GridPackingKey {
+    GridPackingKey(store: store, paneWidth: paneWidth, displayScale: displayScale)
+  }
+
+  /// A repack inside the same `ScrollView` (width, thumbnail size, sections) moves every row
+  /// break, so the remembered photograph is put back at the top of the viewport in the NEW
+  /// packing — what the old binding did by re-resolving on every pass, now done only when the
+  /// packing actually changed. Runs from `onChange`, inside the update that changed the key and
+  /// before the new layout's visibility report could record the rows now at the old offset.
+  private func restoreAfterRepack(proxy: ScrollViewProxy) {
+    let saved = store.gridScrollAnchor
+    guard let target = GridScrollAnchor.row(containing: saved, in: renderRows) else { return }
+    proxy.scrollTo(target, anchor: .top)
   }
 
   /// The scrollable justified grid, with the live pointer-drag gesture attached through
@@ -187,54 +238,62 @@ struct GridView: View {
   /// comment.
   private var scrollArea: some View {
     let content = AnyView(
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 2) {
-          // Rows are identified by their LEADING cell's display id, never by index: with
-          // index identity, a row-count shrink (entering/leaving Scene mode, collapsing a
-          // stack) can leave SwiftUI evaluating a stale row body whose index no longer
-          // exists, and the `packedRows[rowIndex]` subscript traps — the 0.7.0 (9) Scene
-          // crash (EXC_BREAKPOINT in ForEachChild.updateValue, GridView.swift:115). A
-          // leading-cell id is unique per layout (each cell packs into exactly one row)
-          // and moves with its row across repacks, so diffing stays coherent.
-          // WP13 P5b: the sequence is `GridRenderRow`, so a section header and a packed tile
-          // row are the SAME `ForEach`'s elements with their own stable, non-index identities
-          // (a header's is its group key; a tile row's stays its leading cell's display id).
-          ForEach(renderRows) { renderRow in
-            switch renderRow {
-            case .header(let header):
-              GroupSectionHeaderView(header: header)
-            case .tiles(let rowModel):
-              HStack(spacing: 2) {
-                ForEach(rowModel.cells, id: \.id) { packed in
-                  if let row = rowsByID[packed.id] {
-                    cell(for: row, plan: packed.plan)
-                      .background(
-                        GeometryReader { proxy in
-                          Color.clear.preference(
-                            key: TileFramePreferenceKey.self,
-                            value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+      ScrollViewReader { scrollProxy in
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 2) {
+            // Rows are identified by their LEADING cell's display id, never by index: with
+            // index identity, a row-count shrink (entering/leaving Scene mode, collapsing a
+            // stack) can leave SwiftUI evaluating a stale row body whose index no longer
+            // exists, and the `packedRows[rowIndex]` subscript traps — the 0.7.0 (9) Scene
+            // crash (EXC_BREAKPOINT in ForEachChild.updateValue, GridView.swift:115). A
+            // leading-cell id is unique per layout (each cell packs into exactly one row)
+            // and moves with its row across repacks, so diffing stays coherent.
+            // WP13 P5b: the sequence is `GridRenderRow`, so a section header and a packed tile
+            // row are the SAME `ForEach`'s elements with their own stable, non-index identities
+            // (a header's is its group key; a tile row's stays its leading cell's display id).
+            ForEach(renderRows) { renderRow in
+              switch renderRow {
+              case .header(let header):
+                GroupSectionHeaderView(header: header)
+              case .tiles(let rowModel):
+                HStack(spacing: 2) {
+                  ForEach(rowModel.cells, id: \.id) { packed in
+                    if let row = rowsByID[packed.id] {
+                      cell(for: row, plan: packed.plan)
+                        .background(
+                          GeometryReader { proxy in
+                            Color.clear.preference(
+                              key: TileFramePreferenceKey.self,
+                              value: [packed.id: proxy.frame(in: .named("gridSpace"))])
+                          }
+                        )
+                        .onTapGesture { Task { await store.tapCell(packed.id) } }
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                          store.longPressCell(packed.id)
                         }
-                      )
-                      .onTapGesture { Task { await store.tapCell(packed.id) } }
-                      .onLongPressGesture(minimumDuration: 0.5) {
-                        store.longPressCell(packed.id)
-                      }
-                      .task(id: packed.id) { await page(from: packed.id) }
+                        .task(id: packed.id) { await page(from: packed.id) }
+                    }
                   }
                 }
               }
             }
           }
+          .scrollTargetLayout()
+          .padding(2)
         }
-        .scrollTargetLayout()
-        .padding(2)
+        // WP16 P2 (IMGMGR-298): the offset is kept in STORE-owned state, so it survives this view
+        // being rebuilt — see `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
+        // IMGMGR-473: recorded here and restored once, never bound (see `scrollAnchorRestored`).
+        // Near-zero threshold: a mostly clipped top row still counts as visible, so the recorded
+        // photograph is the topmost PARTIALLY visible row, as the binding reported it.
+        .onScrollTargetVisibilityChange(idType: GridRenderRowID.self, threshold: 0.01) { visible in
+          restoreOrRecordScrollAnchor(visible: visible, proxy: scrollProxy)
+        }
+        .onChange(of: packingKey) { _, _ in restoreAfterRepack(proxy: scrollProxy) }
+        .onDisappear { scrollAnchorRestored = false }
+        .coordinateSpace(name: "gridSpace")
+        .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
       }
-      // WP16 P2 (IMGMGR-298): the offset is bound to STORE-owned state, so it survives this
-      // view being rebuilt when the Regular-3 collapse swaps the split view's shape — see
-      // `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
-      .scrollPosition(id: scrollAnchorBinding)
-      .coordinateSpace(name: "gridSpace")
-      .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
     )
     return pointerGestureInstaller.attach(
       content,
@@ -253,6 +312,9 @@ struct GridView: View {
   private func cell(for row: SceneDisplayRow, plan: TileRenderPlan) -> some View {
     switch row {
     case .image(let image):
+      // IMGMGR-475: the quick-pick corner, only where it leaves the tile's centre to the tile.
+      let cornerTileSize = QuickPickCorner.installedTileSize(plan: plan, missing: image.missing)
+      let hasMarkCorner = cornerTileSize != nil
       TileView(
         image: image,
         plan: plan,
@@ -262,9 +324,22 @@ struct GridView: View {
         // WP13 P5a (IMGMGR-221): read here, in the one place that builds a tile, so the More
         // menu's toggle and what every tile draws are the same fact.
         showsFilenamePlate: store.preferences.filenamePlates,
-        store: store
+        store: store,
+        hasMarkCorner: hasMarkCorner
       )
       .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
+      .overlay(alignment: .topTrailing) {
+        if let cornerTileSize {
+          MarkCornerTarget(
+            imageID: image.id,
+            tileSize: cornerTileSize,
+            spokenValue: QuickPickCorner.accessibilityValue(
+              mark: MarkStateValue(image.mark.state), isEdited: image.hasEdit == true,
+              isGood: image.lightroom.good == true,
+              isChangedElsewhere: store.changedElsewhereImageIDs.contains(image.id)),
+            store: store)
+        }
+      }
     case .stack(let stackRow, let isExpanded):
       SceneCardView(row: stackRow, plan: plan, isExpanded: isExpanded, store: store)
         // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
@@ -559,90 +634,11 @@ struct GridNoticeBanner: View {
   }
 }
 
-/// WP13 P4 (IMGMGR-215): the Group control — ONE definition, rendered either as a Regular
-/// `.primaryAction` toolbar item or inside Compact's persistent options row. Its label carries
-/// the CURRENT VALUE ("Group: Scene"), which is the discoverability half of this ticket: an
-/// icon-only menu behind an overflow chevron is exactly what the owner could not find.
-///
-/// Scene is a MODE, not a `group_by` wire value (ADR-0005 decision 6) — it calls a different
-/// endpoint with a different row vocabulary. It lives in a Group menu anyway because that is
-/// where a reader looks for "how is this stream arranged", and because the two entries are
-/// mutually exclusive by construction when they share one single-select list.
-struct GridGroupControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Menu {
-      // WP13 P5b: ONE single-select list over `GroupingChoice` — None, Scene, then the six
-      // offered `group_by` dimensions. Exclusivity is structural: `GroupingChoice` cannot
-      // express "Scene and Camera", and every row calls the same coordinator, which is what
-      // makes choosing a dimension while Scene is on actually LEAVE Scene (ADR-0005 decision 6)
-      // instead of setting a wire parameter the stacks endpoint never reads.
-      ForEach(SortGroupOptions.groupingChoices, id: \.self) { choice in
-        Button {
-          Task { await store.selectGrouping(choice) }
-        } label: {
-          if store.activeGrouping == choice {
-            Label(Self.rowTitle(for: choice), systemImage: "checkmark")
-          } else {
-            Text(Self.rowTitle(for: choice))
-          }
-        }
-      }
-    } label: {
-      Label(
-        Self.title(for: store.activeGrouping),
-        systemImage: Self.isHighlighted(for: store.activeGrouping)
-          ? "square.stack.fill" : "square.stack")
-    }
-    // IMGMGR-256: the control itself is now the "you are in an arrangement" signal — the Scene
-    // caption row it replaces is gone. The treatment is VALUE-driven inside one view type (a
-    // filled symbol variant, a semibold label, an accent ring drawn as an overlay), never an
-    // `if/else` over two different view types: SwiftUI would tear the `Menu` down and rebuild it
-    // on every grouping change, closing it mid-interaction. Nothing here changes the control's
-    // size, at rest or highlighted.
-    .modifier(GroupControlHighlight(isHighlighted: Self.isHighlighted(for: store.activeGrouping)))
-    // The value has to stay VISIBLE, not just present in the accessibility label: a nav-bar
-    // `Label` renders icon-only by default, and an icon-only menu is precisely what the owner
-    // could not find (gap audit /link/3282, owner feedback (c)). Observed on the iPad Pro 13"
-    // simulator before this line existed — the two toolbar items showed a box and a 2x2 grid
-    // and nothing else. No effect on Compact's options row, where a `Label` in a plain HStack
-    // already draws both.
-    .labelStyle(.titleAndIcon)
-    .accessibilityIdentifier("gridGroupControl")
-    // Machine-readable highlight state, and a genuine VoiceOver improvement rather than a probe:
-    // "Group: Camera, Active" states in words what the tint states in pixels.
-    .accessibilityValue(
-      Self.isHighlighted(for: store.activeGrouping) ? "Active" : "Off")
-  }
-
-  /// IMGMGR-256: the control renders highlighted whenever ANY arrangement is in force — Scene or
-  /// one of the six dimensions — and plain under None. A pure function, so the state is a value
-  /// test rather than a screenshot reading.
-  static func isHighlighted(for choice: GroupingChoice) -> Bool {
-    choice != .none
-  }
-
-  /// A pure function so the value-in-label contract is testable without a render host.
-  static func title(for choice: GroupingChoice) -> String {
-    "Group: \(rowTitle(for: choice))"
-  }
-
-  /// One menu row's own words — the same string the label above wraps, so the row a reader
-  /// picked and the value they then read back cannot be spelled differently.
-  static func rowTitle(for choice: GroupingChoice) -> String {
-    switch choice {
-    case .none: return "None"
-    case .scene: return "Scene"
-    case .key(let key): return key.title
-    }
-  }
-}
-
 /// Applies the prominent (tinted) button style only while an arrangement is in force. A
-/// `ViewModifier` rather than a `@ViewBuilder if/else` on the whole `Menu`, because the two
-/// branches of such an `if` are DIFFERENT view types to SwiftUI: the menu would be torn down and
-/// rebuilt on every grouping change, closing itself mid-interaction.
+/// `ViewModifier` rather than a `@ViewBuilder if/else` on the whole control, because the two
+/// branches of such an `if` are DIFFERENT view types to SwiftUI: the control would be torn down
+/// and rebuilt on every grouping change, dismissing what it presents. WP29 P2 (IMGMGR-453): worn
+/// by `GridArrangeControl`, which took over the removed Group control's IMGMGR-256 signal.
 struct GroupControlHighlight: ViewModifier {
   let isHighlighted: Bool
 
@@ -654,102 +650,16 @@ struct GroupControlHighlight: ViewModifier {
           .strokeBorder(Color.accentColor.opacity(isHighlighted ? 0.9 : 0), lineWidth: 2)
           // Negative padding on an OVERLAY's own content: an overlay is laid out inside the
           // parent's frame and never propagates a size back, so the ring can sit just outside
-          // the label without the control changing width — which is what keeps
-          // `SortGroupScreenshotUITests`' no-overflow assertion answering the same question.
+          // the label without the control changing width, so the highlight never reflows the bar.
           .padding(-3)
       )
   }
 }
 
-/// WP13 P5b (IMGMGR-221 part 2): the Sort control — the same shape as `GridGroupControl`, and
-/// rendered in the same two places (a Regular `.primaryAction` toolbar item, Compact's persistent
-/// options row). Its label carries the CURRENT key AND direction ("Sort: Rating ↓"), because the
-/// ticket's own words are "nothing gesture-only" and an icon-only control behind an overflow
-/// chevron is what the owner could not find (gap audit /link/3282, owner feedback (c)).
-///
-/// Six of the server's fifteen keys and both directions (`SortGroupOptions`) — the offered subset
-/// is data, so a different six is a one-line change here and in its subset test, never a rework.
-struct GridSortControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Menu {
-      Section("Sort by") {
-        ForEach(SortGroupOptions.sortKeys, id: \.self) { key in
-          Button {
-            Task { await store.setSortKey(key) }
-          } label: {
-            if store.activeSortKey == key {
-              Label(key.title, systemImage: "checkmark")
-            } else {
-              Text(key.title)
-            }
-          }
-        }
-      }
-      Section("Direction") {
-        ForEach(SortGroupOptions.directions, id: \.self) { direction in
-          Button {
-            Task { await store.setSortDirection(direction) }
-          } label: {
-            if store.activeDirection == direction {
-              Label(direction.title, systemImage: "checkmark")
-            } else {
-              Text(direction.title)
-            }
-          }
-        }
-      }
-    } label: {
-      Label(
-        Self.title(for: store.activeSortKey, direction: store.activeDirection),
-        systemImage: "arrow.up.arrow.down")
-    }
-    .labelStyle(.titleAndIcon)
-    .accessibilityIdentifier("gridSortControl")
-  }
-
-  static func title(for key: SortKey, direction: SortDirection) -> String {
-    "Sort: \(key.title) \(direction.arrow)"
-  }
-}
-
-/// WP13 P4 (IMGMGR-215): the Zoom control, the same shape as `GridGroupControl` above and the
-/// six native row-height steps' one real UI call site (diff-gate round 2, blocker 2). The
-/// menu-bar View menu declares the same six steps as ⌘1…⌘6 (`AppCommands.zoomDeclarations`),
-/// dispatching to this same `GridStore.setRowHeight`.
-struct GridZoomControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Menu {
-      ForEach(GridRowHeight.allCases, id: \.self) { step in
-        Button {
-          store.setRowHeight(step)
-        } label: {
-          if store.rowHeight == step {
-            Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
-          } else {
-            Text("\(Int(step.rawValue)) pt")
-          }
-        }
-      }
-    } label: {
-      Label(Self.title(for: store.rowHeight), systemImage: "square.grid.2x2")
-    }
-    .labelStyle(.titleAndIcon)
-    .accessibilityIdentifier("gridZoomControl")
-  }
-
-  static func title(for step: GridRowHeight) -> String {
-    "Zoom: \(Int(step.rawValue)) pt"
-  }
-}
-
-/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row — one row, two menu buttons
-/// each labelled with its current value so the state is readable without opening anything, and
-/// (diff-gate r1 blocker 3) the trailing shortcut-help button that is Compact's only route into
-/// the help sheet.
+/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row. Since WP29 P2 (IMGMGR-453) it
+/// reads Arrange · Filter · "?": the Arrange control (whose popover holds sort, grouping and
+/// thumbnail size), the funnel, and (diff-gate r1 blocker 3) the trailing shortcut-help button
+/// that is Compact's only route into the help sheet.
 /// Deliberately NOT a dense icon filter row (p3220 §2.2 must-not-copy #1) and deliberately not
 /// a filter surface: filters live in the Stats segment (`InspectorView`), never in chrome.
 struct GridOptionsRow: View {
@@ -757,33 +667,24 @@ struct GridOptionsRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      // Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
+      // WP29 P1 (IMGMGR-452): the row renders `ShellToolbarLayout.compactOptionsRow` and holds
+      // no second list, so "no identifier twice across the bar, this row and More" is a unit
+      // test. Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
       // already follows — never a single frame on the containing `HStack`.
-      GridSortControl(store: store)
-        .frame(minHeight: 44)
-      GridGroupControl(store: store)
-        .frame(minHeight: 44)
-      GridZoomControl(store: store)
-        .frame(minHeight: 44)
-      // WP16 P3 (IMGMGR-295): Compact's copy of the funnel, the FOURTH control in this row's
-      // leading cluster and the fifth on the row. Icon-only like the help button, so it adds one
-      // 44 pt hit region and no value label to a row whose three value-carrying controls already
-      // truncate at the tail — the measurement the phase was told to make before letting another
-      // control onto this row. (Compact's bar is not the six-item case: `RootView` puts Info and
-      // the account item on the NAV BAR there, not on this row.) `FilterPopoverUITests` asserts
-      // the help button is still hittable here — the "the row did not overflow" contract.
-      GridFilterControl(store: store)
-        .frame(minHeight: 44)
-      Spacer(minLength: 0)
-      GridShortcutHelpControl(store: store)
-        .frame(minHeight: 44)
+      ForEach(ShellToolbarLayout.compactOptionsRow, id: \.self) { control in
+        // The trailing "?" sits after a spacer, as it always has.
+        if control == .shortcutHelp {
+          Spacer(minLength: 0)
+        }
+        optionControl(control)
+          .frame(minHeight: 44)
+      }
     }
     .buttonStyle(.bordered)
     .font(.subheadline)
-    // WP13 P5b: Sort joined Group and Zoom on this one row, so three value-carrying labels now
-    // share a phone's width. One line each, truncating at the tail, keeps every control's
-    // 44 pt hit region and its checkmarked menu reachable — the alternative (a label wrapping
-    // to two lines) grows the row and pushes the help button off it.
+    // One line each, truncating at the tail, keeps every control's 44 pt hit region reachable —
+    // the alternative (a label wrapping to two lines) grows the row and pushes the help button
+    // off it.
     .lineLimit(1)
     .truncationMode(.tail)
     .padding(.horizontal)
@@ -791,9 +692,60 @@ struct GridOptionsRow: View {
     .chromeFill(.thinMaterial)
     // NO `.accessibilityIdentifier` on this HStack: an identifier set on a container OVERRIDES
     // its descendants'. Observed on the iPhone 17 Pro gate leg — both controls came back as
-    // `identifier: 'gridOptionsRow'` and neither `gridGroupControl` nor `gridZoomControl`
-    // existed, so the row's own two controls were unaddressable. The controls are what anything
+    // `identifier: 'gridOptionsRow'` and the row's own controls did not exist by their names,
+    // so they were unaddressable. The controls are what anything
     // needs to name; the row is just where they sit on Compact.
+  }
+
+  /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only like the help button;
+  /// `FilterPopoverUITests` asserts the help button is still hittable here — the "the row did
+  /// not overflow" contract.
+  @ViewBuilder
+  private func optionControl(_ control: ShellToolbarControl) -> some View {
+    switch control {
+    case .arrange: GridArrangeControl(store: store)
+    case .filter: GridFilterControl(store: store)
+    case .shortcutHelp: GridShortcutHelpControl(store: store)
+    // Not options-row members (`ShellToolbarLayout.compactOptionsRow`).
+    case .info, .search, .select, .more: EmptyView()
+    }
+  }
+}
+
+/// WP29 P1 (IMGMGR-452): Select, as a bar command — the same title, action and identifier the
+/// More menu's Select row shipped with (`gridSelectCommand`), declared once here now that the
+/// row is gone. Its title states the way OUT while Select is on, never a second "Select".
+enum GridSelectCommand {
+  static let accessibilityIdentifier = "gridSelectCommand"
+  static let systemImage = "checkmark.circle"
+
+  @MainActor
+  static func title(_ store: GridStore) -> String {
+    store.selection.mode == .select ? "Exit Select" : "Select"
+  }
+
+  @MainActor
+  static func run(_ store: GridStore) {
+    if store.selection.mode == .select {
+      store.done()
+    } else {
+      store.enterSelectExplicitly()
+    }
+  }
+}
+
+/// WP29 P1 (IMGMGR-452): the bar's Select — Regular's trailing group, Compact's navigation bar
+/// beside Info (`ShellToolbarLayout`).
+struct GridSelectControl: View {
+  let store: GridStore
+
+  var body: some View {
+    Button {
+      GridSelectCommand.run(store)
+    } label: {
+      Label(GridSelectCommand.title(store), systemImage: GridSelectCommand.systemImage)
+    }
+    .accessibilityIdentifier(GridSelectCommand.accessibilityIdentifier)
   }
 }
 
@@ -926,6 +878,21 @@ struct ActionBarLayout: Equatable {
   /// its own identifier and disabled rule, never a gesture-only action, and never a control
   /// squeezed under 44 pt.
   var foldsClearIntoMore: Bool
+  /// WP29 P1 (IMGMGR-452): whether this bar renders More. False on every Regular tier, where
+  /// More is the grid bar's own item (`WorkspaceChromePlacement.actionBarCarriesMore`).
+  var carriesMore: Bool = true
+  /// WP29 P4 (IMGMGR-455): the Select bar — `… · Tag · Scene ‖ Undo` (`SelectBarLayout`).
+  var selecting: Bool = false
+  /// IMGMGR-475 review round 1: whether Tap to Pick shows its title beside its icon. Only where
+  /// the width allows (`ActionBarMetrics.toggleTitleAllowance` is counted for it); icon-only on
+  /// every tight or folded tier.
+  var showsToggleTitle: Bool = false
+
+  /// The controls this tier renders, in order — the one list `ActionBarView` walks.
+  var controls: [SelectBarControl] {
+    SelectBarLayout.controls(
+      selecting: selecting, carriesMore: carriesMore, foldsClearIntoMore: foldsClearIntoMore)
+  }
 }
 
 /// The action bar's geometry as DATA, so the view lays out with the same numbers a test checks
@@ -964,10 +931,14 @@ enum ActionBarMetrics {
   /// The narrow tier's gap and padding. Chosen so six full-size controls still fit 320 pt.
   static let tightSpacing: CGFloat = 8
   static let tightHorizontalPadding: CGFloat = 8
-  /// Pick, Dislike, Clear, Undo, Tag, More.
-  static let controlCount = 6
+  /// Pick, Tap to Pick, Dislike, Clear, Undo, Tag, More — IMGMGR-475 added Tap to Pick beside
+  /// Pick, which moved the 402-pt iPhone from the roomy tier to the tight one at rest.
+  static let controlCount = 7
   /// The same bar with Clear folded into the More menu.
-  static let foldedControlCount = 5
+  static let foldedControlCount = 6
+  /// IMGMGR-475: the narrowest gap any tier uses — six controls at it still fit the measured
+  /// 315-pt Regular-3 column (6×44 + 5×4 + 2×8 = 300).
+  static let narrowestSpacing: CGFloat = 4
 
   /// The width the bar needs for `controlCount` controls at `spacing`, all at their minimum
   /// side, including both paddings.
@@ -990,29 +961,113 @@ enum ActionBarMetrics {
   static let folded = ActionBarLayout(
     name: "folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
     controlCount: foldedControlCount, foldsClearIntoMore: true)
+  /// IMGMGR-475: 6×44 + 5×4 + 2×8 = 300 pt — the folded bar at the narrowest gap, so the Compact
+  /// bar still has a tier inside the measured 315-pt column (the folded tier alone is 320).
+  static let foldedTight = ActionBarLayout(
+    name: "folded-tight", spacing: narrowestSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: foldedControlCount, foldsClearIntoMore: true)
+
+  /// IMGMGR-475 review round 1: the room Tap to Pick's visible title takes beyond its 44-pt
+  /// slot — "Tap to Pick" in `.subheadline` plus the icon gap, rounded up. `ViewThatFits` still
+  /// measures the real control, so an underestimate only ever picks a narrower tier.
+  static let toggleTitleAllowance: CGFloat = 96
+
+  /// WP29 P1 (IMGMGR-452): Regular's bar without More — Pick, Tap to Pick (IMGMGR-475),
+  /// Dislike, Clear, Undo, Tag.
+  static let regularControlCount = 6
+  /// IMGMGR-475 review round 1: the roomy Regular bar with Tap to Pick's title shown —
+  /// 376 + 96 = 472 pt.
+  static let regularTitled = ActionBarLayout(
+    name: "regular-titled", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false,
+    showsToggleTitle: true)
+  /// 6×44 + 5×16 + 2×16 = 376 pt.
+  static let regularRoomy = ActionBarLayout(
+    name: "regular-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
+  /// 6×44 + 5×4 + 2×8 = 300 pt — inside the measured 315-pt Regular-3 column with the inspector
+  /// expanded, so no Regular tier ever needs to fold Clear (at the 8-pt gap it would be 320).
+  static let regularTight = ActionBarLayout(
+    name: "regular-tight", spacing: narrowestSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: regularControlCount, foldsClearIntoMore: false, carriesMore: false)
+
+  /// WP29 P4 (IMGMGR-455): the Select bar's tiers. Compact carries seven controls
+  /// (`Pick · Dislike · Clear · Tag · Scene · More ‖ Undo`), six with Clear folded; Regular six,
+  /// without More. The spacer before Undo is one more HStack child, so one more gap.
+  static let selectControlCount = 7
+  static let selectFoldedControlCount = 6
+  static let regularSelectControlCount = 6
+  /// The tight Regular Select tier's gap: 6×44 + 6×4 + 2×8 = 304 pt, inside the measured
+  /// 315-pt Regular-3 column with the inspector expanded.
+  static let regularSelectTightSpacing: CGFloat = narrowestSpacing
+
+  /// 7×44 + 7×16 + 2×16 = 452 pt.
+  static let selectRoomy = ActionBarLayout(
+    name: "select-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: selectControlCount, foldsClearIntoMore: false, selecting: true)
+  /// 7×44 + 7×8 + 2×8 = 380 pt — inside the 402-pt iPhone.
+  static let selectTight = ActionBarLayout(
+    name: "select-tight", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: selectControlCount, foldsClearIntoMore: false, selecting: true)
+  /// 6×44 + 6×8 + 2×8 = 328 pt, Clear in More under its bar identifier.
+  static let selectFolded = ActionBarLayout(
+    name: "select-folded", spacing: tightSpacing, horizontalPadding: tightHorizontalPadding,
+    controlCount: selectFoldedControlCount, foldsClearIntoMore: true, selecting: true)
+  /// 6×44 + 6×16 + 2×16 = 392 pt.
+  static let regularSelectRoomy = ActionBarLayout(
+    name: "regular-select-roomy", spacing: controlSpacing, horizontalPadding: horizontalPadding,
+    controlCount: regularSelectControlCount, foldsClearIntoMore: false, carriesMore: false,
+    selecting: true)
+  static let regularSelectTight = ActionBarLayout(
+    name: "regular-select-tight", spacing: regularSelectTightSpacing,
+    horizontalPadding: tightHorizontalPadding, controlCount: regularSelectControlCount,
+    foldsClearIntoMore: false, carriesMore: false, selecting: true)
+
+  static let selectTiers: [ActionBarLayout] = [selectRoomy, selectTight, selectFolded]
+  static let regularSelectTiers: [ActionBarLayout] = [regularSelectRoomy, regularSelectTight]
 
   /// Widest first. `ActionBarView` renders these in this order through `ViewThatFits`, and
   /// `layout(forWidth:)` walks the SAME list — so the arithmetic the tests assert and the tier
   /// the layout system actually picks cannot disagree.
-  static let tiers: [ActionBarLayout] = [roomy, tight, folded]
+  static let tiers: [ActionBarLayout] = [roomy, tight, folded, foldedTight]
 
+  /// WP29 P1: the Regular tiers, widest first — the bar without More, and no fold.
+  static let regularTiers: [ActionBarLayout] = [regularTitled, regularRoomy, regularTight]
+
+  /// The tier list for a bar that does or does not carry More.
+  static func tiers(carriesMore: Bool, selecting: Bool = false) -> [ActionBarLayout] {
+    switch (carriesMore, selecting) {
+    case (true, false): return tiers
+    case (false, false): return regularTiers
+    case (true, true): return selectTiers
+    case (false, true): return regularSelectTiers
+    }
+  }
+
+  /// The spacer before Undo (Select only) is one more HStack child, so it adds one gap.
   static func requiredWidth(for layout: ActionBarLayout) -> CGFloat {
     requiredWidth(
       controlCount: layout.controlCount, spacing: layout.spacing,
       horizontalPadding: layout.horizontalPadding)
+      + (layout.controls.contains(.spacer) ? layout.spacing : 0)
+      + (layout.showsToggleTitle ? toggleTitleAllowance : 0)
   }
 
-  /// The narrowest width that still shows all six controls: 6×44 + 5×8 + 2×8 = 320 pt.
-  static var sixControlFloor: CGFloat { requiredWidth(for: tight) }
+  /// The narrowest width that still shows every at-rest Compact control, Clear included:
+  /// 7×44 + 6×8 + 2×8 = 372 pt (IMGMGR-475; 320 with six controls before Tap to Pick).
+  static var unfoldedFloor: CGFloat { requiredWidth(for: tight) }
 
-  /// The narrowest width the folded bar needs: 5×44 + 4×8 + 2×8 = 268 pt.
-  static var foldedFloor: CGFloat { requiredWidth(for: folded) }
+  /// The narrowest width the folded bar needs: 6×44 + 5×4 + 2×8 = 300 pt.
+  static var foldedFloor: CGFloat { requiredWidth(for: foldedTight) }
 
   /// The tier a given width selects — the arithmetic statement of what `ViewThatFits` decides
   /// at run time. Total: the narrowest tier is the answer when nothing fits, because a bar that
   /// must overflow should at least overflow least.
-  static func layout(forWidth width: CGFloat) -> ActionBarLayout {
-    tiers.first { requiredWidth(for: $0) <= width } ?? folded
+  static func layout(
+    forWidth width: CGFloat, carriesMore: Bool = true, selecting: Bool = false
+  ) -> ActionBarLayout {
+    let list = tiers(carriesMore: carriesMore, selecting: selecting)
+    return list.first { requiredWidth(for: $0) <= width } ?? list[list.count - 1]
   }
 }
 
@@ -1077,6 +1132,9 @@ struct ActionBarView: View {
   /// WP13 P11: forwarded straight through to `GridMoreMenuContent` — the bar itself never opens
   /// a window, it only carries the menu that does.
   let openShootWindow: ShootWindowOpener
+  /// WP29 P1 (IMGMGR-452): `WorkspaceChromePlacement.actionBarCarriesMore` — true at Compact,
+  /// false at Regular, where More is the grid bar's own item.
+  var carriesMore: Bool = true
 
   /// Widest tier first — straight out of `ActionBarMetrics.tiers` — and the LAYOUT SYSTEM
   /// picks, not a measurement this view took. Every per-tier difference (its gap, its padding,
@@ -1091,12 +1149,19 @@ struct ActionBarView: View {
   /// fits — so there is no first pass with a default width, no state to arrive late, and no way
   /// for the bar to paint wider than what it was handed.
   var body: some View {
+    // IMGMGR-474: read ONCE per render and handed to every tier, rather than re-derived per
+    // control per tier — it walks the actionable projection.
+    let readout = store.markTargetReadout
     ViewThatFits(in: .horizontal) {
       // Derived FROM the list, never a hand-written copy of it beside the list: adding,
       // removing or reordering a tier changes what renders, by construction. Keyed by the
       // tier's own name, never by index (IMGMGR-210).
-      ForEach(ActionBarMetrics.tiers, id: \.name) { tier in
-        bar(tier)
+      ForEach(
+        ActionBarMetrics.tiers(
+          carriesMore: carriesMore, selecting: store.selection.mode == .select),
+        id: \.name
+      ) { tier in
+        bar(tier, readout: readout)
       }
     }
     .frame(maxWidth: .infinity)
@@ -1111,12 +1176,17 @@ struct ActionBarView: View {
     }
     // WP14 P4: hosted here for the same reason the two above are — on the OUTER body, never on a
     // `ViewThatFits` child, which would declare each of them once per tier.
+    // WP29 P4 (IMGMGR-455): Scene ▸ is the only opener of both pickers, so both re-check the
+    // selection's agreement right before their shipped submit (R4-B1).
     .sheet(isPresented: $store.isSceneMergePickerPresented) {
-      SceneMergePicker(store: store)
+      SceneMergePicker(
+        store: store, submissionGuard: SceneSelectionAgreement.pickerGuard(for: .mergeFocusedScene))
     }
     // IMGMGR-347: the absorb's own target sheet, hosted beside its sibling for the same reason.
     .sheet(isPresented: $store.isSceneAbsorbPickerPresented) {
-      SceneMergePicker(store: store, kind: .absorbLoosePhotograph)
+      SceneMergePicker(
+        store: store, kind: .absorbLoosePhotograph,
+        submissionGuard: SceneSelectionAgreement.pickerGuard(for: .absorbLoosePhotograph))
     }
     .sceneEditAlert(store: store)
   }
@@ -1126,14 +1196,38 @@ struct ActionBarView: View {
   /// time. Its ideal width is its content, which is exactly what has to be compared with the
   /// column.
   @ViewBuilder
-  private func bar(_ layout: ActionBarLayout) -> some View {
+  private func bar(_ layout: ActionBarLayout, readout: MarkTargetReadout) -> some View {
     HStack(spacing: layout.spacing) {
-      latchButton(.pick)
-      latchButton(.dislike)
-      if !layout.foldsClearIntoMore {
-        markControl(.clear)
+      // WP29 P4 (IMGMGR-455): the tier's own control list (`SelectBarLayout`), in order — at
+      // rest exactly the shipped order, in Select `… · Tag · Scene (· More) ‖ Undo`.
+      ForEach(layout.controls, id: \.self) { control in
+        barControl(control, layout: layout, readout: readout)
       }
+    }
+    .labelStyle(.iconOnly)
+    .font(.title3)
+    .padding(.horizontal, layout.horizontalPadding)
+    .padding(.vertical, ActionBarMetrics.verticalPadding)
+  }
 
+  @ViewBuilder
+  private func barControl(
+    _ control: SelectBarControl, layout: ActionBarLayout, readout: MarkTargetReadout
+  ) -> some View {
+    switch control {
+    case .pick:
+      latchButton(.pick, readout: readout)
+    case .tapToPick:
+      tapToPickToggle(showsTitle: layout.showsToggleTitle)
+    case .dislike:
+      latchButton(.dislike, readout: readout)
+    case .clear:
+      markControl(.clear, readout: readout)
+    case .spacer:
+      Spacer(minLength: 0)
+    case .scene:
+      sceneMenu()
+    case .undo:
       Button {
         Task { await store.undoLastMark() }
       } label: {
@@ -1144,6 +1238,7 @@ struct ActionBarView: View {
       .accessibilityIdentifier("gridUndoButton")
       .actionBarControlSize()
 
+    case .tag:
       Button {
         store.handleTagShortcut()
       } label: {
@@ -1154,41 +1249,60 @@ struct ActionBarView: View {
       .accessibilityIdentifier("gridTagButton")
       .actionBarControlSize()
 
-      // WP13 P5a (IMGMGR-221): the decided set, rendered from `GridMoreMenu.entries` and from
-      // nothing else — this view holds no second list of what the menu contains. It stays the
-      // OVERFLOW: the action bar is at its 6-control limit (`ActionBarMetrics`) and Regular's
-      // toolbar already carries three `.primaryAction` items, so no entry here becomes a bar
-      // control.
-      Menu {
-        // WP13 P5a (IMGMGR-221) + P1 (IMGMGR-212), resolved as ONE composition: the decided
-        // More set renders from `GridMoreMenu.entries`, and the fold is what the Clear ROW's
-        // identity keys off — never a second Clear row beside it.
-        GridMoreMenuContent(
-          store: store, foldsClearIntoMore: layout.foldsClearIntoMore,
-          openShootWindow: openShootWindow)
-      } label: {
-        Label("More", systemImage: "ellipsis.circle")
-          // WP28 P4 (IMGMGR-451): this menu draws no capsule, so its hit target is the glyph
-          // alone unless the label itself is sized — the `.actionBarControlSize()` below sits
-          // OUTSIDE the control and grows only the layout slot. The same 44 pt, on the label,
-          // with a shape to hit: nothing is drawn in it, so the bar looks the same.
-          .actionBarControlSize()
-          .contentShape(Rectangle())
+    case .more:
+      // WP29 P1 (IMGMGR-452): only where the bar carries More — Compact. At Regular More is
+      // the grid bar's own item (`GridToolbarMoreMenu`), never rendered twice.
+      if layout.carriesMore {
+        // WP13 P5a (IMGMGR-221): the decided set, rendered from `GridMoreMenu.entries` and from
+        // nothing else — this view holds no second list of what the menu contains. It stays the
+        // OVERFLOW: the action bar is at its 6-control limit (`ActionBarMetrics`) and Regular's
+        // toolbar already carries three `.primaryAction` items, so no entry here becomes a bar
+        // control.
+        Menu {
+          // WP13 P5a (IMGMGR-221) + P1 (IMGMGR-212), resolved as ONE composition: the decided
+          // More set renders from `GridMoreMenu.entries`, and the fold is what the Clear ROW's
+          // identity keys off — never a second Clear row beside it.
+          GridMoreMenuContent(
+            store: store, foldsClearIntoMore: layout.foldsClearIntoMore,
+            openShootWindow: openShootWindow)
+        } label: {
+          Label("More", systemImage: "ellipsis.circle")
+            // WP28 P4 (IMGMGR-451): this menu draws no capsule, so its hit target is the glyph
+            // alone unless the label itself is sized — the `.actionBarControlSize()` below sits
+            // OUTSIDE the control and grows only the layout slot. The same 44 pt, on the label,
+            // with a shape to hit: nothing is drawn in it, so the bar looks the same.
+            .actionBarControlSize()
+            .contentShape(Rectangle())
+        }
+        // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
+        // secondaryAction toolbar items into an overflow control with the same label, and a UI
+        // test that matched on the label alone could drive the wrong one.
+        .accessibilityIdentifier("gridMoreMenu")
+        // EVIDENCE, fixture-only: whichever tier `ViewThatFits` chose is the one that renders, so
+        // the chosen child stamps its own name here and a gate attachment can report the tier
+        // instead of inferring it from pixel deltas. Never set outside the DEBUG fixture launch.
+        .accessibilityValue(tierProbeValue(layout))
+        .actionBarControlSize()
       }
-      // Named, because "More" is not unique on screen: Compact collapses the nav bar's own
-      // secondaryAction toolbar items into an overflow control with the same label, and a UI
-      // test that matched on the label alone could drive the wrong one.
-      .accessibilityIdentifier("gridMoreMenu")
-      // EVIDENCE, fixture-only: whichever tier `ViewThatFits` chose is the one that renders, so
-      // the chosen child stamps its own name here and a gate attachment can report the tier
-      // instead of inferring it from pixel deltas. Never set outside the DEBUG fixture launch.
-      .accessibilityValue(tierProbeValue(layout))
-      .actionBarControlSize()
     }
-    .labelStyle(.iconOnly)
-    .font(.title3)
-    .padding(.horizontal, layout.horizontalPadding)
-    .padding(.vertical, ActionBarMetrics.verticalPadding)
+  }
+
+  /// WP29 P4 (IMGMGR-455): Scene ▸ — the scene edits' one touch home, rendered from
+  /// `SelectBarSceneMenu.entries` through the More menu's own row view. The label is sized like
+  /// More's (it draws no capsule either), so its hit region is the full 44 pt.
+  private func sceneMenu() -> some View {
+    Menu {
+      ForEach(SelectBarSceneMenu.entries) { entry in
+        GridMoreMenuItem(
+          entry: entry, store: store, foldsClearIntoMore: false, openShootWindow: openShootWindow)
+      }
+    } label: {
+      Label(SelectBarSceneMenu.title, systemImage: SelectBarSceneMenu.systemImage)
+        .actionBarControlSize()
+        .contentShape(Rectangle())
+    }
+    .accessibilityIdentifier(SelectBarSceneMenu.accessibilityIdentifier)
+    .actionBarControlSize()
   }
 
   /// Empty outside the DEBUG screenshot fixture, so nothing about production accessibility
@@ -1206,16 +1320,34 @@ struct ActionBarView: View {
   /// (see `latchButton`) — all three still take their title, symbol and STATE from the same
   /// table.
   @ViewBuilder
-  private func markControl(_ control: ActionBarMarkControl) -> some View {
+  private func markControl(_ control: ActionBarMarkControl, readout: MarkTargetReadout)
+    -> some View
+  {
+    let presentation = ActionBarMarkPresentation.for(
+      control, lockState: store.pickLock.state, readout: readout)
     Button {
       Task { await store.applyMarkToTarget(control.state) }
     } label: {
-      Label(control.title, systemImage: control.systemImage)
+      markLabel(control, presentation)
     }
     .buttonStyle(.bordered)
+    // IMGMGR-474: Clear is selected when the target is unmarked. "No mark" has no mark colour, so
+    // its selected fill is the accent it always carried; unselected, the fill is neutral.
+    .tint(presentation.fillTint.color)
+    .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
+    .accessibilityValue(presentation.accessibilityValue)
     .disabled(store.isMarkActionUnavailable)
     .accessibilityIdentifier(control.accessibilityIdentifier)
     .actionBarControlSize()
+  }
+
+  /// IMGMGR-474: the icon a mark control draws for its presentation — the filled glyph while the
+  /// target carries this mark, and a small badge while only part of a mixed selection does. The
+  /// title stays the accessibility label; the state rides the control's value and trait.
+  private func markLabel(
+    _ control: ActionBarMarkControl, _ presentation: ActionBarMarkPresentation
+  ) -> some View {
+    MarkControlLabel(title: control.title, presentation: presentation)
   }
 
   /// The identifier goes on the node that CARRIES THE FRAME — after `.actionBarControlSize()`,
@@ -1235,22 +1367,25 @@ struct ActionBarView: View {
   /// control is added to the bar — `ActionBarMetrics` is untouched and the six-control tiers are
   /// unchanged; Dislike simply stops being a plain button.
   @ViewBuilder
-  private func latchButton(_ verb: LatchVerb) -> some View {
+  private func latchButton(_ verb: LatchVerb, readout: MarkTargetReadout) -> some View {
     let control = ActionBarMarkControl.control(for: verb)
-    let presentation = PickButtonPresentation.for(store.pickLock.state, control: verb)
+    // IMGMGR-474: the latch half is `PickButtonPresentation` unchanged; the readout half says
+    // what the target already carries (filled glyph + selected, or the mixed badge).
+    let presentation = ActionBarMarkPresentation.for(
+      control, lockState: store.pickLock.state, readout: readout)
     Group {
       if presentation.isProminent {
         Button {
           Task { await store.activateLatchButton(verb) }
         } label: {
-          Label(control.title, systemImage: control.systemImage)
+          markLabel(control, presentation)
         }
         .buttonStyle(.borderedProminent)
       } else {
         Button {
           Task { await store.activateLatchButton(verb) }
         } label: {
-          Label(control.title, systemImage: control.systemImage)
+          markLabel(control, presentation)
         }
         .buttonStyle(.bordered)
       }
@@ -1258,8 +1393,13 @@ struct ActionBarView: View {
     // WP16 P1 (p3332 decision 5): the tint SOURCE moves from the implicit accent colour to the
     // mark palette, for these two verbs only — Clear and Undo are not verdicts and keep theirs.
     // What each button STYLE does with a tint stays the system's business.
-    .tint(MarkPalette.color(for: verb.markRole))
-    .accessibilityAddTraits(presentation.accessibilitySelected ? .isSelected : [])
+    // IMGMGR-474 review round 1: the FILL now says whether the control is selected — neutral
+    // while plain, the mark colour while selected (`.bordered`) or latched (`.borderedProminent`,
+    // solid). The glyph keeps the mark colour in both bordered states (`MarkControlLabel`), so
+    // decision 5 still holds for the verb itself.
+    .tint(presentation.fillTint.color)
+    .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
+    .accessibilityValue(presentation.accessibilityValue)
     // Select mode alone no longer disables these — it is P1's whole point. What stays disabled
     // is LOCK entry, in the context menu below and in the store's own guard.
     .disabled(store.isLatchControlDisabled)
@@ -1272,6 +1412,99 @@ struct ActionBarView: View {
       // exclusion made visible rather than merely enforced.
       Button(control.lockMenuTitle) { store.lockFromMenu(verb) }
         .disabled(store.pickLock.latchedVerb != nil || store.selection.mode == .select)
+    }
+  }
+}
+
+extension ActionBarView {
+  /// IMGMGR-475 option 1: the visible "Tap to Pick" toggle — Pick Lock surfaced as a control of
+  /// its own beside Pick. It carries the same unmistakable pair the latched Pick does (solid
+  /// `.borderedProminent` fill + the selected trait) while on, and the mode row's caption and Done
+  /// appear exactly as for any Pick Lock. Disabled where it is inert (`TapToPickToggle.action`):
+  /// under a Dislike lock, whose Done exits it. Never on the Select bar (`SelectBarLayout`).
+  @ViewBuilder
+  func tapToPickToggle(showsTitle: Bool) -> some View {
+    let isOn = TapToPickToggle.isOn(store.pickLock.state)
+    let isInert =
+      TapToPickToggle.action(lockState: store.pickLock.state, mode: store.selection.mode) == .inert
+    let label = Label(
+      TapToPickToggle.title,
+      systemImage: isOn ? "\(TapToPickToggle.systemImage).fill" : TapToPickToggle.systemImage)
+    Group {
+      if isOn {
+        Button {
+          store.toggleTapToPick()
+        } label: {
+          label
+        }
+        .buttonStyle(.borderedProminent)
+      } else {
+        Button {
+          store.toggleTapToPick()
+        } label: {
+          label
+        }
+        .buttonStyle(.bordered)
+      }
+    }
+    // Innermost style wins over the bar's `.iconOnly`, so only this control can show its title.
+    .labelStyle(TapToPickLabelStyle(showsTitle: showsTitle))
+    .tint(MarkPalette.color(for: LatchVerb.pick.markRole))
+    .accessibilityLabel(TapToPickToggle.title)
+    .accessibilityAddTraits(isOn ? .isSelected : [])
+    .accessibilityValue(isOn ? "On" : "Off")
+    .disabled(isInert)
+    .actionBarControlSize()
+    .accessibilityIdentifier(TapToPickToggle.accessibilityIdentifier)
+  }
+}
+
+/// IMGMGR-475 review round 1: Tap to Pick's label — icon and visible title on a tier that
+/// counted room for it, the icon alone everywhere else. A system label style, no custom material.
+struct TapToPickLabelStyle: LabelStyle {
+  let showsTitle: Bool
+
+  @ViewBuilder
+  func makeBody(configuration: Configuration) -> some View {
+    if showsTitle {
+      HStack(spacing: 6) {
+        configuration.icon
+        configuration.title.font(.subheadline)
+      }
+    } else {
+      configuration.icon
+    }
+  }
+}
+
+/// IMGMGR-474: a bar mark control's label — the filled glyph while the target carries this mark,
+/// a small badge while only part of a mixed selection does, and the control's own colour on the
+/// glyph in both bordered states. The title stays the accessibility label; the state rides the
+/// control's value and trait. The colour override is dropped while DISABLED so the system's own
+/// dimming still reads, exactly as it did before the override existed.
+struct MarkControlLabel: View {
+  let title: String
+  let presentation: ActionBarMarkPresentation
+  @Environment(\.isEnabled) private var isEnabled
+
+  var body: some View {
+    let label = Label {
+      Text(title)
+    } icon: {
+      Image(systemName: presentation.systemImage)
+        .overlay(alignment: .topTrailing) {
+          if presentation.showsMixedBadge {
+            Image(systemName: ActionBarMarkPresentation.mixedBadgeSymbol)
+              .font(.caption2.weight(.bold))
+              .offset(x: 6, y: -6)
+              .accessibilityHidden(true)
+          }
+        }
+    }
+    if isEnabled, let glyph = presentation.glyphTint {
+      label.foregroundStyle(glyph.color)
+    } else {
+      label
     }
   }
 }

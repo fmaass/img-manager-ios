@@ -3537,26 +3537,30 @@ struct GridStoreBulkMarkTests {
 @Suite("Grid action bar geometry (the bar must fit the column it is given)")
 struct ActionBarMetricsTests {
 
-  @Test("Six 44-pt controls fit the narrowest Compact width")
-  func sixControlsFitTheNarrowestCompactWidth() {
-    #expect(ActionBarMetrics.controlCount == 6)
+  /// IMGMGR-475 added Tap to Pick beside Pick: seven controls at rest, which the 402-pt iPhone
+  /// fits at the TIGHT rhythm (the roomy one needs 436).
+  @Test("Seven 44-pt controls fit the narrowest Compact width at the tight rhythm")
+  func sevenControlsFitTheNarrowestCompactWidth() {
+    #expect(ActionBarMetrics.controlCount == 7)
     #expect(ActionBarMetrics.minimumControlSide == 44)
-    #expect(ActionBarMetrics.requiredWidth() <= ActionBarMetrics.narrowestCompactWidth)
+    #expect(ActionBarMetrics.unfoldedFloor <= ActionBarMetrics.narrowestCompactWidth)
     let compact = ActionBarMetrics.layout(forWidth: ActionBarMetrics.narrowestCompactWidth)
+    #expect(compact.name == "tight")
     #expect(!compact.foldsClearIntoMore)
-    #expect(compact.spacing == ActionBarMetrics.controlSpacing)
+    #expect(compact.spacing == ActionBarMetrics.tightSpacing)
   }
 
-  @Test("The MEASURED Regular-3 grid column is too narrow for six controls, so Clear folds")
+  @Test("The MEASURED Regular-3 column still takes a Compact tier: folded at the narrowest gap")
   func theMeasuredRegular3ColumnFoldsClearIntoMore() {
     // 315 pt, derived from the gate's own landscape geometry attachment rather than assumed —
-    // see `ActionBarMetrics.measuredRegular3GridColumn`. Six controls need 320 even at the
-    // tight rhythm, which is exactly why the bar came out at x = -13.5 there.
-    #expect(ActionBarMetrics.sixControlFloor > ActionBarMetrics.measuredRegular3GridColumn)
+    // see `ActionBarMetrics.measuredRegular3GridColumn`. Seven controls need 372 even at the
+    // tight rhythm, and the folded six need 320 at it, so only the narrowest gap fits.
+    #expect(ActionBarMetrics.unfoldedFloor > ActionBarMetrics.measuredRegular3GridColumn)
     #expect(ActionBarMetrics.foldedFloor <= ActionBarMetrics.measuredRegular3GridColumn)
     let column = ActionBarMetrics.layout(forWidth: ActionBarMetrics.measuredRegular3GridColumn)
     #expect(column.foldsClearIntoMore)
-    #expect(column.spacing == ActionBarMetrics.tightSpacing)
+    #expect(column.name == "folded-tight")
+    #expect(column.spacing == ActionBarMetrics.narrowestSpacing)
     // The window constant stays the layout's own, never a second copy of 1197.
     #expect(ActionBarMetrics.narrowestRegular3Window == LayoutResolver.regular3Threshold)
     #expect(ActionBarMetrics.measuredRegular3GridColumn < ActionBarMetrics.narrowestRegular3Window)
@@ -3564,20 +3568,22 @@ struct ActionBarMetricsTests {
 
   @Test("The rhythms that stopped fitting are pinned as executable facts, not comments")
   func theShippedRhythmsWouldNotHaveFit() {
-    // 6×44 + 5×24 + 2×16 = 416 against 402: the Compact overflow the first diff gate found.
-    #expect(ActionBarMetrics.requiredWidth(spacing: 24) == 416)
-    #expect(ActionBarMetrics.requiredWidth(spacing: 24) > ActionBarMetrics.narrowestCompactWidth)
-    // 6×44 + 5×16 + 2×16 = 376: fits Compact, and is exactly what the iPad landscape leg
-    // showed does NOT fit a Regular-3 grid column — hence a tier below it rather than a wider
-    // promise.
-    #expect(ActionBarMetrics.requiredWidth() == 376)
-    #expect(ActionBarMetrics.sixControlFloor == 320)
-    #expect(ActionBarMetrics.foldedFloor == 268)
+    // Six controls: 6×44 + 5×24 + 2×16 = 416 against 402 — the Compact overflow the first diff
+    // gate found; 6×44 + 5×16 + 2×16 = 376 is what the iPad landscape leg showed does NOT fit a
+    // Regular-3 grid column.
+    #expect(ActionBarMetrics.requiredWidth(controlCount: 6, spacing: 24) == 416)
+    #expect(ActionBarMetrics.requiredWidth(controlCount: 6) == 376)
+    // Seven (IMGMGR-475): 436 roomy, which no 402-pt iPhone fits — hence the tight tier there.
+    #expect(ActionBarMetrics.requiredWidth() == 436)
+    #expect(ActionBarMetrics.requiredWidth() > ActionBarMetrics.narrowestCompactWidth)
+    #expect(ActionBarMetrics.unfoldedFloor == 372)
+    #expect(ActionBarMetrics.foldedFloor == 300)
   }
 
-  @Test("The bar tightens, then folds Clear into More, as the column narrows")
+  @Test("The bar tightens, then folds Clear into More, then narrows the gap, as the column narrows")
   func layoutTightensThenFoldsAsTheColumnNarrows() {
     let roomy = ActionBarMetrics.layout(forWidth: ActionBarMetrics.requiredWidth())
+    #expect(roomy.name == "roomy")
     #expect(roomy.spacing == ActionBarMetrics.controlSpacing)
     #expect(roomy.horizontalPadding == ActionBarMetrics.horizontalPadding)
     #expect(!roomy.foldsClearIntoMore)
@@ -3587,12 +3593,18 @@ struct ActionBarMetricsTests {
     #expect(tight.horizontalPadding == ActionBarMetrics.tightHorizontalPadding)
     #expect(!tight.foldsClearIntoMore)
 
-    let atFloor = ActionBarMetrics.layout(forWidth: ActionBarMetrics.sixControlFloor)
+    let atFloor = ActionBarMetrics.layout(forWidth: ActionBarMetrics.unfoldedFloor)
     #expect(!atFloor.foldsClearIntoMore)
 
-    let folded = ActionBarMetrics.layout(forWidth: ActionBarMetrics.sixControlFloor - 1)
+    let folded = ActionBarMetrics.layout(forWidth: ActionBarMetrics.unfoldedFloor - 1)
+    #expect(folded.name == "folded")
     #expect(folded.foldsClearIntoMore)
     #expect(folded.spacing == ActionBarMetrics.tightSpacing)
+
+    let foldedTight = ActionBarMetrics.layout(
+      forWidth: ActionBarMetrics.requiredWidth(for: ActionBarMetrics.folded) - 1)
+    #expect(foldedTight.name == "folded-tight")
+    #expect(foldedTight.spacing == ActionBarMetrics.narrowestSpacing)
   }
 
   @Test("Every tier fits the width that selects it, with no control under 44 pt")
@@ -3601,30 +3613,32 @@ struct ActionBarMetricsTests {
       ActionBarMetrics.requiredWidth(
         spacing: ActionBarMetrics.tightSpacing,
         horizontalPadding: ActionBarMetrics.tightHorizontalPadding)
-        == ActionBarMetrics.sixControlFloor)
-    #expect(ActionBarMetrics.foldedFloor < ActionBarMetrics.sixControlFloor)
+        == ActionBarMetrics.unfoldedFloor)
+    #expect(ActionBarMetrics.foldedFloor < ActionBarMetrics.unfoldedFloor)
     // The folded tier buys exactly one control's worth of room, and buys it by MOVING the
     // control into the More menu — never by shrinking one.
     #expect(
-      ActionBarMetrics.sixControlFloor - ActionBarMetrics.foldedFloor
+      ActionBarMetrics.unfoldedFloor - ActionBarMetrics.requiredWidth(for: ActionBarMetrics.folded)
         == ActionBarMetrics.minimumControlSide + ActionBarMetrics.tightSpacing)
   }
 
   @Test("The tier list is ordered widest-first, which is the order the bar renders them in")
   func tiersAreOrderedWidestFirst() {
-    // `ActionBarView` feeds these three, in this order, to `ViewThatFits`, which takes the first
+    // `ActionBarView` feeds these, in this order, to `ViewThatFits`, which takes the first
     // that fits the column. `layout(forWidth:)` walks the same list, so this ordering is what
     // makes the arithmetic below and the rendered result the same statement.
     let widths = ActionBarMetrics.tiers.map(ActionBarMetrics.requiredWidth(for:))
-    #expect(widths == [376, 320, 268])
+    #expect(widths == [436, 372, 320, 300])
     #expect(widths == widths.sorted(by: >))
-    #expect(ActionBarMetrics.tiers.map(\.name) == ["roomy", "tight", "folded"])
-    #expect(ActionBarMetrics.tiers.filter(\.foldsClearIntoMore).map(\.name) == ["folded"])
-    // Only the folded tier drops a control, and it drops exactly one.
+    #expect(ActionBarMetrics.tiers.map(\.name) == ["roomy", "tight", "folded", "folded-tight"])
+    #expect(
+      ActionBarMetrics.tiers.filter { $0.foldsClearIntoMore }.map { $0.name }
+        == ["folded", "folded-tight"])
+    // Only the folded tiers drop a control, and each drops exactly one.
     #expect(
       ActionBarMetrics.tiers.map(\.controlCount) == [
         ActionBarMetrics.controlCount, ActionBarMetrics.controlCount,
-        ActionBarMetrics.foldedControlCount,
+        ActionBarMetrics.foldedControlCount, ActionBarMetrics.foldedControlCount,
       ])
     // The renderer branches on `foldsClearIntoMore` while the arithmetic counts `controlCount`:
     // this is the one place those two could drift, so it is asserted rather than assumed.
@@ -3639,9 +3653,54 @@ struct ActionBarMetricsTests {
     #expect(Set(ActionBarMetrics.tiers.map(\.name)).count == ActionBarMetrics.tiers.count)
   }
 
-  @Test("A seventh control would not fit the roomy tier — the guard covers the count too")
-  func aSeventhControlWouldNotFit() {
+  /// WP29 P1 (IMGMGR-452): at Regular More is the grid bar's own item, so the action bar is
+  /// five controls and never folds Clear — the measured 315-pt expanded column included.
+  @Test("No Regular tier folds Clear, and the tightest Regular tier fits the 315-pt column")
+  func regularTiersNeverFoldClear() {
+    let regular = ActionBarMetrics.tiers(carriesMore: false)
+    #expect(regular.map(\.name) == ["regular-titled", "regular-roomy", "regular-tight"])
+    #expect(regular.allSatisfy { !$0.foldsClearIntoMore && !$0.carriesMore })
+    #expect(regular.allSatisfy { $0.controlCount == 6 })
+    let widths = regular.map(ActionBarMetrics.requiredWidth(for:))
+    #expect(widths == [472, 376, 300])
+    #expect(widths == widths.sorted(by: >))
+    let tightest = regular[regular.count - 1]
+    #expect(
+      ActionBarMetrics.requiredWidth(for: tightest)
+        <= ActionBarMetrics.measuredRegular3GridColumn)
+    let column = ActionBarMetrics.layout(
+      forWidth: ActionBarMetrics.measuredRegular3GridColumn, carriesMore: false)
+    #expect(column.name == "regular-tight")
+    #expect(!column.foldsClearIntoMore)
+    // Narrower than any tier: the narrowest Regular tier, still without a fold.
+    #expect(!ActionBarMetrics.layout(forWidth: 100, carriesMore: false).foldsClearIntoMore)
+    // Names are ForEach identities — unique within the list the bar renders.
+    #expect(Set(regular.map(\.name)).count == regular.count)
+  }
+
+  @Test("Compact's tiers are unchanged and every one carries More")
+  func compactTiersUnchanged() {
+    #expect(
+      ActionBarMetrics.tiers(carriesMore: true).map(\.name)
+        == ["roomy", "tight", "folded", "folded-tight"])
+    #expect(ActionBarMetrics.tiers(carriesMore: true).allSatisfy { $0.carriesMore })
+    #expect(
+      ActionBarMetrics.layout(forWidth: ActionBarMetrics.narrowestCompactWidth)
+        == ActionBarMetrics.layout(
+          forWidth: ActionBarMetrics.narrowestCompactWidth, carriesMore: true))
+    #expect(WorkspaceChromePlacement.actionBarCarriesMore(for: .compact))
+    #expect(!WorkspaceChromePlacement.actionBarCarriesMore(for: .regular2))
+    #expect(!WorkspaceChromePlacement.actionBarCarriesMore(for: .regular3))
+  }
+
+  @Test("An eighth control would not fit the tight tier — the guard covers the count too")
+  func anEighthControlWouldNotFit() {
     #expect(
       ActionBarMetrics.requiredWidth(controlCount: 7) > ActionBarMetrics.narrowestCompactWidth)
+    #expect(
+      ActionBarMetrics.requiredWidth(
+        controlCount: 8, spacing: ActionBarMetrics.tightSpacing,
+        horizontalPadding: ActionBarMetrics.tightHorizontalPadding)
+        > ActionBarMetrics.narrowestCompactWidth)
   }
 }

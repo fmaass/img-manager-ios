@@ -138,6 +138,21 @@
           .ok,
           Components.Schemas.StackEditResult(
             dissolvedStackIds: [], loosenedImageIds: [], stackIds: [Self.fixtureStackID]))
+      // WP29 P4 (IMGMGR-455): the split and extract Scene ▸ drives. Recorded as the WIRE call —
+      // the stack id off the path, the payload off the body — BEFORE the answer goes back, so a
+      // UI test reads what was sent. The result names the fixture's own scene, which the topology
+      // coordinator then reopens exactly as it does after an absorb.
+      case Operations.SplitStackApiStacksStackIdSplitPost.id,
+        Operations.ExtractFromStackApiStacksStackIdExtractPost.id:
+        let record = await Self.sceneEditRecord(
+          isSplit: operationID == Operations.SplitStackApiStacksStackIdSplitPost.id,
+          path: request.path, body: body)
+        let sceneEditProbe = self.probe
+        await MainActor.run { (sceneEditProbe ?? .shared).sceneEdits.append(record) }
+        return try jsonResponse(
+          .ok,
+          Components.Schemas.StackEditResult(
+            dissolvedStackIds: [], loosenedImageIds: [], stackIds: [Self.fixtureStackID]))
       // IMGMGR-348: the one-tap share's master lane needs bytes in the fixture composition —
       // `fixtureImages()` marks every third stub image `hasEdit`, and those are exactly the ones
       // whose share takes the master path, so without this the UI test would be measuring a
@@ -272,6 +287,37 @@
       case 4...7: return "FUJIFILM X-T2"
       default: return nil
       }
+    }
+
+    /// `split(stackID: S, atImageID: I)` / `extract(stackID: S, imageIDs: [I, …])` — the wire
+    /// fields in the order the request carried them. A body that does not decode records its
+    /// absence (`?`) rather than a plausible value.
+    private static func sceneEditRecord(isSplit: Bool, path: String?, body: HTTPBody?) async
+      -> String
+    {
+      let stackID = sceneEditStackID(path: path) ?? "?"
+      var object: [String: Any] = [:]
+      if let body, let data = try? await Data(collecting: body, upTo: 1 << 16) {
+        object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+      }
+      if isSplit {
+        let at = (object["at_image_id"] as? Int).map(String.init) ?? "?"
+        return "split(stackID: \(stackID), atImageID: \(at))"
+      }
+      let ids = (object["image_ids"] as? [Int]).map { $0.map(String.init).joined(separator: ", ") }
+      return "extract(stackID: \(stackID), imageIDs: [\(ids ?? "?")])"
+    }
+
+    /// The `stacks/{id}` segment of a scene-edit request path, or `nil` when the path names none.
+    private static func sceneEditStackID(path: String?) -> String? {
+      guard let requestPath = path.flatMap({ URLComponents(string: $0)?.path }) else {
+        return nil
+      }
+      let parts = requestPath.split(separator: "/")
+      guard let index = parts.firstIndex(of: "stacks"), index + 1 < parts.count else {
+        return nil
+      }
+      return String(parts[index + 1])
     }
 
     /// The fixture scene's id. One scene is enough and two would only make the screenshot
@@ -758,6 +804,24 @@
     /// capture. Renders nothing a reader sees; Debug-only like every flag here.
     static var materialsProbe: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestMaterialsProbe")
+    }
+
+    /// IMGMGR-478: the Regular sidebar's visibility is REMEMBERED across launches
+    /// (`SidebarVisibilityMemory.hiddenKey`, standard `UserDefaults`), and the simulator keeps it
+    /// from one test to the next — so a fixture launch forgets it (`ImgManagerApp.init`) and every
+    /// suite starts on the shown sidebar it was written against, whatever an earlier or
+    /// interrupted test left. `-UITestKeepSidebarMemory` keeps it: the relaunch half of
+    /// `RegularSidebarShellUITests` passes it to read back what its previous launch stored, through
+    /// the same `@AppStorage` read a shipped launch makes.
+    static var keepsSidebarMemory: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestKeepSidebarMemory")
+    }
+
+    /// The fixture launch's reset described above; `ImgManagerApp.init` calls it once per process,
+    /// before any `RootView` reads the flag.
+    static func resetSidebarMemoryUnlessKept(defaults: UserDefaults = .standard) {
+      guard isActive, !keepsSidebarMemory else { return }
+      defaults.removeObject(forKey: SidebarVisibilityMemory.hiddenKey)
     }
 
     /// WP28 P3 (IMGMGR-450): which fixture folder the auto-select opens — the id that follows

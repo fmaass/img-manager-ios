@@ -153,7 +153,13 @@ final class SelectModeScreenshotUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(dislike.isEnabled, "\(configuration): Dislike must be live on a selection.")
     XCTAssertTrue(tag.isEnabled, "\(configuration): Tag must be live on a selection.")
 
-    var barControls = [("Pick", pick), ("Dislike", dislike), ("Tag", tag), ("More", more)]
+    // WP29 P4 (IMGMGR-455): Scene ▸ is a Select-bar control, held to the same reachability.
+    let scene = app.descendants(matching: .any)["selectBarSceneMenu"].firstMatch
+    XCTAssertTrue(
+      scene.waitForExistence(timeout: 5), "\(configuration): the Select bar has no Scene ▸.")
+    var barControls = [
+      ("Pick", pick), ("Dislike", dislike), ("Tag", tag), ("More", more), ("Scene", scene),
+    ]
     if clearIsInTheBar {
       XCTAssertTrue(clear.isEnabled, "\(configuration): Clear must be live on a selection.")
       barControls.append(("Clear", clear))

@@ -37,6 +37,11 @@
     /// that a sheet was dismissed.
     var absorbRequests = 0
 
+    /// WP29 P4 (IMGMGR-455): every split and extract the fixture transport answered, as the WIRE
+    /// call it received (`split(stackID: 5000, atImageID: 4)`), so a UI test asserts the payload
+    /// Scene ▸ sent rather than a sheet closing.
+    var sceneEdits: [String] = []
+
     /// Final audit F2: how many `/api/folder-summaries` requests the fixture transport has served
     /// this launch — so a UI test observes that the Shoots title menu's Refresh row really
     /// re-fetched, the same way the absorb counter above observes its request.

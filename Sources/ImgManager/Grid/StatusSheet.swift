@@ -22,7 +22,7 @@ struct StatusSheetSection: Identifiable, Equatable, Sendable {
 /// (viii)); the sheet's only verbs are "close" and "try again".
 ///
 /// A pure model so the shapes below — above all the timestamps — are testable without a render
-/// host, the same posture `GridGroupControl.title(for:)` already uses.
+/// host, the same posture `ArrangeModel.groupTitle(for:)` already uses.
 enum StatusSheetModel {
 
   /// Estate ADR-0007 ([/link/2553](/link/2553)): every rendered timestamp is Europe/Zurich AND

@@ -1,0 +1,149 @@
+import XCTest
+
+/// IMGMGR-475 (owner, 2026-09-29, options 1 + 2): picking a photograph takes ONE gesture and never
+/// takes the second tap away from the loupe. Drives the DEBUG fixture (`DebugStubTransport`:
+/// photographs 2 and 3 are unmarked, not edited, not Good) through the shipped surfaces and reads
+/// what RENDERED — the corner's own spoken statuses (it carries the badges' meaning,
+/// `QuickPickCorner`), the bar's Pick readout (IMGMGR-474) and the lock's mode row.
+final class QuickPickUITests: OrientationPinnedUITestCase {
+
+  private func launchedGrid() -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launchArguments = ["-UITestStubGrid"]
+    app.launch()
+    return app
+  }
+
+  private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+  }
+
+  private func waitFor(_ format: String, _ element: XCUIElement, timeout: TimeInterval = 10)
+    -> Bool
+  {
+    let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
+    return XCTWaiter.wait(for: [done], timeout: timeout) == .completed
+  }
+
+  func testMarkCornerFocusesAndPicksInOneTapWithoutOpeningTheLoupe() throws {
+    let app = launchedGrid()
+    let pick = app.buttons["gridPickButton"]
+    XCTAssertTrue(
+      pick.waitForExistence(timeout: 30),
+      "Action bar (gridPickButton) never appeared — expected the DEBUG fixture composition's "
+        + "populated grid, got something else (sign-in screen, blank screen, failed stub).")
+    let close = app.buttons["loupeClose"]
+
+    // Focus photograph 3 (unmarked) first, so the corner tap has focus to MOVE.
+    let other = element(app, "gridTile-3")
+    XCTAssertTrue(other.waitForExistence(timeout: 15), "Fixture tile `gridTile-3` never appeared.")
+    other.tap()
+    if close.waitForExistence(timeout: 2) { close.tap() }
+    XCTAssertEqual(pick.value as? String, "Not picked", "Focused photograph 3 is unmarked.")
+
+    let corner = element(app, "tileMarkCorner-2")
+    XCTAssertTrue(
+      corner.waitForExistence(timeout: 15),
+      "Photograph 2 carries no quick-pick corner (`tileMarkCorner-2`).")
+    XCTAssertEqual(corner.value as? String, "Not picked")
+
+    // ONE gesture: the badge and the bar's Pick both say picked, and the loupe stays shut.
+    corner.tap()
+    XCTAssertTrue(
+      waitFor("value == 'Picked'", corner),
+      "One tap on the mark corner must pick photograph 2; the corner reads "
+        + "\(String(describing: corner.value)).")
+    XCTAssertTrue(
+      waitFor("isSelected == true", pick),
+      "The corner tap must focus photograph 2, so the bar's Pick reads it as picked.")
+    XCTAssertEqual(pick.value as? String, "Picked")
+    attach(name: "IMGMGR-475-corner-picked")
+    XCTAssertFalse(close.exists, "The corner tap opened the loupe — it must never open it.")
+    XCTAssertFalse(
+      app.staticTexts["lockModeCaption"].exists, "A quick pick must never latch a lock.")
+
+    // The focused tile's corner still toggles (pick -> none) and still leaves the loupe alone.
+    corner.tap()
+    XCTAssertTrue(
+      waitFor("isSelected == false", pick),
+      "A second corner tap must clear the pick, and the bar must say so.")
+    XCTAssertEqual(corner.value as? String, "Not picked")
+    XCTAssertFalse(close.exists, "The focused tile's corner opened the loupe.")
+
+    // The second tap still belongs to the loupe: the tile BODY of the focused photograph opens it.
+    element(app, "gridTile-2").tap()
+    XCTAssertTrue(
+      close.waitForExistence(timeout: 10),
+      "A tap on the focused tile's body must still open the loupe.")
+    close.tap()
+  }
+
+  func testTapToPickToggleLatchesAndATilePicks() throws {
+    let app = launchedGrid()
+    let toggle = app.buttons["gridTapToPickToggle"]
+    XCTAssertTrue(
+      toggle.waitForExistence(timeout: 30),
+      "The bar carries no Tap to Pick toggle (`gridTapToPickToggle`).")
+    XCTAssertEqual(toggle.label, "Tap to Pick")
+    XCTAssertFalse(toggle.isSelected, "Tap to Pick is on before anything latched it.")
+
+    toggle.tap()
+
+    let caption = app.staticTexts["lockModeCaption"]
+    XCTAssertTrue(
+      caption.waitForExistence(timeout: 10),
+      "Tap to Pick did not bring up the Pick Lock mode row.")
+    XCTAssertEqual(caption.label, "Pick Lock — tap photos to apply Pick")
+    XCTAssertTrue(waitFor("isSelected == true", toggle), "The toggle must read ON while latched.")
+
+    // Photograph 2, not 3: the fixture lays photograph 3 out under 88 pt on both destinations
+    // (70.7 × 47 iPhone, 77 × 52 iPad on the lane-m gate at fce41c8), and a tile that small
+    // carries no corner by design (`QuickPickCorner.isInstalled`), so it cannot read the mark.
+    let corner = element(app, "tileMarkCorner-2")
+    XCTAssertTrue(corner.waitForExistence(timeout: 15), "Photograph 2 carries no corner.")
+    XCTAssertEqual(corner.value as? String, "Not picked")
+    element(app, "gridTile-2").tap()
+    XCTAssertTrue(
+      waitFor("value == 'Picked'", corner),
+      "With Tap to Pick on, one tap on a tile must pick it.")
+    XCTAssertFalse(app.buttons["loupeClose"].exists, "A latched tap opened the loupe.")
+    attach(name: "IMGMGR-475-tap-to-pick")
+
+    toggle.tap()
+    XCTAssertTrue(
+      waitFor("exists == false", caption), "A second press on Tap to Pick must exit the lock.")
+    XCTAssertTrue(waitFor("isSelected == false", toggle), "The toggle still reads ON.")
+  }
+
+  /// The corner (a SIBLING of the tile, `MarkCornerTarget`) must leave "the tile" ONE element:
+  /// `gridTile-<id>` resolves to exactly one match for a tile with badges (photograph 1) and for
+  /// one without (photograph 2). Several matches make every non-`firstMatch` query ambiguous —
+  /// `isHittable` then reads false for a tile in full view, which is how
+  /// `InspectorSlideOverUITests` lost its scroll readings once the corner landed.
+  func testEachGridTileIsOneAccessibilityElement() throws {
+    let app = launchedGrid()
+    XCTAssertTrue(
+      element(app, "gridTile-2").waitForExistence(timeout: 30),
+      "Fixture tile `gridTile-2` never appeared — expected the DEBUG fixture's populated grid.")
+    Thread.sleep(forTimeInterval: 1.0)
+    var checked: [Int] = []
+    for id in 1...12 {
+      let count = app.descendants(matching: .any).matching(identifier: "gridTile-\(id)").count
+      guard count > 0 else { continue }
+      checked.append(id)
+      XCTAssertEqual(
+        count, 1,
+        "`gridTile-\(id)` matches \(count) elements; a tile must surface as one element.")
+    }
+    XCTAssertTrue(
+      checked.contains(1) && checked.contains(2),
+      "Tiles 1 (badged) and 2 (no badges) must both be on screen to be counted; saw \(checked).")
+  }
+
+  private func attach(name: String) {
+    let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+}

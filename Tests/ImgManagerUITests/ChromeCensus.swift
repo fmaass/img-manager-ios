@@ -80,7 +80,8 @@ enum ChromeOwnership {
     if container == "tabBar" && type == .button { return "system tab bar button" }
     if type == .searchField || insideSearch { return "system search field" }
     let titleShaped =
-      label.hasSuffix(", Actions Menu") || XCTestCase.materialsFolderOneNames.contains(label)
+      label.hasSuffix(", Actions Menu")
+      || XCTestCase.isTitleMenuLabel(label, names: XCTestCase.materialsFolderOneNames)
       || label == XCTestCase.workspaceFallbackTitle || stateTitles.contains(label)
     if titleMenu && container == "navigationBar" && type == .button && identifier.isEmpty
       && !insideControl && titleShaped

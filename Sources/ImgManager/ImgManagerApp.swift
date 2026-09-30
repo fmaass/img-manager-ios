@@ -2,6 +2,14 @@ import SwiftUI
 
 @main
 struct ImgManagerApp: App {
+  init() {
+    #if DEBUG
+      // IMGMGR-478: a fixture launch starts on the shown Regular sidebar unless the test asks to
+      // keep what the previous launch remembered (`DebugStubLaunch.keepsSidebarMemory`).
+      DebugStubLaunch.resetSidebarMemoryUnlessKept()
+    #endif
+  }
+
   var body: some Scene {
     // WP13 P11 (IMGMGR-220): a PARAMETERIZED window group — the second half of design decision
     // D6, "the second shoot beside the first". `WindowGroup(for:)` is what makes a window

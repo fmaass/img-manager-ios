@@ -8,10 +8,14 @@ import XCTest
 ///     above the tree's tier rows;
 /// (b) nothing in the app is a navigation rail (no identifier or label contains "rail");
 /// (c) the toolbar search is a button that expands to a field, and typing filters the tree;
-/// (d) six named bar screenshots — search minimised and active at Regular-3 collapsed, Regular-3
-///     expanded and Regular-2 — for the independent glass-cluster count, plus the frames of every
-///     hittable bar element as DIAGNOSTIC log lines only. At Regular-3 collapsed all six chrome
-///     controls are asserted hittable (IMGMGR-390's collapsed contract).
+/// (d) moved to `GridToolbarUITests` by WP29 P1 (IMGMGR-452): the six named bar screenshots and
+///     the collapsed all-hittable contract now ride the bar's own acceptance tests, beside the
+///     order, cluster and title assertions the new bar adds.
+/// (e) IMGMGR-478: a sidebar hidden with the system toggle has a visible way back on the GRID's
+///     bar (`regularSidebarToggle`, "Show Sidebar"), and the choice survives a kill + relaunch in
+///     both directions, at Regular-3 and at Regular-2. The iPhone destination is Compact, where
+///     the same two tests assert the toggle is never built — they do not skip, so the
+///     destination's skip count is unchanged.
 ///
 /// Layouts are reached the way `Regular3CollapsedChromeUITests` reaches them: landscape and the
 /// app's measured window width against the resolver's pin for Regular-3, portrait for Regular-2.
@@ -31,17 +35,6 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
   /// Mirrors `LayoutResolver.regular3Threshold` (joined by
   /// `LayoutPresentationTests.theRegular3WidthPinMatchesTheUITestLiteral`).
   private static let regular3WidthThreshold: CGFloat = 1197
-
-  /// The six grid-bar controls, in `ShellToolbarLayout.regularGridBar` order
-  /// (`ShellToolbarLayoutTests.shippedIdentifiers` is the join).
-  private static let barControlIdentifiers = [
-    "inspectorChromeButton",
-    "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
-    "gridShortcutHelpControl",
-  ]
 
   // MARK: - (a) Shoots and Library
 
@@ -177,40 +170,200 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
       "The toolbar search did not come back on the grid's bar after the loupe closed.")
   }
 
-  // MARK: - (d) Bar screenshots
+  // MARK: - (e) IMGMGR-478: a hidden sidebar has a way back, and is remembered
 
-  func testRegular3CollapsedBarScreenshotsAndAllSixControlsHittable() throws {
-    let app = try launched(.regular3)
-    XCTAssertFalse(app.buttons["Stats"].exists, "Regular-3 did not launch collapsed.")
+  func testRegular3HiddenSidebarComesBackFromTheGridBarAndSurvivesARelaunch() {
+    assertHiddenSidebarRoundTrip(.regular3)
+  }
 
-    for identifier in Self.barControlIdentifiers {
-      let control = app.descendants(matching: .any)[identifier].firstMatch
-      XCTAssertTrue(
-        control.waitForExistence(timeout: 10),
-        "`\(identifier)` is not on the grid's bar at Regular-3 collapsed.")
-      XCTAssertTrue(
-        control.isHittable,
-        "`\(identifier)` exists but cannot be tapped at Regular-3 collapsed (IMGMGR-390): a "
-          + "control folded into the overflow chevron reads exactly like this.")
+  func testRegular2HiddenSidebarComesBackFromTheGridBarAndSurvivesARelaunch() {
+    assertHiddenSidebarRoundTrip(.regular2)
+  }
+
+  /// Launch 1 (the fixture forgets any remembered state): shown, and no grid-bar toggle → hide
+  /// with the system toggle → the grid bar's toggle is there, labelled "Show Sidebar" → it brings
+  /// the sidebar back → hide again. Launch 2 (`-UITestKeepSidebarMemory`): still hidden, the
+  /// toggle restores it. Launch 3 (keeping memory): shown — the restore was remembered too, and
+  /// the simulator is left on the shown sidebar every other suite expects.
+  private func assertHiddenSidebarRoundTrip(_ layout: Layout) {
+    let tag = layout == .regular3 ? "r3" : "r2"
+    var app = launchForSidebarMemory(layout, keepMemory: false)
+    guard resolvesForSidebarMemory(layout, app) else {
+      assertCompactHasNoSidebarToggle(app)
+      return
     }
-    captureBar(app, name: "ipad-bar-regular3-collapsed-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular3-collapsed-search-active")
-  }
 
-  func testRegular3ExpandedBarScreenshots() throws {
-    let app = try launched(.regular3, inspectorShown: true)
     XCTAssertTrue(
-      app.buttons["Stats"].waitForExistence(timeout: 10),
-      "`-UITestInspectorShown` did not take effect: the inspector is not expanded.")
-    captureBar(app, name: "ipad-bar-regular3-expanded-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular3-expanded-search-active")
+      waitForSidebar(shown: true, in: app),
+      "\(tag): the sidebar is not shown on a fresh fixture launch.")
+    XCTAssertFalse(
+      gridBarSidebarToggle(app).exists,
+      "\(tag): the grid bar carries a sidebar toggle while the sidebar shows — the system toggle "
+        + "is on the sidebar's own bar, so this one would duplicate it.")
+
+    hideWithSystemToggle(in: app, tag: tag)
+    assertGridBarToggleRestores(in: app, tag: "\(tag) launch 1")
+    hideWithSystemToggle(in: app, tag: tag)
+    XCTAssertTrue(
+      gridBarSidebarToggle(app).waitForExistence(timeout: 10),
+      "\(tag): the grid bar's toggle did not come back when the sidebar was hidden again.")
+    attach(named: "IMGMGR-478-\(tag)-hidden")
+
+    // Let the flag's write settle before the kill, then relaunch on the same storage.
+    Thread.sleep(forTimeInterval: 1.0)
+    app.terminate()
+    app = launchForSidebarMemory(layout, keepMemory: true)
+    XCTAssertTrue(
+      waitForSidebar(shown: false, in: app),
+      "\(tag): the sidebar hidden before the relaunch came back SHOWN — the choice was not "
+        + "remembered.")
+    attach(named: "IMGMGR-478-\(tag)-relaunched-hidden")
+    assertGridBarToggleRestores(in: app, tag: "\(tag) launch 2")
+
+    Thread.sleep(forTimeInterval: 1.0)
+    app.terminate()
+    app = launchForSidebarMemory(layout, keepMemory: true)
+    XCTAssertTrue(
+      waitForSidebar(shown: true, in: app),
+      "\(tag): the sidebar restored before the relaunch came back HIDDEN.")
+    XCTAssertFalse(
+      gridBarSidebarToggle(app).exists,
+      "\(tag): the grid bar's toggle is on the bar after a relaunch with the sidebar shown.")
   }
 
-  func testRegular2BarScreenshots() throws {
-    let app = try launched(.regular2)
-    assertNoRailElement(in: app, context: "Regular-2")
-    captureBar(app, name: "ipad-bar-regular2-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular2-search-active")
+  /// The toggle is on the GRID's bar, labelled "Show Sidebar", hittable, and brings the sidebar
+  /// back — after which it leaves the bar.
+  private func assertGridBarToggleRestores(in app: XCUIApplication, tag: String) {
+    let toggle = gridBarSidebarToggle(app)
+    guard toggle.waitForExistence(timeout: 10) else {
+      XCTFail(
+        "\(tag): the sidebar is hidden and the grid's bar carries no sidebar toggle — the owner's "
+          + "report on build 20 (IMGMGR-478). Bar buttons: \(barButtonNames(in: app))")
+      return
+    }
+    XCTAssertEqual(toggle.label, "Show Sidebar", "\(tag): the toggle does not say what it does.")
+    XCTAssertTrue(toggle.isHittable, "\(tag): the grid bar's sidebar toggle is not hittable.")
+    let info = gridInfoControl(app)
+    let center = CGPoint(x: toggle.frame.midX, y: toggle.frame.midY)
+    let bar = app.navigationBars.allElementsBoundByIndex.first { $0.frame.contains(center) }
+    XCTAssertNotNil(bar, "\(tag): the sidebar toggle sits on no navigation bar.")
+    if let bar, info.exists {
+      XCTAssertTrue(
+        bar.frame.contains(CGPoint(x: info.frame.midX, y: info.frame.midY)),
+        "\(tag): the sidebar toggle is not on the grid's bar (the one carrying Info).")
+      XCTAssertLessThan(
+        toggle.frame.minX, info.frame.minX,
+        "\(tag): the sidebar toggle is not in the bar's leading slot, ahead of Info.")
+    }
+    let system = app.buttons.matching(identifier: "ToggleSidebar").firstMatch
+    print(
+      "IMGMGR-478-SYSTEM-TOGGLE \(tag): exists=\(system.exists) "
+        + "hittable=\(system.exists && system.isHittable) toggle=\(toggle.frame)")
+
+    toggle.tap()
+    XCTAssertTrue(
+      waitForSidebar(shown: true, in: app),
+      "\(tag): the grid bar's \"Show Sidebar\" did not bring the sidebar back.")
+    XCTAssertTrue(
+      toggle.waitForNonExistence(timeout: 10),
+      "\(tag): the grid bar's toggle stayed on the bar with the sidebar shown.")
+  }
+
+  /// "Hide via the top-left toggle": the system's own control (`ToggleSidebar`, the identifier
+  /// `ChromeCensus` also knows it by), falling back to its label for an OS that drops the id. The
+  /// HITTABLE match, since the system may keep a second, off-screen copy for the other state.
+  private func hideWithSystemToggle(in app: XCUIApplication, tag: String) {
+    let predicate = NSPredicate(
+      format: "identifier == 'ToggleSidebar' OR (label == 'Hide Sidebar' AND identifier != %@)",
+      Self.sidebarToggleIdentifier)
+    let matches = app.buttons.matching(predicate)
+    _ = matches.firstMatch.waitForExistence(timeout: 10)
+    let candidates = matches.allElementsBoundByIndex
+    guard let system = candidates.first(where: { candidate in candidate.isHittable }) else {
+      XCTFail(
+        "\(tag): no hittable system sidebar toggle to hide the sidebar with. Bar buttons: "
+          + barButtonNames(in: app))
+      return
+    }
+    system.tap()
+    XCTAssertTrue(
+      waitForSidebar(shown: false, in: app),
+      "\(tag): the system toggle did not hide the sidebar.")
+  }
+
+  /// The Shoots header, the sidebar's first row, stands for the column: shown means on screen and
+  /// hittable. Polled, because the column animates.
+  private func waitForSidebar(shown: Bool, in app: XCUIApplication) -> Bool {
+    let header = app.descendants(matching: .any)["sidebarSectionShoots"].firstMatch
+    let deadline = Date().addingTimeInterval(10)
+    repeat {
+      let onScreen = header.exists && header.isHittable && header.frame.minX >= 0
+      if onScreen == shown { return true }
+      Thread.sleep(forTimeInterval: 0.5)
+    } while Date() < deadline
+    return false
+  }
+
+  private static let sidebarToggleIdentifier = "regularSidebarToggle"
+
+  private func gridBarSidebarToggle(_ app: XCUIApplication) -> XCUIElement {
+    app.buttons.matching(identifier: Self.sidebarToggleIdentifier).firstMatch
+  }
+
+  private func barButtonNames(in app: XCUIApplication) -> String {
+    let buttons = app.navigationBars.buttons.allElementsBoundByIndex
+    return buttons.map { button in
+      button.identifier.isEmpty ? button.label : "\(button.identifier)(\(button.label))"
+    }.joined(separator: ", ")
+  }
+
+  /// The fixture launch for (e). Launch 1 omits `-UITestKeepSidebarMemory`, so the app forgets
+  /// whatever an earlier test left (`DebugStubLaunch.resetSidebarMemoryUnlessKept`); the
+  /// relaunches pass it, so they read what the launch before them stored.
+  private func launchForSidebarMemory(_ layout: Layout, keepMemory: Bool) -> XCUIApplication {
+    let orientation: UIDeviceOrientation = layout == .regular2 ? .portrait : .landscapeLeft
+    XCUIDevice.shared.orientation = orientation
+    var arguments = ["-UITestStubGrid"]
+    if keepMemory { arguments.append("-UITestKeepSidebarMemory") }
+    let app = XCUIApplication()
+    app.launchArguments = arguments
+    app.launch()
+    XCUIDevice.shared.orientation = orientation
+    _ = app.windows.firstMatch.waitForExistence(timeout: 30)
+    Thread.sleep(forTimeInterval: 2.0)
+    return app
+  }
+
+  /// `launched(_:)`'s layout gate, as a verdict rather than a skip.
+  private func resolvesForSidebarMemory(_ layout: Layout, _ app: XCUIApplication) -> Bool {
+    let width = app.frame.size.width
+    let resolves: Bool
+    switch layout {
+    case .regular3:
+      resolves = width >= Self.regular3WidthThreshold
+    case .regular2:
+      resolves = width < Self.regular3WidthThreshold && width >= Self.compactShellWidthCeiling
+    }
+    guard resolves else { return false }
+    XCTAssertTrue(
+      app.buttons["Dislike"].waitForExistence(timeout: 30),
+      "The DEBUG fixture composition never rendered (sign-in, blank, or a failed stub).")
+    Thread.sleep(forTimeInterval: 1.0)
+    return true
+  }
+
+  /// Not the layout under test (the iPhone destination, Compact in both orientations): the tab
+  /// shell must be what renders — the positive control, read off the screen, never the idiom —
+  /// and no grid-bar sidebar toggle is ever built there
+  /// (`SidebarVisibilityMemory.showsGridBarToggle`). `rendersCompactShell` is not the check: its
+  /// width ceiling is a portrait one, and the Regular-3 test runs in landscape.
+  private func assertCompactHasNoSidebarToggle(_ app: XCUIApplication) {
+    print("IMGMGR-478 window=\(app.frame.size): not Regular here; asserting Compact instead.")
+    XCTAssertTrue(
+      app.tabBars.firstMatch.waitForExistence(timeout: 30),
+      "IMGMGR-478 window=\(app.frame.size) resolves to neither the Regular layout under test nor "
+        + "the Compact tab shell.")
+    XCTAssertFalse(gridBarSidebarToggle(app).exists, "Compact carries the sidebar toggle.")
   }
 
   // MARK: - Helpers
@@ -280,40 +433,6 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
       print("IMGMGR-449-RAIL \(context): \(rail.allElementsBoundByIndex.map(\.debugDescription))")
     }
     XCTAssertEqual(count, 0, "\(context): an element names itself a rail (p4128 draws none).")
-  }
-
-  /// Search minimised → the named screenshot, plus the diagnostic frame log.
-  private func captureBar(_ app: XCUIApplication, name: String) {
-    logBarFrames(app, state: name)
-    attach(named: name)
-  }
-
-  /// Expands the toolbar search, then captures. The active state is a requirement, so a search
-  /// that does not activate FAILS the test; the screen is still attached, under a DIFFERENT name,
-  /// because a minimised bar filed as `…-search-active` would be false evidence.
-  private func activateSearchAndCapture(
-    _ app: XCUIApplication, name: String, file: StaticString = #filePath, line: UInt = #line
-  ) {
-    guard expandRegularToolbarSearch(app, context: name) != nil else {
-      attach(named: "\(name)-NOT-EXPANDED")
-      XCTFail(
-        "\(name): the toolbar search did not activate (no hittable field taking typed text).",
-        file: file, line: line)
-      return
-    }
-    Thread.sleep(forTimeInterval: 1.0)
-    captureBar(app, name: name)
-  }
-
-  /// DIAGNOSTIC only (plan: the frame log never decides the glass-cluster budget): the frame of
-  /// every hittable element in every navigation bar.
-  private func logBarFrames(_ app: XCUIApplication, state: String) {
-    let elements = app.navigationBars.descendants(matching: .any).allElementsBoundByIndex
-    let lines = elements.compactMap { element -> String? in
-      guard element.elementType != .other, element.isHittable else { return nil }
-      return "id=\(element.identifier) label=\(element.label) frame=\(element.frame)"
-    }
-    print("IMGMGR-449-BAR \(state): window=\(app.frame.size) " + lines.joined(separator: " | "))
   }
 
   private func attach(named name: String) {

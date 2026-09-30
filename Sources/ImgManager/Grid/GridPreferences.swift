@@ -23,10 +23,10 @@ import Foundation
 @Observable
 @MainActor
 final class GridPreferences {
-  /// Every key this type owns, in one place. `GridMoreMenuTests` asserts against this that the
-  /// Density entry did NOT bring a second persisted density property with it — the grid's six
-  /// row-height steps are the one density state (`GridRowHeight`), reached from two entry
-  /// points (the Zoom control and the More menu), never two properties that can disagree.
+  /// Every key this type owns, in one place. `GridMoreMenuTests` and `ArrangeModelTests` assert
+  /// against this that no density, sort or grouping key was ever persisted — the grid's six
+  /// row-height steps are the one density state (`GridRowHeight`, reached from the Arrange
+  /// popover and ⌘1…⌘6 since WP29 P2), never two properties that can disagree.
   static let persistedKeys: [String] = [
     filenamePlatesKey, autoAdvanceOnMarkKey, picksInGroupsKey, pruneMirroredArchiveKey,
   ]
@@ -86,8 +86,8 @@ final class GridPreferences {
   /// folder whose dedup-adjusted count is zero (`FolderTreeModel.pruneMirrored`, the web's
   /// `folderTree.ts:188-197`). A VIEW option over the folder tree, so it lives with the app's
   /// other view options — the More menu's View section — and never in a settings panel of its
-  /// own. This type is the ONE place the switch is stored: the grid's menu and the tree home's
-  /// menu are two entry points onto this property, never two preferences.
+  /// own. This type is the ONE place the switch is stored. WP29 P2 (IMGMGR-453): its one entry
+  /// point is the tree home's View menu; the grid's More menu no longer carries it.
   var pruneMirroredArchive: Bool {
     didSet { defaults.set(pruneMirroredArchive, forKey: Self.pruneMirroredArchiveKey) }
   }

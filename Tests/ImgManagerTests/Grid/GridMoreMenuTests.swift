@@ -40,33 +40,43 @@ struct GridViewMoreMenuTests {
     let (store, _, _, _) = makeStore()
     #expect(
       GridMoreMenu.entries.map(\.id) == [
-        "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-        "more.picksInGroups", "more.density",
-        // IMGMGR-362 (WP21 P3): the archive prune, APPENDED to the View section's own run — an
-        // insertion between two sections, never a reorder of the decided set.
-        "more.pruneMirroredArchive", "more.status", "more.openInNewWindow",
-        // WP14 P4 (IMGMGR-277): the three scene-edit actions, APPENDED — the owner's decided set
-        // and its order above are untouched, exactly as P11's row left them.
-        "more.mergeScene", "more.splitScene", "more.extractScene",
-        // IMGMGR-347: the absorb, APPENDED on the same terms.
-        "more.absorbScene",
+        // WP29 P1 (IMGMGR-452): "more.select" left for the grid's bar (`GridSelectCommand`).
+        // WP29 P2 (IMGMGR-453): "more.density" left for the Arrange popover and
+        // "more.pruneMirroredArchive" for the tree's View menu, its one home.
+        // WP29 P4 (IMGMGR-455): the four scene edits left for the Select bar's Scene ▸.
+        // WP29 P3 (IMGMGR-454): the ticket's order — View · Actions · Shoot.
+        "more.filenamePlates", "more.picksInGroups",
+        "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
+        "more.status",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Select", "Clear mark", "Copy for Lightroom", "Filename plates", "Picks in groups",
-        "Density: 200 pt", "Hide mirrored archive", "Status", "Open in New Window",
-        "Merge into…", "Split here", "Extract selected",
-        // IMGMGR-347: the absorb row's title IS its reason while it cannot act, and this store
-        // has nothing focused at all — a plain "Add to scene…" here would be the inert control
-        // the ticket exists to remove.
-        "Add to scene — focus a loose photograph",
+        "Filename plates", "Picks in groups", "Clear mark", "Copy for Lightroom",
+        "Open in New Window", "Status",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
     // Owner decision 3: downloads stay loupe-Share-only; no grid or bulk download natively.
     #expect(!titles.contains { $0.lowercased().contains("download") })
+  }
+
+  /// WP29 P3 (IMGMGR-454) acceptance probe: six rows, exactly three groups, an icon on every row,
+  /// no duplicate title, and Hide mirrored archive absent (its one home is the tree's View menu).
+  @Test("More: 6 rows in exactly 3 groups, every row an icon, no duplicate title, no prune")
+  func moreMenuMeetsTheTicketShape() {
+    let (store, _, _, _) = makeStore()
+    #expect(GridMoreMenu.sections.count == 3)
+    #expect(GridMoreMenu.entries.count == 6)
+    #expect(GridMoreMenu.entries.allSatisfy { !$0.systemImage.isEmpty })
+    let titles = GridMoreMenu.entries.map { $0.title(store) }
+    // Positive control: the titles really were read, so uniqueness is not about an empty list.
+    #expect(titles.contains("Clear mark"))
+    #expect(Set(titles).count == titles.count)
+    #expect(Set(GridMoreMenu.sections.map(\.title)).count == GridMoreMenu.sections.count)
+    #expect(!titles.contains(GridMoreMenu.pruneMirroredArchive.title(store)))
+    #expect(!GridMoreMenu.entries.contains { $0.id == GridMoreMenu.pruneMirroredArchive.id })
   }
 
   /// The P1 merge contract (IMGMGR-212 x IMGMGR-221): the decided set always renders SIX rows,
@@ -89,8 +99,9 @@ struct GridViewMoreMenuTests {
     // The SET of rows never changes with the fold — only that one identifier does.
     #expect(folded.count == unfolded.count && folded.count == GridMoreMenu.entries.count)
     #expect(zip(folded, unfolded).filter { $0 != $1 }.count == 1)
-    // P1's own identifier for Select survives the merge, so its menu tests keep resolving it.
-    #expect(unfolded.contains("gridSelectCommand"))
+    // WP29 P1 (IMGMGR-452): Select is the bar's now — no row answers to its identifier.
+    #expect(!unfolded.contains("gridSelectCommand"))
+    #expect(!folded.contains("gridSelectCommand"))
   }
 
   /// One Clear row, whatever the fold: the decided set has exactly one, and it is the same row
@@ -117,10 +128,27 @@ struct GridViewMoreMenuTests {
 
   @Test("Select's title states the way OUT while Select is on, not a second 'Select'")
   func selectEntryNamesTheExit() {
+    // WP29 P1 (IMGMGR-452): TRANSFERRED from the More row to the bar's `GridSelectCommand`.
     let (store, _, _, _) = makeStore()
-    #expect(GridMoreMenu.select.title(store) == "Select")
+    #expect(GridSelectCommand.title(store) == "Select")
     store.enterSelectExplicitly()
-    #expect(GridMoreMenu.select.title(store) == "Exit Select")
+    #expect(GridSelectCommand.title(store) == "Exit Select")
+  }
+
+  @Test("The bar's Select enters Select mode, and pressed again leaves it")
+  func barSelectEntersAndLeavesSelectMode() async {
+    // WP29 P1 (IMGMGR-452): the observable effect the More row's own closure was held to, now
+    // on the bar command that replaced it — plus the exit, which the title promises.
+    let (store, transport, _, _) = makeStore()
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .pick)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    #expect(store.selection.mode != .select)
+    GridSelectCommand.run(store)
+    #expect(store.selection.mode == .select, "Select did not enter Select mode")
+    GridSelectCommand.run(store)
+    #expect(store.selection.mode != .select, "Exit Select did not leave Select mode")
+    #expect(GridSelectCommand.accessibilityIdentifier == "gridSelectCommand")
   }
 
   /// The "no placeholder rows" AC, as a test that fails for a DELETED entry (the switch's
@@ -136,15 +164,6 @@ struct GridViewMoreMenuTests {
       store.focusedImageID = 1
 
       switch entry.id {
-      case "more.select":
-        guard case .action(let run) = entry.surface else {
-          Issue.record("more.select is not an action entry")
-          continue
-        }
-        #expect(store.selection.mode != .select)
-        run(store)
-        #expect(store.selection.mode == .select, "Select did not enter Select mode")
-
       case "more.clearMark":
         guard case .action(let run) = entry.surface else {
           Issue.record("more.clearMark is not an action entry")
@@ -193,28 +212,6 @@ struct GridViewMoreMenuTests {
         #expect(isOn(store), "the picks-in-groups toggle did not turn on")
         #expect(store.preferences.picksInGroups, "the toggle did not reach the preference")
 
-      case "more.pruneMirroredArchive":
-        guard case .toggle(let isOn, let set) = entry.surface else {
-          Issue.record("more.pruneMirroredArchive is not a toggle entry")
-          continue
-        }
-        // IMGMGR-362: default OFF, and the row reaches the ONE persisted property — the tree
-        // reads that same property, so a toggle that wrote anywhere else would hide nothing.
-        #expect(isOn(store) == false)
-        set(store, true)
-        #expect(isOn(store), "the mirrored-archive toggle did not turn on")
-        #expect(
-          store.preferences.pruneMirroredArchive, "the toggle did not reach the preference")
-
-      case "more.density":
-        guard case .rowHeightSteps(let set, let isCurrent) = entry.surface else {
-          Issue.record("more.density is not a row-height entry")
-          continue
-        }
-        set(store, .step400)
-        #expect(store.rowHeight == .step400, "the Density entry did not move the row height")
-        #expect(isCurrent(store, .step400))
-
       case "more.status":
         guard case .action(let run) = entry.surface else {
           Issue.record("more.status is not an action entry")
@@ -234,52 +231,6 @@ struct GridViewMoreMenuTests {
         let opened = OpenedShootWindows()
         run(store, ShootWindowOpener { opened.values.append($0) })
         #expect(!opened.values.isEmpty, "the Open in New Window entry opened nothing")
-
-      case "more.mergeScene":
-        guard case .action(let run) = entry.surface else {
-          Issue.record("more.mergeScene is not an action entry")
-          continue
-        }
-        await loadSceneEditFixture(store, transport)
-        #expect(entry.isEnabled(store), "Merge into… is disabled with a focused scene member")
-        #expect(store.isSceneMergePickerPresented == false)
-        run(store)
-        #expect(store.isSceneMergePickerPresented, "Merge into… raised no target sheet")
-
-      case "more.splitScene":
-        guard case .action(let run) = entry.surface else {
-          Issue.record("more.splitScene is not an action entry")
-          continue
-        }
-        await loadSceneEditFixture(store, transport)
-        #expect(entry.isEnabled(store), "Split here is disabled at a splittable member")
-        run(store)
-        await waitForEdits(transport, count: 1)
-        #expect(await transport.recordedStackEdits.count == 1, "Split here sent nothing")
-
-      case "more.extractScene":
-        guard case .action(let run) = entry.surface else {
-          Issue.record("more.extractScene is not an action entry")
-          continue
-        }
-        await loadSceneEditFixture(store, transport)
-        store.selection.enterSelectExplicitly()
-        store.selection.toggle(2)
-        #expect(entry.isEnabled(store), "Extract selected is disabled with a member selected")
-        run(store)
-        await waitForEdits(transport, count: 1)
-        #expect(await transport.recordedStackEdits.count == 1, "Extract selected sent nothing")
-
-      case "more.absorbScene":
-        guard case .action(let run) = entry.surface else {
-          Issue.record("more.absorbScene is not an action entry")
-          continue
-        }
-        await loadLooseAbsorbFixture(store, transport)
-        #expect(entry.isEnabled(store), "Add to scene… is disabled with a loose photograph focused")
-        #expect(store.isSceneAbsorbPickerPresented == false)
-        run(store)
-        #expect(store.isSceneAbsorbPickerPresented, "Add to scene… raised no target sheet")
 
       default:
         // ONE literal, not two concatenated: `Issue.record` takes a `Comment`, and `+` on a
@@ -325,36 +276,29 @@ struct GridViewMoreMenuTests {
     #expect(isOn(store), "the menu toggle did not turn the plates on")
   }
 
-  /// The plan's named test. Density is the SAME six-step row height the Zoom control and
-  /// ⌘1…⌘6 move — one state, two entry points — and it brought no second persisted property
-  /// with it.
-  @Test("The Density entry mutates the same row-height state the Zoom control mutates")
-  func theDensityEntryMutatesTheSameRowHeightStateTheZoomControlMutates() {
+  /// WP29 P2 (IMGMGR-453): Density and Hide mirrored archive left the More menu. Density's
+  /// state is the Arrange popover's thumbnail size (`ArrangeModelTests`); the prune's entry stays
+  /// declared, and the tree's View menu renders it (`RootView.folderTreeViewMenuItem`).
+  @Test("More carries neither Density nor the prune; the prune entry still reaches its key")
+  func moreCarriesNeitherDensityNorThePrune() {
+    let ids = GridMoreMenu.entries.map(\.id)
+    // Positive control: the entries really were read.
+    #expect(ids.contains("more.status"))
+    #expect(!ids.contains("more.density"))
+    #expect(!ids.contains(GridMoreMenu.pruneMirroredArchive.id))
+
     let (store, _, _, _) = makeStore()
-    guard case .rowHeightSteps(let set, let isCurrent) = GridMoreMenu.density.surface else {
-      Issue.record("Density is not a row-height entry")
+    guard case .toggle(let isOn, let set) = GridMoreMenu.pruneMirroredArchive.surface else {
+      Issue.record("more.pruneMirroredArchive is not a toggle entry")
       return
     }
-    #expect(store.rowHeight == .step200)
-
-    set(store, .step400)
-    #expect(store.rowHeight == .step400)
-    #expect(isCurrent(store, .step400))
-    // The other entry point onto the SAME state — the Zoom control's own call target.
-    #expect(GridZoomControl.title(for: store.rowHeight) == "Zoom: 400 pt")
-    #expect(GridMoreMenu.density.title(store) == "Density: 400 pt")
-
-    store.setRowHeight(.step120)
-    #expect(store.rowHeight == .step120)
-    #expect(isCurrent(store, .step120))
-    #expect(isCurrent(store, .step400) == false)
-
-    // No SECOND persisted density property: the row-height steps are the one density state.
-    // Positive control first, so the 0-hit assertion below proves something (LSN-0033).
-    #expect(GridPreferences.persistedKeys.contains(GridPreferences.filenamePlatesKey))
-    #expect(
-      GridPreferences.persistedKeys.allSatisfy { !$0.lowercased().contains("density") },
-      "a second persisted density key exists: \(GridPreferences.persistedKeys)")
+    // IMGMGR-362: default OFF, and the entry reaches the ONE persisted property the tree reads.
+    #expect(isOn(store) == false)
+    set(store, true)
+    #expect(isOn(store), "the mirrored-archive toggle did not turn on")
+    #expect(store.preferences.pruneMirroredArchive, "the toggle did not reach the preference")
+    let pruneIdentifier = GridMoreMenu.pruneMirroredArchive.accessibilityIdentifier
+    #expect(pruneIdentifier == "gridMoreMenu.more.pruneMirroredArchive")
   }
 
   /// The Clear entry is a SECOND ENTRY POINT into the store's one clear action, never a second
@@ -449,6 +393,75 @@ struct GridViewMoreMenuTests {
     #expect(opened.values.isEmpty, "the control opened a window with no shoot in scope")
   }
 
+  /// WP29 P4 (IMGMGR-455): the four scene rows moved from More to the Select bar's Scene ▸ with
+  /// their probes — each still does something observable, from a selection that AGREES with the
+  /// focused subject (`SceneSelectionAgreement`).
+  @Test("Every Scene ▸ row does something observable — no placeholder rows")
+  func everySceneRowDoesSomethingObservable() async {
+    #expect(SelectBarSceneMenu.entries.count == 4)
+    for entry in SelectBarSceneMenu.entries {
+      let (store, transport, _, _) = makeStore()
+      switch entry.id {
+      case "selectBar.scene.merge":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("selectBar.scene.merge is not an action entry")
+          continue
+        }
+        await loadSceneEditFixture(store, transport)
+        agreeingSelection([2], store)
+        #expect(entry.isEnabled(store), "Merge into… is disabled with a focused scene member")
+        #expect(store.isSceneMergePickerPresented == false)
+        run(store)
+        #expect(store.isSceneMergePickerPresented, "Merge into… raised no target sheet")
+
+      case "selectBar.scene.split":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("selectBar.scene.split is not an action entry")
+          continue
+        }
+        await loadSceneEditFixture(store, transport)
+        agreeingSelection([2], store)
+        #expect(entry.isEnabled(store), "Split here is disabled at a splittable member")
+        run(store)
+        await waitForEdits(transport, count: 1)
+        #expect(await transport.recordedStackEdits.count == 1, "Split here sent nothing")
+
+      case "selectBar.scene.extract":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("selectBar.scene.extract is not an action entry")
+          continue
+        }
+        await loadSceneEditFixture(store, transport)
+        agreeingSelection([2], store)
+        #expect(entry.isEnabled(store), "Extract selected is disabled with a member selected")
+        run(store)
+        await waitForEdits(transport, count: 1)
+        #expect(await transport.recordedStackEdits.count == 1, "Extract selected sent nothing")
+
+      case "selectBar.scene.absorb":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("selectBar.scene.absorb is not an action entry")
+          continue
+        }
+        await loadLooseAbsorbFixture(store, transport)
+        agreeingSelection([20], store)
+        #expect(entry.isEnabled(store), "Add to scene… is disabled with a loose photograph focused")
+        #expect(store.isSceneAbsorbPickerPresented == false)
+        run(store)
+        #expect(store.isSceneAbsorbPickerPresented, "Add to scene… raised no target sheet")
+
+      default:
+        Issue.record("Scene ▸ row '\(entry.id)' has no probe here.")
+      }
+    }
+  }
+
+  /// Select mode holding exactly `ids`, the focus untouched.
+  private func agreeingSelection(_ ids: [Int], _ store: GridStore) {
+    store.selection.enterSelectExplicitly()
+    for id in ids { store.selection.toggle(id) }
+  }
+
   /// IMGMGR-347 ACCEPTANCE PROBE, written RED: before the row existed this failed on the first
   /// expectation, which is the owner's device finding stated as a test — the More menu had
   /// nothing that acts on a LOOSE photograph.
@@ -460,10 +473,12 @@ struct GridViewMoreMenuTests {
   func theAbsorbRowIsOfferedOnALoosePhotographAndStatesItsReasonOtherwise() async {
     let (store, transport, _, _) = makeStore()
 
-    let matches = GridMoreMenu.entries.filter {
-      $0.accessibilityIdentifier == "gridMoreMenu.more.absorbScene"
+    // WP29 P4 (IMGMGR-455): TRANSFERRED to the Select bar's Scene ▸, where the row also needs
+    // the selection to agree (S == {f}).
+    let matches = SelectBarSceneMenu.entries.filter {
+      $0.accessibilityIdentifier == "selectBar.scene.absorb"
     }
-    #expect(matches.count == 1, "the More menu carries no absorb row")
+    #expect(matches.count == 1, "Scene ▸ carries no absorb row")
     guard let entry = matches.first else { return }
 
     #expect(entry.isEnabled(store) == false, "the absorb row is live with nothing focused")
@@ -472,6 +487,7 @@ struct GridViewMoreMenuTests {
       "the disabled row does not say what is missing: '\(entry.title(store))'")
 
     await loadLooseAbsorbFixture(store, transport)
+    agreeingSelection([20], store)
     #expect(entry.isEnabled(store), "the absorb row is dead with a loose photograph focused")
     #expect(entry.title(store) == "Add to scene…")
   }
@@ -545,16 +561,20 @@ struct GridViewMoreMenuTests {
 @Suite("Grid More menu — the grouped sections (WP16 P4)")
 struct GridMoreMenuSectionsTests {
 
-  /// The thirteen ids, in the order the owner decided (WP13 kickoff decision 2, epic
+  /// The six ids (WP29 P4 took the Scene group to Scene ▸; WP29 P1 took "more.select" to the
+  /// bar; WP29 P2 took "more.density" to the
+  /// Arrange popover and "more.pruneMirroredArchive" to the tree's View menu), in the order the
+  /// owner decided
+  /// (WP13 kickoff decision 2, epic
   /// IMGMGR-211 comment 2106; P11, WP14 P4, IMGMGR-347 and IMGMGR-362 APPENDED — the last of them
   /// into the View section's own run, which moved no existing pair). Grouping is a
   /// CONTIGUOUS partition over exactly this sequence, so a reorder, a drop or a duplicate fails
   /// element-wise here.
+  /// WP29 P3 (IMGMGR-454) reordered the same six ids into the ticket's shape.
   private let shippedOrder = [
-    "more.select", "more.clearMark", "more.copyForLightroom", "more.filenamePlates",
-    "more.picksInGroups", "more.density", "more.pruneMirroredArchive", "more.status",
-    "more.openInNewWindow", "more.mergeScene", "more.splitScene", "more.extractScene",
-    "more.absorbScene",
+    "more.filenamePlates", "more.picksInGroups",
+    "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
+    "more.status",
   ]
 
   @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
@@ -564,11 +584,37 @@ struct GridMoreMenuSectionsTests {
     #expect(GridMoreMenu.entries.count == counted)
     // Positive control for the equalities above: there really are sections and entries to
     // compare, so neither line can pass on two empty arrays.
-    #expect(GridMoreMenu.sections.count == 4)
-    #expect(GridMoreMenu.entries.count == 13)
+    // WP29 P4 (IMGMGR-455): three, the Scene group having left for Scene ▸.
+    #expect(GridMoreMenu.sections.count == 3)
+    // WP29 P1 (IMGMGR-452): 13 → 12, Select having left for the bar. WP29 P2 (IMGMGR-453):
+    // 12 → 10, Density and the archive prune having left.
+    // WP29 P4 (IMGMGR-455): 10 → 6, the Scene group having left — the ≤ 6 row budget.
+    #expect(GridMoreMenu.entries.count == 6)
+    #expect(GridMoreMenu.entries.count <= 6)
   }
 
-  @Test("Grouping changed nothing about the set: the thirteen ids, in the shipped order")
+  /// WP29 P4 (IMGMGR-455): no scene edit is left in More, and every one is reachable from the
+  /// Select bar's Scene ▸ — nothing shipped is dropped.
+  @Test("No scene id in More; every scene command is reachable from selectBarSceneMenu")
+  func sceneCommandsLiveOnlyInSceneMenu() {
+    let moreIDs = GridMoreMenu.entries.map(\.accessibilityIdentifier)
+    #expect(!moreIDs.contains { $0.localizedCaseInsensitiveContains("scene") })
+    #expect(moreIDs.contains("gridMoreMenu.more.status"))
+    #expect(
+      SelectBarSceneMenu.entries.map(\.accessibilityIdentifier) == [
+        "selectBar.scene.merge", "selectBar.scene.split", "selectBar.scene.extract",
+        "selectBar.scene.absorb",
+      ])
+    #expect(
+      SelectBarSceneMenu.entries.map(\.systemImage) == [
+        "arrow.triangle.merge", "scissors", "square.on.square.dashed",
+        "rectangle.stack.badge.plus",
+      ])
+    #expect(SelectBarSceneMenu.accessibilityIdentifier == "selectBarSceneMenu")
+    #expect(SelectBarSceneMenu.entries.count <= 6)
+  }
+
+  @Test("Grouping changed nothing about the set: the six ids, in the shipped order")
   func groupingKeptTheDecidedSetAndItsOrder() {
     #expect(GridMoreMenu.sections.flatMap(\.entries).map(\.id) == shippedOrder)
     #expect(GridMoreMenu.entries.map(\.id) == shippedOrder)
@@ -581,21 +627,18 @@ struct GridMoreMenuSectionsTests {
   func eachSectionCarriesItsDecidedLabelAndRun() {
     let decided: [(id: String, title: String, entries: [String])] = [
       (
-        "more.section.marks", "Marks",
-        ["more.select", "more.clearMark", "more.copyForLightroom"]
-      ),
-      (
         "more.section.view", "View",
-        // IMGMGR-362 (WP21 P3) APPENDED the archive prune INSIDE this run, which is what keeps
-        // the partition contiguous: the row a reader flips to hide mirrored folders is a view
-        // option, so it belongs to the section the other view options are in.
-        ["more.filenamePlates", "more.picksInGroups", "more.density", "more.pruneMirroredArchive"]
+        // WP29 P2 (IMGMGR-453): Density and the archive prune left this run.
+        ["more.filenamePlates", "more.picksInGroups"]
       ),
-      ("more.section.shoot", "Shoot", ["more.status", "more.openInNewWindow"]),
       (
-        "more.section.scene", "Scene",
-        ["more.mergeScene", "more.splitScene", "more.extractScene", "more.absorbScene"]
+        // WP29 P3 (IMGMGR-454): was "more.section.marks" / "Marks"; Clear mark stays (folded,
+        // it is the bar's only Clear) and Open in New Window joins it.
+        "more.section.actions", "Actions",
+        ["more.clearMark", "more.copyForLightroom", "more.openInNewWindow"]
       ),
+      ("more.section.shoot", "Shoot", ["more.status"]),
+      // WP29 P4 (IMGMGR-455): the Scene group left for the Select bar's Scene ▸.
     ]
     // Closures rather than key paths on the right: Swift has no key path to a tuple element.
     #expect(GridMoreMenu.sections.map(\.id) == decided.map { $0.id })
@@ -609,23 +652,25 @@ struct GridMoreMenuSectionsTests {
   }
 
   /// The Clear-folds-into-More rule (WP13 P1) is untouched by the grouping: folded, the Clear row
-  /// still answers to the bar's identifier, and it does so from INSIDE the Marks section.
-  @Test("The folded Clear row keeps its identity, inside the Marks section")
-  func theFoldedClearRowKeepsItsIdentityInsideTheMarksSection() {
-    guard let marks = GridMoreMenu.sections.first(where: { $0.id == "more.section.marks" }) else {
-      Issue.record("there is no Marks section to fold the bar's Clear into")
+  /// still answers to the bar's identifier, and it does so from INSIDE the Actions section
+  /// (the Marks section until WP29 P3, IMGMGR-454).
+  @Test("The folded Clear row keeps its identity, inside the Actions section")
+  func theFoldedClearRowKeepsItsIdentityInsideTheActionsSection() {
+    guard let marks = GridMoreMenu.sections.first(where: { $0.id == "more.section.actions" })
+    else {
+      Issue.record("there is no Actions section to fold the bar's Clear into")
       return
     }
     let folded = marks.entries.map {
       GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true)
     }
     #expect(folded.filter { $0 == ActionBarMarkControl.clear.accessibilityIdentifier }.count == 1)
-    // Positive control: the Marks section really was enumerated, so the count above is a fact
+    // Positive control: the Actions section really was enumerated, so the count above is a fact
     // about the fold and not about an empty section.
-    #expect(folded.contains("gridSelectCommand"))
+    #expect(folded.contains("gridMoreMenu.more.copyForLightroom"))
     // And no OTHER section grew a Clear on the way.
     let elsewhere = GridMoreMenu.sections
-      .filter { $0.id != "more.section.marks" }
+      .filter { $0.id != "more.section.actions" }
       .flatMap(\.entries)
       .map { GridMoreMenu.accessibilityIdentifier(for: $0, foldsClearIntoMore: true) }
     #expect(!elsewhere.contains(ActionBarMarkControl.clear.accessibilityIdentifier))
@@ -638,23 +683,18 @@ struct GridMoreMenuSectionsTests {
   func noEntryIdentifierChangedWhenTheSectionsArrived() {
     #expect(
       GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
-        "gridSelectCommand", "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
+        // WP29 P2 (IMGMGR-453): Density and the archive prune left; the prune keeps its
+        // identifier in the tree's View menu. WP29 P3 (IMGMGR-454): reordered, none renamed.
         "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
-        "gridMoreMenu.more.density",
-        // IMGMGR-362: the archive prune's own identifier, in the View section's run. The tree
-        // home's View menu renders the SAME entry, so this string is also the handle
-        // `ArchivePruneUITests` drives there — one identifier, two entry points.
-        "gridMoreMenu.more.pruneMirroredArchive", "gridMoreMenu.more.status",
-        "gridMoreMenu.more.openInNewWindow", "gridMoreMenu.more.mergeScene",
-        "gridMoreMenu.more.splitScene", "gridMoreMenu.more.extractScene",
-        "gridMoreMenu.more.absorbScene",
+        "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
+        "gridMoreMenu.more.openInNewWindow",
+        "gridMoreMenu.more.status",
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
-        "checkmark.circle", ActionBarMarkControl.clear.systemImage, "doc.on.clipboard",
-        "textformat", "checkmark.square", "square.grid.2x2", "eye.slash", "info.circle",
-        "macwindow.badge.plus", "arrow.triangle.merge", "scissors", "square.on.square.dashed",
-        "rectangle.stack.badge.plus",
+        "textformat", "checkmark.square",
+        ActionBarMarkControl.clear.systemImage, "doc.on.clipboard", "macwindow.badge.plus",
+        "info.circle",
       ])
   }
 }

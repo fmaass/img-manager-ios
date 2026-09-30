@@ -57,7 +57,18 @@
             ToolbarItem(placement: .primaryAction) {
               Button("Second") {}
             }
+            // WP29 P1 (IMGMGR-452): the system search item, placed among the app's own items.
+            DefaultToolbarItem(kind: .search, placement: .primaryAction)
+            // WP29 P1: SDK 26.5 declares no `badge` on `ToolbarContent` or `ToolbarItem` (only
+            // `TabContent.badge` and `View.badge`), so the spelling the plan named cannot compile.
+            // What CAN be spelled is `View.badge` on the item's own control; whether the bar
+            // draws it is a screenshot's question, not this file's.
+            ToolbarItem(placement: .primaryAction) {
+              Button("Badged") {}
+                .badge(1)
+            }
           }
+          .navigationSubtitle("Subtitle")
           .searchable(text: $query)
           .searchToolbarBehavior(.minimize)
           .inspector(isPresented: $showsInspector) {

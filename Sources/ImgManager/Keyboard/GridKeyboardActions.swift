@@ -18,8 +18,8 @@ struct GridKeyboardActions {
   var tag: () -> Void
   var undo: () -> Void
   /// WP13 P4 (IMGMGR-215): the View menu's six zoom steps (⌘1…⌘6). Same `GridStore.setRowHeight`
-  /// the Group/Zoom chrome control calls, so the menu-bar entry and the on-screen menu cannot
-  /// diverge.
+  /// the Arrange popover's thumbnail-size rows call (`ArrangeModel.apply`, WP29 P2), so the
+  /// menu-bar entry and the on-screen control cannot diverge.
   var setRowHeight: (GridRowHeight) -> Void
   /// WP13 P4: the View menu's Group single-select pair. Scene is a MODE, not a `group_by` wire
   /// value (ADR-0005 decision 6).

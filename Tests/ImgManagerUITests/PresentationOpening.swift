@@ -32,7 +32,7 @@ extension XCTestCase {
   /// asserting nothing, so the unused-result warning is what keeps the caller's assertion in the loop.
   ///
   /// - Parameters:
-  ///   - control: the opener (a funnel, a Sort/Group control, a More or View menu).
+  ///   - control: the opener (a funnel, the Arrange control, a More or View menu).
   ///   - expected: the first row/element the open presentation must render.
   ///   - timeout: the TOTAL budget for the whole open, shared by both waits.
   /// - Returns: `true` when `expected` exists before the deadline.
@@ -86,12 +86,27 @@ extension XCTestCase {
     let more = app.descendants(matching: .any)["gridMoreMenu"]
     XCTAssertTrue(
       more.waitForExistence(timeout: 10),
-      "Nothing named 'gridMoreMenu' is on the action bar.", file: file, line: line)
+      "No 'gridMoreMenu' on the grid bar or the action bar.", file: file, line: line)
     return openPresentation(more, revealing: expected, timeout: timeout)
   }
 
   /// What is left of a budget, never negative — `waitForExistence` treats a negative timeout as
   /// an error rather than as "already out of time".
+  /// WP29 P4 (IMGMGR-455): the Select bar's Scene ▸, opened through the same shared opener.
+  func openSceneMenu(
+    in app: XCUIApplication,
+    revealing expected: XCUIElement,
+    timeout: TimeInterval,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> Bool {
+    let scene = app.descendants(matching: .any)["selectBarSceneMenu"].firstMatch
+    XCTAssertTrue(
+      scene.waitForExistence(timeout: 10),
+      "No 'selectBarSceneMenu' on the Select bar.", file: file, line: line)
+    return openPresentation(scene, revealing: expected, timeout: timeout)
+  }
+
   private static func remaining(until deadline: Date) -> TimeInterval {
     max(0, deadline.timeIntervalSinceNow)
   }

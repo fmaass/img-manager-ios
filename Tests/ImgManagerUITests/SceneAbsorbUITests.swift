@@ -12,7 +12,8 @@ import XCTest
 /// really absorbs when there is.
 ///
 /// Written RED first: before the implementation, `gridMoreMenu.more.absorbScene` did not exist
-/// and both tests failed on its absence.
+/// and both tests failed on its absence. WP29 P4 (IMGMGR-455) moved the row to the Select bar's
+/// Scene ▸ as `selectBar.scene.absorb`.
 ///
 /// Makes NO device-idiom decision — every step keys off an observed element and both destinations
 /// run the same assertions.
@@ -29,9 +30,13 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
     return app
   }
 
-  /// The whole gesture, by identifier: focus a loose photograph, open the More menu, choose the
-  /// scene, and read the app's own count of absorb requests off the fixture probe — the transport
-  /// is an actor, so the request reaching the server is only observable where it is published.
+  /// The whole gesture, by identifier: focus a loose photograph, long-press it into Select (so
+  /// the selection is exactly the focused photograph), open Scene ▸, choose the scene, and read
+  /// the app's own count of absorb requests off the fixture probe — the transport is an actor, so
+  /// the request reaching the server is only observable where it is published.
+  ///
+  /// WP29 P4 (IMGMGR-455): TRANSFERRED from the More menu to the Select bar's Scene ▸, where the
+  /// row also needs the selection to agree (S == {f}).
   func testAbsorbsAFocusedLoosePhotographIntoAScene() throws {
     let app = launchedSceneApp()
 
@@ -42,11 +47,13 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
       loose.waitForExistence(timeout: 20),
       "The fixture's first loose photograph is not on screen — Scene mode never loaded.")
     loose.tap()
+    // Long-press enters Select WITH it selected and leaves the focus where the tap put it.
+    app.descendants(matching: .any)["gridTile-1"].firstMatch.press(forDuration: 1.0)
 
-    let row = app.descendants(matching: .any)["gridMoreMenu.more.absorbScene"]
+    let row = app.descendants(matching: .any)["selectBar.scene.absorb"]
     XCTAssertTrue(
-      openMoreMenu(in: app, revealing: row, timeout: 10),
-      "The More menu offers no way to put a loose photograph into a scene.")
+      openSceneMenu(in: app, revealing: row, timeout: 10),
+      "Scene ▸ offers no way to put a loose photograph into a scene.")
     XCTAssertTrue(
       row.isEnabled,
       "The absorb row is disabled with a loose photograph focused and a scene in the same "
@@ -79,10 +86,13 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
   /// says why — the failure the owner hit was a row that looked available and did nothing.
   func testTheAbsorbRowStatesItsReasonWhenNoLoosePhotographIsFocused() throws {
     let app = launchedSceneApp()
+    // WP29 P4 (IMGMGR-455): Scene ▸ lives on the Select bar, so Select is entered through the
+    // grid bar's own control — nothing focused, nothing selected.
+    enterSelectFromTheGridBar(app)
 
-    let row = app.descendants(matching: .any)["gridMoreMenu.more.absorbScene"]
+    let row = app.descendants(matching: .any)["selectBar.scene.absorb"]
     XCTAssertTrue(
-      openMoreMenu(in: app, revealing: row, timeout: 10),
+      openSceneMenu(in: app, revealing: row, timeout: 10),
       "The absorb row disappears when it cannot act — it must state its reason instead.")
     XCTAssertFalse(
       row.isEnabled,
@@ -93,8 +103,7 @@ final class SceneAbsorbUITests: OrientationPinnedUITestCase {
     // Positive control for the reading above: the menu really did render, so the label came from
     // a row on screen rather than from an element that does not exist.
     XCTAssertTrue(
-      app.descendants(matching: .any)["gridMoreMenu.more.status"].exists,
-      "Positive control failed: the More menu is not on screen, so the label read above is "
-        + "vacuous.")
+      app.descendants(matching: .any)["selectBar.scene.split"].exists,
+      "Positive control failed: Scene ▸ is not on screen, so the label read above is vacuous.")
   }
 }

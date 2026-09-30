@@ -28,11 +28,25 @@ struct WorkspaceContent: View {
   let queueStore: QueueStore
   /// WP28 P3: the grid's navigation title (`WorkspaceTitle`), nil only when no folder is shown —
   /// a shown folder always has one, so its title menu (the Summary entry) always exists.
-  let title: String?
+  /// WP29 P1 (IMGMGR-452): carried by the breadcrumb, which adds the server count.
+  let breadcrumb: GridBreadcrumb?
   /// The one inspector flag, at every width. Session-scoped, collapsed at launch (IMGMGR-390).
   @Binding var showInspector: Bool
+  /// IMGMGR-478: the Regular split's visibility, so the grid's bar can bring a hidden sidebar
+  /// back (`GridBarSidebarToggle`). At Compact the toggle is never built.
+  @Binding var columnVisibility: NavigationSplitViewVisibility
   /// WP28 P3: the Summary sheet, opened only from the title menu (Decision 1, no auto-trigger).
   @State private var showSummary = false
+  /// WP29 P1: the scene's window action, for the Regular bar's More ("Open in New Window"). Copied
+  /// into a local before the opener's closure is formed, as `GridView.openShootWindow` does.
+  @Environment(\.openWindow) private var openWindow
+
+  private var title: String? { breadcrumb?.title }
+
+  private var shootWindowOpener: ShootWindowOpener {
+    let open = openWindow
+    return ShootWindowOpener { value in open(value: value) }
+  }
 
   var body: some View {
     Group {
@@ -54,25 +68,25 @@ struct WorkspaceContent: View {
               controls: ShellToolbarLayout.gridBar(
                 for: layoutMode,
                 inspectorUsesChromeControl: inspectorPresentation.usesChromeControl),
-              store: store, info: inspectorChromeButton)
+              store: store, info: inspectorChromeButton, openShootWindow: shootWindowOpener)
+            // IMGMGR-478: the bar's leading slot, while the Regular sidebar is hidden — a visible
+            // way back that is not the system toggle alone.
+            GridBarSidebarToggle(layoutMode: layoutMode, columnVisibility: $columnVisibility)
           }
           // WP28 P2: the Regular folder search, on the grid only — the docked loupe branch above
           // carries none, so its chrome is unchanged — and never at Compact, whose Search tab is
           // the one search surface there.
           .modifier(RegularFolderSearch(search: folderSearch, isEnabled: layoutMode != .compact))
           // WP28 P3 (IMGMGR-450), Decision 1: the folder's name in the grid's principal slot, and
-          // its title menu's one row, "Shoot Summary". p4128's breadcrumb and count for this slot
-          // are NOT part of this phase.
+          // its title menu's one row, "Shoot Summary". WP29 P1 (IMGMGR-452): at Regular the slot
+          // is p4128's breadcrumb (`GridBreadcrumbTitle`); Compact keeps its pushed title alone.
           .navigationTitle(title ?? "")
           .navigationBarTitleDisplayMode(.inline)
-          .toolbarTitleMenu {
-            Button {
-              showSummary = true
-            } label: {
-              Label(ShootSummarySheet.sheetTitle, systemImage: "chart.bar.doc.horizontal")
-            }
-            .accessibilityIdentifier("shootSummaryTitleMenuRow")
-          }
+          .modifier(
+            GridBreadcrumbTitle(
+              breadcrumb: breadcrumb, isRegular: layoutMode != .compact,
+              openSummary: { showSummary = true })
+          )
           .sheet(isPresented: $showSummary) {
             ShootSummarySheet(
               queueStore: queueStore, folderID: store.query.folderID, title: title,
@@ -137,6 +151,51 @@ struct WorkspaceContent: View {
     .accessibilityIdentifier("inspectorChromeButton")
   }
 
+}
+
+/// WP29 P1 (IMGMGR-452): the grid's title slot. At Regular it is p4128's breadcrumb — the
+/// shoot's name over the server's count — as a PRINCIPAL toolbar item holding the Summary row in
+/// a `Menu`. That is the plan's named pivot: the system title with `.navigationSubtitle` and
+/// `.toolbarTitleMenu` lead-aligned on iPadOS 26.5 (gate on c96429a: title minX 340, off its
+/// bar's midX by -81 pt at Regular-2 and -253 pt at Regular-3). Compact keeps the system title
+/// menu. Keyed on the WIDTH alone (like `RegularFolderSearch`), so a count that arrives later
+/// never swaps the grid's view identity; the Summary row keeps its one identifier either way.
+struct GridBreadcrumbTitle: ViewModifier {
+  let breadcrumb: GridBreadcrumb?
+  let isRegular: Bool
+  let openSummary: () -> Void
+
+  func body(content: Content) -> some View {
+    if isRegular {
+      content.toolbar {
+        if let breadcrumb {
+          ToolbarItem(placement: .principal) {
+            Menu {
+              summaryRow
+            } label: {
+              VStack(spacing: 0) {
+                Text(breadcrumb.title).font(.headline).lineLimit(1)
+                if let subtitle = breadcrumb.subtitle {
+                  Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+              }
+            }
+          }
+        }
+      }
+    } else {
+      content.toolbarTitleMenu {
+        summaryRow
+      }
+    }
+  }
+
+  private var summaryRow: some View {
+    Button(action: openSummary) {
+      Label(ShootSummarySheet.sheetTitle, systemImage: "chart.bar.doc.horizontal")
+    }
+    .accessibilityIdentifier("shootSummaryTitleMenuRow")
+  }
 }
 
 /// WP28 P2 (IMGMGR-449), plan Decision 5: the Regular shell's folder search — a toolbar search

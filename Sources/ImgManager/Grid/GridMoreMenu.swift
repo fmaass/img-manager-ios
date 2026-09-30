@@ -7,17 +7,14 @@ import SwiftUI
 /// comment. Deleting an entry means deleting a row here, and `GridMoreMenuTests` reads these
 /// rows and invokes each row's own closure.
 struct GridMoreMenuEntry: Identifiable, Sendable {
-  /// What activating the entry offers. Three shapes, because the decided set has three: a
-  /// command, a persisted on/off, and a single-select list of the grid's row-height steps.
+  /// What activating the entry offers: a command, a persisted on/off, or a scene window. WP29 P2
+  /// (IMGMGR-453) removed the row-height list with the Density row; thumbnail size lives in the
+  /// Arrange popover (`ArrangeModel`).
   enum Surface: Sendable {
     case action(@MainActor @Sendable (GridStore) -> Void)
     case toggle(
       isOn: @MainActor @Sendable (GridStore) -> Bool,
       set: @MainActor @Sendable (GridStore, Bool) -> Void)
-    /// Density. NOT a second property — see `GridMoreMenu.density`.
-    case rowHeightSteps(
-      set: @MainActor @Sendable (GridStore, GridRowHeight) -> Void,
-      isCurrent: @MainActor @Sendable (GridStore, GridRowHeight) -> Bool)
     /// WP13 P11 (IMGMGR-220): the one entry whose action needs a capability the STORE cannot
     /// hold — SwiftUI's scene-level `openWindow`. It therefore takes the injected
     /// `ShootWindowOpener` alongside the store, which is also what lets a test substitute a spy
@@ -46,7 +43,8 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
 ///
 /// Sections are the menu's SINGLE inventory: `GridMoreMenu.entries` is DERIVED from them, so a
 /// grouping cannot drift from the set it groups — there is no second list to drift from. The
-/// partition is CONTIGUOUS over the owner's decided order, so grouping reorders nothing.
+/// partition is CONTIGUOUS over that one order — since WP29 P3 (IMGMGR-454),
+/// View · Actions · Shoot.
 struct GridMoreMenuSection: Identifiable, Sendable {
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
   let id: String
@@ -59,7 +57,9 @@ struct GridMoreMenuSection: Identifiable, Sendable {
 
 /// WP13 P5a (IMGMGR-221): the More menu's decided set — **Select · Clear mark ·
 /// Copy for Lightroom · Filename plates · Density · Status** (owner decision 2, 2026-08-30
-/// kickoff, epic comment 2106).
+/// kickoff, epic comment 2106). Select moved to the grid's bar in WP29 P1; Density moved to the
+/// Arrange popover's thumbnail sizes in WP29 P2 (IMGMGR-453), which also gave Hide mirrored
+/// archive its one home in the tree's View menu.
 ///
 /// **"Download…" is deliberately absent** (owner decision 3): downloads stay loupe-Share-only
 /// natively, bulk/zip stays on the web. `ShareControls.swift` remains the app's one export
@@ -70,7 +70,9 @@ struct GridMoreMenuSection: Identifiable, Sendable {
 /// requires an observable effect — so a deleted entry and a no-oped entry both turn it RED.
 enum GridMoreMenu {
 
-  /// WP16 P4 (IMGMGR-297): the four labelled groups, and the menu's ONE inventory.
+  /// WP16 P4 (IMGMGR-297): the labelled groups — three since WP29 P4 (IMGMGR-455) moved the
+  /// Scene group to the Select bar's Scene ▸ — and the menu's ONE inventory. Every row carries
+  /// an SF Symbol through the system `Label` (WP29 P3, IMGMGR-454).
   ///
   /// WP13 P11 (IMGMGR-220) APPENDED "Open in New Window"; it did not reorder the owner's decided
   /// set. WP14 P4 (IMGMGR-277) APPENDED the three scene-edit actions, in the plan's own order —
@@ -78,52 +80,35 @@ enum GridMoreMenu {
   /// was: the owner's decided set and its order are untouched, and a topology action is chrome by
   /// decision ("no new gestures", plan Decision 2).
   ///
-  /// Grouping keeps that promise structurally rather than by care: each section is a CONTIGUOUS
-  /// run of the shipped order, so flattening them reproduces it exactly — which is what
-  /// `entries` below does, and what `GridMoreMenuSectionsTests` asserts element-wise.
+  /// Each section is a CONTIGUOUS run of `entries`, which is these sections flattened — the one
+  /// order, asserted element-wise by `GridMoreMenuSectionsTests`. WP29 P3 (IMGMGR-454, ticket
+  /// scope + owner decision D-a) deliberately REORDERED the six rows into the ticket's shape:
+  /// View · Actions · Shoot. Same six rows, same identifiers, same fold rule.
   static let sections: [GridMoreMenuSection] = [
     GridMoreMenuSection(
-      id: "more.section.marks", title: "Marks",
-      entries: [select, clearMark, copyForLightroom]),
-    GridMoreMenuSection(
       id: "more.section.view", title: "View",
-      // IMGMGR-362 APPENDED the archive prune to THIS section's own run — a view option beside
-      // the other view options. The decided order is untouched: every pair that was ordered
-      // before is ordered the same now, and the section stays one contiguous run.
-      entries: [filenamePlates, picksInGroups, density, pruneMirroredArchive]),
+      // WP29 P2 (IMGMGR-453): Density left for the Arrange popover's thumbnail sizes, and Hide
+      // mirrored archive left for its one home, the tree's View menu (`RootView`), which renders
+      // the same static `pruneMirroredArchive` entry. 12 → 10 rows.
+      entries: [filenamePlates, picksInGroups]),
+    GridMoreMenuSection(
+      id: "more.section.actions", title: "Actions",
+      // WP29 P1 (IMGMGR-452): Select left this run for the grid's bar (`GridSelectCommand`),
+      // 13 → 12 rows. WP29 P3 (IMGMGR-454): Clear mark STAYS — folded, this row is the bar's
+      // only Clear (`ActionBarLayout.foldsClearIntoMore`) — and Open in New Window joins it.
+      entries: [clearMark, copyForLightroom, openInNewWindow]),
     GridMoreMenuSection(
       id: "more.section.shoot", title: "Shoot",
-      entries: [status, openInNewWindow]),
-    GridMoreMenuSection(
-      id: "more.section.scene", title: "Scene",
-      // IMGMGR-347 APPENDED the absorb, in the same spirit the two rows before it were appended:
-      // the decided set and its order are untouched, and a topology action stays chrome.
-      entries: [mergeScene, splitScene, extractScene, absorbScene]),
+      entries: [status]),
+    // WP29 P4 (IMGMGR-455): the Scene section (Merge into…, Split here, Extract selected, Add to
+    // scene…) left for its one touch home, the Select bar's Scene ▸ (`SelectBarSceneMenu`), which
+    // now holds those four declarations. 10 → 6 rows in 3 groups.
   ]
 
   /// DERIVED, never declared: the menu has one inventory and this is a view onto it. Every
   /// existing reader (`GridMoreMenuContent`, `GridMoreMenuTests`, `ScenePicksInGroupsTests`,
   /// `ShootSceneValueTests`) keeps working because the shape and the order are unchanged.
   static let entries: [GridMoreMenuEntry] = sections.flatMap(\.entries)
-
-  /// Already shipped as the menu's one item; unchanged, and now declared beside its five
-  /// siblings rather than written inline in `ActionBarView`.
-  static let select = GridMoreMenuEntry(
-    id: "more.select",
-    // P1's identifier, kept verbatim: its label changes with the mode, and a menu item inside a
-    // popover is not addressable by label on every idiom (Regular-3, SelectModeScreenshotUITests).
-    accessibilityIdentifier: "gridSelectCommand",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "checkmark.circle",
-    title: { $0.selection.mode == .select ? "Exit Select" : "Select" },
-    isEnabled: { _ in true },
-    surface: .action { store in
-      if store.selection.mode == .select {
-        store.done()
-      } else {
-        store.enterSelectExplicitly()
-      }
-    })
 
   /// A SECOND ENTRY POINT to the store's one clear action, never a second implementation: the
   /// menu entry, the `U` key equivalent and the View menu's Clear all dispatch into
@@ -195,10 +180,10 @@ enum GridMoreMenu {
   /// view-options surface (the web sibling puts its twin next to the tier row instead; that is
   /// covered-differently, not divergence).
   ///
-  /// The tree home renders THIS SAME VALUE in its own View menu (`RootView.sidebar`), because the
-  /// More menu is on the grid's action bar and the surface that shows the tree is not the grid.
-  /// One entry, one identifier, one preference key, two places a reader can reach it — never a
-  /// second switch that could disagree with this one.
+  /// WP29 P2 (IMGMGR-453): no longer a More row. Its one home is the tree's View menu
+  /// (`RootView.folderTreeViewMenuItem`), which renders THIS value — the switch is about the tree,
+  /// and the tree's own surface is where it belongs. The entry stays declared here so the row
+  /// keeps its identifier, title and binding onto the one `GridPreferences` key.
   static let pruneMirroredArchive = GridMoreMenuEntry(
     id: "more.pruneMirroredArchive",
     accessibilityIdentifier: "gridMoreMenu.more.pruneMirroredArchive",
@@ -209,28 +194,6 @@ enum GridMoreMenu {
     surface: .toggle(
       isOn: { $0.preferences.pruneMirroredArchive },
       set: { store, isOn in store.preferences.pruneMirroredArchive = isOn }))
-
-  /// DENSITY, mapped onto the grid's EXISTING six row-height steps (`GridRowHeight`) rather
-  /// than a second persisted property. The native grid already has six measured zoom steps
-  /// which are exactly what the web's density control approximates on a phone; a second density
-  /// knob would give one visual property two owners that can disagree. One state, two entry
-  /// points — this menu and `GridZoomControl` (and ⌘1…⌘6), all calling `GridStore.setRowHeight`.
-  ///
-  /// This is a deliberate DEVIATION from the literal decided list (plan §P5a Approach) and is
-  /// flagged for the owner to overrule; the warrant is "companion value through native
-  /// capability, never web parity" (IMGMGR-114 comment 1949) plus the duplicated-functionality
-  /// rule. `GridMoreMenuTests` asserts `GridPreferences.persistedKeys` holds no density key, so
-  /// a future second property fails the gate rather than shipping quietly.
-  static let density = GridMoreMenuEntry(
-    id: "more.density",
-    accessibilityIdentifier: "gridMoreMenu.more.density",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "square.grid.2x2",
-    title: { "Density: \(Int($0.rowHeight.rawValue)) pt" },
-    isEnabled: { _ in true },
-    surface: .rowHeightSteps(
-      set: { store, step in store.setRowHeight(step) },
-      isCurrent: { store, step in store.rowHeight == step }))
 
   /// READ ONLY (`StatusSheet`): maintenance state, last indexed, store health, coverage, recent
   /// runs. `POST /api/reindex` is in the vendored spec and stays unwired (plan invariant viii).
@@ -280,63 +243,6 @@ enum GridMoreMenu {
       let value = ShootSceneValue.from(query: store.query)
       ShootWindowAction.open(value, using: opener)
     })
-
-  /// WP14 P4 (IMGMGR-277). All three rows follow P11's single-predicate discipline: the
-  /// `isEnabled` closure and the action read the SAME store derivation, so "the control is
-  /// enabled" and "the action has a subject" cannot drift apart, and a disabled row that somehow
-  /// fired would be a no-op rather than a trap (each store method re-derives its own guard).
-  ///
-  /// The subject is always the FOCUSED member's scene (plan Decision 2) — several scenes can be
-  /// open at once (`sceneExpanded` is a Set), so "the open scene" is not a thing that exists.
-  static let mergeScene = GridMoreMenuEntry(
-    id: "more.mergeScene",
-    accessibilityIdentifier: "gridMoreMenu.more.mergeScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "arrow.triangle.merge",
-    title: { _ in "Merge into…" },
-    isEnabled: { $0.canMergeFocusedScene },
-    surface: .action { store in store.presentSceneMergePicker() })
-
-  static let splitScene = GridMoreMenuEntry(
-    id: "more.splitScene",
-    accessibilityIdentifier: "gridMoreMenu.more.splitScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "scissors",
-    title: { _ in "Split here" },
-    isEnabled: { $0.canSplitFocusedScene },
-    surface: .action { store in
-      Task { await store.splitFocusedScene() }
-    })
-
-  static let extractScene = GridMoreMenuEntry(
-    id: "more.extractScene",
-    accessibilityIdentifier: "gridMoreMenu.more.extractScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "square.on.square.dashed",
-    title: { _ in "Extract selected" },
-    isEnabled: { $0.canExtractSelectionFromScene },
-    surface: .action { store in
-      Task { await store.extractSelectionFromFocusedScene() }
-    })
-
-  /// IMGMGR-347: the row for the photograph that is in no scene — the gesture the family was
-  /// missing, and the one the owner went looking for on the device ("i dont think this works im
-  /// missing a menu basically to do so", TestFlight 0.11.0 (14)).
-  ///
-  /// Its subject is the one the other three cannot have, so it is enabled exactly where they are
-  /// disabled, and vice versa. The TITLE is a function of the same derivation as the enablement
-  /// (`sceneAbsorbUnavailability`): while it cannot act it says which thing is missing, because a
-  /// row that only greys out is what sent the owner looking in the first place — and because this
-  /// menu's idiom is present-and-disabled, a row's title is the only surface a reason can appear
-  /// on.
-  static let absorbScene = GridMoreMenuEntry(
-    id: "more.absorbScene",
-    accessibilityIdentifier: "gridMoreMenu.more.absorbScene",
-    foldedAccessibilityIdentifier: nil,
-    systemImage: "rectangle.stack.badge.plus",
-    title: { SceneAbsorbCopy.title(for: $0.sceneAbsorbUnavailability) },
-    isEnabled: { $0.canAbsorbFocusedPhoto },
-    surface: .action { store in store.presentSceneAbsorbPicker() })
 }
 
 /// The menu's rendered body: EXACTLY `GridMoreMenu.sections`, in order, with no second list —
@@ -374,16 +280,27 @@ struct GridMoreMenuItem: View {
     GridMoreMenu.accessibilityIdentifier(for: entry, foldsClearIntoMore: foldsClearIntoMore)
   }
 
+  /// IMGMGR-474: folded, this row IS the bar's Clear control, so it carries the bar's readout
+  /// too — the filled glyph, the selected trait and the spoken value. `nil` for every other row.
+  private var markPresentation: ActionBarMarkPresentation? {
+    GridMoreMenu.markPresentation(
+      for: entry, foldsClearIntoMore: foldsClearIntoMore, lockState: store.pickLock.state,
+      readout: store.markTargetReadout)
+  }
+
   var body: some View {
     switch entry.surface {
     case .action(let run):
       Button {
         run(store)
       } label: {
-        Label(entry.title(store), systemImage: entry.systemImage)
+        Label(
+          entry.title(store), systemImage: markPresentation?.systemImage ?? entry.systemImage)
       }
       .disabled(!entry.isEnabled(store))
       .labelStyle(.titleAndIcon)
+      .accessibilityAddTraits(markPresentation?.isSelected == true ? .isSelected : [])
+      .accessibilityValue(markPresentation?.accessibilityValue ?? "")
       .accessibilityIdentifier(identifier)
 
     case .toggle(let isOn, let set):
@@ -402,27 +319,6 @@ struct GridMoreMenuItem: View {
         Label(entry.title(store), systemImage: entry.systemImage)
       }
       .disabled(!entry.isEnabled(store))
-      .labelStyle(.titleAndIcon)
-      .accessibilityIdentifier(identifier)
-
-    case .rowHeightSteps(let set, let isCurrent):
-      Menu {
-        // Identified by the STEP, never by its position (IMGMGR-210) — the same identity
-        // `GridZoomControl` uses over the same six cases.
-        ForEach(GridRowHeight.allCases, id: \.self) { step in
-          Button {
-            set(store, step)
-          } label: {
-            if isCurrent(store, step) {
-              Label("\(Int(step.rawValue)) pt", systemImage: "checkmark")
-            } else {
-              Text("\(Int(step.rawValue)) pt")
-            }
-          }
-        }
-      } label: {
-        Label(entry.title(store), systemImage: entry.systemImage)
-      }
       .labelStyle(.titleAndIcon)
       .accessibilityIdentifier(identifier)
     }

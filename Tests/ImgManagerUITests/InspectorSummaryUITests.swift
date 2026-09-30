@@ -24,14 +24,15 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
   /// Mirrors `LayoutResolver.regular3Threshold`; `LayoutPresentationTests` is the join.
   private static let regular3WidthThreshold: CGFloat = 1197
 
-  /// The six host chrome controls (IMGMGR-338): the five grid view options and Info.
+  /// The host chrome controls (IMGMGR-338) on the Regular grid bar. WP29 P1 (IMGMGR-452): "?"
+  /// left it (⌘/ and the menu bar are its Regular homes) and Select and More joined it.
   private static let hostChromeIdentifiers = [
     "inspectorChromeButton",
+    "gridSelectCommand",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
-    "gridShortcutHelpControl",
+    // WP29 P2 (IMGMGR-453): Arrange replaced Sort, Group and Zoom.
+    "gridArrangeControl",
+    "gridMoreMenu",
   ]
 
   private static let folderOneName = "2026-08-27 — Stub Shoot"
@@ -455,8 +456,8 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
     element.exists ? (element.isHittable ? "hittable" : "folded") : "absent"
   }
 
-  /// The system overflow ("More") on the navigation bars — never the grid action bar's own More
-  /// menu (`gridMoreMenu`), which lives on the bottom bar.
+  /// The system overflow ("More") on the navigation bars — never the grid's own More menu
+  /// (`gridMoreMenu`), which since WP29 P1 is an item of this same bar at Regular.
   private func overflowButton(_ app: XCUIApplication) -> XCUIElement {
     app.navigationBars.buttons
       .matching(NSPredicate(format: "label ==[c] 'More' AND identifier != 'gridMoreMenu'"))
@@ -528,8 +529,10 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
   /// A fresh predicate per query, as every other UI test builds them: `matching(_:)` takes the
   /// non-Sendable `NSPredicate` as a `sending` argument (gate on 45e2dfc).
   private func titleElement(in elements: XCUIElementQuery, names: [String]) -> XCUIElement {
-    let labels = names.flatMap { [$0, "\($0), Actions Menu"] }
-    return elements.matching(NSPredicate(format: "label IN %@", labels)).firstMatch
+    // WP29 P1 (IMGMGR-452): plus the breadcrumb's count-subtitle forms, for whichever folder is
+    // shown — folders 3 and 4 count 9 and 3 (`titleMenuLabelPattern`).
+    let pattern = Self.titleMenuLabelPattern(names)
+    return elements.matching(NSPredicate(format: "label MATCHES %@", pattern)).firstMatch
   }
 
   /// Finds the grid's title (asserting it shows one of `titleNames`), opens its title menu with

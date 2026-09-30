@@ -1,51 +1,119 @@
+import ImgManagerAPI
+import SwiftUI
 import Testing
 
 @testable import ImgManager
 
-/// WP28 P2 (IMGMGR-449): the grid bar's six controls as ONE declared group — exactly the six
-/// shipped controls, nothing dropped, nothing duplicated, in the shipped order.
+/// WP28 P2 (IMGMGR-449) + WP29 P1 (IMGMGR-452): the grid bar as ONE declared list — the spec's
+/// trailing group in p4128's order, nothing dropped, nothing on two surfaces.
+@MainActor
 @Suite("ShellToolbarLayout — the grid bar's one declared group")
 struct ShellToolbarLayoutTests {
 
-  /// The shipped identifiers, as literals: `Regular3CollapsedChromeUITests.hostChromeIdentifiers`
-  /// and `RegularSidebarShellUITests.barControlIdentifiers` duplicate them, because a UI-test
-  /// bundle drives the app rather than linking it. This list is the join between the two.
-  private static let shippedIdentifiers = [
+  /// The shipped identifiers of the Regular bar's app items, in order, as literals:
+  /// `GridToolbarUITests`, `Regular3CollapsedChromeUITests` and `InspectorSummaryUITests` spell
+  /// them too, because a UI-test bundle drives the app rather than linking it. The system search
+  /// carries none of the app's.
+  private static let regularIdentifiers = [
     "inspectorChromeButton",
+    "gridSelectCommand",
     "gridFilterControl",
-    "gridSortControl",
-    "gridGroupControl",
-    "gridZoomControl",
-    "gridShortcutHelpControl",
+    "gridArrangeControl",
+    "gridMoreMenu",
   ]
 
-  @Test("At every Regular width the bar carries exactly the six shipped controls")
-  func regularCarriesExactlyTheSix() {
+  @Test("Regular: Info, then Search · Select · Filter · Arrange · More, in that order")
+  func regularOrderIsTheSpecOrder() {
+    #expect(
+      ShellToolbarLayout.regularGridBar == [
+        .info, .search, .select, .filter, .arrange, .more,
+      ])
     for mode in [LayoutMode.regular2, .regular3] {
       let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
-      #expect(bar.count == 6, "The bar at \(mode) carries \(bar.count) controls")
-      // Nothing duplicated: as many distinct members as members.
-      #expect(Set(bar).count == bar.count)
-      // Nothing dropped: every control the type knows is on the bar.
-      #expect(Set(bar) == Set(ShellToolbarControl.allCases))
-      #expect(bar.map(\.accessibilityIdentifier) == Self.shippedIdentifiers)
+      #expect(bar == ShellToolbarLayout.regularGridBar, "The bar at \(mode) is \(bar)")
+      #expect(Set(bar).count == bar.count, "A control is on the bar twice at \(mode)")
+      #expect(bar.compactMap(\.accessibilityIdentifier) == Self.regularIdentifiers)
     }
   }
 
-  @Test("The order is the shipped rendered order: Info, then Filter, Sort, Group, Zoom, ?")
-  func orderIsTheShippedOrder() {
-    // Info leads (the expanded Regular-3 escape hatch the trailing fold must never reach), and
-    // Filter is the first of the five (WP16 P3, decision 1).
+  @Test("Compact: Info and Select on the navigation bar; the options row is Arrange · Filter · ?")
+  func compactCarriesInfoAndSelect() {
     #expect(
-      ShellToolbarLayout.regularGridBar == [.info, .filter, .sort, .group, .zoom, .shortcutHelp])
+      ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
+        == [.info, .select])
     #expect(
-      ShellToolbarLayout.gridBar(for: .regular3, inspectorUsesChromeControl: true)
-        == ShellToolbarLayout.regularGridBar)
+      ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .shortcutHelp])
   }
 
-  @Test("Compact carries Info alone on the bar; the five ride the options row")
-  func compactCarriesInfoAlone() {
-    #expect(ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true) == [.info])
+  @Test("\"?\" leaves the Regular bar and stays on the Compact options row")
+  func shortcutHelpHasOneTouchHomePerWidth() {
+    for mode in [LayoutMode.regular2, .regular3] {
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      #expect(!bar.contains(.shortcutHelp), "\"?\" is still on the bar at \(mode)")
+    }
+    #expect(ShellToolbarLayout.compactOptionsRow.filter { $0 == .shortcutHelp }.count == 1)
+    #expect(
+      !ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
+        .contains(.shortcutHelp))
+    // Regular's homes: ⌘/ (and bare ?) in the menu bar's "Keyboard Shortcuts".
+    let help = AppCommands.declarations.filter { $0.shortcut == .help }
+    #expect(help.contains { $0.key == KeyEquivalent("/") && $0.modifiers == [.command] })
+    // …and it dispatches to the sheet, through the declaration's own closure.
+    let store = GridStore(
+      service: GridService(client: ImgManagerAPIClient.make(transport: GridStubTransport())))
+    let command = help.first { $0.key == KeyEquivalent("/") }
+    #expect(store.isShortcutHelpPresented == false)
+    command?.run(store.keyboardActions)
+    #expect(store.isShortcutHelpPresented == true, "⌘/ did not raise the shortcut sheet")
+  }
+
+  @Test("Select has one touch home per width: the bar, never the More menu")
+  func selectHasOneTouchHomePerWidth() {
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      #expect(bar.filter { $0 == .select }.count == 1, "Select is not on the bar at \(mode)")
+    }
+    #expect(!ShellToolbarLayout.compactOptionsRow.contains(.select))
+    #expect(!GridMoreMenu.entries.contains { $0.accessibilityIdentifier == "gridSelectCommand" })
+    #expect(
+      ShellToolbarControl.select.accessibilityIdentifier
+        == GridSelectCommand.accessibilityIdentifier)
+  }
+
+  @Test("More is on exactly one surface per width: the bar at Regular, the action bar at Compact")
+  func moreHasOneHomePerWidth() {
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      let onBar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+        .contains(.more)
+      let onActionBar = WorkspaceChromePlacement.actionBarCarriesMore(for: mode)
+      #expect(onBar != onActionBar, "More at \(mode): bar=\(onBar) actionBar=\(onActionBar)")
+    }
+    #expect(WorkspaceChromePlacement.actionBarCarriesMore(for: .compact))
+  }
+
+  @Test("No identifier appears twice across the bar, the options row and the More menu")
+  func noIdentifierTwiceAcrossTheSurfaces() {
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      let row: [ShellToolbarControl] =
+        WorkspaceChromePlacement.host(for: mode) == .compactOptionsRow
+        ? ShellToolbarLayout.compactOptionsRow : []
+      let ids =
+        (bar + row).compactMap(\.accessibilityIdentifier)
+        + GridMoreMenu.entries.map(\.accessibilityIdentifier)
+      #expect(Set(ids).count == ids.count, "Duplicated identifier at \(mode): \(ids)")
+      // Positive control: the three surfaces really were enumerated.
+      #expect(ids.contains("gridMoreMenu.more.clearMark"))
+      #expect(ids.contains("inspectorChromeButton"))
+    }
+  }
+
+  @Test("Every control the type knows has a home at some width")
+  func nothingDropped() {
+    let homes = Set(
+      ShellToolbarLayout.regularGridBar + ShellToolbarLayout.compactGridBar
+        + ShellToolbarLayout.compactOptionsRow)
+    #expect(homes == Set(ShellToolbarControl.allCases))
   }
 
   @Test("A presentation without the chrome control drops Info and nothing else")
@@ -64,15 +132,36 @@ struct ShellToolbarLayoutTests {
       let presentation = InspectorPlacement.presentation(for: mode)
       let bar = ShellToolbarLayout.gridBar(
         for: mode, inspectorUsesChromeControl: presentation.usesChromeControl)
-      #expect(bar.contains(.info), "Info is missing from the bar at \(mode)")
+      #expect(bar.first == .info, "Info does not lead the bar at \(mode)")
     }
   }
 
-  @Test("The six identifiers are distinct and are the shipped ones")
+  @Test("The identifiers are distinct and are the shipped ones; search has none of the app's")
   func identifiersAreTheShippedOnes() {
-    let identifiers = ShellToolbarControl.allCases.map(\.accessibilityIdentifier)
+    let identifiers = ShellToolbarControl.allCases.compactMap(\.accessibilityIdentifier)
     #expect(Set(identifiers).count == identifiers.count)
-    #expect(Set(identifiers) == Set(Self.shippedIdentifiers))
+    #expect(
+      Set(identifiers) == Set(Self.regularIdentifiers + ["gridShortcutHelpControl"]))
+    #expect(ShellToolbarControl.search.accessibilityIdentifier == nil)
+  }
+
+  @Test("The rendered order is the declared order; only the search item leaves the groups")
+  func renderedOrderIsTheDeclaredOrder() {
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      for chrome in [true, false] {
+        let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: chrome)
+        let runs = ShellToolbarRuns(bar)
+        #expect(runs.flattened == bar, "At \(mode) the bar renders \(runs.flattened), not \(bar)")
+        let grouped = runs.leading + runs.trailing
+        #expect(!grouped.contains(.search), "The search item rides a group at \(mode)")
+      }
+    }
+    let regular = ShellToolbarRuns(ShellToolbarLayout.regularGridBar)
+    #expect(regular.leading == [.info])
+    #expect(regular.search)
+    #expect(regular.trailing == [.select, .filter, .arrange, .more])
+    #expect(ShellToolbarRuns([]).flattened == [])
+    #expect(ShellToolbarRuns([.info, .select]).trailing == [])
   }
 
   @Test("The Regular sidebar's section names and identifiers")
