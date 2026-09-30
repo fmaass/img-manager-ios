@@ -150,6 +150,7 @@ final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
   /// The tile the grid's top edge cuts through, and how many points of it lie above that edge —
   /// nil when the top row sits flush. One snapshot of the grid, walked by hand (no key paths to
   /// an element's properties: Swift 6 strict concurrency).
+  @MainActor
   private func tileCutByTopEdge(of viewport: CGRect, in grid: XCUIElement) -> (String, CGFloat)? {
     let root: any XCUIElementSnapshot
     do {
