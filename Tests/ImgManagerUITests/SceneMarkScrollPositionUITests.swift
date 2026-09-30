@@ -23,6 +23,7 @@ import XCTest
 /// the grid is told apart from the content offset moving inside it.
 final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
 
+  @MainActor
   func testMarkingAMemberOfAnOpenSceneLeavesTheGridWhereItWas() throws {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestEnterSceneMode"]
