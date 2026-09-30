@@ -177,6 +177,16 @@ struct LoupeView: View {
     }
     .navigationBarTitleDisplayMode(.inline)
     .modifier(ShareLauncherPresentation(launcher: shareLauncher, share: share))
+    // WP30 P2 (IMGMGR-457): tag entry for the focused photograph, hosted HERE while the loupe is
+    // open — the docked Regular loupe replaces the grid that hosts it otherwise, and the Compact
+    // loupe covers it. `TagEntryHost` gives the one flag exactly one host.
+    .sheet(
+      isPresented: Binding(
+        get: { store.presentsTagEntry(on: .loupe) },
+        set: { store.isTagEntryPresented = $0 })
+    ) {
+      TagEntrySheet(store: store)
+    }
     // NOT `.task(id:)` (Codex round 2): that binds the page load to this frame's view lifetime,
     // so the next focus change CANCELS a page still on the wire — and `GridService` maps every
     // thrown error, `CancellationError` included, to `.unreachable`, which the pagers record as
@@ -193,7 +203,11 @@ struct LoupeView: View {
     // framework's timing, while the store's own flag is the app's. Ending twice is harmless — the
     // generation only has to CHANGE.
     .onChange(of: store.isLoupeOpen) { _, isOpen in
-      if !isOpen { pagingLifetime.end() }
+      if !isOpen {
+        pagingLifetime.end()
+        // A tag entry the loupe hosted ends with it, rather than re-presenting on the grid.
+        store.isTagEntryPresented = false
+      }
     }
     .onDisappear { pagingLifetime.end() }
     .task(id: store.focusedImageID) {
@@ -316,10 +330,16 @@ struct LoupeView: View {
         .accessibilityIdentifier(item.accessibilityIdentifier)
       }
     case .more:
-      // P1 holds Share alone, moved off the header so it never loses its home; P2 (IMGMGR-457)
-      // adds the rest of the Cull More.
+      // WP30 P2 (IMGMGR-457): the Cull More, rendered from `CullMoreMenuModel` — two sections,
+      // six rows. Share keeps the home P1 gave it.
       Menu {
-        ShareMenuRow(launcher: shareLauncher, share: share, image: focusedImage)
+        ForEach(CullMoreMenuModel.sections) { section in
+          Section {
+            ForEach(section.commands, id: \.self) { command in
+              cullRow(command, identifier: CullMoreMenuModel.accessibilityIdentifier(for: command))
+            }
+          }
+        }
       } label: {
         Label(item.title, systemImage: "ellipsis.circle")
       }
@@ -329,6 +349,105 @@ struct LoupeView: View {
 
   /// Compare's action until P3 (IMGMGR-458): the control is disabled, so this never runs.
   private func compareIsNotWiredYet() {}
+
+  /// WP30 P2 (IMGMGR-457): the photograph's context menu, rendered from `LoupeContextMenuModel`
+  /// — [Pick, Dislike, Clear] | [Tag, Share] | [Lock ▸]. Every row is a twin of a control that
+  /// exists elsewhere (the mark group, More), so the long press adds no gesture-only verb.
+  @ViewBuilder
+  private var photoContextMenu: some View {
+    ForEach(LoupeContextMenuModel.groups) { group in
+      Section {
+        ForEach(group.nodes) { node in
+          switch node {
+          case .command(let command):
+            cullRow(
+              command, identifier: LoupeContextMenuModel.accessibilityIdentifier(for: command))
+          case .submenu(let submenu):
+            Menu {
+              ForEach(submenu.commands, id: \.self) { command in
+                cullRow(
+                  command, identifier: LoupeContextMenuModel.accessibilityIdentifier(for: command))
+              }
+            } label: {
+              Label(submenu.title, systemImage: submenu.systemImage)
+            }
+            .accessibilityIdentifier(submenu.accessibilityIdentifier)
+          }
+        }
+      }
+    }
+  }
+
+  /// One row of either Cull menu. Each verb reaches the SAME path its existing control uses:
+  /// marks through `applyLoupeMark` (the mark group's own cadence), Tag through the grid's tag
+  /// entry, Share through this loupe's `ShareLauncher`, Lock through the grid latch, Zoom through
+  /// `zoomToggleAction`, Advance through `preferences.autoAdvanceOnMark`.
+  @ViewBuilder
+  private func cullRow(_ command: CullCommand, identifier: String) -> some View {
+    switch command {
+    case .pick, .dislike, .clear:
+      Button {
+        guard let state = command.markState else { return }
+        Task { await store.applyLoupeMark(state) }
+      } label: {
+        Label(command.title, systemImage: command.systemImage)
+      }
+      .disabled(store.focusedImageID == nil || store.isMutatingMark)
+      .accessibilityIdentifier(identifier)
+    case .tag:
+      Button {
+        store.handleTagShortcut()
+      } label: {
+        Label(command.title, systemImage: command.systemImage)
+      }
+      .disabled(store.tagTargetImageIDs.isEmpty)
+      .accessibilityIdentifier(identifier)
+    case .share:
+      ShareMenuRow(
+        launcher: shareLauncher, share: share, image: focusedImage,
+        accessibilityIdentifier: identifier)
+    case .lockPick, .lockDislike, .zoomToOneToOne, .advanceAfterMarking:
+      checkRow(command, identifier: identifier)
+    }
+  }
+
+  /// A menu check row: a `Toggle`, which a menu draws with the system ✓. The spoken value states
+  /// the same thing for VoiceOver and for the UI test that reads it.
+  private func checkRow(_ command: CullCommand, identifier: String) -> some View {
+    let latched = store.pickLock.latchedVerb
+    let zoom = resolvedZoom
+    let isOn: Bool
+    let isEnabled: Bool
+    if let verb = command.latchVerb {
+      // ✓ while its verb holds the grid latch; inert while the other verb does.
+      isOn = CullLockRow.isChecked(verb, latchedVerb: latched)
+      isEnabled = CullLockRow.action(for: verb, latchedVerb: latched) != nil
+    } else if command == .zoomToOneToOne {
+      isOn = CullZoomRow.isAtOneToOne(zoom)
+      isEnabled = zoom.isZoomAvailable
+    } else {
+      isOn = store.preferences.autoAdvanceOnMark
+      isEnabled = true
+    }
+    return Toggle(isOn: Binding(get: { isOn }, set: { setCheck(command, to: $0) })) {
+      Label(command.title, systemImage: command.systemImage)
+    }
+    .disabled(!isEnabled)
+    .accessibilityValue(isOn ? "On" : "Off")
+    .accessibilityIdentifier(identifier)
+  }
+
+  /// What selecting a check row does.
+  private func setCheck(_ command: CullCommand, to isOn: Bool) {
+    if let verb = command.latchVerb {
+      store.toggleLockFromLoupe(verb)
+    } else if command == .zoomToOneToOne {
+      // The loupe's ONE zoom action — the double-tap's — so "100%" cannot mean two things.
+      zoomToggleAction()
+    } else if command == .advanceAfterMarking {
+      store.preferences.autoAdvanceOnMark = isOn
+    }
+  }
 
   private func mainImageArea(zoomToggle: @escaping () -> Void) -> some View {
     let zoom = resolvedZoom
@@ -366,6 +485,9 @@ struct LoupeView: View {
           onDragEnded: { translation in handleDragEnded(translation) }
         )
       )
+      // WP30 P2 (IMGMGR-457): the photograph's context menu (long press; secondary click with a
+      // pointer). The loupe image has no long press of its own, unlike a grid tile.
+      .contextMenu { photoContextMenu }
 
       // Chrome prev/next controls ALONGSIDE swipe (spec: "never gesture-only") — overlaid on
       // the image, never the sole way to advance.

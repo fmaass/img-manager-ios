@@ -1,6 +1,13 @@
 import Foundation
 import XCTest
 
+/// How `openPresentation` operates its opener (WP30 P2): a menu or popover opens on a tap, a
+/// context menu on a long press.
+enum PresentationGesture {
+  case tap
+  case longPress
+}
+
 /// How this target opens a popover or a menu (IMGMGR-404).
 ///
 /// **WHY a helper and not one more `tap()`.** Two iPad gate legs went red on 2026-09-05 against
@@ -35,11 +42,15 @@ extension XCTestCase {
   ///   - control: the opener (a funnel, the Arrange control, a More or View menu).
   ///   - expected: the first row/element the open presentation must render.
   ///   - timeout: the TOTAL budget for the whole open, shared by both waits.
+  ///   - gesture: how the opener is operated — a tap unless the caller names the long press
+  ///     (WP30 P2: the loupe photograph's context menu). The first attempt and the one
+  ///     re-attempt use the same gesture, so the single-retry contract is unchanged.
   /// - Returns: `true` when `expected` exists before the deadline.
   func openPresentation(
     _ control: XCUIElement,
     revealing expected: XCUIElement,
-    timeout: TimeInterval
+    timeout: TimeInterval,
+    gesture: PresentationGesture = .tap
   ) -> Bool {
     let deadline = Date(timeIntervalSinceNow: timeout)
 
@@ -52,7 +63,7 @@ extension XCTestCase {
       _ = XCTWaiter().wait(for: [hittable], timeout: Self.remaining(until: deadline))
     }
 
-    control.tap()
+    operate(control, with: gesture)
 
     // Half of what is left of the budget for the presentation to arrive on its own.
     if expected.waitForExistence(timeout: Self.remaining(until: deadline) / 2) { return true }
@@ -65,7 +76,7 @@ extension XCTestCase {
     guard control.exists, control.isHittable, !expected.exists else {
       return expected.waitForExistence(timeout: Self.remaining(until: deadline))
     }
-    control.tap()
+    operate(control, with: gesture)
 
     return expected.waitForExistence(timeout: Self.remaining(until: deadline))
   }
@@ -105,6 +116,13 @@ extension XCTestCase {
       scene.waitForExistence(timeout: 10),
       "No 'selectBarSceneMenu' on the Select bar.", file: file, line: line)
     return openPresentation(scene, revealing: expected, timeout: timeout)
+  }
+
+  private func operate(_ control: XCUIElement, with gesture: PresentationGesture) {
+    switch gesture {
+    case .tap: control.tap()
+    case .longPress: control.press(forDuration: 1.0)
+    }
   }
 
   private static func remaining(until deadline: Date) -> TimeInterval {

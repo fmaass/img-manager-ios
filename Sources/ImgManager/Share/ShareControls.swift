@@ -110,6 +110,9 @@ struct ShareMenuRow: View {
   let launcher: ShareLauncher
   @Bindable var share: ShareExportStore
   let image: Components.Schemas.ImageSummary?
+  /// `loupeShare` in More; the photograph's context menu names its own row (WP30 P2), so a test
+  /// can tell the two menus' Share rows apart.
+  var accessibilityIdentifier = "loupeShare"
 
   var body: some View {
     Button {
@@ -119,7 +122,7 @@ struct ShareMenuRow: View {
       Label("Share", systemImage: "square.and.arrow.up")
     }
     .disabled(image == nil || share.isPreparing)
-    .accessibilityIdentifier("loupeShare")
+    .accessibilityIdentifier(accessibilityIdentifier)
   }
 }
 

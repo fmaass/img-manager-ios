@@ -1166,7 +1166,13 @@ struct ActionBarView: View {
     }
     .frame(maxWidth: .infinity)
     .chromeFill(.bar)
-    .sheet(isPresented: $store.isTagEntryPresented) {
+    // WP30 P2 (IMGMGR-457): the grid hosts tag entry only while the loupe is closed; while it is
+    // open the loupe hosts it (`TagEntryHost`), so the one flag never presents two sheets.
+    .sheet(
+      isPresented: Binding(
+        get: { store.presentsTagEntry(on: .grid) },
+        set: { store.isTagEntryPresented = $0 })
+    ) {
       TagEntrySheet(store: store)
     }
     // WP13 P5a: hosted on the OUTER body beside tag entry, never on a `ViewThatFits` child —
