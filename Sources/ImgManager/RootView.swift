@@ -62,6 +62,14 @@ struct RootView: View {
   @State private var treeReloadToken = 0
   /// WP28 P1 (IMGMGR-448): the Compact shell's tabs and which one hosts the grid.
   @State private var navigation: WorkspaceNavigation
+  /// WP31 P2 (IMGMGR-461), plan decision 4: the Pass Summary a Triage pass left — held while the
+  /// Triage cover is still going away (`pending`), then presented over the grid (`passSummary`)
+  /// from the cover's `onDismiss`, so the sheet never races the cover's dismissal.
+  @State private var pendingPassSummary: PassSummaryPresentation?
+  @State private var passSummary: PassSummaryPresentation?
+  /// WP31 P2 (IMGMGR-461), plan decision 6: the receiving route of a Triage Handoff; its ticket
+  /// fence lets a newer continuation supersede an older one.
+  @State private var continuationRouter = TriageContinuationRouter()
   /// WP28 P1: the folder search text, hoisted so every search surface shares one query.
   @State private var folderSearch: FolderSearchModel
   /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
@@ -192,6 +200,12 @@ struct RootView: View {
     .onOpenURL { url in
       NativeLoginCallbackInbox.shared.deliver(url)
     }
+    // WP31 P2 (IMGMGR-461): a Triage pass handed off from another device. The DEBUG launch
+    // argument `-UITestContinueActivity` feeds the same `continueTriage(userInfo:)`.
+    .onContinueUserActivity(TriageActivity.activityType) { activity in
+      continueTriage(userInfo: activity.userInfo)
+    }
+    .overlay(alignment: .topTrailing) { continuationProbe }
     .onChange(of: scenePhase) { _, newPhase in
       guard newPhase == .active else { return }
       // P6 (IMGMGR-116): ONE ordered task, not two independent ones — (a) renew, (b) confirm
@@ -349,6 +363,11 @@ struct RootView: View {
             await gridStore.setDisplayMode(.scene)
           }
         }
+        // WP31 P2 (IMGMGR-461): an incoming Handoff, simulated — after the fixture's own shoot
+        // has loaded, through the SAME decode-and-route function `.onContinueUserActivity` calls.
+        if DebugStubLaunch.isActive, let json = DebugStubLaunch.continueActivityJSON {
+          continueTriage(userInfo: TriageActivity.userInfo(json: json))
+        }
         #if canImport(UIKit)
           if DebugStubLaunch.forceLandscape,
             let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
@@ -388,18 +407,37 @@ struct RootView: View {
     }
     // WP31 P1 (IMGMGR-460): Triage — Compact only, its own cover beside the loupe's. It never
     // sets `isLoupeOpen` (`openTriage()` refuses while the loupe is open), so the two covers are
-    // never up together. `onPassEnded` is where P2's pass summary opens; in P1 it closes.
+    // never up together. WP31 P2 (IMGMGR-461), plan decision 4: a pass that ended with at least
+    // one action leaves a Pass Summary, presented over the grid once the cover is gone. A pass
+    // ended by anything that already closed Triage (an incoming Handoff, decision 6) leaves none.
     .fullScreenCover(
       isPresented: Binding(
         get: { gridStore.isTriagePresented && layoutMode == .compact },
         set: { presented in
           if !presented { gridStore.closeTriage() }
-        })
+        }),
+      onDismiss: {
+        passSummary = pendingPassSummary
+        pendingPassSummary = nil
+      }
     ) {
       TriageView(
         store: gridStore, shootTitle: currentBreadcrumb?.title ?? "",
         totalCount: currentImageCount,
-        onPassEnded: { _ in gridStore.closeTriage() })
+        onPassEnded: { result in
+          if gridStore.isTriagePresented {
+            pendingPassSummary = PassSummaryPresentation.make(
+              result: result, folderID: gridStore.query.folderID,
+              tier: gridStore.query.sourceTier, folderTitle: currentBreadcrumb?.title ?? "",
+              pool: gridStore.actionableImages.map(\.id))
+          }
+          gridStore.closeTriage()
+        })
+    }
+    // WP31 P2 (IMGMGR-461): the Pass Summary — a medium detent at Compact, a form at Regular
+    // (`ShootSummarySizing`), the same content.
+    .sheet(item: $passSummary) { presentation in
+      PassSummarySheet(presentation: presentation, layoutMode: layoutMode)
     }
     // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
     // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
@@ -727,6 +765,75 @@ struct RootView: View {
       folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
       cachedTreeFolders: queueStore.cachedTree?.foldersByTier)
   }
+
+  /// WP31 P2 (IMGMGR-461), plan decision 6: the ONE receiving entry of a Triage Handoff — the
+  /// `.onContinueUserActivity` handler and the DEBUG `-UITestContinueActivity` launch argument
+  /// both call it. An undecodable payload is ignored: no navigation at all. The ticket is issued
+  /// here, synchronously, so the newest arrival supersedes any route still running.
+  ///
+  /// The shoot opens the way a restored window's does — `GridStore.selectShoot` AWAITED (the
+  /// row-tap closure `selectShoot` starts an unstructured `Task` and cannot be awaited), then
+  /// `WorkspaceNavigation.showSelectedShoot` — and the loupe opens only on a photograph the
+  /// grid has actually loaded. At Compact that is the loupe's cover, never Triage.
+  private func continueTriage(userInfo: [AnyHashable: Any]?) {
+    guard let activity = TriageActivity(userInfo: userInfo) else { return }
+    let router = continuationRouter
+    let ticket = router.begin()
+    Task {
+      let outcome = await router.route(
+        activity, ticket: ticket,
+        dismissPresentations: { await dismissTriagePresentations() },
+        openShoot: { folderID, tier in
+          selectedFolderID = folderID
+          await gridStore.selectShoot(folderID: folderID, sourceTier: tier)
+          navigation.showSelectedShoot(in: .library)
+        },
+        isShowingShoot: { folderID, tier in
+          gridStore.query.folderID == folderID && gridStore.query.sourceTier == tier
+        },
+        locate: { imageID in await gridStore.locateForContinuation(imageID: imageID) },
+        openLoupe: { imageID in gridStore.openLoupe(on: imageID) })
+      #if DEBUG
+        DebugProbe.shared.continuation = outcome.probeValue
+      #else
+        _ = outcome
+      #endif
+    }
+  }
+
+  /// Decision 6 (a): Triage and any Pass Summary go away before the shoot opens. The pass ends
+  /// WITHOUT a summary — `onPassEnded` only leaves one while `isTriagePresented` is still true,
+  /// and it is false from here on. UIKit refuses a presentation while a dismissal is still
+  /// animating, so when something was up the route waits out that dismissal before the loupe's
+  /// cover can be asked for.
+  private func dismissTriagePresentations() async {
+    let wasPresenting = gridStore.isTriagePresented || passSummary != nil
+    pendingPassSummary = nil
+    passSummary = nil
+    gridStore.closeTriage()
+    if wasPresenting {
+      try? await Task.sleep(for: .milliseconds(600))
+    }
+  }
+
+  /// EVIDENCE, fixture-only (`GridView.debugProbeElement`'s pattern): how the last Handoff
+  /// continuation ended — the positive signal a UI test waits for before asserting that NO loupe
+  /// opened.
+  #if DEBUG
+    @ViewBuilder private var continuationProbe: some View {
+      if DebugStubLaunch.isActive {
+        Text("debugProbeContinuation")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.continuation")
+          .accessibilityValue("continuation=\(DebugProbe.shared.continuation)")
+      }
+    }
+  #else
+    private var continuationProbe: some View { EmptyView() }
+  #endif
 
   /// WP28 P1 (IMGMGR-448): the shared workspace destination — the split's detail at Regular and
   /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).

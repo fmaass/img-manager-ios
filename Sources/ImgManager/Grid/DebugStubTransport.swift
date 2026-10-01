@@ -81,6 +81,12 @@
         await MainActor.run { (summariesProbe ?? .shared).summariesRequests += 1 }
         return try jsonResponse(
           .ok, Components.Schemas.FolderSummaryList(items: Self.servedFixtureSummaries()))
+      case Operations.ListImagesApiImagesGet.id
+      where Self.queryParameters(of: request)["folder_id"] == String(Self.pagedFolderID):
+        // WP31 P2 (IMGMGR-461): the one fixture shoot whose photographs span two pages, so a
+        // Handoff continuation can target a photograph the first page does not carry.
+        return try jsonResponse(
+          .ok, Self.pagedFolderPage(cursor: Self.queryParameters(of: request)["cursor"]))
       case Operations.ListImagesApiImagesGet.id:
         return try jsonResponse(
           .ok,
@@ -480,6 +486,39 @@
       return queryParameters(of: request)["folder_id"].flatMap(Int.init)
     }
 
+    /// WP31 P2 (IMGMGR-461): a fixture shoot whose photographs span TWO `/api/images` pages —
+    /// twelve on the first, eight more behind `pagedSecondPageCursor` — so the Handoff route's
+    /// paging has a photograph to reach beyond page one. Not in the folder tree (no shipped suite
+    /// counts it) and requested only by folder id, so no other suite ever sees it.
+    static let pagedFolderID = 7
+    static let pagedFirstPageCount = 12
+    static let pagedTotalCount = 20
+    private static let pagedSecondPageCursor = "paged-2"
+
+    /// The paged shoot's photograph ids, `7001…7020`, in display order.
+    static func pagedFolderImageIDs() -> [Int] {
+      (1...pagedTotalCount).map { pagedFolderID * 1000 + $0 }
+    }
+
+    private static func pagedFolderPage(cursor: String?) -> Components.Schemas.ImagePage {
+      let ids = pagedFolderImageIDs()
+      guard cursor == pagedSecondPageCursor else {
+        return Components.Schemas.ImagePage(
+          items: ids.prefix(pagedFirstPageCount).map { pagedImage(id: $0) }, limit: 100,
+          nextCursor: pagedSecondPageCursor)
+      }
+      return Components.Schemas.ImagePage(
+        items: ids.dropFirst(pagedFirstPageCount).map { pagedImage(id: $0) }, limit: 100,
+        nextCursor: nil)
+    }
+
+    /// One unmarked photograph of the paged shoot, built like `plainMember`.
+    private static func pagedImage(id: Int) -> Components.Schemas.ImageSummary {
+      var image = plainMember(id: id)
+      image.folderId = pagedFolderID
+      return image
+    }
+
     /// The same twelve photographs, re-identified per folder: `folderID * 1000 + n`, so a tile's
     /// identifier (`gridTile-<id>`) names the folder its grid was loaded for. `nil` returns the
     /// fixture untouched, which is what keeps this invisible to every suite that does not ask.
@@ -826,6 +865,18 @@
     static func resetSidebarMemoryUnlessKept(defaults: UserDefaults = .standard) {
       guard isActive, !keepsSidebarMemory else { return }
       defaults.removeObject(forKey: SidebarVisibilityMemory.hiddenKey)
+    }
+
+    /// WP31 P2 (IMGMGR-461): the JSON `userInfo` of a Triage Handoff to continue once the
+    /// fixture's shoot has loaded — the value after `-UITestContinueActivity`. It feeds the SAME
+    /// decode-and-route function `.onContinueUserActivity` calls, so the receiving side is
+    /// testable without a second device. Debug-only like every flag here.
+    static var continueActivityJSON: String? {
+      let arguments = ProcessInfo.processInfo.arguments
+      guard let index = arguments.firstIndex(of: "-UITestContinueActivity"),
+        arguments.indices.contains(index + 1)
+      else { return nil }
+      return arguments[index + 1]
     }
 
     /// WP28 P3 (IMGMGR-450): which fixture folder the auto-select opens — the id that follows

@@ -397,8 +397,11 @@ final class GridStore {
 
   /// Scene mode's pager as `SuccessorResolver` reads it — the store's own state and its own
   /// `loadMoreScenesIfNeeded`, asked with the last display row so the tail check always passes.
+  ///
+  /// WP31 P2 (IMGMGR-461): also the Scene pager a Handoff continuation pages with
+  /// (`ContinuationPager`) — the same four primitives, asked whether a photograph is loaded.
   @MainActor
-  private final class ScenePager: SuccessorPager {
+  private final class ScenePager: SuccessorPager, ContinuationPager {
     let store: GridStore
 
     init(store: GridStore) {
@@ -416,6 +419,53 @@ final class GridStore {
     func requestNextPage() async {
       guard let last = store.sceneDisplayRows.last?.id else { return }
       await store.loadMoreScenesIfNeeded(currentRowID: last)
+    }
+
+    func holds(_ imageID: Int) -> Bool {
+      store.actionableImages.contains { $0.id == imageID }
+    }
+  }
+
+  // MARK: - Handoff continuation (WP31 P2, IMGMGR-461)
+
+  /// Plan decision 6: brings `imageID` into the loaded actionable pool with the grid's OWN
+  /// mode-aware paging — flat browse's cursor pager (`loadMoreIfNeeded`), Scene mode's display-row
+  /// pager (`loadMoreScenesIfNeeded`) — bounded by `pageBudget` consumed pages. It never moves
+  /// focus and never opens anything; the receiving route opens the loupe only on `.found`.
+  func locateForContinuation(
+    imageID: Int, pageBudget: Int = ContinuationLocator.defaultPageBudget
+  ) async -> ContinuationLookup {
+    switch displayMode {
+    case .flat:
+      return await ContinuationLocator.locate(
+        imageID: imageID, in: FlatGridPager(store: self), pageBudget: pageBudget)
+    case .scene:
+      return await ContinuationLocator.locate(
+        imageID: imageID, in: ScenePager(store: self), pageBudget: pageBudget)
+    }
+  }
+
+  /// Flat browse's grid pager as `ContinuationLocator` reads it: the grid's own cursor paging,
+  /// asked with the loaded tail so `loadMoreIfNeeded`'s tail check always passes.
+  @MainActor
+  private final class FlatGridPager: ContinuationPager {
+    let store: GridStore
+
+    init(store: GridStore) {
+      self.store = store
+    }
+
+    func holds(_ imageID: Int) -> Bool {
+      store.actionableImages.contains { $0.id == imageID }
+    }
+
+    var pagerCursor: String? { store.nextCursor }
+    var isPageLoadInFlight: Bool { store.isLoadingPage }
+    var pagerGeneration: Int { store.loadGeneration }
+
+    func requestNextPage() async {
+      guard let last = store.images.last?.id else { return }
+      await store.loadMoreIfNeeded(currentItemID: last)
     }
   }
 

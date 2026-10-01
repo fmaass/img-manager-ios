@@ -98,6 +98,12 @@ targets:
             CFBundleTypeRole: Editor
             CFBundleURLSchemes:
               - imgmanager
+        # WP31 P2 (IMGMGR-461): native-to-native Handoff of a Triage pass (`TriageActivity`).
+        # Between two devices of one Apple ID running this app, the declared activity type is
+        # all Handoff needs — no entitlement, no associated domains, no `webpageURL`, so
+        # Adjudication A above is untouched.
+        NSUserActivityTypes:
+          - live.discomarder.imgmanager.triage
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: live.discomarder.imgmanager
