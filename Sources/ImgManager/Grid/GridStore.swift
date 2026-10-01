@@ -287,24 +287,136 @@ final class GridStore {
     isLoupeOpen = false
   }
 
+  // MARK: - Triage (WP31 P1, IMGMGR-460)
+
+  /// Whether the Compact Triage cover is up — a flag beside `isShortcutHelpPresented`, the same
+  /// shape, because the control that raises it rides the grid's bar while `RootView` hosts the
+  /// cover. Triage never touches `isLoupeOpen`: the two covers are separate surfaces, and
+  /// `openTriage()` refuses while the loupe is open.
+  private(set) var isTriagePresented = false
+
+  /// Triage needs a photograph to start on — disabled while the scope is empty.
+  var canOpenTriage: Bool { !actionableImages.isEmpty }
+
+  func openTriage() {
+    guard canOpenTriage, !isLoupeOpen else { return }
+    isTriagePresented = true
+  }
+
+  func closeTriage() {
+    isTriagePresented = false
+  }
+
   /// Dedicated flat previous/next (fold advisory: "don't overload row-relative `moveFocus`") —
   /// the loupe's own notion of "next", over the SAME flat load order the grid's paging already
   /// maintains, never a filmstrip-local page.
   func loupeNext() async {
     guard let current = focusedImageID else { return }
-    let pool = actionableImages
-    if let idx = pool.firstIndex(where: { $0.id == current }), pool.indices.contains(idx + 1) {
-      focusedImageID = pool[idx + 1].id
+    if case .next(let id) = loadedSuccessor(after: current) {
+      focusedImageID = id
       return
     }
-    // WP12: the forward-neighbour prefetch is a FLAT-browse mechanism — it asks
-    // `/api/images/{id}/neighbours` "what follows this in the current filter's order", a question
-    // Scene mode's row stream (cards and members, one stored anchor) does not have an answer to,
-    // and the merge target it feeds (`images`) is deliberately empty here. Scene mode's loupe is
-    // therefore bounded by what the grid has loaded, which is also the fold's "one paging path"
-    // rule kept: the grid owns Scene paging, the loupe consumes no cursor of its own.
-    guard displayMode == .flat else { return }
-    await fetchAndMergeNeighbours(after: current)
+    // WP31 P1 (IMGMGR-460): the tail is the shared `successor(after:pagesScenes:)`, asked with
+    // `pagesScenes: false` — exactly the loupe's behaviour before the extraction. In flat mode
+    // the neighbours fetch moves the loupe's focus itself, under its own session fence; in Scene
+    // mode nothing is asked of the network.
+    _ = await successor(after: current, pagesScenes: false)
+  }
+
+  /// The photograph after `imageID` in the loaded actionable pool, without paging.
+  func loadedSuccessor(after imageID: Int) -> LoadedSuccessor {
+    let pool = actionableImages
+    guard let idx = pool.firstIndex(where: { $0.id == imageID }) else { return .absent }
+    return pool.indices.contains(idx + 1) ? .next(pool[idx + 1].id) : .tail
+  }
+
+  /// WP31 P1 (IMGMGR-460), plan decision 1: the photograph after `imageID`, paging at the loaded
+  /// tail with the active mode's own pager — extracted from `loupeNext`'s tail so the loupe and
+  /// Triage share it. It never moves focus itself (the flat neighbours fetch still advances an
+  /// open loupe under its own session fence, as it always has).
+  ///
+  /// - Flat: the forward-neighbour fetch (Triage's call through `SuccessorResolver.resolveFlat`,
+  ///   which first waits out an outstanding grid page). WP12: a FLAT-browse mechanism — it asks
+  ///   `/api/images/{id}/neighbours` "what follows this in the current filter's order", a
+  ///   question Scene mode's row stream (cards and members, one stored anchor) does not have an
+  ///   answer to, and the merge target it feeds (`images`) is deliberately empty there.
+  /// - Scene with `pagesScenes: false` (the loupe): bounded by what the grid has loaded — the
+  ///   fold's "one paging path" rule kept, the loupe consumes no cursor of its own.
+  /// - Scene with `pagesScenes: true` (Triage): Scene's own display-row pager
+  ///   (`loadMoreScenesIfNeeded`), through `SuccessorResolver` — never the flat-only
+  ///   `loadMoreIfNeeded`, which returns at once in Scene mode.
+  func successor(after imageID: Int, pagesScenes: Bool) async -> SuccessorLookup {
+    let position = loadedSuccessor(after: imageID)
+    if case .next(let id) = position { return .found(id) }
+    switch displayMode {
+    case .flat:
+      // WP31 P1 review (B2): Triage's flat path waits out an outstanding grid page before it
+      // trusts a tail answer; the loupe's path below is exactly what it was.
+      if pagesScenes {
+        return await SuccessorResolver.resolveFlat(after: imageID, in: FlatPager(store: self))
+      }
+      let generation = loadGeneration
+      let fetched = await fetchAndMergeNeighbours(after: imageID)
+      guard generation == loadGeneration else { return .unresolved }
+      switch loadedSuccessor(after: imageID) {
+      case .next(let id): return .found(id)
+      case .tail: return fetched == .exhausted ? .exhausted : .unresolved
+      case .absent: return .unresolved
+      }
+    case .scene:
+      guard pagesScenes, position == .tail else { return .unresolved }
+      return await SuccessorResolver.resolve(after: imageID, in: ScenePager(store: self))
+    }
+  }
+
+  /// Flat mode's pager as `SuccessorResolver.resolveFlat` reads it — the grid's own page-load
+  /// flag and the loupe's forward-neighbour fetch.
+  @MainActor
+  private final class FlatPager: NeighbourPager {
+    let store: GridStore
+
+    init(store: GridStore) {
+      self.store = store
+    }
+
+    func loadedSuccessor(after imageID: Int) -> LoadedSuccessor {
+      store.loadedSuccessor(after: imageID)
+    }
+
+    var isPageLoadInFlight: Bool { store.isLoadingPage }
+    var pagerGeneration: Int { store.loadGeneration }
+
+    func fetchNeighbours(after imageID: Int) async -> NeighbourAnswer {
+      switch await store.fetchAndMergeNeighbours(after: imageID) {
+      case .merged: return .merged
+      case .exhausted: return .exhausted
+      case .failed, .stale: return .failed
+      }
+    }
+  }
+
+  /// Scene mode's pager as `SuccessorResolver` reads it — the store's own state and its own
+  /// `loadMoreScenesIfNeeded`, asked with the last display row so the tail check always passes.
+  @MainActor
+  private final class ScenePager: SuccessorPager {
+    let store: GridStore
+
+    init(store: GridStore) {
+      self.store = store
+    }
+
+    func loadedSuccessor(after imageID: Int) -> LoadedSuccessor {
+      store.loadedSuccessor(after: imageID)
+    }
+
+    var pagerCursor: String? { store.sceneNextCursor }
+    var isPageLoadInFlight: Bool { store.isLoadingPage }
+    var pagerGeneration: Int { store.loadGeneration }
+
+    func requestNextPage() async {
+      guard let last = store.sceneDisplayRows.last?.id else { return }
+      await store.loadMoreScenesIfNeeded(currentRowID: last)
+    }
   }
 
   /// Previous is PURELY the retained-prefix local walk (fold-verified premise: GridStore
@@ -450,7 +562,12 @@ final class GridStore {
   /// cursor-paged `loadMoreIfNeeded`. Merges (never a filmstrip-local page/cursor: fold's
   /// "one paging path" pivot) via `mergeImages`, the SAME dedup point `loadMoreIfNeeded` uses,
   /// so the two sources can never produce a duplicate tile even when their ranges overlap.
-  private func fetchAndMergeNeighbours(after imageID: Int) async {
+  ///
+  /// WP31 P1 (IMGMGR-460): it ANSWERS now, so `successor(after:pagesScenes:)` can tell the
+  /// server's "nothing follows" from a failure or a stale scope. Every write is what it was;
+  /// `@discardableResult` keeps the answer optional for any other caller.
+  @discardableResult
+  private func fetchAndMergeNeighbours(after imageID: Int) async -> NeighbourFetchOutcome {
     // Diff-gate round (2026-08-28): the same generation guard every other paging await here
     // carries — a neighbours response that lands after the shoot/filter changed must be
     // discarded whole, or it appends old-scope rows into the new scope and can focus the
@@ -461,7 +578,7 @@ final class GridStore {
     let session = loupeSession
     do {
       let page = try await service.neighbours(after: imageID, query: query, limit: 5)
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration else { return .stale }
       let added = mergeImages(page.items)
       images.append(contentsOf: added)
       if page.items.isEmpty {
@@ -493,6 +610,7 @@ final class GridStore {
         }
       }
       lastPageLoadError = nil
+      return page.items.isEmpty ? .exhausted : .merged
     } catch {
       // P6 (premise-gate advisory (a)): the SAME generation guard the success path above
       // already carries — a neighbours call that started in an OLD scope and only FAILS after
@@ -500,9 +618,18 @@ final class GridStore {
       // discards silently; a failure discarding into a stale write would be the inconsistent
       // half). Reuses the grid's own paging-error surface — a neighbours failure is the same
       // class of "reachability" concern as a failed grid page fetch, not a new error surface.
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration else { return .stale }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+      return .failed
     }
+  }
+
+  /// How one forward-neighbour fetch ended (WP31 P1).
+  private enum NeighbourFetchOutcome: Equatable {
+    case merged
+    case exhausted
+    case failed
+    case stale
   }
 
   /// The ONE merge point for every source that can add to `images` after the first page: the

@@ -707,7 +707,7 @@ struct GridOptionsRow: View {
     case .filter: GridFilterControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
     // Not options-row members (`ShellToolbarLayout.compactOptionsRow`).
-    case .info, .search, .select, .more: EmptyView()
+    case .info, .search, .select, .more, .triage: EmptyView()
     }
   }
 }

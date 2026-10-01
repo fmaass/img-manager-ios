@@ -46,5 +46,9 @@
     /// this launch — so a UI test observes that the Shoots title menu's Refresh row really
     /// re-fetched, the same way the absorb counter above observes its request.
     var summariesRequests = 0
+
+    /// WP31 P1 (IMGMGR-460): how many `POST /api/marks/state` writes the fixture transport has
+    /// served this launch — what makes "Skip performs no server write" falsifiable from a UI test.
+    var markWrites = 0
   }
 #endif

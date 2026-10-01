@@ -166,6 +166,10 @@
         }
         return (response, HTTPBody(Self.fixtureProxy(tier: "preview")))
       case Operations.SetMarkStateApiMarksStatePost.id:
+        // WP31 P1 (IMGMGR-460): counted BEFORE the answer goes back, through the same probe as the
+        // absorb request, so a UI test reads how many mark writes really reached the wire.
+        let markProbe = self.probe
+        await MainActor.run { (markProbe ?? .shared).markWrites += 1 }
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
       case Operations.EditMarkTagsApiMarksTagsPost.id:

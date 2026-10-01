@@ -36,11 +36,11 @@ struct ShellToolbarLayoutTests {
     }
   }
 
-  @Test("Compact: Info and Select on the navigation bar; the options row is Arrange · Filter · ?")
-  func compactCarriesInfoAndSelect() {
+  @Test("Compact: Triage, Info and Select on the bar; the options row is Arrange · Filter · ?")
+  func compactCarriesTriageInfoAndSelect() {
     #expect(
       ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
-        == [.info, .select])
+        == [.triage, .info, .select])
     #expect(
       ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .shortcutHelp])
   }
@@ -132,8 +132,28 @@ struct ShellToolbarLayoutTests {
       let presentation = InspectorPlacement.presentation(for: mode)
       let bar = ShellToolbarLayout.gridBar(
         for: mode, inspectorUsesChromeControl: presentation.usesChromeControl)
-      #expect(bar.first == .info, "Info does not lead the bar at \(mode)")
+      // WP31 P1 (IMGMGR-460): Info leads every Regular bar (the IMGMGR-390 fold argument); at
+      // Compact Triage leads and Info follows it.
+      let leader: ShellToolbarControl = mode == .compact ? .triage : .info
+      #expect(bar.first == leader, "\(leader) does not lead the bar at \(mode)")
+      #expect(bar.contains(.info), "Info is not on the bar at \(mode)")
     }
+  }
+
+  @Test("Triage has one home: the Compact bar, enabled only while the scope holds a photograph")
+  func triageIsCompactOnly() {
+    for mode in [LayoutMode.regular2, .regular3] {
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      #expect(!bar.contains(.triage), "Triage is on the Regular bar at \(mode)")
+    }
+    #expect(ShellToolbarLayout.compactGridBar.filter { $0 == .triage }.count == 1)
+    #expect(!ShellToolbarLayout.compactOptionsRow.contains(.triage))
+    #expect(ShellToolbarControl.triage.accessibilityIdentifier == "gridTriageButton")
+    let store = GridStore(
+      service: GridService(client: ImgManagerAPIClient.make(transport: GridStubTransport())))
+    #expect(store.canOpenTriage == false)
+    store.openTriage()
+    #expect(store.isTriagePresented == false, "Triage opened on an empty scope")
   }
 
   @Test("The identifiers are distinct and are the shipped ones; search has none of the app's")
@@ -141,7 +161,8 @@ struct ShellToolbarLayoutTests {
     let identifiers = ShellToolbarControl.allCases.compactMap(\.accessibilityIdentifier)
     #expect(Set(identifiers).count == identifiers.count)
     #expect(
-      Set(identifiers) == Set(Self.regularIdentifiers + ["gridShortcutHelpControl"]))
+      Set(identifiers)
+        == Set(Self.regularIdentifiers + ["gridShortcutHelpControl", "gridTriageButton"]))
     #expect(ShellToolbarControl.search.accessibilityIdentifier == nil)
   }
 

@@ -386,6 +386,21 @@ struct RootView: View {
           chrome: LoupeChrome(shootTitle: currentBreadcrumb?.title ?? "", info: nil))
       }
     }
+    // WP31 P1 (IMGMGR-460): Triage — Compact only, its own cover beside the loupe's. It never
+    // sets `isLoupeOpen` (`openTriage()` refuses while the loupe is open), so the two covers are
+    // never up together. `onPassEnded` is where P2's pass summary opens; in P1 it closes.
+    .fullScreenCover(
+      isPresented: Binding(
+        get: { gridStore.isTriagePresented && layoutMode == .compact },
+        set: { presented in
+          if !presented { gridStore.closeTriage() }
+        })
+    ) {
+      TriageView(
+        store: gridStore, shootTitle: currentBreadcrumb?.title ?? "",
+        totalCount: currentImageCount,
+        onPassEnded: { _ in gridStore.closeTriage() })
+    }
     // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
     // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
     // grid is swapped out for the docked loupe, which would take the sheet's host with it.
@@ -704,6 +719,13 @@ struct RootView: View {
     GridBreadcrumb.make(
       folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
       cachedTreeFolders: queueStore.cachedTree?.foldersByTier, summaries: queueStore.summaries)
+  }
+
+  /// WP31 P1 (IMGMGR-460): the breadcrumb's server count as a number — Triage's "of N".
+  private var currentImageCount: Int? {
+    GridBreadcrumb.imageCount(
+      folderID: gridStore.query.folderID, treeFolders: folderTree.load.foldersByTier,
+      cachedTreeFolders: queueStore.cachedTree?.foldersByTier)
   }
 
   /// WP28 P1 (IMGMGR-448): the shared workspace destination — the split's detail at Regular and

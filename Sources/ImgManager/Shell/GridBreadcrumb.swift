@@ -34,6 +34,18 @@ struct GridBreadcrumb: Equatable, Sendable {
     return count == 1 ? "1 photo" : "\(count) photos"
   }
 
+  /// WP31 P1 (IMGMGR-460): the same server count the subtitle states, as a number — Triage's
+  /// "i of N". Nil when no tree carries the folder.
+  static func imageCount(
+    folderID: Int?, treeFolders: [FolderTreeTier: [Components.Schemas.FolderNode]],
+    cachedTreeFolders: [FolderTreeTier: [Components.Schemas.FolderNode]]?
+  ) -> Int? {
+    guard let folderID else { return nil }
+    let node =
+      Self.node(folderID, in: treeFolders) ?? Self.node(folderID, in: cachedTreeFolders ?? [:])
+    return node.flatMap { $0.imageCount }
+  }
+
   private static func node(
     _ id: Int, in folders: [FolderTreeTier: [Components.Schemas.FolderNode]]
   ) -> Components.Schemas.FolderNode? {

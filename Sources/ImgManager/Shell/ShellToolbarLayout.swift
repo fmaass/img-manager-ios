@@ -25,6 +25,8 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
   /// WP29 P1: the grid's More menu. At Regular it moved from the bottom action bar to the bar;
   /// at Compact it stays on the action bar (`WorkspaceChromePlacement.actionBarCarriesMore`).
   case more
+  /// WP31 P1 (IMGMGR-460): the way into Triage — Compact only (iPad culls in the loupe).
+  case triage
 
   /// Nil for the system search item, which carries no identifier of the app's.
   var accessibilityIdentifier: String? {
@@ -36,6 +38,7 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
     case .arrange: GridArrangeControl.accessibilityIdentifier
     case .shortcutHelp: "gridShortcutHelpControl"
     case .more: "gridMoreMenu"
+    case .triage: GridTriageControl.accessibilityIdentifier
     }
   }
 }
@@ -59,8 +62,10 @@ enum ShellToolbarLayout {
   ]
 
   /// WP29 P1: Compact's navigation bar — Info, and Select beside it. Search is the Search tab
-  /// there and More stays on the bottom action bar.
-  static let compactGridBar: [ShellToolbarControl] = [.info, .select]
+  /// there and More stays on the bottom action bar. WP31 P1 (IMGMGR-460): Triage leads it; the
+  /// Regular fold argument for Info leading (IMGMGR-390) is a Regular-3 one, and Info and Select
+  /// both stay.
+  static let compactGridBar: [ShellToolbarControl] = [.triage, .info, .select]
 
   /// Compact's persistent options row (`GridOptionsRow`): Arrange, the funnel, and "?" at the
   /// trailing end (WP29 P2).
@@ -162,6 +167,7 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
     case .arrange: GridArrangeControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
     case .more: GridToolbarMoreMenu(store: store, openShootWindow: openShootWindow)
+    case .triage: GridTriageControl(store: store)
     }
   }
 }
