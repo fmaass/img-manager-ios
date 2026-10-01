@@ -392,12 +392,20 @@ struct RootView: View {
     .sheet(isPresented: $gridStore.isShortcutHelpPresented) {
       ShortcutHelpSheet()
     }
-    .focusedSceneValue(\.gridKeyboardActions, gridStore.keyboardActions)
+    // WP30 P3 (IMGMGR-458), plan decision 7: nil while Compare is open, so every key command is
+    // disabled there; the same actions are published again after Back.
+    .focusedSceneValue(\.gridKeyboardActions, publishedKeyboardActions)
     // WP13 P11: the menu-bar twin of the More menu's "Open in New Window". Published from here
     // because `openWindow` is a SCENE capability the store cannot hold, and carried as the
     // ALREADY-CONSTRUCTED value so the menu item's enabled state and the value it would open are
     // the same `ShootSceneValue.from(query:)` answer rather than two independent checks.
     .focusedSceneValue(\.shootWindowCommand, shootWindowCommand)
+  }
+
+  /// The keyboard actions the scene publishes: none while Compare is open (decision 7).
+  private var publishedKeyboardActions: GridKeyboardActions? {
+    let actions = gridStore.keyboardActions
+    return CompareKeyboardIsolation.published(actions, isCompareOpen: gridStore.isCompareOpen)
   }
 
   /// The value's own construction, off the modifier chain.
@@ -420,6 +428,8 @@ struct RootView: View {
     guard mode != layoutMode else { return }
     let previous = layoutMode
     layoutMode = mode
+    // WP30 P3: iPhone-width has no Compare (p4128 "Open items" 2) — the loupe carries on alone.
+    if mode == .compact { gridStore.closeCompare() }
     // WP28 P1 (IMGMGR-448): Regular→Compact with a shoot selected lands on its grid in Library.
     navigation.applyLayoutChange(
       from: previous, to: mode, hasSelectedShoot: gridStore.query.folderID != nil)

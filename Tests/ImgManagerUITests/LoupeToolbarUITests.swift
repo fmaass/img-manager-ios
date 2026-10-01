@@ -42,7 +42,8 @@ final class LoupeToolbarUITests: OrientationPinnedUITestCase {
       XCTAssertFalse(info.exists, "The Compact cover has no inspector path, yet Info is built.")
     } else {
       XCTAssertTrue(compare.exists, "The Regular trailing group has no Compare.")
-      XCTAssertFalse(compare.isEnabled, "Compare is wired in P3; in P1 it must be disabled.")
+      // WP30 P3 (IMGMGR-458) wired it: the flat fixture's scope holds far more than two images.
+      XCTAssertTrue(compare.isEnabled, "Compare is disabled on a scope of two or more images.")
       XCTAssertTrue(info.exists, "The Regular trailing group has no Info.")
     }
 

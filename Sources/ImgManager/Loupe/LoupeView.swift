@@ -313,11 +313,13 @@ struct LoupeView: View {
           .accessibilityIdentifier("loupeFidelityLabel")
       }
     case .compare:
-      // P1 places the control; P3 (IMGMGR-458) wires it. Present, disabled, and saying why.
-      Button(item.title, systemImage: "rectangle.split.2x1", action: compareIsNotWiredYet)
-        .disabled(true)
-        .accessibilityHint("Compare is not available yet.")
-        .accessibilityIdentifier(item.accessibilityIdentifier)
+      // WP30 P3 (IMGMGR-458): opens Compare on the focused photograph and the next scope image.
+      // Enabled iff the filmstrip scope holds at least two photographs (plan decision 2).
+      Button(item.title, systemImage: "rectangle.split.2x1") {
+        store.openCompare()
+      }
+      .disabled(!store.canOpenCompare)
+      .accessibilityIdentifier(item.accessibilityIdentifier)
     case .info:
       if let info = chrome.info {
         // The SAME inspector flag the grid bar's Info toggles (`inspectorChromeButton`).
@@ -346,9 +348,6 @@ struct LoupeView: View {
       .accessibilityIdentifier(item.accessibilityIdentifier)
     }
   }
-
-  /// Compare's action until P3 (IMGMGR-458): the control is disabled, so this never runs.
-  private func compareIsNotWiredYet() {}
 
   /// WP30 P2 (IMGMGR-457): the photograph's context menu, rendered from `LoupeContextMenuModel`
   /// — [Pick, Dislike, Clear] | [Tag, Share] | [Lock ▸]. Every row is a twin of a control that

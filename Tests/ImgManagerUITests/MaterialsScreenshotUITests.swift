@@ -221,6 +221,12 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
     try assertSettingReadsBack(portrait, "ipad", before: "regular2-loupe")
     openLoupe(portrait)
     try capture(portrait, "ipad", "regular2-loupe", readBack: false)
+
+    // WP30 P3 (IMGMGR-458): Compare, swapped into the same docked container — its bars and the
+    // content strip in each mode.
+    try assertSettingReadsBack(portrait, "ipad", before: "regular2-compare")
+    openCompare(portrait)
+    try capture(portrait, "ipad", "regular2-compare", readBack: false)
   }
 
   // MARK: - Launch, read-back, capture
@@ -236,6 +242,15 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
       _ = back.waitForExistence(timeout: 3)
     }
     XCTAssertTrue(back.exists, "The loupe never opened from a tile tap.")
+  }
+
+  /// WP30 P3: opens Compare from the open loupe's toolbar control.
+  private func openCompare(_ app: XCUIApplication) {
+    let compare = anyElement(app, "loupeCompareButton")
+    XCTAssertTrue(compare.waitForExistence(timeout: 10), "The loupe has no Compare control.")
+    compare.tap()
+    XCTAssertTrue(
+      app.buttons["compareBack"].waitForExistence(timeout: 10), "Compare never opened.")
   }
 
   private func launch(

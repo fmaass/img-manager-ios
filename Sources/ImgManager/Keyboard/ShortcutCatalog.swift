@@ -5,9 +5,11 @@ import Foundation
 /// discovery half of design decision 9 that WP13 P4 adds (`zoomStep`, `sceneToggle`,
 /// `groupMode`, and the `⌘/` form of `help`), plus `autoAdvance`, which WP13 P8 adds.
 /// Deliberately NOT the web's full set: `Escape` (close), `Tab` (compare-flip) and `C`
-/// (compare) stay excluded from the target inventory — `C` because native compare is cancelled
-/// outright (Amendment 7; declared NOWHERE, never present-and-dead), the other two because the
-/// P3 fold's own target inventory line does not name them.
+/// (compare) stay excluded from the target inventory. Native Compare was cancelled by Amendment
+/// 7 and revived by the owner on 2026-09-27 as the iPad loupe's 2-up (p4128, WP30 P3), whose
+/// §Keyboard reads "shortcuts unchanged": Compare is reached from its toolbar control only, so
+/// `C` and `Tab` stay declared NOWHERE (never present-and-dead); `Escape` because the P3 fold's
+/// own target inventory line does not name it.
 ///
 /// `A` (auto-advance) used to be listed among those exclusions, on the ground that "its own
 /// surface is WP13 P8's and a present-and-dead key is exactly what this catalog exists to

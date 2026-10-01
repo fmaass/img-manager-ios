@@ -11,6 +11,9 @@ actor GridStubTransport: ClientTransport {
   enum MarkMutationOutcome: Sendable {
     case success(Components.Schemas.MarksApplied)
     case conflict
+    /// WP30 P3 (IMGMGR-458): a non-conflict refusal (HTTP 500), so a compound verb's
+    /// "a group failed" outcome is distinguishable from its conflict outcome.
+    case serverError
   }
 
   /// Always what a `cursor == nil` (first-page / restart) request receives.
@@ -355,6 +358,29 @@ actor GridStubTransport: ClientTransport {
     membersReleaseContinuation?.resume()
     membersReleaseContinuation = nil
     membersHasStarted = false
+  }
+
+  /// WP30 P3 fold round 1: the same hold/release pattern for `GET /api/stacks/{id}` — the scene
+  /// cover refresh a mark or an undo awaits AFTER its write landed, so a test can move the
+  /// generation inside that window rather than inside the write request.
+  private var stackRowHoldEnabled = false
+  private var stackRowHasStarted = false
+  private var stackRowStartedContinuation: CheckedContinuation<Void, Never>?
+  private var stackRowReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdStackRowRequests(_ hold: Bool) { stackRowHoldEnabled = hold }
+
+  func waitUntilStackRowStarted() async {
+    if stackRowHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.stackRowStartedContinuation = continuation
+    }
+  }
+
+  func releaseStackRow() {
+    stackRowReleaseContinuation?.resume()
+    stackRowReleaseContinuation = nil
+    stackRowHasStarted = false
   }
 
   // MARK: - IMGMGR-371: the 503 count_cancelled envelope the recut declares
@@ -821,6 +847,14 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(.ok, page)
 
     case Operations.GetStackApiStacksStackIdGet.id:
+      if stackRowHoldEnabled {
+        stackRowHasStarted = true
+        stackRowStartedContinuation?.resume()
+        stackRowStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.stackRowReleaseContinuation = continuation
+        }
+      }
       let stackID = request.path.flatMap(URLComponents.init(string:))?
         .path.split(separator: "/").last.flatMap { Int($0) }
       guard let stackID, let row = stackRows[stackID] else {
@@ -968,6 +1002,7 @@ actor GridStubTransport: ClientTransport {
       switch effectiveOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
       case .conflict: return try staleRevisionConflict(for: lastMarkStateRequest?.imageIds ?? [])
+      case .serverError: return (HTTPResponse(status: .internalServerError), nil)
       }
 
     // WP14 P4 (IMGMGR-277). All three take the SAME shape: record the request exactly as it went
@@ -1015,6 +1050,7 @@ actor GridStubTransport: ClientTransport {
       switch tagsOutcome {
       case .success(let applied): return try jsonResponse(.ok, applied)
       case .conflict: return try staleRevisionConflict(for: lastTagsRequest?.imageIds ?? [])
+      case .serverError: return (HTTPResponse(status: .internalServerError), nil)
       }
 
     default:

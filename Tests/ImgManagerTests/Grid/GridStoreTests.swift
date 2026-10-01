@@ -2849,7 +2849,7 @@ struct GridStoreTests {
     await transport.setMarkStateOutcome(
       .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r2")])))
     await transport.holdMarkStateRequests(true)
-    async let undoCall: Void = store.undoLastMark()
+    async let undoCall = store.undoLastMark()
     await transport.waitUntilMarkStateStarted()
 
     await transport.setListImagesPage(.init(items: [], limit: 100, nextCursor: nil))
@@ -2857,7 +2857,7 @@ struct GridStoreTests {
 
     await transport.holdMarkStateRequests(false)
     await transport.releaseMarkState()
-    await undoCall
+    _ = await undoCall
 
     #expect(store.mutationCommitCount == 2)
   }

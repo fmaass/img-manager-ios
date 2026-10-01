@@ -58,7 +58,13 @@ struct WorkspaceContent: View {
         // WP30 P1 (IMGMGR-456): the loupe's own toolbar (`LoupeToolbar`) renders on this
         // column's bar; the grid's `.toolbar` below is attached only in the `else` branch, so no
         // grid item is mounted while the loupe is open.
-        LoupeView(store: store, layoutMode: layoutMode, share: share, chrome: loupeChrome)
+        // WP30 P3 (IMGMGR-458), plan decision 5: Compare is a state swap in this same container,
+        // never a push; its Back swaps the loupe back in on the current left image.
+        if store.isCompareOpen {
+          CompareView(store: store, chrome: loupeChrome)
+        } else {
+          LoupeView(store: store, layoutMode: layoutMode, share: share, chrome: loupeChrome)
+        }
       } else {
         GridView(store: store, layoutMode: layoutMode)
           .toolbar {

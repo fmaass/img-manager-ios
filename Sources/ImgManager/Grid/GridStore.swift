@@ -277,10 +277,13 @@ final class GridStore {
     // own doc comment pins it "Grid-only, never the loupe" — and structurally a latched tap
     // never reaches here anyway (`tapTile`'s `latchedVerb` branch returns before this switch).
     selection.reset(.enteredLoupe)
+    // WP30 P3: a new loupe session never inherits a Compare the previous one left open.
+    compareState = nil
     isLoupeOpen = true
   }
 
   func closeLoupe() {
+    compareState = nil
     isLoupeOpen = false
   }
 
@@ -319,6 +322,101 @@ final class GridStore {
   /// filmstrip could not be rendering it), so this is a direct focus move, never a network call.
   func loupeFocus(on imageID: Int) {
     focusedImageID = imageID
+  }
+
+  // MARK: - Compare 2-up (WP30 P3, IMGMGR-458)
+
+  /// The Compare state machine's current value (`CompareSession`, pure). Read through
+  /// `compareSession`, which is the only form that answers "is Compare open".
+  private var compareState: CompareSession?
+  /// The `loadGeneration` Compare opened under. Plan decision 6: ANY generation change while
+  /// Compare is open ends it — the scope it was comparing is gone — so a moved generation makes
+  /// `compareSession` answer nil and the host shows the loupe again, with nothing to reset.
+  private var compareGeneration = 0
+
+  /// The open Compare session, or nil: nil while the loupe is closed, and nil once the
+  /// generation has moved since Compare opened.
+  var compareSession: CompareSession? {
+    guard isLoupeOpen, compareGeneration == loadGeneration else { return nil }
+    return compareState
+  }
+
+  /// Decision 7's switch: while true, `RootView` publishes no keyboard actions at all.
+  var isCompareOpen: Bool { compareSession != nil }
+
+  /// Plan decision 2: Compare's candidates are the loupe's filmstrip scope, and it is offered
+  /// only when that scope holds the focused photograph and at least one other.
+  var canOpenCompare: Bool {
+    guard isLoupeOpen, let focused = focusedImageID else { return false }
+    return CompareSession(scope: FilmstripScope.resolve(for: self), focused: focused) != nil
+  }
+
+  /// Opens Compare on the focused photograph (left) and the next scope image (right).
+  func openCompare() {
+    guard isLoupeOpen, let focused = focusedImageID,
+      let session = CompareSession(scope: FilmstripScope.resolve(for: self), focused: focused)
+    else { return }
+    compareGeneration = loadGeneration
+    compareState = session
+  }
+
+  /// Back: the loupe again, focused on the current left image (decision 5).
+  func closeCompare() {
+    if let session = compareSession { focusedImageID = session.left }
+    compareState = nil
+  }
+
+  /// One Compare verb: ONE compound mark (decision 6), then the pane progression its outcome
+  /// licenses. The progression is applied only to the session that asked, unchanged while the
+  /// write was in flight (the strip, swipe and Pin are disabled for that span; this is the
+  /// store-side half of the same rule).
+  @discardableResult
+  func compareDecide(_ verb: CompareVerb) async -> CompoundMarkResult {
+    guard let session = compareSession, let groups = session.markGroups(for: verb) else {
+      return .refused
+    }
+    let result = await applyCompoundMark(groups)
+    // Equality includes the session's `token` (A1), so a reopened session on the same pair is
+    // never mistaken for the one that asked.
+    guard var current = compareSession, current == session else { return result }
+    current.record(verb, result: result)
+    compareState = current
+    focusedImageID = current.left
+    return result
+  }
+
+  /// Compare's Undo: the store's one undo slot, and the pane pair popped only when the whole
+  /// entry came back (`UndoOutcome.restoredAll`).
+  @discardableResult
+  func compareUndo() async -> UndoOutcome {
+    guard let asked = compareSession?.token else { return .refused }
+    let outcome = await undoLastMark()
+    guard var current = compareSession, current.token == asked else { return outcome }
+    current.undoCompleted(outcome)
+    compareState = current
+    focusedImageID = current.left
+    return outcome
+  }
+
+  /// A strip tap: the right pane shows `imageID` (never the left image).
+  func compareShowOnRight(_ imageID: Int) {
+    guard !isMutatingMark, var current = compareSession else { return }
+    current.showOnRight(imageID)
+    compareState = current
+  }
+
+  /// A swipe on the right pane: the right candidate steps, skipping the left image.
+  func compareStepRight(forward: Bool) {
+    guard !isMutatingMark, var current = compareSession else { return }
+    current.stepRight(forward: forward)
+    compareState = current
+  }
+
+  /// Pin: while on, the left pane never changes.
+  func compareSetPinned(_ isPinned: Bool) {
+    guard !isMutatingMark, var current = compareSession else { return }
+    current.isPinned = isPinned
+    compareState = current
   }
 
   /// The FOCUSED photograph's own mark, or `nil` when nothing is focused (or the focused id is
@@ -2538,7 +2636,26 @@ final class GridStore {
   /// the priors, so that "which ids did this write actually cover" is answerable before the
   /// write goes out. Every caller holds the lane for the whole call.
   private func performMark(_ state: MarkStateValue, priors: [PriorMarkSnapshot]) async -> Bool {
-    guard !priors.isEmpty else { return false }
+    await writeMark(state, priors: priors, recordsUndo: true) == .committed
+  }
+
+  /// How one `writeMark` ended — the distinctions `applyCompoundMark` needs and `performMark`'s
+  /// `Bool` folds away (only `.committed` is `true` there).
+  private enum MarkWriteOutcome: Equatable {
+    case committed
+    case failed
+    case conflict
+    case scopeChanged
+    case nothingToWrite
+  }
+
+  /// `performMark`'s body. WP30 P3 (IMGMGR-458, plan decision 6): `recordsUndo` lets a compound
+  /// verb write its groups here and record ONE entry itself; every existing caller goes through
+  /// `performMark`, which passes `true`, so their behaviour is unchanged.
+  private func writeMark(
+    _ state: MarkStateValue, priors: [PriorMarkSnapshot], recordsUndo: Bool
+  ) async -> MarkWriteOutcome {
+    guard !priors.isEmpty else { return .nothingToWrite }
     // Diff-gate round 2, B2: the generation THIS mutation's priors were captured under. A
     // shoot/filter reload racing the network await already replaced `images` with fresh server
     // truth by the time this returns — completing (either branch) against a moved generation
@@ -2558,17 +2675,17 @@ final class GridStore {
       // the fact that the write landed, so the queue's post-mutation re-read is never silently
       // skipped just because a scope change happened to race the network await.
       mutationCommitCount += 1
-      guard generation == loadGeneration else { return false }
+      guard generation == loadGeneration else { return .scopeChanged }
       reconcileRevisions(applied.revisions ?? [])
-      undo.record(UndoEntry(appliedState: state, priorStates: priors))
+      if recordsUndo { undo.record(UndoEntry(appliedState: state, priorStates: priors)) }
       if priors.count > 1 { selection.bulkActionSucceeded() }
       lastMutationError = nil
       // WP12: the cover follows the pick. Still inside this call's own lane hold, so it is
       // serialised against other mutations by construction rather than by a second lock.
       await refreshScenesFor(priors.map(\.imageID))
-      return true
+      return .committed
     } catch {
-      guard generation == loadGeneration else { return false }
+      guard generation == loadGeneration else { return .scopeChanged }
       rollback(priors)
       let mutationError = (error as? GridServiceError) ?? .unreachable
       lastMutationError = mutationError
@@ -2581,9 +2698,60 @@ final class GridStore {
           ConflictBatchEntry(imageID: $0.imageID, revisionSubmitted: $0.revisionBefore)
         }
         await handleConflict(intent: .setState(state), batch: batch)
+        return .conflict
       }
-      return false
+      return .failed
     }
+  }
+
+  /// WP30 P3 (IMGMGR-458), plan decision 6: a Compare verb as ONE store-level mutation. The lane
+  /// is acquired once and held across every group; the priors of every id are captured once,
+  /// before any write; the groups are written in order through `writeMark` with undo recording
+  /// suppressed, and exactly ONE `UndoEntry` is recorded, covering the groups that committed.
+  ///
+  /// Server atomicity is not promised, and nothing is compensated: when a later group fails
+  /// after an earlier one landed, the entry is truthful about what landed (Undo reverts exactly
+  /// that) and the answer is `.partial`. A conflict runs the existing `handleConflict` machine,
+  /// which clears the slot; a generation change is the existing escape.
+  ///
+  /// Fenced verb-wide (fold round 1, B1): the generation is captured ONCE, here, and re-checked
+  /// after every awaited group — `writeMark`'s own fence only covers its request, not the scene
+  /// refresh it awaits before answering `.committed` — so no later group is written under a
+  /// generation the verb never saw and no entry is recorded for a scope already left.
+  func applyCompoundMark(_ groups: [CompoundMarkGroup]) async -> CompoundMarkResult {
+    guard tryAcquireLane() else { return .refused }
+    defer { releaseLane() }
+    let generation = loadGeneration
+    var planned: [(state: MarkStateValue, priors: [PriorMarkSnapshot])] = []
+    for group in groups {
+      let priors = capturePriorSnapshots(for: group.imageIDs)
+      if !priors.isEmpty { planned.append((group.state, priors)) }
+    }
+    guard let firstState = planned.first?.state else { return .refused }
+    var committed: [PriorMarkSnapshot] = []
+    var committedState: MarkStateValue?
+    for (state, priors) in planned {
+      switch await writeMark(state, priors: priors, recordsUndo: false) {
+      case .committed:
+        // `.conflict` is answered before this check on purpose: its re-read moves the
+        // generation itself. `.failed` never awaits past `writeMark`'s own fence.
+        guard generation == loadGeneration else { return .scopeChanged }
+        committed += priors
+        if committedState == nil { committedState = state }
+      case .failed:
+        guard let committedState else { return .failed }
+        undo.record(UndoEntry(appliedState: committedState, priorStates: committed))
+        return .partial
+      case .conflict:
+        return .conflict
+      case .scopeChanged:
+        return .scopeChanged
+      case .nothingToWrite:
+        continue
+      }
+    }
+    undo.record(UndoEntry(appliedState: committedState ?? firstState, priorStates: committed))
+    return .committed
   }
 
   /// Restores each image's TRUTHFUL prior state — grouped by target state, since one
@@ -2619,13 +2787,22 @@ final class GridStore {
   /// group (the loop already stopped at the first failure, per the doc above) loses its own
   /// retry-via-`Z` along with it — a documented scope decision (phase ledger), not an oversight;
   /// recovering it would need preserving two independent retry mechanisms over the same slot.
-  func undoLastMark() async {
-    guard tryAcquireLane() else { return }
+  ///
+  /// WP30 P3 (IMGMGR-458), plan decision 6: it ANSWERS now (`UndoOutcome`), fenced to the entry
+  /// and the generation captured here. The writes are exactly what they were; only the answer is
+  /// new, and `@discardableResult` keeps every existing caller compiling unchanged.
+  @discardableResult
+  func undoLastMark() async -> UndoOutcome {
+    guard tryAcquireLane() else { return .refused }
     guard let entry = undo.entry else {
       releaseLane()
-      return
+      return .nothingToUndo
     }
     defer { releaseLane() }
+    // Fold round 1, B2: ONE generation for the whole call, checked before each group is written
+    // and after every await (the request AND the scene refresh), so a later group never writes
+    // under a generation this undo never saw and the slot is never touched for a left scope.
+    let callGeneration = loadGeneration
     let groups = Dictionary(grouping: entry.priorStates, by: { $0.state })
       .sorted { $0.key.rawValue < $1.key.rawValue }
 
@@ -2634,6 +2811,7 @@ final class GridStore {
 
     for (targetState, snapshots) in groups {
       guard !encounteredFailure else { break }
+      guard callGeneration == loadGeneration else { return .scopeChanged }
       let ids = snapshots.map(\.imageID)
       let priors = capturePriorSnapshots(for: ids)
       let loadedIDs = Set(priors.map(\.imageID))
@@ -2643,8 +2821,8 @@ final class GridStore {
         continue
       }
       // Diff-gate round 2, B2: fence THIS group's completion against a scope change racing the
-      // network await, same reasoning as `applyMark`'s own `generation` capture.
-      let generation = loadGeneration
+      // network await, same reasoning as `applyMark`'s own `generation` capture — now the call's.
+      let generation = callGeneration
       optimisticallyApply(targetState, priors: priors)
       let preconditions = priors.map {
         Components.Schemas.MarkPrecondition(imageId: $0.imageID, revision: $0.revisionBefore)
@@ -2656,15 +2834,16 @@ final class GridStore {
         // server-side regardless of a racing generation change, so the commit signal fires
         // before the generation guard withholds the rest (local reconciliation only).
         mutationCommitCount += 1
-        guard generation == loadGeneration else { return }
+        guard generation == loadGeneration else { return .scopeChanged }
         reconcileRevisions(applied.revisions ?? [])
         // Only the ids actually submitted (the loaded subset) come out of the remainder — an
         // unloaded sibling in the same group was never attempted and stays pending.
         remaining.removeAll { loadedIDs.contains($0.imageID) }
         lastMutationError = nil
         await refreshScenesFor(priors.map(\.imageID))
+        guard generation == loadGeneration else { return .scopeChanged }
       } catch {
-        guard generation == loadGeneration else { return }
+        guard generation == loadGeneration else { return .scopeChanged }
         rollback(priors)
         let mutationError = (error as? GridServiceError) ?? .unreachable
         lastMutationError = mutationError
@@ -2673,17 +2852,19 @@ final class GridStore {
             ConflictBatchEntry(imageID: $0.imageID, revisionSubmitted: $0.revisionBefore)
           }
           await handleConflict(intent: .setState(targetState), batch: batch)
-          return  // the slot is now owned by conflictRecovery, not the remaining-tracking below
+          return .conflict  // the slot is now owned by conflictRecovery, not the tracking below
         }
         encounteredFailure = true
       }
     }
 
+    guard callGeneration == loadGeneration else { return .scopeChanged }
     if remaining.isEmpty {
       undo.clear()
     } else {
       undo.record(UndoEntry(appliedState: entry.appliedState, priorStates: remaining))
     }
+    return remaining.isEmpty ? .restoredAll : .partial
   }
 
   // MARK: - Proxy pixels
