@@ -324,6 +324,80 @@ struct TriageActivityTests {
   #endif
 }
 
+/// Review round 3: the advertising side — the activity is built, held and made current
+/// explicitly, never through SwiftUI's `.userActivity` update closure.
+@MainActor
+@Suite("TriageActivityAdvertiser — the activity made current")
+struct TriageActivityAdvertiserTests {
+  private func payload(_ session: TriageSession, pool: [Int]) -> TriageActivity? {
+    TriageActivity.advertised(
+      folderID: 1, tier: .local, imageID: session.continuationImageID, pool: pool,
+      completed: session.completed)
+  }
+
+  @Test("An open pass: current, eligible, decoding to the cursor; a new position reuses it")
+  func openPassFollowsTheCursor() async throws {
+    let session = TriageSession(store: PassFakeStore(ids: [1, 2, 3]))
+    let advertiser = TriageActivityAdvertiser(source: "triage")
+    await displayAndDecide(session, .skip)
+    advertiser.advertise(payload(session, pool: [1, 2, 3]))
+
+    let activity = try #require(advertiser.activity)
+    #expect(advertiser.isCurrent)
+    #expect(activity.activityType == TriageActivity.activityType)
+    #expect(activity.isEligibleForHandoff)
+    let atTwo = TriageActivity(folderID: 1, tier: .local, imageID: 2, index: 2, completed: false)
+    #expect(TriageActivity(userInfo: activity.userInfo) == atTwo)
+
+    await displayAndDecide(session, .skip)
+    advertiser.advertise(payload(session, pool: [1, 2, 3]))
+    #expect(advertiser.activity === activity, "A new position made a second activity.")
+    let atThree = TriageActivity(
+      folderID: 1, tier: .local, imageID: 3, index: 3, completed: false)
+    #expect(TriageActivity(userInfo: activity.userInfo) == atThree)
+
+    advertiser.end()
+    #expect(!advertiser.isCurrent)
+    #expect(advertiser.activity == nil)
+  }
+
+  @Test("A finished pass: the summary's activity carries the final photograph, completed")
+  func finishedPassIsCompleted() async throws {
+    let session = TriageSession(store: PassFakeStore(ids: [1, 2]))
+    await displayAndDecide(session, .skip)
+    await displayAndDecide(session, .pick)
+    let result = try #require(session.result)
+    let presentation = try #require(
+      PassSummaryPresentation.make(
+        result: result, folderID: 1, tier: .local, folderTitle: "", pool: [1, 2]))
+    let advertiser = TriageActivityAdvertiser(source: "passSummary")
+    advertiser.advertise(presentation.handoff)
+
+    let activity = try #require(advertiser.activity)
+    #expect(advertiser.isCurrent)
+    let finished = TriageActivity(
+      folderID: 1, tier: .local, imageID: 2, index: 2, completed: true)
+    #expect(TriageActivity(userInfo: activity.userInfo) == finished)
+
+    advertiser.end()
+    #expect(!advertiser.isCurrent)
+    #expect(advertiser.activity == nil)
+  }
+
+  @Test("Nothing to continue resigns; ending twice is harmless")
+  func nilPayloadResigns() {
+    let advertiser = TriageActivityAdvertiser(source: "triage")
+    advertiser.advertise(
+      TriageActivity(folderID: 1, tier: nil, imageID: 5, index: nil, completed: false))
+    #expect(advertiser.isCurrent)
+    advertiser.advertise(nil)
+    #expect(!advertiser.isCurrent)
+    #expect(advertiser.activity == nil)
+    advertiser.end()
+    #expect(!advertiser.isCurrent)
+  }
+}
+
 /// A grid pager with loaded ids and pages behind it, an optional endless cursor, an in-flight
 /// flag a test sets, and a hook that replaces what a request does.
 @MainActor

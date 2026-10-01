@@ -46,6 +46,8 @@ struct TriageView: View {
   /// The preview ON SCREEN, tied to the photograph it was loaded for (review B1): when its id is
   /// not the cursor's the photo area shows a placeholder, never the previous photograph.
   @State private var preview: TriagePreview?
+  /// WP31 P2 review round 3: holds the pass's Handoff activity and keeps it current.
+  @State private var advertiser = TriageActivityAdvertiser(source: "triage")
 
   init(
     store: GridStore, shootTitle: String, totalCount: Int?,
@@ -77,14 +79,21 @@ struct TriageView: View {
     .onChange(of: session.result) { _, result in
       if let result { onPassEnded(result) }
     }
-    .onDisappear { session.close() }
-    // WP31 P2 (IMGMGR-461), plan decision 5: Triage keeps its Handoff activity current while it
-    // is open, so the iPad offers the app at the pass's position. What the closure configured is
-    // recorded from inside it for the UI tests (`debugProbe.activity`).
-    .userActivity(TriageActivity.activityType, isActive: handoff != nil) { activity in
-      handoff?.configure(activity)
-      TriageActivityProbe.record(activity, source: "triage")
+    // WP31 P2 (IMGMGR-461), plan decision 5: Triage keeps its Handoff activity current while
+    // the pass is open, so the iPad offers the app at the pass's position — made current on
+    // appearance and on every position change, resigned when the pass ends or the cover goes
+    // (review round 3: owned by `TriageActivityAdvertiser`, not `.userActivity`).
+    .onAppear { advertiser.advertise(advertisedHandoff) }
+    .onChange(of: advertisedHandoff) { _, payload in advertiser.advertise(payload) }
+    .onDisappear {
+      advertiser.end()
+      session.close()
     }
+  }
+
+  /// The payload to keep current: the pass's own, and nothing once the pass has ended.
+  private var advertisedHandoff: TriageActivity? {
+    session.isClosed ? nil : handoff
   }
 
   /// WP31 P2 (IMGMGR-461): the pass's Handoff payload — the grid's shoot and the continuation
@@ -242,7 +251,7 @@ struct TriageView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.marks")
           .accessibilityValue("markWrites=\(DebugProbe.shared.markWrites)")
-        // WP31 P2 (IMGMGR-461): what this cover's `.userActivity` closure configured.
+        // WP31 P2 (IMGMGR-461): the activity this cover's advertiser made current.
         Text("debugProbeActivity")
           .font(.system(size: 1))
           .foregroundStyle(.clear)

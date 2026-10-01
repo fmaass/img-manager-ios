@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// It shows the pass's OWN counts — picks, dislikes, skipped — and the "Continue on iPad" row,
 /// which explains Handoff rather than pretending to send anything (decision 5): while the sheet
-/// is up it keeps the pass's `TriageActivity` current through `.userActivity`, so the iPad
+/// is up it keeps the pass's `TriageActivity` current (`TriageActivityAdvertiser`), so the iPad
 /// offers the app in its Dock. The whole-shoot Shoot Summary sheet is a different surface and
 /// is unchanged.
 struct PassSummarySheet: View {
@@ -14,6 +14,8 @@ struct PassSummarySheet: View {
   let layoutMode: LayoutMode
   @Environment(\.dismiss) private var dismiss
   @State private var detent: PresentationDetent = .medium
+  /// Review round 3: holds the pass's Handoff activity while the sheet is up.
+  @State private var advertiser = TriageActivityAdvertiser(source: "passSummary")
 
   var body: some View {
     NavigationStack {
@@ -29,16 +31,11 @@ struct PassSummarySheet: View {
     }
     .overlay(alignment: .topLeading) { debugProbeElement }
     .modifier(ShootSummarySizing(isCompact: layoutMode == .compact, detent: $detent))
-    .userActivity(TriageActivity.activityType, isActive: isAdvertising) { activity in
-      presentation.handoff?.configure(activity)
-      TriageActivityProbe.record(activity, source: "passSummary")
-    }
+    .onAppear { advertiser.advertise(presentation.handoff) }
+    .onDisappear { advertiser.end() }
   }
 
   private var summary: PassSummary { presentation.summary }
-
-  /// Decision 5: the sheet keeps the pass's activity current while it is up.
-  private var isAdvertising: Bool { presentation.handoff != nil }
 
   private var content: some View {
     List {
@@ -89,8 +86,8 @@ struct PassSummarySheet: View {
     .frame(maxWidth: .infinity)
   }
 
-  /// EVIDENCE, fixture-only (`GridView.debugProbeElement`'s pattern): what this sheet's
-  /// `.userActivity` closure configured, recorded from inside it.
+  /// EVIDENCE, fixture-only (`GridView.debugProbeElement`'s pattern): the activity this sheet's
+  /// advertiser made current, read back from that instance.
   #if DEBUG
     @ViewBuilder private var debugProbeElement: some View {
       if DebugStubLaunch.isActive {

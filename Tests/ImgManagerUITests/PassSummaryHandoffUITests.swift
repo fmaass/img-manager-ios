@@ -5,7 +5,7 @@ import XCTest
 /// on that photograph.
 ///
 /// Launch fixture: `-UITestStubGrid`. Folder 1 opens on its own; photograph 1 is picked, so a
-/// pass starts on photograph 2 (plan decision 2). What a `.userActivity` closure configured is
+/// pass starts on photograph 2 (plan decision 2). The activity a surface made current is
 /// read off `debugProbe.activity` on the presented surface (Triage, then the sheet); how a
 /// continuation ended is read off `debugProbe.continuation`, the positive signal a "no loupe"
 /// assertion waits for. The receiving side is driven by `-UITestContinueActivity <json>`, which

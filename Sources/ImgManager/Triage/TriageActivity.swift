@@ -108,8 +108,8 @@ struct TriageActivity: Equatable, Sendable {
     return number.boolValue
   }
 
-  /// Makes `activity` carry this payload, eligible for Handoff. The activity type is the one the
-  /// `.userActivity` modifier was declared with.
+  /// Makes `activity` carry this payload, eligible for Handoff. The activity type is the one
+  /// `TriageActivityAdvertiser` created it with.
   func configure(_ activity: NSUserActivity) {
     activity.isEligibleForHandoff = true
     activity.userInfo = userInfo
@@ -124,6 +124,59 @@ struct TriageActivity: Equatable, Sendable {
     let index = pool.firstIndex(of: imageID).map { $0 + 1 }
     return TriageActivity(
       folderID: folderID, tier: tier, imageID: imageID, index: index, completed: completed)
+  }
+}
+
+/// Review round 3: the advertising side, owned explicitly. SwiftUI's `.userActivity(_:isActive:_:)`
+/// never ran its update closure in the simulator (gate on 1bfc834: the activity probe stayed
+/// empty), so a surface that advertises holds one of these instead: it builds the
+/// `NSUserActivity` from a `TriageActivity`, keeps a STRONG reference to it (an activity nobody
+/// holds is released and stops being current), makes it current with `becomeCurrent()`, and
+/// resigns and invalidates it on `end()`. A new position reuses the same instance.
+///
+/// `UIWindowScene.userActivity` is deliberately left alone: SwiftUI owns it for the
+/// `WindowGroup(for:)` scene and its restoration, and `becomeCurrent()` is what Handoff reads.
+@MainActor
+final class TriageActivityAdvertiser {
+  /// The probe's `source=` — which surface advertises.
+  let source: String
+  /// The activity made current, held strongly until `end()`.
+  private(set) var activity: NSUserActivity?
+  private(set) var isCurrent = false
+
+  init(source: String) {
+    self.source = source
+  }
+
+  /// Makes `payload` the current activity; nil ends any advertising.
+  func advertise(_ payload: TriageActivity?) {
+    guard let payload else {
+      end()
+      return
+    }
+    let activity: NSUserActivity
+    if let existing = self.activity {
+      activity = existing
+      payload.configure(activity)
+      activity.needsSave = true
+    } else {
+      activity = NSUserActivity(activityType: TriageActivity.activityType)
+      payload.configure(activity)
+      self.activity = activity
+    }
+    activity.becomeCurrent()
+    isCurrent = true
+    // Read back from the instance just made current — never re-encoded from the payload.
+    TriageActivityProbe.record(activity, source: source)
+  }
+
+  /// The surface went away or the pass ended: no longer offered to other devices.
+  func end() {
+    guard let activity else { return }
+    activity.resignCurrent()
+    activity.invalidate()
+    self.activity = nil
+    isCurrent = false
   }
 }
 
@@ -162,9 +215,10 @@ struct TriageActivity: Equatable, Sendable {
 #endif
 
 #if DEBUG
-  /// Records what a `.userActivity` closure configured into `DebugProbe.activity` — called from
-  /// INSIDE that closure (plan P2), fixture launches only. Assigned only on a change: the probe
-  /// is `@Observable`, and an unconditional write would re-render the surface that reads it.
+  /// Records the activity `TriageActivityAdvertiser` just made current into
+  /// `DebugProbe.activity`, read off that instance (review round 3), fixture launches only.
+  /// Assigned only on a change: the probe is `@Observable`, and an unconditional write would
+  /// re-render the surface that reads it.
   @MainActor
   enum TriageActivityProbe {
     static func record(_ activity: NSUserActivity, source: String) {
