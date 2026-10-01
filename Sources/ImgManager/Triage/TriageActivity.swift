@@ -56,12 +56,18 @@ struct TriageActivity: Equatable, Sendable {
 
   /// Decodes a received payload; nil for an unknown version, a missing required key, or any key
   /// of the wrong type or out of range.
+  ///
+  /// Review round 1 (B2): numbers and Booleans are told apart by IDENTITY, not by what `as?`
+  /// will bridge. A property list or JSON payload arrives as `NSNumber`s, and `as? Int` accepts a
+  /// Boolean `NSNumber` (true → 1) while `as? Bool` accepts the numbers 0 and 1 — so a `v: true`
+  /// or a `completed: 1` would decode. An integer key refuses a Boolean; `completed` refuses
+  /// anything that is not one.
   init?(userInfo: [AnyHashable: Any]?) {
     guard let userInfo,
-      let version = userInfo[Key.version] as? Int, version == Self.version,
-      let folderID = userInfo[Key.folderID] as? Int, folderID > 0,
-      let imageID = userInfo[Key.imageID] as? Int, imageID > 0,
-      let completed = userInfo[Key.completed] as? Bool
+      let version = Self.integer(userInfo[Key.version]), version == Self.version,
+      let folderID = Self.integer(userInfo[Key.folderID]), folderID > 0,
+      let imageID = Self.integer(userInfo[Key.imageID]), imageID > 0,
+      let completed = Self.boolean(userInfo[Key.completed])
     else { return nil }
 
     var tier: GridSourceTier?
@@ -75,23 +81,31 @@ struct TriageActivity: Equatable, Sendable {
     }
     var index: Int?
     if let raw = userInfo[Key.index] {
-      guard let value = raw as? Int, value > 0 else { return nil }
+      guard let value = Self.integer(raw), value > 0 else { return nil }
       index = value
     }
     self.init(
       folderID: folderID, tier: tier, imageID: imageID, index: index, completed: completed)
   }
 
-  /// The DEBUG launch argument's form of a payload: a JSON object with the `userInfo` keys. Not
-  /// an object (or not JSON at all) → nil, which the decoder above then refuses.
-  static func userInfo(json: String) -> [AnyHashable: Any]? {
-    guard let data = json.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data),
-      let dictionary = object as? [String: Any]
-    else { return nil }
-    var info: [AnyHashable: Any] = [:]
-    for (key, value) in dictionary { info[key] = value }
-    return info
+  /// Whether `value` is a Boolean by identity: a Swift `Bool` bridges to the `CFBoolean`
+  /// singletons, and so do JSON `true`/`false` and a property list's `<true/>`; an integer
+  /// `NSNumber` never does.
+  private static func isBoolean(_ value: Any) -> Bool {
+    guard let number = value as? NSNumber else { return false }
+    return CFGetTypeID(number) == CFBooleanGetTypeID()
+  }
+
+  /// An integer that is not a Boolean in disguise; nil otherwise (a fraction included).
+  private static func integer(_ value: Any?) -> Int? {
+    guard let value, !isBoolean(value) else { return nil }
+    return value as? Int
+  }
+
+  /// A Boolean by identity — never the numbers 0 and 1.
+  private static func boolean(_ value: Any?) -> Bool? {
+    guard let value, isBoolean(value), let number = value as? NSNumber else { return nil }
+    return number.boolValue
   }
 
   /// Makes `activity` carry this payload, eligible for Handoff. The activity type is the one the
@@ -111,23 +125,41 @@ struct TriageActivity: Equatable, Sendable {
     return TriageActivity(
       folderID: folderID, tier: tier, imageID: imageID, index: index, completed: completed)
   }
-
-  /// EVIDENCE for the UI tests (`debugProbe.activity`): what an activity was configured with —
-  /// its type, its Handoff eligibility, and its `userInfo` as a receiver would decode it. Read
-  /// off the `NSUserActivity` itself, never re-encoded from the session.
-  static func probeDescription(
-    source: String, type: String, eligible: Bool, userInfo: [AnyHashable: Any]?
-  ) -> String {
-    let head = "source=\(source);type=\(type);eligible=\(eligible)"
-    guard let decoded = TriageActivity(userInfo: userInfo) else {
-      return "\(head);payload=undecodable"
-    }
-    let index = decoded.index.map { String($0) } ?? ""
-    return "\(head);v=\(version);folderID=\(decoded.folderID);"
-      + "tier=\(decoded.tier?.rawValue ?? "");imageID=\(decoded.imageID);index=\(index);"
-      + "completed=\(decoded.completed)"
-  }
 }
+
+#if DEBUG
+  /// Review round 1: the fixture's half of the payload — the launch argument's JSON entry and
+  /// the probe's wording — compiled into Debug builds only, like every caller of it.
+  extension TriageActivity {
+    /// The DEBUG launch argument's form of a payload: a JSON object with the `userInfo` keys.
+    /// Not an object (or not JSON at all) → nil, which the decoder then refuses.
+    static func userInfo(json: String) -> [AnyHashable: Any]? {
+      guard let data = json.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data),
+        let dictionary = object as? [String: Any]
+      else { return nil }
+      var info: [AnyHashable: Any] = [:]
+      for (key, value) in dictionary { info[key] = value }
+      return info
+    }
+
+    /// EVIDENCE for the UI tests (`debugProbe.activity`): what an activity was configured with —
+    /// its type, its Handoff eligibility, and its `userInfo` as a receiver would decode it. Read
+    /// off the `NSUserActivity` itself, never re-encoded from the session.
+    static func probeDescription(
+      source: String, type: String, eligible: Bool, userInfo: [AnyHashable: Any]?
+    ) -> String {
+      let head = "source=\(source);type=\(type);eligible=\(eligible)"
+      guard let decoded = TriageActivity(userInfo: userInfo) else {
+        return "\(head);payload=undecodable"
+      }
+      let index = decoded.index.map { String($0) } ?? ""
+      return "\(head);v=\(version);folderID=\(decoded.folderID);"
+        + "tier=\(decoded.tier?.rawValue ?? "");imageID=\(decoded.imageID);index=\(index);"
+        + "completed=\(decoded.completed)"
+    }
+  }
+#endif
 
 #if DEBUG
   /// Records what a `.userActivity` closure configured into `DebugProbe.activity` — called from

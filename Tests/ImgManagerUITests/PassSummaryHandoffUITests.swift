@@ -78,7 +78,9 @@ final class PassSummaryHandoffUITests: OrientationPinnedUITestCase {
 
   // MARK: - iPad: the receiving route
 
-  /// Photograph 7015 is on the paged fixture shoot's SECOND page, so the route has to page.
+  /// Photograph 7015 is on the paged fixture shoot's SECOND page, so the route has to page. The
+  /// payload's `index` is deliberately WRONG (3): the receiver resolves by id, never by index,
+  /// so the loupe still lands on 15 of 20.
   func testContinueActivityOpensTheLoupeOnAPhotographBeyondTheFirstPage() throws {
     let app = try launchedRegular(continuing: 7015)
     XCTAssertTrue(
@@ -155,10 +157,11 @@ final class PassSummaryHandoffUITests: OrientationPinnedUITestCase {
   }
 
   /// The paged fixture shoot is folder 7 (`DebugStubTransport.pagedFolderID`), photographs
-  /// 7001…7020 over two pages.
+  /// 7001…7020 over two pages. The `index` is 3 whatever the photograph — informational only
+  /// (`TriageActivity`), so a receiver that used it would land on the wrong photograph.
   private func launchedRegular(continuing imageID: Int) throws -> XCUIApplication {
     let app = XCUIApplication()
-    let json = #"{"v":1,"folderID":7,"imageID":\#(imageID),"index":15,"completed":false}"#
+    let json = #"{"v":1,"folderID":7,"imageID":\#(imageID),"index":3,"completed":false}"#
     app.launchArguments = ["-UITestStubGrid", "-UITestContinueActivity", json]
     app.launch()
     // No wait on the grid's bar first: the route may already have swapped the grid for the

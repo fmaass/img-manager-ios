@@ -206,20 +206,77 @@ struct TriageActivityTests {
     #expect(activity.isEligibleForHandoff)
     #expect(activity.webpageURL == nil)
     #expect(TriageActivity(userInfo: activity.userInfo) == payload)
-    #expect(
-      TriageActivity.probeDescription(
-        source: "triage", type: activity.activityType, eligible: activity.isEligibleForHandoff,
-        userInfo: activity.userInfo)
-        == "source=triage;type=live.discomarder.imgmanager.triage;eligible=true;v=1;folderID=1;"
-        + "tier=local;imageID=5;index=5;completed=false")
+    #if DEBUG
+      #expect(
+        TriageActivity.probeDescription(
+          source: "triage", type: activity.activityType, eligible: activity.isEligibleForHandoff,
+          userInfo: activity.userInfo)
+          == "source=triage;type=live.discomarder.imgmanager.triage;eligible=true;v=1;"
+          + "folderID=1;tier=local;imageID=5;index=5;completed=false")
+    #endif
   }
 
-  @Test("The launch argument's JSON decodes to the same payload")
-  func jsonEntry() {
-    let json = #"{"v":1,"folderID":7,"imageID":7015,"index":15,"completed":false}"#
-    #expect(
-      TriageActivity(userInfo: TriageActivity.userInfo(json: json))
-        == TriageActivity(folderID: 7, tier: nil, imageID: 7015, index: 15, completed: false))
+  #if DEBUG
+    @Test("The launch argument's JSON decodes to the same payload")
+    func jsonEntry() {
+      let json = #"{"v":1,"folderID":7,"imageID":7015,"index":15,"completed":false}"#
+      #expect(
+        TriageActivity(userInfo: TriageActivity.userInfo(json: json))
+          == TriageActivity(folderID: 7, tier: nil, imageID: 7015, index: 15, completed: false))
+    }
+
+    /// Review round 1 (B2): JSON's `true`/`false` arrive as Boolean NSNumbers, which `as? Int`
+    /// would read as 1/0 — and an integer NSNumber `as? Bool` would read as a Boolean.
+    @Test(
+      "JSON: a Boolean where an integer belongs, or an integer where a Boolean belongs, is refused",
+      arguments: [
+        #"{"v":true,"folderID":7,"imageID":7015,"completed":false}"#,
+        #"{"v":1,"folderID":true,"imageID":7015,"completed":false}"#,
+        #"{"v":1,"folderID":7,"imageID":true,"completed":false}"#,
+        #"{"v":1,"folderID":7,"imageID":7015,"index":true,"completed":false}"#,
+        #"{"v":1,"folderID":7,"imageID":7015,"completed":1}"#,
+        #"{"v":1,"folderID":7,"imageID":7015,"completed":0}"#,
+      ])
+    func jsonBooleanIdentity(_ json: String) {
+      #expect(TriageActivity(userInfo: TriageActivity.userInfo(json: json)) == nil, "\(json)")
+    }
+  #endif
+
+  /// Review round 1 (B2): the same identity through a property-list-style dictionary of
+  /// NSNumbers — what a Handoff's `userInfo` is once it has crossed devices.
+  @Test(
+    "Property list: a Boolean NSNumber for an integer, or an integer for a Boolean, is refused",
+    arguments: ["v", "folderID", "imageID", "index", "completed 1", "completed 0"])
+  func plistBooleanIdentity(_ name: String) {
+    var info = Self.plistPayload
+    switch name {
+    case "completed 1": info[TriageActivity.Key.completed] = NSNumber(value: 1)
+    case "completed 0": info[TriageActivity.Key.completed] = NSNumber(value: 0)
+    default: info[name] = NSNumber(value: true)
+    }
+    #expect(TriageActivity(userInfo: info) == nil, "'\(name)' decoded.")
+  }
+
+  @Test("Property list: integer NSNumbers and a Boolean NSNumber decode")
+  func plistNumbersDecode() {
+    var info = Self.plistPayload
+    info[TriageActivity.Key.completed] = NSNumber(value: true)
+    let expected = TriageActivity(
+      folderID: 7, tier: nil, imageID: 7015, index: 15, completed: true)
+    #expect(TriageActivity(userInfo: info) == expected)
+    #expect(TriageActivity(userInfo: Self.plistPayload)?.completed == false)
+  }
+
+  /// Computed, not stored: `[AnyHashable: Any]` is not `Sendable`, so a stored static would be
+  /// refused under Swift 6.
+  private static var plistPayload: [AnyHashable: Any] {
+    [
+      TriageActivity.Key.version: NSNumber(value: 1),
+      TriageActivity.Key.folderID: NSNumber(value: 7),
+      TriageActivity.Key.imageID: NSNumber(value: 7015),
+      TriageActivity.Key.index: NSNumber(value: 15),
+      TriageActivity.Key.completed: NSNumber(value: false),
+    ]
   }
 
   @Test(
@@ -251,18 +308,20 @@ struct TriageActivityTests {
     #expect(TriageActivity(userInfo: info) == nil, "'\(name)' decoded.")
   }
 
-  @Test("JSON that is not an object is refused", arguments: ["[1,2]", "not json", "", "7"])
-  func malformedJSONIsRefused(_ json: String) {
-    #expect(TriageActivity(userInfo: TriageActivity.userInfo(json: json)) == nil)
-  }
+  #if DEBUG
+    @Test("JSON that is not an object is refused", arguments: ["[1,2]", "not json", "", "7"])
+    func malformedJSONIsRefused(_ json: String) {
+      #expect(TriageActivity(userInfo: TriageActivity.userInfo(json: json)) == nil)
+    }
 
-  @Test("The probe says when a configured activity carries an undecodable payload")
-  func probeOnUndecodable() {
-    #expect(
-      TriageActivity.probeDescription(
-        source: "passSummary", type: "x", eligible: false, userInfo: ["v": 9])
-        == "source=passSummary;type=x;eligible=false;payload=undecodable")
-  }
+    @Test("The probe says when a configured activity carries an undecodable payload")
+    func probeOnUndecodable() {
+      #expect(
+        TriageActivity.probeDescription(
+          source: "passSummary", type: "x", eligible: false, userInfo: ["v": 9])
+          == "source=passSummary;type=x;eligible=false;payload=undecodable")
+    }
+  #endif
 }
 
 /// A grid pager with loaded ids and pages behind it, an optional endless cursor, an in-flight
@@ -391,6 +450,9 @@ private final class FakeContinuationHost {
   var opensOtherShoot = false
   var duringOpenShoot: (@MainActor () -> Void)?
   var duringLocate: (@MainActor () -> Void)?
+  /// When set, the dismissal clears the flags and then awaits this gate's completion — as
+  /// `RootView.dismissTriagePresentations` does.
+  var dismissalGate: PresentationDismissalGate?
 
   func run(
     _ router: TriageContinuationRouter, _ activity: TriageActivity, ticket: Int
@@ -401,6 +463,7 @@ private final class FakeContinuationHost {
         self.events.append("dismiss")
         self.triageOpen = false
         self.summaryOpen = false
+        await self.dismissalGate?.settled()
       },
       openShoot: { folderID, tier in
         self.events.append("openShoot:\(folderID)")
@@ -409,6 +472,9 @@ private final class FakeContinuationHost {
         self.shownFolder = self.opensOtherShoot ? folderID + 1 : folderID
         self.shownTier = tier
         self.events.append("loaded:\(folderID)")
+      },
+      showShoot: { folderID in
+        self.events.append("show:\(folderID)")
       },
       isShowingShoot: { folderID, tier in
         self.shownFolder == folderID && self.shownTier == tier
@@ -432,7 +498,7 @@ struct TriageContinuationRouterTests {
   private let activity = TriageActivity(
     folderID: 7, tier: .local, imageID: 7015, index: 15, completed: false)
 
-  @Test("Dismiss → open shoot → await its load → resolve by id → open the loupe")
+  @Test("Dismiss → open shoot → await its load → show it → resolve by id → open the loupe")
   func ordering() async {
     let router = TriageContinuationRouter()
     let host = FakeContinuationHost()
@@ -440,8 +506,44 @@ struct TriageContinuationRouterTests {
     #expect(outcome == .opened(imageID: 7015))
     #expect(
       host.events == [
-        "dismiss", "openShoot:7", "loaded:7", "locate:7015",
+        "dismiss", "openShoot:7", "loaded:7", "show:7", "locate:7015",
         "openLoupe:7015 triage=false summary=false",
+      ])
+  }
+
+  /// Review round 1 (B1): route A clears the flags and awaits a dismissal that is still
+  /// animating; route B arrives meanwhile, finds the flags already cleared — and still waits,
+  /// on the SAME completion. Neither opens a shoot before it; only the newest proceeds after.
+  @Test("A route arriving during a pending dismissal waits for it; only the newest proceeds")
+  func secondRouteWaitsForThePendingDismissal() async {
+    let router = TriageContinuationRouter()
+    let gate = PresentationDismissalGate()
+    gate.presented(.triageCover)
+    let host = FakeContinuationHost()
+    host.triageOpen = true
+    host.dismissalGate = gate
+
+    let olderTicket = router.begin()
+    let older = Task { await host.run(router, activity, ticket: olderTicket) }
+    await waitUntil { host.events == ["dismiss"] }
+    #expect(!host.triageOpen, "The flags are cleared before the dismissal completes.")
+
+    let newer = TriageActivity(folderID: 8, tier: nil, imageID: 8003, index: nil, completed: false)
+    let newerTicket = router.begin()
+    let newest = Task { await host.run(router, newer, ticket: newerTicket) }
+    await waitUntil { host.events.count == 2 }
+    // Both are parked on the gate: give either every chance to run on — neither may.
+    for _ in 0..<20 { await Task.yield() }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(host.events == ["dismiss", "dismiss"])
+
+    gate.dismissed(.triageCover)
+    #expect(await older.value == .superseded)
+    #expect(await newest.value == .opened(imageID: 8003))
+    #expect(
+      host.events == [
+        "dismiss", "dismiss", "openShoot:8", "loaded:8", "show:8", "locate:8003",
+        "openLoupe:8003 triage=false summary=false",
       ])
   }
 
@@ -473,6 +575,7 @@ struct TriageContinuationRouterTests {
     let host = FakeContinuationHost()
     host.duringOpenShoot = { _ = router.begin() }
     #expect(await host.run(router, activity, ticket: router.begin()) == .superseded)
+    // Review round 1: no navigation either — `show` follows the ticket check.
     #expect(host.events == ["dismiss", "openShoot:7", "loaded:7"])
   }
 
@@ -507,5 +610,68 @@ struct TriageContinuationRouterTests {
     host.opensOtherShoot = true
     #expect(await host.run(router, activity, ticket: router.begin()) == .unresolved)
     #expect(!host.events.contains { $0.hasPrefix("locate") || $0.hasPrefix("openLoupe") })
+  }
+}
+
+/// Review round 1 (B1): the dismissal completion every incoming route awaits.
+@MainActor
+@Suite("PresentationDismissalGate — dismissal completion, not elapsed time")
+struct PresentationDismissalGateTests {
+  /// How many waiters have come back from `settled()`.
+  @MainActor
+  private final class Resumed {
+    var count = 0
+  }
+
+  private func park(_ gate: PresentationDismissalGate, _ resumed: Resumed) -> Task<Void, Never> {
+    Task {
+      await gate.settled()
+      resumed.count += 1
+    }
+  }
+
+  @Test("Nothing on screen: settled at once")
+  func settledWhenNothingIsUp() async {
+    let gate = PresentationDismissalGate()
+    #expect(gate.isSettled)
+    await gate.settled()
+  }
+
+  @Test("Waits until EVERY reported surface is dismissed, then resumes every waiter")
+  func waitsForEverySurface() async {
+    let gate = PresentationDismissalGate()
+    let resumed = Resumed()
+    gate.presented(.triageCover)
+    gate.presented(.passSummarySheet)
+    let first = park(gate, resumed)
+    let second = park(gate, resumed)
+    for _ in 0..<20 { await Task.yield() }
+    #expect(resumed.count == 0)
+
+    gate.dismissed(.triageCover)
+    for _ in 0..<20 { await Task.yield() }
+    #expect(resumed.count == 0, "The sheet is still on screen.")
+
+    gate.dismissed(.passSummarySheet)
+    await first.value
+    await second.value
+    #expect(resumed.count == 2)
+    #expect(gate.isSettled)
+  }
+
+  @Test("Dismissing a surface that was never reported settles nothing")
+  func unreportedDismissalIsANoOp() async {
+    let gate = PresentationDismissalGate()
+    let resumed = Resumed()
+    gate.presented(.triageCover)
+    let waiter = park(gate, resumed)
+    gate.dismissed(.passSummarySheet)
+    for _ in 0..<20 { await Task.yield() }
+    #expect(resumed.count == 0)
+    #expect(!gate.isSettled)
+
+    gate.dismissed(.triageCover)
+    await waiter.value
+    #expect(resumed.count == 1)
   }
 }

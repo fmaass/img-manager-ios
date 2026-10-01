@@ -89,24 +89,75 @@ enum ContinuationOutcome: Equatable, Sendable {
   case unresolved
   /// A newer continuation arrived; this one stopped at its next step.
   case superseded
+}
 
-  /// The DEBUG probe's word for it (`debugProbe.continuation`).
-  var probeValue: String {
-    switch self {
-    case .opened(let id): "opened-\(id)"
-    case .notFound: "notFound"
-    case .budgetSpent: "budgetSpent"
-    case .unresolved: "unresolved"
-    case .superseded: "superseded"
+#if DEBUG
+  extension ContinuationOutcome {
+    /// The DEBUG probe's word for it (`debugProbe.continuation`) — Debug builds only, like its
+    /// one caller.
+    var probeValue: String {
+      switch self {
+      case .opened(let id): "opened-\(id)"
+      case .notFound: "notFound"
+      case .budgetSpent: "budgetSpent"
+      case .unresolved: "unresolved"
+      case .superseded: "superseded"
+      }
+    }
+  }
+#endif
+
+/// A presented surface the receiving route has to see GONE before it opens anything.
+enum TriagePresentedSurface: Hashable, Sendable {
+  case triageCover
+  case passSummarySheet
+}
+
+/// Review round 1 (B1): dismissal COMPLETION, shared by every incoming route.
+///
+/// Clearing a presentation flag starts a dismissal; it does not finish one, and UIKit refuses a
+/// new presentation while one is still animating. Elapsed time is not completion either. So the
+/// host reports each surface when it appears (its content's `onAppear`) and when it is gone (the
+/// presentation's own `onDismiss`), and `settled()` returns only once nothing reported is still
+/// on screen or on its way off it. A route that arrives while an EARLIER route's dismissal is
+/// still animating finds the flags already cleared, but the surface still here — and waits for
+/// the same completion.
+@MainActor
+final class PresentationDismissalGate {
+  private var onScreen: Set<TriagePresentedSurface> = []
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  var isSettled: Bool { onScreen.isEmpty }
+
+  func presented(_ surface: TriagePresentedSurface) {
+    onScreen.insert(surface)
+  }
+
+  /// A surface's `onDismiss`. Once the last one is gone, every waiting route resumes. A surface
+  /// that was never reported is a no-op.
+  func dismissed(_ surface: TriagePresentedSurface) {
+    onScreen.remove(surface)
+    guard onScreen.isEmpty else { return }
+    let resumed = waiters
+    waiters = []
+    for waiter in resumed { waiter.resume() }
+  }
+
+  /// Returns at once when nothing is on screen; otherwise when the last surface is dismissed.
+  func settled() async {
+    guard !onScreen.isEmpty else { return }
+    await withCheckedContinuation { continuation in
+      self.waiters.append(continuation)
     }
   }
 }
 
 /// WP31 P2 (IMGMGR-461), plan decision 6: the receiving route of a Triage Handoff, in order —
 /// (a) close Triage and any Pass Summary sheet (the pass ends without a summary; its marks are
-/// already committed), (b) open the shoot and AWAIT its load, (c) resolve the photograph by id,
-/// paging with the grid's own pager, and only then open the loupe on it. At Compact the loupe
-/// opens, never Triage.
+/// already committed) and AWAIT that dismissal's completion (`PresentationDismissalGate`), (b)
+/// open the shoot and AWAIT its load, then — only while still the newest route — show it, (c)
+/// resolve the photograph by id, paging with the grid's own pager, and only then open the loupe
+/// on it. At Compact the loupe opens, never Triage.
 ///
 /// ONE function serves both entries — `.onContinueUserActivity` and the DEBUG
 /// `-UITestContinueActivity` launch argument — and its steps are closures, so a unit test drives
@@ -128,6 +179,7 @@ final class TriageContinuationRouter {
     ticket: Int,
     dismissPresentations: () async -> Void,
     openShoot: (Int, GridSourceTier?) async -> Void,
+    showShoot: (Int) -> Void,
     isShowingShoot: (Int, GridSourceTier?) -> Bool,
     locate: (Int) async -> ContinuationLookup,
     openLoupe: (Int) -> Void
@@ -137,6 +189,9 @@ final class TriageContinuationRouter {
     guard ticket == generation else { return .superseded }
     await openShoot(activity.folderID, activity.tier)
     guard ticket == generation else { return .superseded }
+    // Review round 1: the navigation follows the ticket check, so a superseded route never moves
+    // the tabs or the sidebar selection after a newer one did.
+    showShoot(activity.folderID)
     guard isShowingShoot(activity.folderID, activity.tier) else { return .unresolved }
     let lookup = await locate(activity.imageID)
     guard ticket == generation else { return .superseded }

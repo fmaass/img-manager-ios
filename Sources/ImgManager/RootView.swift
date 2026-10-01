@@ -70,6 +70,10 @@ struct RootView: View {
   /// WP31 P2 (IMGMGR-461), plan decision 6: the receiving route of a Triage Handoff; its ticket
   /// fence lets a newer continuation supersede an older one.
   @State private var continuationRouter = TriageContinuationRouter()
+  /// Review round 1 (B1): which of the Triage cover and the Pass Summary sheet is still on
+  /// screen — reported from their content's `onAppear` and their presentation's `onDismiss` —
+  /// so every incoming route awaits the same dismissal COMPLETION, not a fixed delay.
+  @State private var dismissalGate = PresentationDismissalGate()
   /// WP28 P1: the folder search text, hoisted so every search surface shares one query.
   @State private var folderSearch: FolderSearchModel
   /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
@@ -419,6 +423,7 @@ struct RootView: View {
       onDismiss: {
         passSummary = pendingPassSummary
         pendingPassSummary = nil
+        dismissalGate.dismissed(.triageCover)
       }
     ) {
       TriageView(
@@ -432,12 +437,18 @@ struct RootView: View {
               pool: gridStore.actionableImages.map(\.id))
           }
           gridStore.closeTriage()
-        })
+        }
+      )
+      .onAppear { dismissalGate.presented(.triageCover) }
     }
     // WP31 P2 (IMGMGR-461): the Pass Summary — a medium detent at Compact, a form at Regular
     // (`ShootSummarySizing`), the same content.
-    .sheet(item: $passSummary) { presentation in
+    .sheet(
+      item: $passSummary,
+      onDismiss: { dismissalGate.dismissed(.passSummarySheet) }
+    ) { presentation in
       PassSummarySheet(presentation: presentation, layoutMode: layoutMode)
+        .onAppear { dismissalGate.presented(.passSummarySheet) }
     }
     // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
     // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
@@ -773,8 +784,9 @@ struct RootView: View {
   ///
   /// The shoot opens the way a restored window's does — `GridStore.selectShoot` AWAITED (the
   /// row-tap closure `selectShoot` starts an unstructured `Task` and cannot be awaited), then
-  /// `WorkspaceNavigation.showSelectedShoot` — and the loupe opens only on a photograph the
-  /// grid has actually loaded. At Compact that is the loupe's cover, never Triage.
+  /// the List selection and `WorkspaceNavigation.showSelectedShoot`, applied only once the router
+  /// has re-checked the ticket after that load (`showShoot`) — and the loupe opens only on a
+  /// photograph the grid has actually loaded. At Compact that is the loupe's cover, never Triage.
   private func continueTriage(userInfo: [AnyHashable: Any]?) {
     guard let activity = TriageActivity(userInfo: userInfo) else { return }
     let router = continuationRouter
@@ -784,8 +796,10 @@ struct RootView: View {
         activity, ticket: ticket,
         dismissPresentations: { await dismissTriagePresentations() },
         openShoot: { folderID, tier in
-          selectedFolderID = folderID
           await gridStore.selectShoot(folderID: folderID, sourceTier: tier)
+        },
+        showShoot: { folderID in
+          selectedFolderID = folderID
           navigation.showSelectedShoot(in: .library)
         },
         isShowingShoot: { folderID, tier in
@@ -804,16 +818,15 @@ struct RootView: View {
   /// Decision 6 (a): Triage and any Pass Summary go away before the shoot opens. The pass ends
   /// WITHOUT a summary — `onPassEnded` only leaves one while `isTriagePresented` is still true,
   /// and it is false from here on. UIKit refuses a presentation while a dismissal is still
-  /// animating, so when something was up the route waits out that dismissal before the loupe's
-  /// cover can be asked for.
+  /// animating, so the route awaits the dismissal's COMPLETION (`dismissalGate`, resolved from
+  /// the cover's and the sheet's `onDismiss`) before the loupe's cover can be asked for. A route
+  /// that arrives while an earlier route's dismissal is still animating finds the flags already
+  /// cleared and awaits the same completion.
   private func dismissTriagePresentations() async {
-    let wasPresenting = gridStore.isTriagePresented || passSummary != nil
     pendingPassSummary = nil
     passSummary = nil
     gridStore.closeTriage()
-    if wasPresenting {
-      try? await Task.sleep(for: .milliseconds(600))
-    }
+    await dismissalGate.settled()
   }
 
   /// EVIDENCE, fixture-only (`GridView.debugProbeElement`'s pattern): how the last Handoff
