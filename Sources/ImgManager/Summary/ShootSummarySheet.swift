@@ -99,7 +99,8 @@ struct ShootSummarySheet: View {
 /// Form sizing at Regular, a medium detent at Compact (plan Phase 3). Neither request has a
 /// flag-taking form, so the branch is here; it flips only if the window crosses Compact/Regular
 /// while the sheet is open, which rebuilds the sheet's own content and nothing outside it.
-private struct ShootSummarySizing: ViewModifier {
+/// WP31 P2 (IMGMGR-461): internal, so the Pass Summary sheet sizes exactly the same way.
+struct ShootSummarySizing: ViewModifier {
   let isCompact: Bool
   @Binding var detent: PresentationDetent
 

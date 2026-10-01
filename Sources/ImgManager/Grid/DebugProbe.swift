@@ -50,5 +50,21 @@
     /// WP31 P1 (IMGMGR-460): how many `POST /api/marks/state` writes the fixture transport has
     /// served this launch — what makes "Skip performs no server write" falsifiable from a UI test.
     var markWrites = 0
+
+    /// WP31 P2 (IMGMGR-461): the activity a surface's `TriageActivityAdvertiser` last made
+    /// current — type, Handoff eligibility and the decoded `userInfo` — read back from that
+    /// `NSUserActivity` instance (`TriageActivityProbe`), so a UI test reads the activity itself,
+    /// not the session.
+    var activity = ""
+
+    /// WP31 P2 (IMGMGR-461): how the last Handoff continuation ended
+    /// (`ContinuationOutcome.probeValue`) — the positive signal a UI test waits for before it
+    /// asserts that NO loupe opened.
+    var continuation = ""
+
+    /// WP31 P2 review round 2: which path last settled a presented surface for a Handoff route
+    /// (`PresentationDismissalGate`) — `<surface>:onDismiss`, or `<surface>:grace` for a
+    /// presentation withdrawn before it ever appeared.
+    var dismissal = ""
   }
 #endif

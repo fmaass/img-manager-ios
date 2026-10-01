@@ -38,14 +38,16 @@ struct TriageView: View {
   let shootTitle: String
   /// The grid breadcrumb's count (plan decision 2); the loaded pool's size when there is none.
   let totalCount: Int?
-  /// The pass ended — Back, or the last photograph decided. P2 opens the summary from here; in
-  /// P1 the host just closes.
+  /// The pass ended — Back, or the last photograph decided. The host closes the cover and, for a
+  /// pass with at least one action, presents the Pass Summary over the grid (WP31 P2).
   let onPassEnded: (TriagePassResult) -> Void
 
   @State private var session: TriageSession
   /// The preview ON SCREEN, tied to the photograph it was loaded for (review B1): when its id is
   /// not the cursor's the photo area shows a placeholder, never the previous photograph.
   @State private var preview: TriagePreview?
+  /// WP31 P2 review round 3: holds the pass's Handoff activity and keeps it current.
+  @State private var advertiser = TriageActivityAdvertiser(source: "triage")
 
   init(
     store: GridStore, shootTitle: String, totalCount: Int?,
@@ -77,7 +79,30 @@ struct TriageView: View {
     .onChange(of: session.result) { _, result in
       if let result { onPassEnded(result) }
     }
-    .onDisappear { session.close() }
+    // WP31 P2 (IMGMGR-461), plan decision 5: Triage keeps its Handoff activity current while
+    // the pass is open, so the iPad offers the app at the pass's position — made current on
+    // appearance and on every position change, resigned when the pass ends or the cover goes
+    // (review round 3: owned by `TriageActivityAdvertiser`, not `.userActivity`).
+    .onAppear { advertiser.advertise(advertisedHandoff) }
+    .onChange(of: advertisedHandoff) { _, payload in advertiser.advertise(payload) }
+    .onDisappear {
+      advertiser.end()
+      session.close()
+    }
+  }
+
+  /// The payload to keep current: the pass's own, and nothing once the pass has ended.
+  private var advertisedHandoff: TriageActivity? {
+    session.isClosed ? nil : handoff
+  }
+
+  /// WP31 P2 (IMGMGR-461): the pass's Handoff payload — the grid's shoot and the continuation
+  /// position (plan decision 4), with its index in the live pool as information only.
+  private var handoff: TriageActivity? {
+    TriageActivity.advertised(
+      folderID: store.query.folderID, tier: store.query.sourceTier,
+      imageID: session.continuationImageID, pool: store.actionableImages.map(\.id),
+      completed: session.completed)
   }
 
   private var header: some View {
@@ -226,6 +251,14 @@ struct TriageView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.marks")
           .accessibilityValue("markWrites=\(DebugProbe.shared.markWrites)")
+        // WP31 P2 (IMGMGR-461): the activity this cover's advertiser made current.
+        Text("debugProbeActivity")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.activity")
+          .accessibilityValue(DebugProbe.shared.activity)
       }
     }
   #else
