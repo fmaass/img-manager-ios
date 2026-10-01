@@ -60,5 +60,10 @@
     /// (`ContinuationOutcome.probeValue`) — the positive signal a UI test waits for before it
     /// asserts that NO loupe opened.
     var continuation = ""
+
+    /// WP31 P2 review round 2: which path last settled a presented surface for a Handoff route
+    /// (`PresentationDismissalGate`) — `<surface>:onDismiss`, or `<surface>:grace` for a
+    /// presentation withdrawn before it ever appeared.
+    var dismissal = ""
   }
 #endif

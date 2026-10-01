@@ -298,9 +298,15 @@ final class GridStore {
   /// Triage needs a photograph to start on — disabled while the scope is empty.
   var canOpenTriage: Bool { !actionableImages.isEmpty }
 
+  /// WP31 P2 review round 2: the presented surfaces a Handoff route waits on. Triage's cover is
+  /// registered HERE, where its presentation is requested, so a route arriving before the
+  /// cover's content appears still waits for it (`RootView` settles it from the cover).
+  let presentationGate = PresentationDismissalGate()
+
   func openTriage() {
     guard canOpenTriage, !isLoupeOpen else { return }
     isTriagePresented = true
+    presentationGate.requested(.triageCover)
   }
 
   func closeTriage() {

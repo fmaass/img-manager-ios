@@ -113,42 +113,118 @@ enum TriagePresentedSurface: Hashable, Sendable {
   case passSummarySheet
 }
 
-/// Review round 1 (B1): dismissal COMPLETION, shared by every incoming route.
+/// Review rounds 1–2 (B1): dismissal COMPLETION, shared by every incoming route.
 ///
 /// Clearing a presentation flag starts a dismissal; it does not finish one, and UIKit refuses a
-/// new presentation while one is still animating. Elapsed time is not completion either. So the
-/// host reports each surface when it appears (its content's `onAppear`) and when it is gone (the
-/// presentation's own `onDismiss`), and `settled()` returns only once nothing reported is still
-/// on screen or on its way off it. A route that arrives while an EARLIER route's dismissal is
-/// still animating finds the flags already cleared, but the surface still here — and waits for
-/// the same completion.
+/// new presentation while one is still animating. Elapsed time is not completion either. So a
+/// surface is registered the moment its presentation is REQUESTED (`requested` — where the flag
+/// or item that drives it is set), confirmed by its content's `onAppear` (`presented`, an
+/// idempotent re-register), and settled by its presentation's own `onDismiss` (`dismissed`).
+/// `settled()` returns only once nothing registered is left. A route that arrives while an
+/// EARLIER route's dismissal is still animating, or while a presentation is still on its way in,
+/// finds the flags already cleared but the surface still registered — and waits.
+///
+/// One fallback, so a route never waits forever: a presentation requested and then withdrawn
+/// by a route before its content ever appeared may never present at all, and then no
+/// `onDismiss` comes. `withdrawUnappeared()` settles exactly those after a bounded grace. A
+/// surface that DID appear never takes the fallback; it waits for its `onDismiss`.
 @MainActor
 final class PresentationDismissalGate {
-  private var onScreen: Set<TriagePresentedSurface> = []
+  /// Which path settled a surface — recorded for the tests and the DEBUG probe.
+  enum Path: String, Sendable {
+    case onDismiss
+    case grace
+  }
+
+  struct Settlement: Equatable, Sendable {
+    let surface: TriagePresentedSurface
+    let path: Path
+  }
+
+  private struct Entry {
+    let request: Int
+    var appeared = false
+    var withdrawn = false
+  }
+
+  private var entries: [TriagePresentedSurface: Entry] = [:]
+  private var requestCount = 0
   private var waiters: [CheckedContinuation<Void, Never>] = []
+  private let grace: Duration
+  private let sleep: @MainActor (Duration) async -> Void
+  /// The latest settlements, newest last (a handful kept).
+  private(set) var settlements: [Settlement] = []
 
-  var isSettled: Bool { onScreen.isEmpty }
+  /// `grace` and `sleep` are the fallback's bound and its clock — a test injects both.
+  init(
+    grace: Duration = .milliseconds(1500),
+    sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+  ) {
+    self.grace = grace
+    self.sleep = sleep
+  }
 
+  var isSettled: Bool { entries.isEmpty }
+
+  /// The presentation was asked for: registered before anything can appear. Asking again for a
+  /// surface already registered (and not withdrawn) changes nothing.
+  func requested(_ surface: TriagePresentedSurface) {
+    if let entry = entries[surface], !entry.withdrawn { return }
+    requestCount += 1
+    entries[surface] = Entry(request: requestCount)
+  }
+
+  /// The surface's content appeared (`onAppear`): from here only its `onDismiss` settles it.
   func presented(_ surface: TriagePresentedSurface) {
-    onScreen.insert(surface)
+    if entries[surface] == nil { requested(surface) }
+    entries[surface]?.appeared = true
   }
 
   /// A surface's `onDismiss`. Once the last one is gone, every waiting route resumes. A surface
-  /// that was never reported is a no-op.
+  /// that was never registered is a no-op.
   func dismissed(_ surface: TriagePresentedSurface) {
-    onScreen.remove(surface)
-    guard onScreen.isEmpty else { return }
-    let resumed = waiters
-    waiters = []
-    for waiter in resumed { waiter.resume() }
+    guard entries.removeValue(forKey: surface) != nil else { return }
+    record(surface, .onDismiss)
   }
 
-  /// Returns at once when nothing is on screen; otherwise when the last surface is dismissed.
+  /// A route has just cleared the flags. Every registered surface whose content never appeared
+  /// is settled after the grace — unless it appears meanwhile, or is requested anew. Calling it
+  /// again does not extend a grace already running.
+  func withdrawUnappeared() {
+    for (surface, entry) in entries where !entry.appeared && !entry.withdrawn {
+      entries[surface]?.withdrawn = true
+      let request = entry.request
+      Task {
+        await self.sleep(self.grace)
+        self.graceExpired(surface, request: request)
+      }
+    }
+  }
+
+  /// Returns at once when nothing is registered; otherwise when the last surface is settled.
   func settled() async {
-    guard !onScreen.isEmpty else { return }
+    guard !entries.isEmpty else { return }
     await withCheckedContinuation { continuation in
       self.waiters.append(continuation)
     }
+  }
+
+  private func graceExpired(_ surface: TriagePresentedSurface, request: Int) {
+    guard let entry = entries[surface], entry.request == request, !entry.appeared else { return }
+    entries[surface] = nil
+    record(surface, .grace)
+  }
+
+  private func record(_ surface: TriagePresentedSurface, _ path: Path) {
+    settlements.append(Settlement(surface: surface, path: path))
+    if settlements.count > 8 { settlements.removeFirst() }
+    #if DEBUG
+      DebugProbe.shared.dismissal = "\(surface):\(path.rawValue)"
+    #endif
+    guard entries.isEmpty else { return }
+    let resumed = waiters
+    waiters = []
+    for waiter in resumed { waiter.resume() }
   }
 }
 

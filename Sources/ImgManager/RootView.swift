@@ -70,10 +70,6 @@ struct RootView: View {
   /// WP31 P2 (IMGMGR-461), plan decision 6: the receiving route of a Triage Handoff; its ticket
   /// fence lets a newer continuation supersede an older one.
   @State private var continuationRouter = TriageContinuationRouter()
-  /// Review round 1 (B1): which of the Triage cover and the Pass Summary sheet is still on
-  /// screen — reported from their content's `onAppear` and their presentation's `onDismiss` —
-  /// so every incoming route awaits the same dismissal COMPLETION, not a fixed delay.
-  @State private var dismissalGate = PresentationDismissalGate()
   /// WP28 P1: the folder search text, hoisted so every search surface shares one query.
   @State private var folderSearch: FolderSearchModel
   /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
@@ -423,7 +419,10 @@ struct RootView: View {
       onDismiss: {
         passSummary = pendingPassSummary
         pendingPassSummary = nil
-        dismissalGate.dismissed(.triageCover)
+        // Review round 2: the sheet is registered where it is requested — before the cover is
+        // settled, so a waiting route never slips between the two.
+        if passSummary != nil { gridStore.presentationGate.requested(.passSummarySheet) }
+        gridStore.presentationGate.dismissed(.triageCover)
       }
     ) {
       TriageView(
@@ -439,16 +438,16 @@ struct RootView: View {
           gridStore.closeTriage()
         }
       )
-      .onAppear { dismissalGate.presented(.triageCover) }
+      .onAppear { gridStore.presentationGate.presented(.triageCover) }
     }
     // WP31 P2 (IMGMGR-461): the Pass Summary — a medium detent at Compact, a form at Regular
     // (`ShootSummarySizing`), the same content.
     .sheet(
       item: $passSummary,
-      onDismiss: { dismissalGate.dismissed(.passSummarySheet) }
+      onDismiss: { gridStore.presentationGate.dismissed(.passSummarySheet) }
     ) { presentation in
       PassSummarySheet(presentation: presentation, layoutMode: layoutMode)
-        .onAppear { dismissalGate.presented(.passSummarySheet) }
+        .onAppear { gridStore.presentationGate.presented(.passSummarySheet) }
     }
     // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
     // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
@@ -818,15 +817,18 @@ struct RootView: View {
   /// Decision 6 (a): Triage and any Pass Summary go away before the shoot opens. The pass ends
   /// WITHOUT a summary — `onPassEnded` only leaves one while `isTriagePresented` is still true,
   /// and it is false from here on. UIKit refuses a presentation while a dismissal is still
-  /// animating, so the route awaits the dismissal's COMPLETION (`dismissalGate`, resolved from
-  /// the cover's and the sheet's `onDismiss`) before the loupe's cover can be asked for. A route
-  /// that arrives while an earlier route's dismissal is still animating finds the flags already
-  /// cleared and awaits the same completion.
+  /// animating, so the route awaits the dismissal's COMPLETION (`GridStore.presentationGate`:
+  /// each surface registered where its presentation is requested, settled by its own
+  /// `onDismiss`) before the loupe's cover can be asked for. A route that arrives while an
+  /// earlier route's dismissal is still animating, or before a requested surface has appeared,
+  /// finds the flags already cleared and awaits the same completion. A request withdrawn here
+  /// before its content ever appeared is settled after the gate's bounded grace instead.
   private func dismissTriagePresentations() async {
     pendingPassSummary = nil
     passSummary = nil
     gridStore.closeTriage()
-    await dismissalGate.settled()
+    gridStore.presentationGate.withdrawUnappeared()
+    await gridStore.presentationGate.settled()
   }
 
   /// EVIDENCE, fixture-only (`GridView.debugProbeElement`'s pattern): how the last Handoff
@@ -842,6 +844,14 @@ struct RootView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.continuation")
           .accessibilityValue("continuation=\(DebugProbe.shared.continuation)")
+        // Review round 2: which path settled the last surface a route waited on.
+        Text("debugProbeDismissal")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.dismissal")
+          .accessibilityValue("dismissal=\(DebugProbe.shared.dismissal)")
       }
     }
   #else

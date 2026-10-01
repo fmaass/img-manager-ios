@@ -463,6 +463,7 @@ private final class FakeContinuationHost {
         self.events.append("dismiss")
         self.triageOpen = false
         self.summaryOpen = false
+        self.dismissalGate?.withdrawUnappeared()
         await self.dismissalGate?.settled()
       },
       openShoot: { folderID, tier in
@@ -613,10 +614,34 @@ struct TriageContinuationRouterTests {
   }
 }
 
+/// The gate's grace clock, held by the test: a sleep returns only when the test elapses it.
+@MainActor
+private final class FakeGraceClock {
+  private var sleepers: [CheckedContinuation<Void, Never>] = []
+  private(set) var sleeps: [Duration] = []
+
+  func sleep(_ duration: Duration) async {
+    sleeps.append(duration)
+    await withCheckedContinuation { continuation in
+      self.sleepers.append(continuation)
+    }
+  }
+
+  func elapse() {
+    let resumed = sleepers
+    sleepers = []
+    for sleeper in resumed { sleeper.resume() }
+  }
+}
+
 /// Review round 1 (B1): the dismissal completion every incoming route awaits.
 @MainActor
 @Suite("PresentationDismissalGate — dismissal completion, not elapsed time")
 struct PresentationDismissalGateTests {
+  private typealias Settlement = PresentationDismissalGate.Settlement
+  private let activity = TriageActivity(
+    folderID: 7, tier: .local, imageID: 7015, index: 15, completed: false)
+
   /// How many waiters have come back from `settled()`.
   @MainActor
   private final class Resumed {
@@ -673,5 +698,87 @@ struct PresentationDismissalGateTests {
     gate.dismissed(.triageCover)
     await waiter.value
     #expect(resumed.count == 1)
+  }
+
+  /// Review round 2 (1): requested → a route arrives BEFORE the content appears → the content
+  /// appears late → dismissal. The route waits for the dismissal; the grace running out after
+  /// the appearance settles nothing.
+  @Test("Requested, route arrives before appearance, late appearance: waits for the dismissal")
+  func routeBeforeAppearanceWaitsForTheDismissal() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate(grace: .milliseconds(1500)) { await clock.sleep($0) }
+    gate.requested(.triageCover)
+    let router = TriageContinuationRouter()
+    let host = FakeContinuationHost()
+    host.triageOpen = true
+    host.dismissalGate = gate
+
+    let ticket = router.begin()
+    let route = Task { await host.run(router, activity, ticket: ticket) }
+    await waitUntil { host.events == ["dismiss"] && clock.sleeps.count == 1 }
+    #expect(clock.sleeps == [.milliseconds(1500)], "The withdrawn request takes the grace.")
+
+    gate.presented(.triageCover)
+    clock.elapse()
+    for _ in 0..<20 { await Task.yield() }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(host.events == ["dismiss"], "A surface that appeared must wait for its onDismiss.")
+    #expect(!gate.isSettled)
+
+    gate.dismissed(.triageCover)
+    #expect(await route.value == .opened(imageID: 7015))
+    #expect(gate.settlements == [Settlement(surface: .triageCover, path: .onDismiss)])
+  }
+
+  /// Review round 2 (2): requested, then withdrawn by the route before anything appeared — no
+  /// `onDismiss` will ever come. The route proceeds after the grace: not before, not never.
+  @Test("Requested then cancelled before appearance: the route proceeds after the grace only")
+  func cancelledRequestSettlesAfterTheGrace() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate(grace: .milliseconds(1500)) { await clock.sleep($0) }
+    gate.requested(.triageCover)
+    let router = TriageContinuationRouter()
+    let host = FakeContinuationHost()
+    host.dismissalGate = gate
+
+    let ticket = router.begin()
+    let route = Task { await host.run(router, activity, ticket: ticket) }
+    await waitUntil { host.events == ["dismiss"] && clock.sleeps.count == 1 }
+    for _ in 0..<20 { await Task.yield() }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(host.events == ["dismiss"], "Proceeded before the grace ran out.")
+
+    clock.elapse()
+    #expect(await route.value == .opened(imageID: 7015))
+    #expect(gate.settlements == [Settlement(surface: .triageCover, path: .grace)])
+  }
+
+  @Test("A second withdrawal does not restart a running grace; a fresh request voids it")
+  func graceIsNotExtendedAndAFreshRequestVoidsIt() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    gate.requested(.passSummarySheet)
+    gate.withdrawUnappeared()
+    gate.withdrawUnappeared()
+    await waitUntil { clock.sleeps.count == 1 }
+    for _ in 0..<20 { await Task.yield() }
+    #expect(clock.sleeps.count == 1)
+
+    gate.requested(.passSummarySheet)
+    clock.elapse()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(!gate.isSettled, "The old grace settled a NEW request.")
+    #expect(gate.settlements.isEmpty)
+  }
+
+  @Test("The default clock's grace is real and bounded")
+  func realGraceIsBounded() async {
+    let gate = PresentationDismissalGate(grace: .milliseconds(50))
+    gate.requested(.triageCover)
+    let started = ContinuousClock.now
+    gate.withdrawUnappeared()
+    await gate.settled()
+    #expect(ContinuousClock.now - started >= .milliseconds(50))
+    #expect(gate.settlements == [Settlement(surface: .triageCover, path: .grace)])
   }
 }
