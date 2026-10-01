@@ -97,7 +97,8 @@ final class NeedsReviewSectionUITests: OrientationPinnedUITestCase {
 
     let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(incoming, in: app), "The Incoming tier row never appeared.")
-    incoming.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(incoming, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     let shootRow = app.descendants(matching: .any)["folderRow-1"].firstMatch
     XCTAssertTrue(reveal(shootRow, in: app), "The fixture's root shoot row never appeared.")

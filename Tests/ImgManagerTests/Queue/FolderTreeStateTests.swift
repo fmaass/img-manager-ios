@@ -55,3 +55,115 @@ struct FolderTreeStateTests {
     #expect(state.load.answered(.incoming))
   }
 }
+
+/// IMGMGR-462 (WP31 P3): the Compact Library tab opens with the Incoming tier open, so a root
+/// shoot is one tap from its grid and two from Triage. One shot per session, additive, Compact
+/// only — `LibraryTriageUITests` is the end-to-end proof; these pin the rule's edges.
+@MainActor
+@Suite("FolderTreeState Compact launch opening")
+struct FolderTreeLaunchOpeningTests {
+  private let answered = FolderTreeLoad(phase: .loaded, foldersByTier: [.incoming: []])
+
+  private func published(_ load: FolderTreeLoad) -> FolderTreeState {
+    let state = FolderTreeState()
+    let generation = state.beginLoad()
+    #expect(state.publish(load, generation: generation, cached: nil))
+    return state
+  }
+
+  @Test("a Compact load that answered for Incoming opens Incoming and nothing else")
+  func compactOpensIncomingOnly() {
+    let state = published(answered)
+
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+
+    #expect(state.expandedTiers == [.incoming])
+    #expect(state.expandedBranches.isEmpty)
+    #expect(FolderTreeState.compactLaunchTiers == [.incoming])
+  }
+
+  /// Scope: the split's sidebar launches exactly as before, and a Regular load leaves the
+  /// one-shot armed for a later Compact mount.
+  @Test("Regular never opens a tier, and does not consume the Compact opening")
+  func regularIsUntouched() {
+    let state = published(answered)
+
+    state.applyCompactLaunchOpening(layoutMode: .regular3)
+    state.applyCompactLaunchOpening(layoutMode: .regular2)
+    #expect(state.expandedTiers.isEmpty)
+    #expect(!state.appliedCompactLaunchOpening)
+
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    #expect(state.expandedTiers == [.incoming])
+  }
+
+  /// Boundary: nothing published yet (the first frame), so there is no tier to open.
+  @Test("before the first load answers, nothing opens and the opening stays armed")
+  func nothingBeforeTheLoadAnswers() {
+    let state = FolderTreeState()
+
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+
+    #expect(state.expandedTiers.isEmpty)
+    #expect(!state.appliedCompactLaunchOpening)
+  }
+
+  /// Error path: an Incoming fetch that failed must not swallow the opening — the retry that
+  /// answers is the first load that can show the tier.
+  @Test("a load whose Incoming tier failed consumes nothing; the answering retry opens it")
+  func aFailedIncomingTierWaitsForTheRetry() {
+    let state = published(
+      FolderTreeLoad(phase: .partiallyFailed([.incoming]), foldersByTier: [.edits: []]))
+
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    #expect(state.expandedTiers.isEmpty)
+    #expect(!state.appliedCompactLaunchOpening)
+
+    let retry = state.beginLoad()
+    #expect(state.publish(answered, generation: retry, cached: nil))
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    #expect(state.expandedTiers == [.incoming])
+  }
+
+  /// Concurrency: two mounted sections (Library and Search share this state) and a
+  /// pull-to-refresh each publish and each apply — once the reader has closed the tier, none of
+  /// them reopens it.
+  @Test("one shot: a later publish never reopens a tier the reader closed")
+  func theReadersCloseStands() {
+    let state = published(answered)
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    state.expandedTiers.remove(.incoming)
+
+    let second = state.beginLoad()
+    #expect(state.publish(answered, generation: second, cached: nil))
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+
+    #expect(state.expandedTiers.isEmpty)
+  }
+
+  /// Additive: tiers a reveal already opened stay open beside Incoming.
+  @Test("the opening only adds to what is already open")
+  func theOpeningIsAdditive() {
+    let state = published(answered)
+    state.expandedTiers = [.archive]
+
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+
+    #expect(state.expandedTiers == [.archive, .incoming])
+  }
+
+  @Test("the session boundary re-arms the opening for the next account")
+  func endSessionReArms() {
+    let state = published(answered)
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    #expect(state.appliedCompactLaunchOpening)
+
+    state.endSession()
+    #expect(!state.appliedCompactLaunchOpening)
+    let next = state.beginLoad()
+    #expect(state.publish(answered, generation: next, cached: nil))
+    state.applyCompactLaunchOpening(layoutMode: .compact)
+    #expect(state.expandedTiers == [.incoming])
+  }
+}

@@ -31,7 +31,8 @@ final class FolderTreeRowAnatomyUITests: OrientationPinnedUITestCase {
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     // The shoot row itself first: everything below is an assertion ABOUT this row, so its
     // absence has to be reported as its own failure rather than as a missing thumbnail.

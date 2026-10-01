@@ -24,7 +24,8 @@ final class FolderTreeReadinessBadgeUITests: OrientationPinnedUITestCase {
 
     let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(incoming, in: app), "The Incoming tier branch never appeared.")
-    incoming.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(incoming, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     // The row first: every assertion below is about it, so its absence is its own failure.
     let shootRow = app.descendants(matching: .any)["folderRow-1"].firstMatch

@@ -45,6 +45,18 @@ extension XCTestCase {
     selectCompactTab(app, title: "Library", file: file, line: line)
   }
 
+  /// IMGMGR-462 (WP31 P3): opens a tree tier the way the tree walks always have — a tap on its
+  /// label — but only while `child`, a row that tier shows once open, is absent. At Compact the
+  /// Library tab now launches with Incoming already OPEN (`FolderTreeState.compactLaunchTiers`),
+  /// where an unconditional tap would CLOSE it; at Regular every tier still launches closed and
+  /// this taps exactly as before. The row's presence is the read because the system
+  /// `DisclosureGroup` label publishes no open/closed state of its own. The app applies the
+  /// opening in the same main-actor turn that publishes the rows, so a tier label on screen
+  /// already carries its launch state when this reads it.
+  func openTreeTier(_ tier: XCUIElement, showing child: XCUIElement) {
+    if !child.exists { tier.tap() }
+  }
+
   /// Taps a search field and returns once THIS field provably takes typing: the keyboard is up,
   /// and a probe character typed at the app level changes this field's own value (it is deleted
   /// again straight away). `typeText` into an unfocused field fails as "Neither element nor any

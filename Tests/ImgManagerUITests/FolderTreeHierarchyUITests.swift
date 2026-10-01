@@ -35,7 +35,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     // Level one: a folder that is NOT a shoot, which is exactly what the pre-P7 list dropped —
     // and its expand control, which is a separate button from the row's own tap target.
@@ -149,7 +150,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     app.descendants(matching: .any)["folderDisclose-2"].firstMatch.tap()
     let month = app.descendants(matching: .any)["folderTreeMonth-2-2026-09"].firstMatch
@@ -197,7 +199,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     app.descendants(matching: .any)["folderDisclose-2"].firstMatch.tap()
     let month = app.descendants(matching: .any)["folderTreeMonth-2-2026-09"].firstMatch
@@ -257,7 +260,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     let container = app.descendants(matching: .any)["folderContainer-2"].firstMatch
     XCTAssertTrue(reveal(container, in: app), "The year container never appeared under Incoming.")
@@ -350,7 +354,8 @@ final class FolderTreeHierarchyUITests: OrientationPinnedUITestCase {
 
     let localTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(localTier, in: app), "The Incoming tier branch never appeared.")
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     let shoot = app.descendants(matching: .any)["folderRow-1"].firstMatch
     XCTAssertTrue(reveal(shoot, in: app), "The fixture's root shoot row never appeared.")
