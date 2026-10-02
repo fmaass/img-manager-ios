@@ -26,8 +26,8 @@ struct GridFilterControl: View {
     } label: {
       Label("Filters", systemImage: symbolName)
     }
-    // Icon-only, like the shortcut-help control beside it: the funnel carries no value to read at
-    // rest, and the dot below is what states "filters are on".
+    // Icon-only: the funnel carries no value to read at rest, and the dot below is what states
+    // "filters are on".
     .labelStyle(.iconOnly)
     // The dot itself. An overlay rather than a second glyph, so the control's own size is
     // identical filtered and unfiltered — a control that grows when a filter lands would reflow

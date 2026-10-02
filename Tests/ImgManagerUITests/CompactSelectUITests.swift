@@ -6,9 +6,9 @@ import XCTest
 ///   and enters Select mode.
 /// - More rides the bottom action bar at Compact — its only Compact home, at rest and in Select —
 ///   and the grid's toolbar at Regular.
-/// - The options row's "?" opens the shortcut help sheet. The sheet's content check moved here
-///   from `ViewOptionsScreenshotUITests` (TRANSFERRED): at Regular "?" has left the bar, so a
-///   Regular destination asserts the removal instead.
+/// - The shortcut help sheet opens by KEY COMMAND and has no chrome control at either width
+///   (IMGMGR-464, owner ruling 2026-10-02). The sheet's content check moved here from
+///   `ViewOptionsScreenshotUITests` (TRANSFERRED) and runs on both destinations.
 ///
 /// Every test reads the width off the window (never the idiom) and asserts that width's own
 /// contract, so no destination skips.
@@ -85,14 +85,19 @@ final class CompactSelectUITests: OrientationPinnedUITestCase {
   /// be equal — so an extra rendered row fails as surely as a missing one. The delta-gate
   /// finding this replaces was a 15-entry literal inventory here that asserted only presence.
   ///
-  /// HOW IT OPENS THE SHEET, and why: the render assertions go through the CHROME control,
-  /// which both layouts carry (Compact's options row, Regular's `.primaryAction` toolbar).
-  /// Pressing ⌘/ is attempted first but only LOGGED, never asserted — the queue-p4-green2 gate
-  /// run showed the key equivalent never reaches the app on the iPad simulator, which has no
-  /// attached hardware keyboard, and a UI test cannot open the system menu bar either. The
-  /// proof that the ⌘/ and `?` declarations actually dispatch is
-  /// `GridViewOptionsTests.helpDeclarationsDispatchThroughTheirOwnRunClosures`, which invokes
-  /// each declaration's own `run` closure; this test's job is the RENDERED sheet.
+  /// HOW IT OPENS THE SHEET, and why (IMGMGR-464, WP32 P2): by KEY COMMAND, never through
+  /// chrome — the owner ruling of 2026-10-02 removed the options row's keyboard-glyph control
+  /// ("the sheet opens with ⌘/ (hardware keyboard) and from the iPad menu bar"). The key pressed
+  /// is bare `?`, the silent twin of the View menu's ⌘/ row and the same command: ⌘ key
+  /// equivalents have never reached the gate's simulators and a UI test cannot open the system
+  /// menu bar, while a bare key does arrive (`SilentKeysUITests`). So no ⌘/ press is attempted
+  /// here, because one whose effect is not asserted proves nothing. The ⌘/ binding — the
+  /// `helpRow` declaration's key and modifiers and its dispatch into `showShortcutHelp()` — is
+  /// proven by `ShortcutHelpEntryPointsTests.commandSlashIsTheMenuRowAndOpensTheSheet`. A `?`
+  /// that does not arrive FAILS this test; there is no skip path.
+  ///
+  /// Before the key, at BOTH widths: nothing named `gridShortcutHelpControl` exists, with a
+  /// positive control proving the surface it would sit on was rendered.
   ///
   /// Makes no device-idiom decision (plan invariant (i)): every step keys off an observed
   /// element, never off which kind of device this destination happens to be.
@@ -106,38 +111,34 @@ final class CompactSelectUITests: OrientationPinnedUITestCase {
       "Action bar (Dislike button) never appeared within 30s — expected the DEBUG fixture "
         + "composition's populated grid, got something else (sign-in screen, blank screen, or a "
         + "failed stub composition).")
+    let tile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
+    XCTAssertTrue(tile.waitForExistence(timeout: 15), "The fixture's first tile is missing.")
+
+    // IMGMGR-464: the help control is gone from every surface. Positive control first, so the
+    // 0-count cannot pass on a blank screen: the funnel rides Compact's options row and the
+    // Regular bar alike, so its presence proves the surface "?" used to sit on was rendered.
+    let width = rendersCompactShell(app) ? "compact" : "regular"
+    let funnel = app.descendants(matching: .any)["gridFilterControl"].firstMatch
+    XCTAssertTrue(
+      funnel.waitForExistence(timeout: 15),
+      "\(width): no 'gridFilterControl' — the options row / grid bar never rendered, so the "
+        + "absence check below would pass vacuously.")
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "gridShortcutHelpControl").count, 0,
+      "\(width): 'gridShortcutHelpControl' is still on screen — the owner ruled the visible help "
+        + "control out (IMGMGR-464); the sheet opens by key command only.")
 
     let helpBar = app.navigationBars["Keyboard shortcuts"]
-    app.typeKey("/", modifierFlags: .command)
-    let openedByKeyEquivalent = helpBar.waitForExistence(timeout: 5)
-    if !openedByKeyEquivalent {
-      let helpControl = app.descendants(matching: .any)["gridShortcutHelpControl"]
-      // WP29 P1 (IMGMGR-452, plan Decision 1): "?" left the REGULAR bar. Its homes there are ⌘/
-      // and the menu bar's "Keyboard Shortcuts", neither drivable on the iPad simulator, and
-      // their declarations are unit-proven (`GridViewOptionsTests`, `ShellToolbarLayoutTests`).
-      // What a Regular destination CAN prove is the removal: no second touch home.
-      guard rendersCompactShell(app) else {
-        XCTAssertEqual(
-          app.descendants(matching: .any).matching(identifier: "gridShortcutHelpControl").count,
-          0,
-          "The Regular bar still carries 'gridShortcutHelpControl' — \"?\" has one touch home "
-            + "per width, and at Regular that is the menu bar.")
-        return
-      }
-      XCTAssertTrue(
-        helpControl.waitForExistence(timeout: 10),
-        "Neither route into the shortcut help sheet exists at Compact: ⌘/ did not reach the app "
-          + "and nothing named 'gridShortcutHelpControl' is on the options row.")
-      helpControl.tap()
-    }
-    let openedVia = openedByKeyEquivalent ? "the ⌘/ key equivalent" : "the chrome control"
+    XCTAssertFalse(helpBar.exists, "The help sheet was already up before any key was pressed.")
+    app.typeKey("?", modifierFlags: [])
 
     // The sheet's own rendered chrome. NOT an identifier on the sheet container: one set there
     // overrides its descendants' (the `GridOptionsRow` lesson, `GridView.swift`), which would
     // make the rows below unaddressable.
     XCTAssertTrue(
       helpBar.waitForExistence(timeout: 10),
-      "The shortcut help sheet never came up after opening it via \(openedVia).")
+      "\(width): bare ? did not open the Keyboard Shortcuts sheet — the key command is its only "
+        + "route since IMGMGR-464, so the sheet is unreachable here.")
 
     let opened = XCUIScreen.main.screenshot()
     let openedAttachment = XCTAttachment(screenshot: opened)
@@ -254,7 +255,7 @@ final class CompactSelectUITests: OrientationPinnedUITestCase {
     XCTAssertEqual(
       rendered.count, expectedCount,
       "The sheet rendered \(rendered.count) distinct rows but publishes \(expectedCount) active "
-        + "shortcuts. Opened via \(openedVia); traversed \(forwardSteps) forward and "
+        + "shortcuts. Opened by bare ? at \(width); traversed \(forwardSteps) forward and "
         + "\(reverseSteps) back; found: \(rendered.keys.sorted()).")
 
     // The rows a reader came for, asserted on the RENDERED text rather than on the model that
@@ -272,7 +273,7 @@ final class CompactSelectUITests: OrientationPinnedUITestCase {
     }
 
     XCTContext.runActivity(
-      named: "Opened via \(openedVia) · ⌘/ reached the app: \(openedByKeyEquivalent) · "
+      named: "Opened by bare ? at \(width) · "
         + "\(rendered.count) rendered rows in \(forwardSteps)+\(reverseSteps) steps · captured "
         + "\(opened.image.size)"
     ) { _ in }

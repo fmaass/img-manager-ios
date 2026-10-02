@@ -18,10 +18,6 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
   /// WP29 P2 (IMGMGR-453): how the stream is arranged — sort, direction, grouping and thumbnail
   /// size in one popover (`GridArrangeControl`). It replaced the Sort, Group and Zoom controls.
   case arrange
-  /// The shortcut help sheet's chrome route. WP29 P1 (plan Decision 1) takes it off the REGULAR
-  /// bar — its homes there are ⌘/ and the menu bar's "Keyboard Shortcuts" — and keeps it on
-  /// Compact's options row, because an iPhone has no menu bar.
-  case shortcutHelp
   /// WP29 P1: the grid's More menu. At Regular it moved from the bottom action bar to the bar;
   /// at Compact it stays on the action bar (`WorkspaceChromePlacement.actionBarCarriesMore`).
   case more
@@ -37,7 +33,6 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
     case .select: "gridSelectCommand"
     case .filter: "gridFilterControl"
     case .arrange: GridArrangeControl.accessibilityIdentifier
-    case .shortcutHelp: "gridShortcutHelpControl"
     case .more: "gridMoreMenu"
     case .triage: GridTriageControl.accessibilityIdentifier
     }
@@ -72,11 +67,15 @@ enum ShellToolbarLayout {
   /// never overflows.
   static let compactGridBar: [ShellToolbarControl] = [.info, .select]
 
-  /// Compact's persistent options row (`GridOptionsRow`): Arrange, the funnel, Triage, and "?"
-  /// at the trailing end (WP29 P2; Triage since IMGMGR-462, WP31 P3).
-  static let compactOptionsRow: [ShellToolbarControl] = [
-    .arrange, .filter, .triage, .shortcutHelp,
-  ]
+  /// Compact's persistent options row (`GridOptionsRow`): Arrange, the funnel and Triage (WP29
+  /// P2; Triage since IMGMGR-462, WP31 P3).
+  ///
+  /// IMGMGR-464 (WP32 P2, p4128 D10): the trailing keyboard-glyph "?" is gone — owner ruling
+  /// 2026-10-02, "remove the visible help control at Compact; the sheet opens with ⌘/ (hardware
+  /// keyboard) and from the iPad menu bar". No `ShellToolbarControl` opens the shortcut sheet at
+  /// any width; its two entry points are the View menu's "Keyboard Shortcuts" row (⌘/) and that
+  /// row's silent `?` twin (`AppCommands.helpRow`).
+  static let compactOptionsRow: [ShellToolbarControl] = [.arrange, .filter, .triage]
 
   /// The controls the grid's bar carries at `mode`. `inspectorUsesChromeControl` is
   /// `InspectorPresentation.usesChromeControl`, which is true at every width today; it stays an
@@ -170,7 +169,6 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
     // The shipped funnel and its dot, unchanged (see `ShellToolbarRuns` for the badge).
     case .filter: GridFilterControl(store: store)
     case .arrange: GridArrangeControl(store: store)
-    case .shortcutHelp: GridShortcutHelpControl(store: store)
     case .more: GridToolbarMoreMenu(store: store, openShootWindow: openShootWindow)
     // A member of no bar (`compactOptionsRow` holds it); here only for exhaustiveness.
     case .triage: GridTriageControl(store: store)

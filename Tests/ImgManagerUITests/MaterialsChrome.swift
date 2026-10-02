@@ -34,11 +34,11 @@ extension XCTestCase {
 
   /// The grid view options on the Compact options row. WP29 P1 (IMGMGR-452): at Regular "?"
   /// left the bar — see `regularGridBarIdentifiers`. WP29 P2 (IMGMGR-453): Arrange replaced Sort,
-  /// Group and Zoom.
+  /// Group and Zoom. IMGMGR-464 (WP32 P2): "?" left the options row too (owner ruling
+  /// 2026-10-02).
   static let gridViewOptionIdentifiers = [
     "gridArrangeControl",
     "gridFilterControl",
-    "gridShortcutHelpControl",
   ]
 
   /// The Compact bottom action bar, by identifier (Clear, which folds into More, is not listed).

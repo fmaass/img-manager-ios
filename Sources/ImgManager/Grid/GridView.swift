@@ -656,10 +656,11 @@ struct GroupControlHighlight: ViewModifier {
   }
 }
 
-/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row. Since WP29 P2 (IMGMGR-453) it
-/// reads Arrange · Filter · "?": the Arrange control (whose popover holds sort, grouping and
-/// thumbnail size), the funnel, and (diff-gate r1 blocker 3) the trailing shortcut-help button
-/// that is Compact's only route into the help sheet.
+/// WP13 P4 (IMGMGR-215): Compact's persistent view-options row. It reads Arrange · Filter ·
+/// Triage: the Arrange control (WP29 P2, IMGMGR-453; its popover holds sort, grouping and
+/// thumbnail size), the funnel, and the way into Triage (IMGMGR-462). IMGMGR-464 (WP32 P2)
+/// removed the trailing keyboard-glyph "?" per the owner ruling of 2026-10-02: the shortcut sheet
+/// opens with ⌘/ or `?` on a hardware keyboard and from the iPad menu bar, never from chrome.
 /// Deliberately NOT a dense icon filter row (p3220 §2.2 must-not-copy #1) and deliberately not
 /// a filter surface: filters live in the Stats segment (`InspectorView`), never in chrome.
 struct GridOptionsRow: View {
@@ -672,18 +673,17 @@ struct GridOptionsRow: View {
       // test. Each control carries its OWN >=44 pt hit region, the same rule `ActionBarView`
       // already follows — never a single frame on the containing `HStack`.
       ForEach(ShellToolbarLayout.compactOptionsRow, id: \.self) { control in
-        // The trailing "?" sits after a spacer, as it always has.
-        if control == .shortcutHelp {
-          Spacer(minLength: 0)
-        }
         optionControl(control)
           .frame(minHeight: 44)
       }
+      // The spacer that stood before the removed "?" (IMGMGR-464) now closes the row, so the
+      // controls keep their leading positions and the row still spans the width.
+      Spacer(minLength: 0)
     }
     .buttonStyle(.bordered)
     .font(.subheadline)
     // One line each, truncating at the tail, keeps every control's 44 pt hit region reachable —
-    // the alternative (a label wrapping to two lines) grows the row and pushes the help button
+    // the alternative (a label wrapping to two lines) grows the row and pushes its last control
     // off it.
     .lineLimit(1)
     .truncationMode(.tail)
@@ -697,15 +697,14 @@ struct GridOptionsRow: View {
     // needs to name; the row is just where they sit on Compact.
   }
 
-  /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only like the help button;
-  /// `FilterPopoverUITests` asserts the help button is still hittable here — the "the row did
-  /// not overflow" contract.
+  /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only; `FilterPopoverUITests`
+  /// asserts the row's last control (Triage since IMGMGR-464) is still hittable here — the "the
+  /// row did not overflow" contract.
   @ViewBuilder
   private func optionControl(_ control: ShellToolbarControl) -> some View {
     switch control {
     case .arrange: GridArrangeControl(store: store)
     case .filter: GridFilterControl(store: store)
-    case .shortcutHelp: GridShortcutHelpControl(store: store)
     // IMGMGR-462 (WP31 P3): the way into Triage, moved here from the navigation bar, where a
     // long title collapsed it into the bar's "More" overflow. The same control — identifier
     // `gridTriageButton`, disabled while nothing is actionable, `openTriage()` — and a visible
@@ -751,39 +750,6 @@ struct GridSelectControl: View {
       Label(GridSelectCommand.title(store), systemImage: GridSelectCommand.systemImage)
     }
     .accessibilityIdentifier(GridSelectCommand.accessibilityIdentifier)
-  }
-}
-
-/// WP13 P4 (IMGMGR-215), diff-gate r1 blocker 3: the chrome path INTO the shortcut help sheet,
-/// rendered on both layouts — Compact's options row and Regular's `.primaryAction` toolbar.
-/// Every other route the plan names — the menu-bar View menu, `?`, ⌘/ — needs a hardware
-/// keyboard or the menu bar, neither of which exists on a phone and neither of which the gate's
-/// simulators supplied, so without this the sheet was unreachable and had no rendered evidence.
-/// Deliberately NOT a fourth entry in the More menu: that menu's contents are P5a's decided set
-/// (IMGMGR-221) and this phase does not get to pre-empt them.
-///
-/// Calls the same `GridStore.showShortcutHelp()` the `?`/⌘/ declarations dispatch into, so the
-/// button and the shortcut cannot drift apart.
-struct GridShortcutHelpControl: View {
-  let store: GridStore
-
-  var body: some View {
-    Button {
-      store.showShortcutHelp()
-    } label: {
-      Label("Keyboard shortcuts", systemImage: "keyboard")
-        // WP28 P4 (IMGMGR-451): the keyboard glyph is short, so the bordered capsule — which IS
-        // the hit target — measured 46.7 × 27.7 pt on the Compact options row, under the 28 pt
-        // floor. A frame OUTSIDE the button (the `minHeight: 44` at the call site) does not
-        // grow it. 18 pt of label height brings the capsule to its text siblings' height
-        // (Group/Sort, 32-34 pt) and adds nothing at Regular, where the bar item is 36 pt.
-        .frame(minHeight: 18)
-    }
-    // Icon-only ON PURPOSE here, unlike Group/Zoom: it carries no value to read, and the row's
-    // job is the two view options — this is the help affordance beside them, not a third one.
-    .labelStyle(.iconOnly)
-    .accessibilityLabel("Keyboard shortcuts")
-    .accessibilityIdentifier("gridShortcutHelpControl")
   }
 }
 

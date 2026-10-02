@@ -6,9 +6,10 @@ import XCTest
 final class LoupeToolbarUITests: OrientationPinnedUITestCase {
 
   /// The grid bar's own controls — none of them may be mounted while the loupe is open.
+  /// IMGMGR-464 (WP32 P2) deleted `gridShortcutHelpControl`, so it is no longer listed.
   private static let gridBarIdentifiers = [
     "gridSelectCommand", "gridFilterControl", "gridArrangeControl", "gridMoreMenu",
-    "gridShortcutHelpControl", "inspectorChromeButton",
+    "inspectorChromeButton",
   ]
 
   // MARK: - Three groups, and no grid item
