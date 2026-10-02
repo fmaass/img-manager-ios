@@ -127,16 +127,6 @@ struct GridViewOptionsTests {
     #expect(store.isShortcutHelpPresented == true)
   }
 
-  @Test("Compact's options-row button raises the SAME sheet the shortcuts do")
-  func theOptionsRowHelpButtonRaisesTheSheet() {
-    // `GridShortcutHelpControl`'s whole body is `store.showShortcutHelp()` — the one action
-    // both surfaces call, so the button and the key equivalent cannot drift apart.
-    let store = makeStore()
-    #expect(store.isShortcutHelpPresented == false)
-    store.showShortcutHelp()
-    #expect(store.isShortcutHelpPresented == true)
-  }
-
   @Test("Help opens THROUGH each declaration's own run closure — both `?` and ⌘/")
   func helpDeclarationsDispatchThroughTheirOwnRunClosures() {
     // Diff-gate r1 blocker 2: every retained test called `keyboardActions.showShortcutHelp()`

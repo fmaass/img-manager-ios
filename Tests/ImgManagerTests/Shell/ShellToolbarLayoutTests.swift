@@ -38,36 +38,39 @@ struct ShellToolbarLayoutTests {
 
   /// IMGMGR-462 (WP31 P3): the bar is back to its pre-WP31 members — with Triage leading it, a
   /// long title pushed all three controls into iOS 26's "More" overflow — and Triage rides the
-  /// options row, which is content and never overflows.
-  @Test("Compact: Info and Select on the bar; the options row is Arrange · Filter · Triage · ?")
+  /// options row, which is content and never overflows. IMGMGR-464 (WP32 P2): "?" left the row.
+  @Test("Compact: Info and Select on the bar; the options row is Arrange · Filter · Triage")
   func compactCarriesInfoAndSelect() {
     #expect(
       ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
         == [.info, .select])
-    #expect(
-      ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .triage, .shortcutHelp])
+    #expect(ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .triage])
   }
 
-  @Test("\"?\" leaves the Regular bar and stays on the Compact options row")
-  func shortcutHelpHasOneTouchHomePerWidth() {
-    for mode in [LayoutMode.regular2, .regular3] {
-      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
-      #expect(!bar.contains(.shortcutHelp), "\"?\" is still on the bar at \(mode)")
+  /// IMGMGR-464 (WP32 P2): owner ruling 2026-10-02, "remove the visible help control at
+  /// Compact". WP29 P1 had already taken it off the Regular bar, so its shipped identifier is now
+  /// on no bar and no options row at either width. The sheet's two remaining entry points (⌘/
+  /// and its silent `?` twin) are `ShortcutHelpEntryPointsTests`'.
+  @Test("The keyboard-glyph help control is on no bar and no options row, at either width")
+  func shortcutHelpControlIsOnNoSurface() {
+    let removed = "gridShortcutHelpControl"
+    func carriesTheHelpControl(_ identifiers: [String]) -> Bool {
+      identifiers.contains(removed)
     }
-    #expect(ShellToolbarLayout.compactOptionsRow.filter { $0 == .shortcutHelp }.count == 1)
-    #expect(
-      !ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
-        .contains(.shortcutHelp))
-    // Regular's homes: ⌘/ (and bare ?) in the menu bar's "Keyboard Shortcuts".
-    let help = AppCommands.declarations.filter { $0.shortcut == .help }
-    #expect(help.contains { $0.key == KeyEquivalent("/") && $0.modifiers == [.command] })
-    // …and it dispatches to the sheet, through the declaration's own closure.
-    let store = GridStore(
-      service: GridService(client: ImgManagerAPIClient.make(transport: GridStubTransport())))
-    let command = help.first { $0.key == KeyEquivalent("/") }
-    #expect(store.isShortcutHelpPresented == false)
-    command?.run(store.keyboardActions)
-    #expect(store.isShortcutHelpPresented == true, "⌘/ did not raise the shortcut sheet")
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      let row: [ShellToolbarControl] =
+        WorkspaceChromePlacement.host(for: mode) == .compactOptionsRow
+        ? ShellToolbarLayout.compactOptionsRow : []
+      let ids = (bar + row).compactMap(\.accessibilityIdentifier)
+      #expect(!carriesTheHelpControl(ids), "The help control is on a surface at \(mode): \(ids)")
+      // Positive controls: the surfaces really were enumerated (the funnel rides both widths),
+      // and the predicate fails a surface that still carries the control.
+      #expect(ids.contains("gridFilterControl"), "No surface was enumerated at \(mode): \(ids)")
+      #expect(carriesTheHelpControl(ids + [removed]))
+    }
+    let everyIdentifier = ShellToolbarControl.allCases.compactMap(\.accessibilityIdentifier)
+    #expect(!carriesTheHelpControl(everyIdentifier), "A control still ships the help identifier")
   }
 
   @Test("Select has one touch home per width: the bar, never the More menu")
@@ -168,7 +171,7 @@ struct ShellToolbarLayoutTests {
     #expect(Set(identifiers).count == identifiers.count)
     #expect(
       Set(identifiers)
-        == Set(Self.regularIdentifiers + ["gridShortcutHelpControl", "gridTriageButton"]))
+        == Set(Self.regularIdentifiers + ["gridTriageButton"]))
     #expect(ShellToolbarControl.search.accessibilityIdentifier == nil)
   }
 

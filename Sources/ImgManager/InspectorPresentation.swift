@@ -48,7 +48,7 @@ enum InspectorColumnMetrics {
 /// grid view-option controls (`gridFilterControl`, `gridSortControl`, `gridGroupControl`,
 /// `gridZoomControl`, `gridShortcutHelpControl`) and the inspector's own persistent control
 /// (`inspectorChromeButton`). WP29 P2 (IMGMGR-453) replaced Sort, Group and Zoom with one
-/// `gridArrangeControl`.
+/// `gridArrangeControl`; IMGMGR-464 (WP32 P2) removed `gridShortcutHelpControl`.
 ///
 /// A VALUE, and the same "declare the decision, then render the declaration" discipline
 /// `GridChromeRows` and `InspectorPlacement` already follow: the answer is stated once, here,

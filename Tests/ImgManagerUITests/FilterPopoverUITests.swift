@@ -25,9 +25,10 @@ import XCTest
 ///
 /// Makes NO device-idiom decision (plan invariant (i)): every step keys off an OBSERVED element,
 /// so the same assertions run against Regular's `.primaryAction` toolbar and against Compact's
-/// persistent options row. The displaced-control leg is `gridShortcutHelpControl` — "the row did
-/// not overflow" — on Compact, and since WP29 P1 `gridMoreMenu` — "nothing was pushed into the
-/// chevron" — on Regular; the branch keys off the observed shell (`rendersCompactShell`).
+/// persistent options row. The displaced-control leg reads the surface's LAST control — on
+/// Compact the options row's Triage (`gridTriageButton`, since IMGMGR-464 removed the trailing
+/// "?"), "the row did not overflow", and since WP29 P1 `gridMoreMenu` — "nothing was pushed into
+/// the chevron" — on Regular; the branch keys off the observed shell (`rendersCompactShell`).
 final class FilterPopoverUITests: OrientationPinnedUITestCase {
 
   /// Launched with the inspector off screen on purpose: decision 1 is about filtering WITHOUT the
@@ -93,7 +94,9 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
     //
     // WP29 P1 (IMGMGR-452, plan Decision 1): "?" left the REGULAR bar, so there the displaced-
     // control check reads the bar's LAST app item, More — the first to fall into the chevron.
-    let lastOnSurface = rendersCompactShell(app) ? "gridShortcutHelpControl" : "gridMoreMenu"
+    // IMGMGR-464 (WP32 P2) removed "?" from Compact's options row too (owner ruling 2026-10-02),
+    // so there it reads the row's last control now, Triage — the first a crowded row pushes off.
+    let lastOnSurface = rendersCompactShell(app) ? "gridTriageButton" : "gridMoreMenu"
     XCTAssertTrue(
       app.descendants(matching: .any)[lastOnSurface].firstMatch.isHittable,
       "'\(lastOnSurface)' is no longer hittable once the funnel joined its surface — on "
