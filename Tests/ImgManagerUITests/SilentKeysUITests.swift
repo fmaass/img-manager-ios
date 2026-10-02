@@ -17,10 +17,21 @@ final class SilentKeysUITests: OrientationPinnedUITestCase {
     let helpBar = app.navigationBars["Keyboard shortcuts"]
     XCTAssertFalse(helpBar.exists, "The help sheet was already up before any key was pressed.")
 
-    app.typeKey("?", modifierFlags: [])
+    // Pressed up to five times, 3 s apart: gate lane-m 2026-10-02 on a79ef8f showed the FIRST
+    // press can land before the freshly rendered grid has registered its key commands (this
+    // test went red on both destinations while `CompactSelectUITests`, pressing the same key a
+    // few queries later, went green). An unregistered binding still fails — no press ever opens
+    // the sheet — so the retry buys time, not a pass.
+    var presses = 0
+    while presses < 5, !helpBar.exists {
+      app.typeKey("?", modifierFlags: [])
+      presses += 1
+      _ = helpBar.waitForExistence(timeout: 3)
+    }
     XCTAssertTrue(
-      helpBar.waitForExistence(timeout: 10),
-      "Bare ? did not open the Keyboard Shortcuts sheet — the silent binding is not registered.")
+      helpBar.exists,
+      "Bare ? did not open the Keyboard Shortcuts sheet after \(presses) presses — the silent "
+        + "binding is not registered.")
   }
 
   /// (b) Space — the silent twin of the Grid menu's "Open" (Return) — opens the loupe on the
