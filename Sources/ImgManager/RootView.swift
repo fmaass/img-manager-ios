@@ -404,6 +404,8 @@ struct RootView: View {
           store: gridStore, layoutMode: layoutMode, share: shareExport,
           chrome: LoupeChrome(shootTitle: currentBreadcrumb?.title ?? "", info: nil))
       }
+      // IMGMGR-463: the cover takes the workspace's place, so it carries the silent keys too.
+      .background { SilentKeyCommandHost() }
     }
     // WP31 P1 (IMGMGR-460): Triage — Compact only, its own cover beside the loupe's. It never
     // sets `isLoupeOpen` (`openTriage()` refuses while the loupe is open), so the two covers are
@@ -439,6 +441,8 @@ struct RootView: View {
         }
       )
       .onAppear { gridStore.presentationGate.presented(.triageCover) }
+      // IMGMGR-463: as on the loupe's cover — the silent keys follow their menu rows here.
+      .background { SilentKeyCommandHost() }
     }
     // WP31 P2 (IMGMGR-461): the Pass Summary — a medium detent at Compact, a form at Regular
     // (`ShootSummarySizing`), the same content.
@@ -458,6 +462,9 @@ struct RootView: View {
     // WP30 P3 (IMGMGR-458), plan decision 7: nil while Compare is open, so every key command is
     // disabled there; the same actions are published again after Back.
     .focusedSceneValue(\.gridKeyboardActions, publishedKeyboardActions)
+    // IMGMGR-463 (p4128 D10): the secondary keys (Space, bare A, `?`) the menu bar no longer
+    // draws as twin rows, bound here instead and dispatched into the same focused values.
+    .background { SilentKeyCommandHost() }
     // WP13 P11: the menu-bar twin of the More menu's "Open in New Window". Published from here
     // because `openWindow` is a SCENE capability the store cannot hold, and carried as the
     // ALREADY-CONSTRUCTED value so the menu item's enabled state and the value it would open are

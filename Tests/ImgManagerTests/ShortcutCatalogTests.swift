@@ -292,7 +292,8 @@ struct ShortcutCatalogTests {
   @MainActor
   @Test("The View menu NAMES the sort keys and the direction toggle")
   func viewMenuNamesTheSortOptions() {
-    let titles = AppCommands.viewMenuGroups.flatMap(\.items).map(\.title)
+    // The rows the menu DRAWS (IMGMGR-463), not every binding.
+    let titles = AppCommands.viewMenuGroups.flatMap(\.menuRows).map(\.title)
     for key in SortGroupOptions.sortKeys {
       #expect(titles.contains("Sort: \(key.title)"), "the View menu does not name \(key.title)")
     }
@@ -352,11 +353,16 @@ struct ShortcutCatalogTests {
     }
     #expect(commandA.isEmpty)
 
-    // Both declarations must be in the View menu — the discovery surface p3220 §3.1 names.
+    // Both declarations belong to the View menu's group — the discovery surface p3220 §3.1
+    // names — but since IMGMGR-463 (p4128 D10) only the ⌘⇧A form draws a ROW there; bare A is
+    // its silent twin, still bound (above) and rendered by `SilentKeyCommandHost`.
     let viewMenuItems = AppCommands.viewMenuGroups.flatMap(\.items)
     let viewMenuIDs = Set(viewMenuItems.map(\.id))
     #expect(declared.allSatisfy { viewMenuIDs.contains($0.id) })
-    #expect(viewMenuItems.map(\.title).contains("Advance After Marking"))
+    let viewMenuRows = AppCommands.viewMenuGroups.flatMap(\.menuRows)
+    #expect(viewMenuRows.filter { $0.shortcut == .autoAdvance }.map(\.id) == discovery.map(\.id))
+    #expect(viewMenuRows.map(\.title).contains("Advance After Marking"))
+    #expect(bare.allSatisfy { $0.presentation == .silent })
 
     // POSITIVE CONTROL, same invocation (LSN-0033): the 0-hit `commandA` filter proves absence
     // only if the same scan finds something known to be bound.
@@ -393,7 +399,8 @@ struct ShortcutCatalogTests {
   @MainActor
   @Test("The View menu NAMES the view options the AC requires: Group, Scene, every zoom step, help")
   func viewMenuNamesGroupAndZoomAndHelp() {
-    let titles = AppCommands.viewMenuGroups.flatMap(\.items).map(\.title)
+    // The rows the menu DRAWS (IMGMGR-463), not every binding.
+    let titles = AppCommands.viewMenuGroups.flatMap(\.menuRows).map(\.title)
     #expect(titles.contains("Group: None"))
     #expect(titles.contains("Group: Scene"))
     #expect(titles.contains("Toggle Scene View"))
