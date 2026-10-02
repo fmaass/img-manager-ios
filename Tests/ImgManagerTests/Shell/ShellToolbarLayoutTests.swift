@@ -36,13 +36,16 @@ struct ShellToolbarLayoutTests {
     }
   }
 
-  @Test("Compact: Triage, Info and Select on the bar; the options row is Arrange · Filter · ?")
-  func compactCarriesTriageInfoAndSelect() {
+  /// IMGMGR-462 (WP31 P3): the bar is back to its pre-WP31 members — with Triage leading it, a
+  /// long title pushed all three controls into iOS 26's "More" overflow — and Triage rides the
+  /// options row, which is content and never overflows.
+  @Test("Compact: Info and Select on the bar; the options row is Arrange · Filter · Triage · ?")
+  func compactCarriesInfoAndSelect() {
     #expect(
       ShellToolbarLayout.gridBar(for: .compact, inspectorUsesChromeControl: true)
-        == [.triage, .info, .select])
+        == [.info, .select])
     #expect(
-      ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .shortcutHelp])
+      ShellToolbarLayout.compactOptionsRow == [.arrange, .filter, .triage, .shortcutHelp])
   }
 
   @Test("\"?\" leaves the Regular bar and stays on the Compact options row")
@@ -132,25 +135,28 @@ struct ShellToolbarLayoutTests {
       let presentation = InspectorPlacement.presentation(for: mode)
       let bar = ShellToolbarLayout.gridBar(
         for: mode, inspectorUsesChromeControl: presentation.usesChromeControl)
-      // WP31 P1 (IMGMGR-460): Info leads every Regular bar (the IMGMGR-390 fold argument); at
-      // Compact Triage leads and Info follows it.
-      let leader: ShellToolbarControl = mode == .compact ? .triage : .info
-      #expect(bar.first == leader, "\(leader) does not lead the bar at \(mode)")
+      // Info leads every bar (the IMGMGR-390 fold argument); IMGMGR-462 took Triage, which led
+      // the Compact bar under WP31 P1, off the bar altogether.
+      #expect(bar.first == .info, "Info does not lead the bar at \(mode)")
       #expect(bar.contains(.info), "Info is not on the bar at \(mode)")
     }
   }
 
-  @Test("Triage has one home: the Compact bar, enabled only while the scope holds a photograph")
+  /// IMGMGR-462 (WP31 P3): the options row is mounted only at Compact
+  /// (`GridChromeRows.rows`), so its membership plus "on no bar" is "Compact only".
+  @Test("Triage has one home: the Compact options row, enabled only with a photograph in scope")
   func triageIsCompactOnly() {
-    for mode in [LayoutMode.regular2, .regular3] {
-      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
-      #expect(!bar.contains(.triage), "Triage is on the Regular bar at \(mode)")
-    }
-    #expect(ShellToolbarLayout.compactGridBar.filter { $0 == .triage }.count == 1)
-    #expect(!ShellToolbarLayout.compactOptionsRow.contains(.triage))
-    #expect(ShellToolbarControl.triage.accessibilityIdentifier == "gridTriageButton")
     let store = GridStore(
       service: GridService(client: ImgManagerAPIClient.make(transport: GridStubTransport())))
+    for mode in [LayoutMode.compact, .regular2, .regular3] {
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      #expect(!bar.contains(.triage), "Triage is on the bar at \(mode)")
+      let rows = GridChromeRows.rows(layoutMode: mode, store: store)
+      #expect(rows.contains(.options) == (mode == .compact), "Options row presence at \(mode)")
+    }
+    #expect(!ShellToolbarLayout.regularGridBar.contains(.triage))
+    #expect(ShellToolbarLayout.compactOptionsRow.filter { $0 == .triage }.count == 1)
+    #expect(ShellToolbarControl.triage.accessibilityIdentifier == "gridTriageButton")
     #expect(store.canOpenTriage == false)
     store.openTriage()
     #expect(store.isTriagePresented == false, "Triage opened on an empty scope")

@@ -706,8 +706,13 @@ struct GridOptionsRow: View {
     case .arrange: GridArrangeControl(store: store)
     case .filter: GridFilterControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
+    // IMGMGR-462 (WP31 P3): the way into Triage, moved here from the navigation bar, where a
+    // long title collapsed it into the bar's "More" overflow. The same control — identifier
+    // `gridTriageButton`, disabled while nothing is actionable, `openTriage()` — and a visible
+    // title and icon (the bordered row style shows both), so it is chrome, never a gesture.
+    case .triage: GridTriageControl(store: store)
     // Not options-row members (`ShellToolbarLayout.compactOptionsRow`).
-    case .info, .search, .select, .more, .triage: EmptyView()
+    case .info, .search, .select, .more: EmptyView()
     }
   }
 }

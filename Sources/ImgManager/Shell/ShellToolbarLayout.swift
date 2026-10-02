@@ -25,7 +25,8 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
   /// WP29 P1: the grid's More menu. At Regular it moved from the bottom action bar to the bar;
   /// at Compact it stays on the action bar (`WorkspaceChromePlacement.actionBarCarriesMore`).
   case more
-  /// WP31 P1 (IMGMGR-460): the way into Triage — Compact only (iPad culls in the loupe).
+  /// WP31 P1 (IMGMGR-460): the way into Triage — Compact only (iPad culls in the loupe). Its
+  /// home is Compact's options row (IMGMGR-462), never a bar.
   case triage
 
   /// Nil for the system search item, which carries no identifier of the app's.
@@ -62,15 +63,19 @@ enum ShellToolbarLayout {
   ]
 
   /// WP29 P1: Compact's navigation bar — Info, and Select beside it. Search is the Search tab
-  /// there and More stays on the bottom action bar. WP31 P1 (IMGMGR-460): Triage leads it; the
-  /// Regular fold argument for Info leading (IMGMGR-390) is a Regular-3 one, and Info and Select
-  /// both stay.
-  static let compactGridBar: [ShellToolbarControl] = [.triage, .info, .select]
+  /// there and More stays on the bottom action bar.
+  ///
+  /// IMGMGR-462 (WP31 P3): back to its pre-WP31 members. WP31 P1 had Triage leading this bar,
+  /// and on iOS 26 a long title (a shoot's tree name, "2026-08-27 — Stub Shoot") pushed all
+  /// three controls into the bar's "More" overflow — Triage, Info and Select each one tap
+  /// further away. Triage now lives in `compactOptionsRow`, which is content, not bar, and
+  /// never overflows.
+  static let compactGridBar: [ShellToolbarControl] = [.info, .select]
 
-  /// Compact's persistent options row (`GridOptionsRow`): Arrange, the funnel, and "?" at the
-  /// trailing end (WP29 P2).
+  /// Compact's persistent options row (`GridOptionsRow`): Arrange, the funnel, Triage, and "?"
+  /// at the trailing end (WP29 P2; Triage since IMGMGR-462, WP31 P3).
   static let compactOptionsRow: [ShellToolbarControl] = [
-    .arrange, .filter, .shortcutHelp,
+    .arrange, .filter, .triage, .shortcutHelp,
   ]
 
   /// The controls the grid's bar carries at `mode`. `inspectorUsesChromeControl` is
@@ -167,6 +172,7 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
     case .arrange: GridArrangeControl(store: store)
     case .shortcutHelp: GridShortcutHelpControl(store: store)
     case .more: GridToolbarMoreMenu(store: store, openShootWindow: openShootWindow)
+    // A member of no bar (`compactOptionsRow` holds it); here only for exhaustiveness.
     case .triage: GridTriageControl(store: store)
     }
   }

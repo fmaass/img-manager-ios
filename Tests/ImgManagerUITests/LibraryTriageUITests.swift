@@ -10,7 +10,8 @@ import XCTest
 /// closed, so the fixture's root shoot (`folderRow-1`, the Incoming tier's root-level
 /// `2026-08-27 — Stub Shoot`) was not on screen until the tier was tapped — three taps, and this
 /// test failed at the row's absence. The product now opens Incoming at Compact
-/// (`FolderTreeState.applyCompactLaunchOpening`).
+/// (`FolderTreeState.applyCompactLaunchOpening`), and Triage sits in the grid's Compact options
+/// row, where a long title cannot push it into the navigation bar's overflow.
 ///
 /// Compact only: at Regular the tree is the split's sidebar and Triage has no entry (the iPad
 /// culls in the loupe), so the test skips there with that reason.
@@ -44,12 +45,19 @@ final class LibraryTriageUITests: OrientationPinnedUITestCase {
     attach(named: "IMGMGR-462-library-at-launch")
     tap(shootRow)
 
-    // (2) The grid's Triage entry (P1, IMGMGR-460), on the grid the row pushed.
-    let entry = app.navigationBars.descendants(matching: .any)["gridTriageButton"].firstMatch
+    // (2) The grid's Triage entry (IMGMGR-460), on the grid the row pushed — in the Compact
+    // options row since IMGMGR-462. This grid is titled by the tree's long name ("2026-08-27 —
+    // Stub Shoot"), the title that pushed a bar-hosted Triage into the bar's "More" overflow,
+    // so the entry must be hittable as it stands: no overflow opened, no tap spent.
+    let entry = app.descendants(matching: .any)["gridTriageButton"].firstMatch
     XCTAssertTrue(
       entry.waitForExistence(timeout: 30),
       "The shoot row did not reach a grid carrying 'gridTriageButton'.")
     XCTAssertTrue(waitFor("isEnabled == true", entry), "Triage is disabled on a populated grid.")
+    XCTAssertTrue(
+      entry.isHittable,
+      "'gridTriageButton' is not hittable on the long-titled Library grid without opening the "
+        + "bar's \"More\" overflow.")
     tap(entry)
 
     XCTAssertTrue(
