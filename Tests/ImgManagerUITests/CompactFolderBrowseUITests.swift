@@ -33,7 +33,8 @@ final class CompactFolderBrowseUITests: OrientationPinnedUITestCase {
         + "surface (IMGMGR-216); a nil tree section is exactly the defect this phase fixed.")
     attach(named: "P6-home-tier-branch")
 
-    localTier.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(localTier, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
     let shootRow = app.descendants(matching: .any)[stubShootRow].firstMatch
     XCTAssertTrue(
       reveal(shootRow, in: app),

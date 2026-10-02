@@ -22,6 +22,18 @@ final class FolderTreeState {
   /// F3: which tree load is the current one. Advanced by every start, checked by every finish,
   /// and advanced by `endSession()` so a load started under the old session is never current.
   private(set) var loadGeneration = 0
+  /// IMGMGR-462 (WP31 P3): whether this session's Compact launch opening has been applied (see
+  /// `applyCompactLaunchOpening`). Re-armed by `endSession()`, so the next account opens the
+  /// same way the first one did.
+  private(set) var appliedCompactLaunchOpening = false
+
+  /// IMGMGR-462 (WP31 P3): the tier branches the Compact tree opens with. Incoming alone — the
+  /// tier new shoots land in — so its root-level shoots are one tap from their grid and two from
+  /// Triage (plan AC 3: "shoot row, `gridTriageButton`"). Before this every tier launched closed
+  /// and the walk was three taps (tier, row, Triage). Edits and Archive stay closed, and no row
+  /// inside Incoming is opened: a shoot under a year container is still reached through its year
+  /// and month rows, exactly as before.
+  static let compactLaunchTiers: Set<FolderTreeTier> = [.incoming]
 
   /// Starts a load: advances the generation and returns it, the ticket its finish presents.
   func beginLoad() -> Int {
@@ -41,6 +53,24 @@ final class FolderTreeState {
     return true
   }
 
+  /// IMGMGR-462 (WP31 P3): opens `compactLaunchTiers` ONCE per session, at Compact, on the first
+  /// published load that answered for Incoming. Additive (it never closes anything) and one-shot:
+  /// after it ran, the reader's own disclosure choices stand — a tier closed by hand stays closed
+  /// through a pull-to-refresh, a second mounted section (the Search tab shares this state) and a
+  /// relaunch of the load. Regular is untouched: the split's sidebar launches exactly as before,
+  /// and a Regular load does not consume the one-shot, so a later Compact mount (an iPad window
+  /// narrowed into Slide Over) still opens the way the phone does.
+  ///
+  /// A load whose Incoming tier did not answer (still loading, or failed) consumes nothing: a
+  /// retry that answers is the first load that can show the tier, so that is when it opens.
+  func applyCompactLaunchOpening(layoutMode: LayoutMode) {
+    guard layoutMode == .compact, !appliedCompactLaunchOpening, load.answered(.incoming) else {
+      return
+    }
+    appliedCompactLaunchOpening = true
+    expandedTiers.formUnion(Self.compactLaunchTiers)
+  }
+
   /// The session boundary (sign-out, erased credentials), called beside
   /// `QueueStore.endSession()`. This object outlives the workspace view that used to own this
   /// state, so without it the next account would open on the previous account's folders and
@@ -51,5 +81,6 @@ final class FolderTreeState {
     load = .loading
     expandedBranches = []
     expandedTiers = []
+    appliedCompactLaunchOpening = false
   }
 }

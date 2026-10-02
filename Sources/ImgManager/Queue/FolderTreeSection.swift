@@ -160,6 +160,11 @@ struct FolderTreeSection: View {
     // Rule 6, the relaunch case: the selection is restored before there is a tree to find it in,
     // so the ancestors can only be opened once the rows exist.
     revealHighlightedFolder()
+    // IMGMGR-462 (WP31 P3): the Compact Library tab opens with Incoming open — applied in the
+    // same main-actor turn as the publish, BEFORE the await below, so the first frame that shows
+    // the tier already shows it open (no closed-then-open flash, and no window in which a tap on
+    // the label would race it).
+    treeState.applyCompactLaunchOpening(layoutMode: layoutMode)
     // Only a clean answer is worth remembering: a partial one would persist a tier's absence as
     // if it were its content, and the next launch would replay that as the library.
     if fresh.phase == .loaded { await rememberTree(fresh.foldersByTier, fence) }

@@ -97,7 +97,8 @@ final class TierHomeUITests: OrientationPinnedUITestCase {
 
     let incoming = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertTrue(reveal(incoming, in: app), "The Incoming tier row never appeared.")
-    incoming.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(incoming, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
 
     app.descendants(matching: .any)["folderDisclose-2"].firstMatch.tap()
     let month = app.descendants(matching: .any)["folderTreeMonth-2-2026-09"].firstMatch
@@ -142,7 +143,8 @@ final class TierHomeUITests: OrientationPinnedUITestCase {
         + "to the home, not nested under its own wrapper.")
     attach(named: "\(label)-home")
 
-    incoming.tap()
+    // IMGMGR-462: Compact launches with Incoming open; a bare tap would close it.
+    openTreeTier(incoming, showing: app.descendants(matching: .any)["folderRow-1"].firstMatch)
     let container = app.descendants(matching: .any)["folderContainer-2"].firstMatch
     XCTAssertTrue(reveal(container, in: app), "The year container never appeared under Incoming.")
 
