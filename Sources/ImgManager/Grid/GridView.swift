@@ -280,6 +280,9 @@ struct GridView: View {
           }
           .scrollTargetLayout()
           .padding(2)
+          // IMGMGR-469: at Regular the photographs continue under the floating sidebar. On the
+          // scroll CONTENT only, never on a control or the bar (ADR-N1 Amendment 1).
+          .gridBackgroundExtension(for: layoutMode)
         }
         // WP16 P2 (IMGMGR-298): the offset is kept in STORE-owned state, so it survives this view
         // being rebuilt — see `GridStore.gridScrollAnchor` for why the view cannot keep it itself.

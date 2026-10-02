@@ -8,8 +8,9 @@
   /// fallback rule asks for; it is never worked around inside this file.
   ///
   /// System components only (ADR-N1): nothing here draws glass of its own. The
-  /// `.backgroundExtensionEffect()` call is a SPELLING check and nothing more — WP28 holds that
-  /// modifier out of every shipped view until the owner rules on ADR-N1's clear-variant clause.
+  /// `.backgroundExtensionEffect()` call is a SPELLING check and nothing more. The shipped use is
+  /// the grid's scroll content at Regular (`GridBackgroundExtension`, IMGMGR-469), permitted by
+  /// ADR-N1 Amendment 1 (IMGMGR-470 comment 10233, owner ruling 2026-10-02).
   struct SDKSurfaceProbe: View {
     @State private var tab = SDKSurfaceProbeTab.titled
     @State private var query = ""
