@@ -188,6 +188,81 @@ final class LoupeToolbarUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(ours.exists || system.exists, "More › Share did not present the share sheet.")
   }
 
+  // MARK: - Looks (IMGMGR-382)
+
+  /// Looks leads the trailing group — Looks · Compare · Info · More on the iPad, Looks · More on
+  /// the phone — and choosing a look or None is stated on the control's value and, once the
+  /// bytes are painted, on the loupe image's label.
+  @MainActor
+  func testLooksLeadsTheTrailingGroupAndChoosesALook() throws {
+    let app = launchAndOpenLoupe()
+    let isCompact = rendersCompactShell(app)
+    let bar = loupeBar(app)
+    XCTAssertTrue(bar.waitForExistence(timeout: 10), "No navigation bar carries loupeBack.")
+    let looks = element(bar, "loupeLooksButton")
+    XCTAssertTrue(looks.waitForExistence(timeout: 10), "The trailing group has no Looks.")
+
+    var trailing = [looks]
+    if !isCompact {
+      trailing += [element(bar, "loupeCompareButton"), element(bar, "loupeInfoButton")]
+    }
+    trailing.append(element(bar, "loupeMoreMenu"))
+    for item in trailing {
+      XCTAssertTrue(item.exists, "A trailing item is missing: \(item.debugDescription)")
+    }
+    for (left, right) in zip(trailing, trailing.dropFirst()) {
+      XCTAssertLessThan(
+        left.frame.minX, right.frame.minX,
+        "The trailing group is out of order: \(left.identifier) is not before \(right.identifier).")
+    }
+
+    // The catalogue arrives with the loupe; until then the control is disabled.
+    let enabled = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "isEnabled == true"), object: looks)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [enabled], timeout: 15), .completed,
+      "Looks never became choosable: the stub catalogue did not arrive.")
+    XCTAssertEqual(looks.value as? String, "Off", "With no look chosen, Looks does not read Off.")
+
+    let warm = element(app, "loupeLook-warm-film")
+    XCTAssertTrue(
+      openPresentation(looks, revealing: warm, timeout: 15), "Looks did not open its popover.")
+    XCTAssertTrue(element(app, "loupeLook-none").exists, "The popover has no None row.")
+    attach(app, name: "loupe-looks-popover")
+    warm.tap()
+    XCTAssertTrue(warm.waitForNonExistence(timeout: 10), "Choosing a look did not dismiss.")
+    let named = XCTNSPredicateExpectation(predicate: valueIs("Warm Film"), object: looks)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [named], timeout: 10), .completed,
+      "After choosing Warm Film, Looks reads '\(looks.value as? String ?? "nil")'.")
+    // The render signal: the painted bytes went through the look (the label, not the value,
+    // which stays the zoom state).
+    let image = element(app, "loupeImage")
+    let lookedLabel = NSPredicate(format: "label == %@", "Photograph, look Warm Film")
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: lookedLabel, object: image)], timeout: 15),
+      .completed, "The loupe never painted the looked render: '\(image.label)'.")
+    attach(app, name: "loupe-looks-warm-film")
+
+    let none = element(app, "loupeLook-none")
+    XCTAssertTrue(
+      openPresentation(looks, revealing: none, timeout: 15), "Looks did not reopen its popover.")
+    none.tap()
+    XCTAssertTrue(none.waitForNonExistence(timeout: 10), "Choosing None did not dismiss.")
+    let off = XCTNSPredicateExpectation(predicate: valueIs("Off"), object: looks)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [off], timeout: 10), .completed,
+      "After choosing None, Looks reads '\(looks.value as? String ?? "nil")'.")
+    // "Photograph" is only ever the label of PAINTED unlooked bytes; nothing painted reads
+    // "Photograph not loaded", so this wait needs a real image on screen.
+    let unlookedLabel = NSPredicate(format: "label == %@", "Photograph")
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: unlookedLabel, object: image)], timeout: 15),
+      .completed, "After None the loupe did not repaint unlooked: '\(image.label)'.")
+  }
+
   // MARK: - Shared
 
   private func valueIs(_ value: String) -> NSPredicate {

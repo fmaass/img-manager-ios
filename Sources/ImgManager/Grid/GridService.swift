@@ -501,6 +501,65 @@ struct GridService: Sendable {
     }
   }
 
+  // MARK: - Looks (IMGMGR-382, img-manager v0.21.0)
+
+  /// `GET /api/looks` — the looks this server can apply right now, in its own manifest order. A
+  /// look whose asset failed the server's integrity check is simply absent, so the list is
+  /// returned as-is: this client neither sorts it nor fills a gap.
+  ///
+  /// The app never holds a look's colour table. The catalogue is descriptive only (name,
+  /// category, source, licence), and every looked pixel comes from `lookedProxy` below.
+  func looks() async throws -> [Components.Schemas.LookSummary] {
+    let output: Operations.ListLooksApiLooksGet.Output
+    do {
+      output = try await client.listLooksApiLooksGet(.init())
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    guard case .ok(let ok) = output, let body = try? ok.body.json else {
+      throw GridServiceError.unreachable
+    }
+    return body.looks
+  }
+
+  /// `GET /api/images/{id}/proxy/{tier}/look/{look_id}` — the cached proxy for `tier` with one
+  /// catalogued look applied, rendered on the fly by the server (`Cache-Control: no-store`, never
+  /// a validator, so there is no `v` and no 304 here).
+  ///
+  /// The 404 is NOT the unlooked proxy's 404: nothing is queued by asking for a look, so a caller
+  /// that gets `.notFound` asks for the unlooked proxy, which is the request that enqueues one.
+  /// The coded 422 (`unknown_look`, `invalid_request`) arrives typed, in the stack-edit
+  /// refusals' idiom; an undecodable 422 body, an undeclared status or a transport failure is
+  /// `.unreachable`.
+  func lookedProxy(imageID: Int, tier: ProxyTier, lookID: String) async throws
+    -> LookedProxyFetchResult
+  {
+    let output: Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.Output
+    do {
+      output = try await client.getLookedProxyApiImagesImageIdProxyTierLookLookIdGet(
+        .init(path: .init(imageId: imageID, tier: tier.rawValue, lookId: lookID)))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard case .jpeg(let body) = ok.body else { throw GridServiceError.unreachable }
+      // The same bound as the unlooked proxy: a looked render is the same size of image.
+      let data = try await Data(collecting: body, upTo: 30 * 1024 * 1024)
+      return .ok(data)
+    case .notFound:
+      return .notFound
+    case .unprocessableContent(let refusal):
+      guard let body = try? refusal.body.json else { throw GridServiceError.unreachable }
+      switch body.detail.code {
+      case .unknownLook: return .refused(.unknownLook)
+      case .invalidRequest: return .refused(.invalidRequest)
+      }
+    case .undocumented:
+      throw GridServiceError.unreachable
+    }
+  }
+
   // MARK: - Marks (revision-precondition path only — never unconditional)
 
   /// `preconditions` is REQUIRED and must be non-empty: P4 never sends an unconditional mark
@@ -658,6 +717,23 @@ enum ProxyFetchResult: Equatable, Sendable {
   case ok(Data)
   case notModified
   case notFound
+}
+
+/// What `GridService.lookedProxy` answered (IMGMGR-382). No `.notModified`: the looked route
+/// never sends a validator.
+enum LookedProxyFetchResult: Equatable, Sendable {
+  case ok(Data)
+  /// No proxy is cached for this image and tier — and nothing was queued by asking.
+  case notFound
+  /// The coded 422.
+  case refused(LookRefusalCode)
+}
+
+/// `LookRefusal.code`, as this client's own vocabulary — a typed code, never the server's
+/// sentence.
+enum LookRefusalCode: Sendable, Equatable {
+  case unknownLook
+  case invalidRequest
 }
 
 struct GridImagesPage: Sendable, Equatable {

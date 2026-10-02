@@ -9,29 +9,42 @@ import Testing
 @Suite("Loupe chrome layout (WP30 P1)")
 struct LoupeChromeLayoutTests {
 
-  @Test("Regular with Info: exactly three groups — Back · title · Compare, Info, More")
+  @Test("Regular with Info: exactly three groups — Back · title · Looks, Compare, Info, More")
   func regularWithInfo() {
     for mode in [LayoutMode.regular2, .regular3] {
       let layout = LoupeChromeLayout.make(layoutMode: mode, hasInfo: true)
       #expect(layout.groups.count == 3)
-      #expect(layout.groups == [[.back], [.title], [.compare, .info, .more]])
+      #expect(layout.groups == [[.back], [.title], [.looks, .compare, .info, .more]])
     }
   }
 
-  @Test("Compact without Info: Back · title · More — no Compare on the phone")
+  @Test("Compact without Info: Back · title · Looks, More — no Compare on the phone")
   func compactWithoutInfo() {
     let layout = LoupeChromeLayout.make(layoutMode: .compact, hasInfo: false)
-    #expect(layout.groups == [[.back], [.title], [.more]])
+    #expect(layout.groups == [[.back], [.title], [.looks, .more]])
   }
 
   @Test("Info appears only when the host has an inspector path")
   func infoFollowsTheHost() {
     #expect(
       LoupeChromeLayout.make(layoutMode: .regular2, hasInfo: false).groups
-        == [[.back], [.title], [.compare, .more]])
+        == [[.back], [.title], [.looks, .compare, .more]])
     #expect(
       LoupeChromeLayout.make(layoutMode: .compact, hasInfo: true).groups
-        == [[.back], [.title], [.info, .more]])
+        == [[.back], [.title], [.looks, .info, .more]])
+  }
+
+  @Test(
+    "IMGMGR-382: Looks leads the trailing group in every layout mode",
+    arguments: [
+      (LayoutMode.compact, false), (.compact, true), (.regular2, false), (.regular2, true),
+      (.regular3, false), (.regular3, true),
+    ])
+  func looksLeadsTheTrailingGroup(mode: LayoutMode, hasInfo: Bool) {
+    let trailing = LoupeChromeLayout.make(layoutMode: mode, hasInfo: hasInfo).trailing
+    #expect(trailing.first == .looks)
+    #expect(trailing.filter { $0 == .looks }.count == 1)
+    #expect(trailing.last == .more)
   }
 
   @Test(
@@ -53,6 +66,7 @@ struct LoupeChromeLayoutTests {
   func identifiers() {
     #expect(LoupeChromeItem.back.accessibilityIdentifier == "loupeBack")
     #expect(LoupeChromeItem.title.accessibilityIdentifier == "loupeTitle")
+    #expect(LoupeChromeItem.looks.accessibilityIdentifier == "loupeLooksButton")
     #expect(LoupeChromeItem.compare.accessibilityIdentifier == "loupeCompareButton")
     #expect(LoupeChromeItem.more.accessibilityIdentifier == "loupeMoreMenu")
     #expect(!LoupeChromeItem.allCases.contains { $0.accessibilityIdentifier == "loupeClose" })

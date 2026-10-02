@@ -25,6 +25,8 @@ struct LoupeChrome {
 enum LoupeChromeItem: CaseIterable, Hashable, Sendable {
   case back
   case title
+  /// IMGMGR-382: the server-rendered look, a popover of None plus the catalogue.
+  case looks
   case compare
   case info
   case more
@@ -33,6 +35,7 @@ enum LoupeChromeItem: CaseIterable, Hashable, Sendable {
     switch self {
     case .back: "loupeBack"
     case .title: "loupeTitle"
+    case .looks: "loupeLooksButton"
     case .compare: "loupeCompareButton"
     case .info: "loupeInfoButton"
     case .more: "loupeMoreMenu"
@@ -44,6 +47,7 @@ enum LoupeChromeItem: CaseIterable, Hashable, Sendable {
     switch self {
     case .back: "Back"
     case .title: "Title"
+    case .looks: "Looks"
     case .compare: "Compare"
     case .info: "Info"
     case .more: "More"
@@ -52,15 +56,16 @@ enum LoupeChromeItem: CaseIterable, Hashable, Sendable {
 }
 
 /// The loupe toolbar as a VALUE: exactly three groups — leading Back, principal title, trailing
-/// Compare · Info · More — in that order. `LoupeToolbar` renders one `ToolbarItemGroup` per
-/// group from this, so a test on the value pins what the bar carries.
+/// Looks · Compare · Info · More — in that order. `LoupeToolbar` renders one `ToolbarItemGroup`
+/// per group from this, so a test on the value pins what the bar carries.
 struct LoupeChromeLayout: Equatable, Sendable {
   let groups: [[LoupeChromeItem]]
 
   private init(groups: [[LoupeChromeItem]]) { self.groups = groups }
 
   static func make(layoutMode: LayoutMode, hasInfo: Bool) -> LoupeChromeLayout {
-    var trailing: [LoupeChromeItem] = []
+    // IMGMGR-382: Looks leads the trailing group in every layout mode, the phone's included.
+    var trailing: [LoupeChromeItem] = [.looks]
     // Compare is an iPad verb (p4128 "Open items" 2): never built at Compact.
     if layoutMode != .compact { trailing.append(.compare) }
     if hasInfo { trailing.append(.info) }

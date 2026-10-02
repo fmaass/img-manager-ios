@@ -76,6 +76,10 @@ struct LoupeView: View {
   var filmstrip: LoupeFilmstripSurface = .live
 
   @State private var proxyImage: PlatformImage?
+  /// What `proxyImage` was rendered as (IMGMGR-382), published with it; nil while nothing is.
+  @State private var renderedAs: LoupeRendering?
+  /// The photograph `proxyImage` shows, so a failed reload of the SAME frame keeps it on screen.
+  @State private var paintedImageID: Int?
   @State private var zoomModel: LoupeZoomModel
   /// This presentation's paging lifetime — see `LoupePagingLifetime`. Injectable for the same
   /// reason `zoomModel` is: a test cannot install `@State` on an unrendered view, but it CAN hand
@@ -213,6 +217,9 @@ struct LoupeView: View {
       }
     }
     .onDisappear { pagingLifetime.end() }
+    // IMGMGR-382: the look catalogue, fetched once per app session on the first open; a failed
+    // fetch is asked again on the next open (`LookModel.loadCatalogueIfNeeded`).
+    .task { await store.looks.loadCatalogueIfNeeded() }
     .task(id: store.focusedImageID) {
       // Commit the frame-change reset to storage (the render already reflects it through
       // `resolvedZoom`): without this, stepping away from a zoomed frame and back would restore
@@ -223,6 +230,11 @@ struct LoupeView: View {
       // left behind for whatever the user shares next. This is the SUPERSEDE, not a completion:
       // the context changed, so it abandons every generation rather than ending a named one.
       share.supersede()
+    }
+    // The main image reloads on a frame change AND on a look change (IMGMGR-382). Its own task,
+    // so choosing a look neither supersedes a prepared export (the share is never looked) nor
+    // re-commits a zoom reset; a newer key cancels the older load (`loadMainImage`).
+    .task(id: mainImageRequest) {
       await loadMainImage()
       syncZoomGeometry()
     }
@@ -273,7 +285,7 @@ struct LoupeView: View {
   /// gesture (pinch and double-tap, `mainImageArea`); advance-after-marking keeps its keyboard
   /// form (`A`/⌘⇧A) and its account-sheet row; the full-screen MODE had no other way in and went
   /// with its control. WP30 P1 (IMGMGR-456) keeps it that way: `LoupeChromeLayout` has no zoom
-  /// item, and the bar is Back · title · Compare, Info, More.
+  /// item, and the bar is Back · title · Looks, Compare, Info, More (Looks: IMGMGR-382).
   var chromeLayout: LoupeChromeLayout {
     LoupeChromeLayout.make(layoutMode: layoutMode, hasInfo: chrome.info != nil)
   }
@@ -315,6 +327,9 @@ struct LoupeView: View {
           .lineLimit(1)
           .accessibilityIdentifier("loupeFidelityLabel")
       }
+    case .looks:
+      // IMGMGR-382: the server-rendered look, for the main image only.
+      LoupeLooksControl(looks: store.looks, focusedImageID: store.focusedImageID)
     case .compare:
       // WP30 P3 (IMGMGR-458): opens Compare on the focused photograph and the next scope image.
       // Enabled iff the filmstrip scope holds at least two photographs (plan decision 2).
@@ -470,7 +485,9 @@ struct LoupeView: View {
           .clipped()
           .contentShape(Rectangle())
           .accessibilityIdentifier("loupeImage")
-          .accessibilityLabel("Photograph")
+          // IMGMGR-382: the label says which look the painted bytes went through; the value
+          // stays the zoom state it always was.
+          .accessibilityLabel(store.looks.imageAccessibilityLabel(for: renderedAs))
           .accessibilityValue(zoom.accessibilityValue)
           .onGeometryChange(for: CGSize.self) {
             $0.size
@@ -559,21 +576,76 @@ struct LoupeView: View {
     }
   }
 
+  var mainImageRequest: LoupeImageRequest {
+    LoupeImageRequest(imageID: store.focusedImageID, lookID: store.looks.activeLookID)
+  }
+
   func loadMainImage() async {
+    let request = mainImageRequest
     guard let image = focusedImage else {
       proxyImage = nil
+      renderedAs = nil
+      paintedImageID = nil
       return
     }
     let token = ProxyIdentity.token(
       from: image.proxies.additionalProperties[ProxyTier.preview.rawValue]?.url)
-    if let data = await store.proxyData(imageID: image.id, tier: .preview, identityToken: token),
-      let decoded = PlatformImage(data: data)
-    {
-      proxyImage = decoded
-    } else {
+    // IMGMGR-382: through the active look when there is one, falling back to the unlooked proxy
+    // inside the store (an undecodable looked render included). Still the `.preview` tier.
+    let preview = await store.loupePreview(
+      imageID: image.id, identityToken: token, decode: { PlatformImage(data: $0) })
+    // A load the frame or the look moved on from never paints over the newer one.
+    let fresh = LoupeImageRequest.mayPublish(
+      requested: request, current: mainImageRequest, isCancelled: Task.isCancelled)
+    guard fresh else { return }
+    let paint = LoupeImageRequest.paint(
+      hasNewImage: preview.image != nil, imageID: image.id, paintedImageID: paintedImageID)
+    switch paint {
+    case .paint:
+      proxyImage = preview.image
+      renderedAs = preview.rendering
+      paintedImageID = image.id
+    case .keep:
+      // The bytes on screen are still this photograph's, and the label keeps describing them;
+      // the Looks control already says the chosen look is unavailable for it.
+      break
+    case .clear:
       proxyImage = nil
+      renderedAs = nil
+      paintedImageID = nil
     }
   }
+}
+
+/// What the loupe's main image depends on (IMGMGR-382): the focused frame and the active look.
+struct LoupeImageRequest: Hashable, Sendable {
+  let imageID: Int?
+  let lookID: String?
+
+  /// Whether a finished load may paint: only when it was not cancelled AND the frame and the
+  /// look it was asked for are still the ones in front of the reader. Cancellation alone is not
+  /// enough — a load can finish in the window before its task is cancelled.
+  static func mayPublish(
+    requested: LoupeImageRequest, current: LoupeImageRequest, isCancelled: Bool
+  ) -> Bool {
+    !isCancelled && requested == current
+  }
+
+  /// What a fresh load does to the screen. New bytes always paint. A load that produced nothing
+  /// KEEPS what is shown when it is the same photograph (a look and its unlooked fallback both
+  /// failing must not blank a frame the reader can already see), and clears only when the frame
+  /// changed — the old photograph must never stand in for a different one.
+  static func paint(hasNewImage: Bool, imageID: Int, paintedImageID: Int?) -> LoupePaint {
+    if hasNewImage { return .paint }
+    return paintedImageID == imageID ? .keep : .clear
+  }
+}
+
+/// `LoupeImageRequest.paint`'s answer.
+enum LoupePaint: Equatable, Sendable {
+  case paint
+  case keep
+  case clear
 }
 
 /// The loupe's own persistent bottom mark bar (spec: "Pick · Dislike · Clear · Undo", placed

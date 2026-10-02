@@ -594,6 +594,42 @@ actor GridStubTransport: ClientTransport {
     proxyHasStarted = false
   }
 
+  // MARK: - IMGMGR-382: GET /api/looks and the looked proxy
+
+  var looksCatalogue: [Components.Schemas.LookSummary] = []
+  func setLooksCatalogue(_ looks: [Components.Schemas.LookSummary]) { looksCatalogue = looks }
+  /// Self-disarming, like `proxyShouldFail`: the NEXT catalogue fetch fails in transport.
+  var looksShouldFail = false
+  func setLooksShouldFail(_ fail: Bool) { looksShouldFail = fail }
+
+  /// The looked proxy's outcomes at the WIRE level, so the probe decodes them through the real
+  /// generated `Client`. `.refused` carries the coded 422's `code` exactly as the server spells it.
+  enum LookedProxyOutcome: Sendable {
+    case ok(Data)
+    case notFound
+    case refused(code: String)
+  }
+
+  var lookedProxyOutcome: LookedProxyOutcome = .ok(Data([0xFF, 0xD8, 0xFF, 0xDB]))
+  func setLookedProxyOutcome(_ outcome: LookedProxyOutcome) { lookedProxyOutcome = outcome }
+  /// Self-disarming: the NEXT looked-proxy call fails in transport.
+  var lookedProxyShouldFail = false
+  func setLookedProxyShouldFail(_ fail: Bool) { lookedProxyShouldFail = fail }
+  /// Every looked-proxy request path, in order.
+  private(set) var recordedLookedProxyRequests: [String] = []
+
+  /// IMGMGR-382: EVERY request this transport saw — operation, path with query, and the body
+  /// bytes exactly as the generated `Client` encoded them — so a test can prove that a look id
+  /// reaches no request except the two look operations, and that a mark write's body is
+  /// byte-for-byte the one it would have been without a look.
+  struct RecordedWireRequest: Sendable, Equatable {
+    let operationID: String
+    let path: String
+    let body: Data
+  }
+
+  private(set) var recordedWire: [RecordedWireRequest] = []
+
   // MARK: - WP12 (IMGMGR-196): GET /api/images/{id}/download
 
   /// The download endpoint's outcomes, modelled at the WIRE level so the contract probe decodes
@@ -729,6 +765,15 @@ actor GridStubTransport: ClientTransport {
     _ request: HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String
   ) async throws -> (HTTPResponse, HTTPBody?) {
     callCounts[operationID, default: 0] += 1
+    // Captured once and handed on as a fresh body, so every branch below reads the same bytes.
+    var body = body
+    var bodyBytes = Data()
+    if let original = body {
+      bodyBytes = try await Data(collecting: original, upTo: 1024 * 1024)
+      body = HTTPBody(bodyBytes)
+    }
+    recordedWire.append(
+      RecordedWireRequest(operationID: operationID, path: request.path ?? "", body: bodyBytes))
 
     switch operationID {
     case Operations.FolderTreeApiFoldersGet.id:
@@ -951,6 +996,31 @@ actor GridStubTransport: ClientTransport {
         return (HTTPResponse(status: .notModified), nil)
       case .notFound:
         return (HTTPResponse(status: .notFound), nil)
+      }
+
+    case Operations.ListLooksApiLooksGet.id:
+      if looksShouldFail {
+        looksShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced looks failure")
+      }
+      return try jsonResponse(.ok, Components.Schemas.LookList(looks: looksCatalogue))
+
+    case Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.id:
+      recordedLookedProxyRequests.append(request.path ?? "")
+      if lookedProxyShouldFail {
+        lookedProxyShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced looked proxy failure")
+      }
+      switch lookedProxyOutcome {
+      case .ok(let data):
+        var response = HTTPResponse(status: .ok)
+        response.headerFields[.contentType] = "image/jpeg"
+        return (response, HTTPBody(data))
+      case .notFound:
+        return (HTTPResponse(status: .notFound), nil)
+      case .refused(let code):
+        return jsonBytes(
+          .unprocessableContent, #"{"detail": {"code": "\#(code)", "message": "refused"}}"#)
       }
 
     case Operations.DownloadImageApiImagesImageIdDownloadGet.id:

@@ -409,4 +409,81 @@ struct GridServiceContractProbeTests {
     #expect(unfiltered.asStackRowQuery().camera == nil)
     #expect(unfiltered.asListImagesQuery().camera == nil)
   }
+
+  // MARK: - IMGMGR-382: the v0.21.0 look operations
+
+  static func look(_ id: String, name: String, category: String = "Film")
+    -> Components.Schemas.LookSummary
+  {
+    Components.Schemas.LookSummary(
+      category: category, id: id, licence: "test licence", name: name, source: "test",
+      sourceUrl: "https://example.invalid/\(id)")
+  }
+
+  @Test("Looks: GET /api/looks decodes the real LookList, in the server's own order")
+  func looksProbe() async throws {
+    let transport = GridStubTransport()
+    let catalogue = [
+      Self.look("b-look", name: "B"), Self.look("a-look", name: "A", category: "Creative"),
+    ]
+    await transport.setLooksCatalogue(catalogue)
+    let looks = try await makeService(transport).looks()
+    #expect(looks.map(\.id) == ["b-look", "a-look"])  // manifest order, never re-sorted
+    #expect(looks[1].category == "Creative")
+    #expect(looks[0].sourceUrl == "https://example.invalid/b-look")
+  }
+
+  @Test("Looks: a transport failure is .unreachable, never an empty catalogue")
+  func looksUnreachableProbe() async {
+    let transport = GridStubTransport()
+    await transport.setLooksShouldFail(true)
+    await #expect(throws: GridServiceError.unreachable) {
+      _ = try await makeService(transport).looks()
+    }
+  }
+
+  @Test("Looked proxy: the 200 is image/jpeg bytes, on the tier and look the caller named")
+  func lookedProxyBytesProbe() async throws {
+    let transport = GridStubTransport()
+    let bytes = Data([0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x20])
+    await transport.setLookedProxyOutcome(.ok(bytes))
+    let result = try await makeService(transport).lookedProxy(
+      imageID: 7, tier: .preview, lookID: "warm-film")
+    #expect(result == .ok(bytes))
+    let paths = await transport.recordedLookedProxyRequests
+    #expect(paths.count == 1)
+    #expect(paths.first?.hasSuffix("/api/images/7/proxy/preview/look/warm-film") == true)
+    // No validator on this route: the request carries no `v`.
+    #expect(paths.first?.contains("?") == false)
+    // It is not the unlooked operation.
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 0)
+  }
+
+  @Test("Looked proxy: 404 and each coded 422 decode to their own typed outcomes")
+  func lookedProxyRefusalsProbe() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+
+    await transport.setLookedProxyOutcome(.notFound)
+    #expect(try await service.lookedProxy(imageID: 1, tier: .preview, lookID: "x") == .notFound)
+
+    await transport.setLookedProxyOutcome(.refused(code: "unknown_look"))
+    #expect(
+      try await service.lookedProxy(imageID: 1, tier: .preview, lookID: "x")
+        == .refused(.unknownLook))
+
+    await transport.setLookedProxyOutcome(.refused(code: "invalid_request"))
+    #expect(
+      try await service.lookedProxy(imageID: 1, tier: .grid, lookID: "x")
+        == .refused(.invalidRequest))
+  }
+
+  @Test("Looked proxy: a transport failure is .unreachable")
+  func lookedProxyUnreachableProbe() async {
+    let transport = GridStubTransport()
+    await transport.setLookedProxyShouldFail(true)
+    await #expect(throws: GridServiceError.unreachable) {
+      _ = try await makeService(transport).lookedProxy(imageID: 1, tier: .preview, lookID: "x")
+    }
+  }
 }

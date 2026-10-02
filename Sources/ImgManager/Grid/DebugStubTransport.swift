@@ -122,6 +122,27 @@
         let tier = request.path.flatMap { URLComponents(string: $0)?.path }?
           .split(separator: "/").last.map(String.init)
         return (response, HTTPBody(Self.fixtureProxy(tier: tier)))
+      // IMGMGR-382: the look catalogue and the looked proxy, so the loupe's Looks control has
+      // something to choose under `-UITestStubGrid`. The looked render is the same fixture with a
+      // visible warm cast; an id outside the catalogue answers the server's coded 422.
+      case Operations.ListLooksApiLooksGet.id:
+        return try jsonResponse(.ok, Components.Schemas.LookList(looks: Self.fixtureLooks))
+      case Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.id:
+        // `/api/images/{id}/proxy/{tier}/look/{look_id}`: the look is the last component, the
+        // tier the third from last.
+        let path = request.path.flatMap { URLComponents(string: $0)?.path } ?? ""
+        let components = path.split(separator: "/").map(String.init)
+        guard let lookID = components.last, Self.fixtureLooks.contains(where: { $0.id == lookID })
+        else {
+          return try jsonResponse(
+            .unprocessableContent,
+            Components.Schemas.LookRefusalError(
+              detail: .init(code: .unknownLook, message: "unknown look")))
+        }
+        let tier = components.count >= 3 ? components[components.count - 3] : nil
+        var response = HTTPResponse(status: .ok)
+        response.headerFields[.contentType] = "image/jpeg"
+        return (response, HTTPBody(Self.fixtureLookedProxy(tier: tier)))
       // WP14 lane B (IMGMGR-240/-241/-261): Scene mode's own fixture. Without these three the
       // Debug composition could not enter Scene mode with data at all, so the band, the ✓N badge
       // and the inline picks had no rendered evidence — only unit assertions.
@@ -222,12 +243,36 @@
     private static let previewFixture: Data = renderFixture(width: 1600, height: 1067)
     private static let gridFixture: Data = renderFixture(width: 400, height: 267)
 
-    private static func renderFixture(width: Int, height: Int) -> Data {
+    /// IMGMGR-382: the looked twin of the fixture proxy, at the same geometry per tier.
+    private static func fixtureLookedProxy(tier: String?) -> Data {
+      tier == ProxyTier.grid.rawValue ? lookedGridFixture : lookedPreviewFixture
+    }
+
+    private static let lookedPreviewFixture = renderFixture(width: 1600, height: 1067, looked: true)
+    private static let lookedGridFixture = renderFixture(width: 400, height: 267, looked: true)
+
+    private static func renderFixture(width: Int, height: Int, looked: Bool = false) -> Data {
       #if canImport(UIKit)
-        return DebugStubProxyRenderer.jpeg(width: width, height: height) ?? tinyJPEG
+        return DebugStubProxyRenderer.jpeg(width: width, height: height, looked: looked) ?? tinyJPEG
       #else
         return tinyJPEG
       #endif
+    }
+
+    /// IMGMGR-382: a three-look catalogue in manifest order. The names avoid the zoom pill's
+    /// vocabulary (`LoupeScopeScan.pillPattern`), so the no-zoom scan stays meaningful.
+    static let fixtureLooks: [Components.Schemas.LookSummary] = [
+      fixtureLook(id: "warm-film", name: "Warm Film", category: "Film"),
+      fixtureLook(id: "cool-matte", name: "Cool Matte", category: "Creative"),
+      fixtureLook(id: "classic-mono", name: "Classic Mono", category: "Black and white"),
+    ]
+
+    private static func fixtureLook(id: String, name: String, category: String)
+      -> Components.Schemas.LookSummary
+    {
+      Components.Schemas.LookSummary(
+        category: category, id: id, licence: "Debug fixture, no colour table", name: name,
+        source: "img-manager-ios debug stub", sourceUrl: "https://example.invalid/looks/\(id)")
     }
 
     /// A dozen fixture images spanning several aspect ratios — including a panorama (index 3)
@@ -958,7 +1003,7 @@
     /// Draws the DEBUG fixture proxy. Offscreen only, never on a shipping path — this whole
     /// file sits inside `#if DEBUG`, so a Release/TestFlight archive contains none of it.
     enum DebugStubProxyRenderer {
-      static func jpeg(width: Int, height: Int) -> Data? {
+      static func jpeg(width: Int, height: Int, looked: Bool = false) -> Data? {
         let size = CGSize(width: width, height: height)
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
@@ -982,6 +1027,11 @@
             x: size.width * 0.04, y: size.height * 0.46,
             width: size.width * 0.92, height: max(1, size.height * 0.01))
           context.fill(bar)
+          // IMGMGR-382: the looked fixture is the same frame under a visible warm cast.
+          if looked {
+            UIColor(red: 0.95, green: 0.62, blue: 0.30, alpha: 0.35).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+          }
         }
         // The deployed render profile encodes at quality 85 (`PROXY_JPEG_QUALITY`, probed
         // 2026-08-30), so the fixture carries the same compression character.

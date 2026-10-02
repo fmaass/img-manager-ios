@@ -243,6 +243,9 @@ final class GridStore {
   let selection = SelectionState()
   let pickLock = PickLockState()
   let undo = UndoStack()
+  /// IMGMGR-382: the loupe's session-only look (`LookModel`). One per store, so it survives
+  /// frame-to-frame navigation and closing and reopening the loupe, and ends with the app.
+  let looks: LookModel
 
   // MARK: - Loupe (P5)
 
@@ -713,6 +716,7 @@ final class GridStore {
     self.service = service
     self.preferences = preferences
     self.pasteboard = pasteboard
+    self.looks = LookModel(fetchCatalogue: { try await service.looks() })
   }
 
   // MARK: - Loading
@@ -3072,8 +3076,18 @@ final class GridStore {
   /// `nil` on 404/unreachable — the caller renders a failure placeholder, never retries in a
   /// loop.
   func proxyData(imageID: Int, tier: ProxyTier, identityToken: String?) async -> Data? {
-    let key = "\(imageID)|\(tier.rawValue)|\(identityToken ?? "")"
-    if let cached = proxyCache[key] { return cached }
+    if let cached = proxyCache[Self.proxyCacheKey(imageID, tier, identityToken)] { return cached }
+    return await requestProxy(imageID: imageID, tier: tier, identityToken: identityToken)
+  }
+
+  private static func proxyCacheKey(_ imageID: Int, _ tier: ProxyTier, _ token: String?) -> String {
+    "\(imageID)|\(tier.rawValue)|\(token ?? "")"
+  }
+
+  /// The unlooked proxy request itself, cache or no cache — `proxyData`'s miss path, and the
+  /// looked fallback's enqueue (IMGMGR-382).
+  private func requestProxy(imageID: Int, tier: ProxyTier, identityToken: String?) async -> Data? {
+    let key = Self.proxyCacheKey(imageID, tier, identityToken)
     do {
       switch try await service.proxy(imageID: imageID, tier: tier, v: identityToken) {
       case .ok(let data):
@@ -3087,6 +3101,72 @@ final class GridStore {
     } catch {
       return nil
     }
+  }
+
+  // MARK: - Looked proxy pixels (IMGMGR-382)
+
+  /// The unlooked request a looked FALLBACK issued while showing cached unlooked bytes — held
+  /// only so a test can await it. Nothing reads its result: the request is made because it is
+  /// the one that makes the server enqueue a proxy it does not have.
+  @ObservationIgnored private(set) var fallbackProxyRequest: Task<Void, Never>?
+
+  /// The loupe's main image: the `.preview` proxy, through the active look when there is one,
+  /// decoded by `decode` (the view's image type; a test's own).
+  ///
+  /// No look: exactly `proxyData(.preview)`, the path the loupe always took. A look: the looked
+  /// proxy at the SAME tier, asked fresh every time — the server sends it `no-store`, so it is
+  /// never cached here. If that render fails for any reason (404, a coded 422, transport, or a
+  /// 200 whose bytes do not decode) the unlooked proxy is shown instead, the look stays selected,
+  /// and the failure is recorded on `looks` so the Looks control can say so. A look never leaves
+  /// the loupe blank.
+  func loupePreview<Image>(
+    imageID: Int, identityToken: String?, decode: (Data) -> Image?
+  ) async -> LoupePreview<Image> {
+    guard let lookID = looks.activeLookID else {
+      let data = await proxyData(imageID: imageID, tier: .preview, identityToken: identityToken)
+      return LoupePreview(image: data.flatMap(decode), rendering: .unlooked)
+    }
+    if let looked = await lookedProxyData(imageID: imageID, tier: .preview, lookID: lookID),
+      let image = decode(looked)
+    {
+      looks.recordRender(imageID: imageID, lookID: lookID, available: true)
+      return LoupePreview(image: image, rendering: .looked(lookID: lookID))
+    }
+    // A load the loupe cancelled (it moved to another frame or look) proves nothing about this
+    // photograph, so only a load that ran to its answer is recorded as unavailable.
+    if !Task.isCancelled {
+      looks.recordRender(imageID: imageID, lookID: lookID, available: false)
+    }
+    let data = await fallbackProxyData(imageID: imageID, identityToken: identityToken)
+    return LoupePreview(image: data.flatMap(decode), rendering: .fallback(lookID: lookID))
+  }
+
+  /// One looked render, always a fresh request.
+  private func lookedProxyData(imageID: Int, tier: ProxyTier, lookID: String) async -> Data? {
+    do {
+      switch try await service.lookedProxy(imageID: imageID, tier: tier, lookID: lookID) {
+      case .ok(let data):
+        return data
+      case .notFound, .refused:
+        return nil
+      }
+    } catch {
+      return nil
+    }
+  }
+
+  /// The looked fallback's unlooked bytes. The unlooked request ALWAYS reaches the server — a
+  /// looked 404 queues nothing, and the unlooked request is what does — but bytes already cached
+  /// are shown at once rather than after that round trip.
+  private func fallbackProxyData(imageID: Int, identityToken: String?) async -> Data? {
+    let key = Self.proxyCacheKey(imageID, .preview, identityToken)
+    guard let cached = proxyCache[key] else {
+      return await requestProxy(imageID: imageID, tier: .preview, identityToken: identityToken)
+    }
+    fallbackProxyRequest = Task { [weak self] in
+      _ = await self?.requestProxy(imageID: imageID, tier: .preview, identityToken: identityToken)
+    }
+    return cached
   }
 
   // MARK: - Tags (T)
@@ -3328,4 +3408,20 @@ extension MarkStateValue {
     case .none: return .none
     }
   }
+}
+
+/// What the loupe's main image was rendered as (IMGMGR-382).
+enum LoupeRendering: Equatable, Sendable {
+  case unlooked
+  /// Through this look.
+  case looked(lookID: String)
+  /// This look was chosen, but the photograph is shown unlooked: the looked render failed.
+  case fallback(lookID: String)
+}
+
+/// `GridStore.loupePreview`'s answer: the decoded image (nil when even the unlooked proxy is
+/// unavailable) and what it was rendered as.
+struct LoupePreview<Image> {
+  let image: Image?
+  let rendering: LoupeRendering
 }
