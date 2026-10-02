@@ -81,6 +81,14 @@ enum ShortcutID: String, CaseIterable, Sendable {
   /// and this app has a Select mode of its own, so the Shift-modified form carries it — the
   /// same reasoning `sceneToggle` records for ⌘G.
   case autoAdvance = "A"
+  /// IMGMGR-495 (owner ruling, comment 10230): "⌘0 alone toggles Fit/100% in the loupe and in
+  /// Compare; ⌘1 stays the grid's first zoom step; no second key." ONE declaration, dispatched
+  /// into the mounted viewer's own zoom toggle (`ViewerZoomCommand`) rather than the grid's
+  /// actions, so it is live in Compare — where every grid key is disabled (WP30 P3 decision 7) —
+  /// and disabled on the bare grid. ⌘0 is the established "Actual Size" accelerator, it is bound
+  /// nowhere else in this app and no iPadOS system default uses it, both asserted in
+  /// `ShortcutCatalogTests`.
+  case viewerZoomToggle = "⌘0"
 }
 
 extension ShortcutID {
@@ -107,6 +115,7 @@ extension ShortcutID {
     case .sortKey: return "⌥⌘1 … ⌥⌘6"
     case .sortDirection: return "⌥⌘R"
     case .autoAdvance: return "A or ⌘⇧A"
+    case .viewerZoomToggle: return "⌘0"
     }
   }
 
@@ -138,6 +147,7 @@ extension ShortcutID {
     case .sortKey: return "Sort the grid — Date, Filename, Rating, ISO, Camera, Lens"
     case .sortDirection: return "Reverse the sort direction"
     case .autoAdvance: return "Advance to the next photograph after marking, on or off"
+    case .viewerZoomToggle: return "Zoom the loupe or Compare to Fit or to 100 %, and back"
     }
   }
 }
@@ -184,6 +194,11 @@ enum OwningPhase: String, Sendable {
   /// Culling row, which shipped in the same commit this entry flipped active in (the type doc
   /// comment's own rule); the loupe header's twin went with IMGMGR-348's device-pass removal.
   case wp13p8 = "WP13 P8 — Advance on mark (account sheet row)"
+  /// IMGMGR-495 (WP32 P0): the ⌘0 Fit/100 % key. Its chrome is the zoom both viewers already
+  /// carry — the loupe's More row "Zoom to 100%" and double-tap, Compare's More rows and
+  /// double-tap — plus the View menu row this phase adds; the entry arrives active in the same
+  /// commit as that row and the focused value it dispatches into.
+  case wp32p0 = "WP32 P0 — Loupe and Compare zoom key (⌘0)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every
@@ -219,6 +234,9 @@ enum ShortcutCatalog {
   /// WP13 P8 (IMGMGR-214): `autoAdvance` arrives active for the same reason — the account
   /// sheet's Culling row ships in the same commit as this row. IMGMGR-348 removed the loupe
   /// header's own toggle (owner device pass), so that row is now the cadence's whole chrome.
+  ///
+  /// IMGMGR-495: `viewerZoomToggle` arrives active — the zoom it drives already has its chrome in
+  /// both viewers, and its View menu row and focused value ship in this same commit.
   static let entries: [ShortcutCatalogEntry] = [
     ShortcutCatalogEntry(id: .arrowUp, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowDown, owningPhase: .p4, hasChromeSurface: true),
@@ -238,6 +256,7 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .sortKey, owningPhase: .wp13p5b, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .sortDirection, owningPhase: .wp13p5b, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .autoAdvance, owningPhase: .wp13p8, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .viewerZoomToggle, owningPhase: .wp32p0, hasChromeSurface: true),
   ]
 
   static var activeEntries: [ShortcutCatalogEntry] { entries.filter(\.isActive) }

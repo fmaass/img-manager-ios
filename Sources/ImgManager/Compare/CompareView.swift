@@ -62,6 +62,9 @@ struct CompareView: View {
       CompareDecisionGroup(store: store)
     }
     .navigationBarTitleDisplayMode(.inline)
+    // IMGMGR-495: ⌘0's target while Compare is mounted — both panes, through the pair's own toggle
+    // (`CompareZoomSync.toggleAll`). The grid's keys stay nil here (decision 7); this one does not.
+    .focusedSceneValue(\.viewerZoomCommand, ViewerZoomCommand(toggle: { zoom.toggleAll() }))
     .onChange(of: zoomKey, initial: true) { _, key in
       zoom.show(left: key.left, right: key.right)
     }
@@ -390,6 +393,8 @@ struct CompareStrip: View {
 
 /// Plan decision 7: while Compare is open the scene publishes NO keyboard actions, so every
 /// menu-bar, grid and loupe key command is disabled (`AppCommands` disables each entry on nil).
+/// The one exception is ⌘0 (IMGMGR-495), which dispatches into `ViewerZoomCommand` — published
+/// by `CompareView` itself — rather than into these actions.
 enum CompareKeyboardIsolation {
   static func published(_ actions: GridKeyboardActions, isCompareOpen: Bool)
     -> GridKeyboardActions?

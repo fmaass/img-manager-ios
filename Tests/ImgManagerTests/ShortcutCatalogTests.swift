@@ -30,10 +30,12 @@ struct ShortcutCatalogTests {
       // existed — that surface (the account-sheet row) ships in the
       // same commit this entry does, which is the catalog's own rule, not an exception to it.
       .autoAdvance,
+      // IMGMGR-495 (owner ruling, comment 10230): ⌘0, Fit ⟷ 100 % in the loupe and in Compare.
+      .viewerZoomToggle,
     ]
     let actual = Set(ShortcutCatalog.entries.map(\.id))
     #expect(actual == expected)
-    #expect(ShortcutCatalog.entries.count == 18)
+    #expect(ShortcutCatalog.entries.count == 19)
   }
 
   @Test("No C anywhere in the catalog")
@@ -170,11 +172,64 @@ struct ShortcutCatalogTests {
   func noTwoDeclarationsBindTheSameCombination() {
     // The Group pair's ⌃⌘1/⌃⌘2 sit one modifier above the zoom steps' ⌘1/⌘2, so "does anything
     // else already use it" has to be a test, not a reading of the file.
-    let combinations = AppCommands.declarations.compactMap { declaration in
-      declaration.key.map { "\($0.character)|\(declaration.modifiers.rawValue)" }
+    func combinations(_ declarations: [MenuCommandDeclaration]) -> [String] {
+      declarations.compactMap { declaration in
+        declaration.key.map { "\($0.character)|\(declaration.modifiers.rawValue)" }
+      }
     }
-    #expect(Set(combinations).count == combinations.count)
-    #expect(combinations.count == AppCommands.declarations.count)
+    func isCollisionFree(_ declarations: [MenuCommandDeclaration]) -> Bool {
+      let swept = combinations(declarations)
+      return Set(swept).count == swept.count
+    }
+    let bound = combinations(AppCommands.declarations)
+    #expect(isCollisionFree(AppCommands.declarations))
+    #expect(bound.count == AppCommands.declarations.count)
+
+    // IMGMGR-495: ⌘0 is IN the swept set — the sweep above covers it rather than passing because
+    // it was never declared — and it is bound exactly once.
+    let commandZero = "0|\(EventModifiers.command.rawValue)"
+    #expect(bound.filter { $0 == commandZero }.count == 1)
+
+    // POSITIVE CONTROL, same invocation (LSN-0033): the same predicate says NO the moment a
+    // second command claims ⌘0, so the pass above is a sweep that can fail, not a vacuous one.
+    let rival = MenuCommandDeclaration(
+      id: "test.rival.commandZero", shortcut: .zoomStep, title: "Rival", key: KeyEquivalent("0"),
+      modifiers: [.command], run: { _ in })
+    #expect(!isCollisionFree(AppCommands.declarations + [rival]))
+  }
+
+  @MainActor
+  @Test("IMGMGR-495: ⌘0 is ONE row, uniquely titled — and ⌘1 stays the grid's first zoom step")
+  func commandZeroIsOneUniquelyTitledRowAndCommandOneIsUnchanged() {
+    let toggle = AppCommands.declarations.filter { $0.shortcut == .viewerZoomToggle }
+    #expect(toggle.count == 1)
+    let row = toggle.first
+    #expect(row?.id == "view.viewerZoom.toggle")
+    #expect(row?.key == KeyEquivalent("0"))
+    #expect(row?.modifiers == EventModifiers.command)
+    #expect(row?.title == "Zoom: Fit / 100%")
+    #expect(ShortcutID.viewerZoomToggle.keyLabel == "⌘0")
+
+    // No other declaration carries its title — a menu row the reader cannot tell apart from
+    // another is a second command under one name.
+    let titles = AppCommands.declarations.map(\.title)
+    #expect(titles.filter { $0 == "Zoom: Fit / 100%" }.count == 1)
+
+    // It sits in the View menu, the discovery surface (p3220 §3.1), beside the zoom steps.
+    let viewMenuIDs = AppCommands.viewMenuGroups.flatMap(\.items).map(\.id)
+    #expect(viewMenuIDs.contains("view.viewerZoom.toggle"))
+
+    let entry = ShortcutCatalog.entries.first { $0.id == .viewerZoomToggle }
+    #expect(entry?.owningPhase == .wp32p0)
+    #expect(entry?.isActive == true)
+
+    // The owner's other half: "⌘1 stays the grid's first zoom step; no second key."
+    let commandOne = AppCommands.declarations.filter {
+      $0.key == KeyEquivalent("1") && $0.modifiers == EventModifiers.command
+    }
+    let firstStep = GridRowHeight.allCases[0]
+    #expect(commandOne.map(\.id) == ["view.zoom.\(Int(firstStep.rawValue))"])
+    #expect(commandOne.first?.shortcut == .zoomStep)
   }
 
   @MainActor
