@@ -118,4 +118,37 @@ struct CompareZoomSyncTests {
     #expect(!sync.isZoomed(.left))
     #expect(!sync.isZoomed(.right))
   }
+
+  @Test("⌘0 while synced (IMGMGR-495): both panes to their own 100 %, then both back to fit")
+  func toggleAllSynced() {
+    var sync = makeSync()
+    sync.toggleAll()
+    #expect(sync.rendered(.left).scale == landscape.maxScale)
+    #expect(sync.rendered(.right).scale == portrait.maxScale)
+    #expect(sync.magnificationDescription(.left) == "100 %")
+    #expect(sync.magnificationDescription(.right) == "100 %")
+    sync.toggleAll()
+    #expect(sync.magnificationDescription(.left) == "fit")
+    #expect(sync.magnificationDescription(.right) == "fit")
+  }
+
+  @Test("⌘0 with sync off (IMGMGR-495): BOTH panes, never only one — fit if either is zoomed")
+  func toggleAllUnsynced() {
+    var sync = makeSync()
+    sync.isSynced = false
+    // Only the left pane zoomed: the key has no pane to land on, so it brings BOTH to fit
+    // (a per-pane double-tap on the right would have zoomed the right instead).
+    sync.toggle(.left)
+    #expect(sync.isZoomed(.left))
+    #expect(!sync.isZoomed(.right))
+    sync.toggleAll()
+    #expect(!sync.isZoomed(.left))
+    #expect(!sync.isZoomed(.right))
+    #expect(!sync.isSynced, "⌘0 must not change Sync zoom")
+    // Both at fit: each pane goes to its OWN 1:1, still unsynced.
+    sync.toggleAll()
+    #expect(sync.rendered(.left).scale == landscape.maxScale)
+    #expect(sync.rendered(.right).scale == portrait.maxScale)
+    #expect(!sync.isSynced)
+  }
 }

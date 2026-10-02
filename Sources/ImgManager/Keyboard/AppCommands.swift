@@ -18,10 +18,80 @@ struct MenuCommandDeclaration: Identifiable {
   let title: String
   let key: KeyEquivalent?
   let modifiers: EventModifiers
-  /// What activating it does, given the focused grid actions. The menu entry and the
-  /// on-screen control it mirrors call the same `GridStore` method through this closure, so a
-  /// shortcut and its button cannot drift apart.
-  let run: (GridKeyboardActions) -> Void
+  /// Which focused value activating it dispatches into, and what it does there.
+  let target: Target
+
+  /// The focused value an entry acts on. IMGMGR-495 adds the second case: ⌘0 acts on the
+  /// mounted viewer's zoom (`ViewerZoomCommand`), which the scene publishes while Compare is open
+  /// — when `GridKeyboardActions` is deliberately nil (WP30 P3 plan decision 7) — and does not
+  /// publish on the bare grid.
+  enum Target {
+    /// The menu entry and the on-screen control it mirrors call the same `GridStore` method
+    /// through this closure, so a shortcut and its button cannot drift apart.
+    case grid((GridKeyboardActions) -> Void)
+    /// The viewer's own zoom toggle (IMGMGR-495).
+    case viewerZoom((ViewerZoomCommand) -> Void)
+  }
+
+  /// A grid-actions entry — every row WP8 and WP13 declared, spelled exactly as they were.
+  init(
+    id: String, shortcut: ShortcutID?, title: String, key: KeyEquivalent?,
+    modifiers: EventModifiers, run: @escaping (GridKeyboardActions) -> Void
+  ) {
+    self.init(
+      id: id, shortcut: shortcut, title: title, key: key, modifiers: modifiers,
+      target: .grid(run))
+  }
+
+  /// A viewer-zoom entry (IMGMGR-495).
+  init(
+    id: String, shortcut: ShortcutID?, title: String, key: KeyEquivalent?,
+    modifiers: EventModifiers, viewerZoom: @escaping (ViewerZoomCommand) -> Void
+  ) {
+    self.init(
+      id: id, shortcut: shortcut, title: title, key: key, modifiers: modifiers,
+      target: .viewerZoom(viewerZoom))
+  }
+
+  private init(
+    id: String, shortcut: ShortcutID?, title: String, key: KeyEquivalent?,
+    modifiers: EventModifiers, target: Target
+  ) {
+    self.id = id
+    self.shortcut = shortcut
+    self.title = title
+    self.key = key
+    self.modifiers = modifiers
+    self.target = target
+  }
+
+  /// What activating it does, given the focused grid actions — a no-op on a viewer-zoom entry,
+  /// which the grid's actions cannot reach. Kept as the grid entries' single call shape, so the
+  /// tests that invoke a declaration "exactly as `AppCommands.entry(_:)`'s Button does" still do.
+  func run(_ actions: GridKeyboardActions) {
+    perform(grid: actions, viewerZoom: nil)
+  }
+
+  /// Whether the entry is live: the focused value it dispatches into is published. A grid entry
+  /// follows the grid's actions (nil while Compare is open, decision 7); the ⌘0 entry follows the
+  /// mounted viewer, so it is disabled on the bare grid and live in the loupe and in Compare.
+  func isEnabled(grid: GridKeyboardActions?, viewerZoom: ViewerZoomCommand?) -> Bool {
+    switch target {
+    case .grid: return grid != nil
+    case .viewerZoom: return viewerZoom != nil
+    }
+  }
+
+  /// Activates the entry against whichever focused values are published — the ONE dispatch the
+  /// menu's Button calls, so the enabled state and the action read the same value.
+  func perform(grid: GridKeyboardActions?, viewerZoom: ViewerZoomCommand?) {
+    switch target {
+    case .grid(let run):
+      if let grid { run(grid) }
+    case .viewerZoom(let run):
+      if let viewerZoom { run(viewerZoom) }
+    }
+  }
 }
 
 /// The menu bar's "Open in New Window" entry, AS DATA. WP16 P4 (IMGMGR-297), the plan's B8 fold.
@@ -30,7 +100,8 @@ struct MenuCommandDeclaration: Identifiable {
 /// reason: the `Commands` body renders exactly this value and decides nothing of its own, so what
 /// the entry says, whether it is enabled and what it opens are a TEST (`ShootWindowEntryTests`)
 /// rather than a comment. It is deliberately NOT a `MenuCommandDeclaration` — every row of that
-/// table is a key equivalent dispatched into `GridKeyboardActions`, and this entry claims no key.
+/// table is a key equivalent dispatched into a focused value (`GridKeyboardActions`, or since
+/// IMGMGR-495 the viewer's `ViewerZoomCommand`), and this entry claims no key.
 struct ShootWindowMenuEntry {
   let title: String
   let isEnabled: Bool
@@ -64,6 +135,9 @@ struct AppCommands: Commands {
   /// `.focusedSceneValue` call) because `openWindow` is a SCENE capability no `GridStore` can
   /// hold. Absent — like `actions` — whenever no workspace scene is focused.
   @FocusedValue(\.shootWindowCommand) private var shootWindow
+  /// IMGMGR-495: the mounted viewer's zoom toggle, published by `LoupeView` and `CompareView`.
+  /// Absent on the bare grid, which is what disables the ⌘0 entry there.
+  @FocusedValue(\.viewerZoomCommand) private var viewerZoom
 
   var body: some Commands {
     CommandMenu("Grid") {
@@ -82,8 +156,8 @@ struct AppCommands: Commands {
     }
   }
 
-  /// NOT a `MenuCommandDeclaration`: every row of that table is a KEY EQUIVALENT dispatched into
-  /// `GridKeyboardActions` (`ShortcutCatalogTests.everyMenuDeclarationIsKeyedAndCatalogued`
+  /// NOT a `MenuCommandDeclaration`: every row of that table is a KEY EQUIVALENT dispatched into a
+  /// focused value (`ShortcutCatalogTests.everyMenuDeclarationIsKeyedAndCatalogued`
   /// enforces that every declaration is keyed and catalogued), and this entry deliberately claims
   /// no key — it opens an OS window, which is not a culling accelerator and has no place in the
   /// shortcut inventory. It also dispatches into the window command rather than the grid actions,
@@ -117,10 +191,14 @@ struct AppCommands: Commands {
 
   @ViewBuilder
   private func entry(_ item: MenuCommandDeclaration) -> some View {
+    // Copied into locals so the Button's action reads the values this render saw, the same
+    // values `isEnabled` decided on.
+    let grid = actions
+    let zoom = viewerZoom
     let button = Button(item.title) {
-      if let actions { item.run(actions) }
+      item.perform(grid: grid, viewerZoom: zoom)
     }
-    .disabled(actions == nil)
+    .disabled(!item.isEnabled(grid: grid, viewerZoom: zoom))
     if let key = item.key {
       button.keyboardShortcut(key, modifiers: item.modifiers)
     } else {
@@ -284,6 +362,18 @@ extension AppCommands {
           run: { $0.toggleSortDirection() })
       ]),
     MenuCommandGroup(id: "view.zoom", items: AppCommands.zoomDeclarations),
+    // IMGMGR-495 (owner ruling, comment 10230): "⌘0 alone toggles Fit/100% in the loupe and in
+    // Compare; ⌘1 stays the grid's first zoom step; no second key." ONE row, beside the grid's
+    // zoom steps because both answer "how big is the photograph", dispatched into the mounted
+    // viewer's own toggle — the loupe's `LoupeZoomState.toggle()`, Compare's
+    // `CompareZoomSync.toggleAll()` — and disabled on the bare grid, where nothing publishes it.
+    MenuCommandGroup(
+      id: "view.viewerZoom",
+      items: [
+        MenuCommandDeclaration(
+          id: "view.viewerZoom.toggle", shortcut: .viewerZoomToggle, title: "Zoom: Fit / 100%",
+          key: KeyEquivalent("0"), modifiers: [.command], viewerZoom: { $0.toggle() })
+      ]),
     // WP13 P8 (IMGMGR-214): advance-on-mark, in the View menu because that menu is the
     // discovery surface for what the app does with a keypress (p3220 §3.1) — and in BOTH forms,
     // decision 9's "the web set verbatim as the fast path AND Command-equivalents for

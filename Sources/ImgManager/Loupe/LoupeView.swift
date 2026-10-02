@@ -176,6 +176,9 @@ struct LoupeView: View {
       LoupeMarkGroup(store: store)
     }
     .navigationBarTitleDisplayMode(.inline)
+    // IMGMGR-495: ⌘0's target while this loupe is mounted — THE zoom action, the same closure the
+    // double-tap and the More row's "Zoom to 100%" call, so the key cannot mean a second value.
+    .focusedSceneValue(\.viewerZoomCommand, ViewerZoomCommand(toggle: zoomToggle))
     .modifier(ShareLauncherPresentation(launcher: shareLauncher, share: share))
     // WP30 P2 (IMGMGR-457): tag entry for the focused photograph, hosted HERE while the loupe is
     // open — the docked Regular loupe replaces the grid that hosts it otherwise, and the Compact

@@ -41,6 +41,11 @@ struct ShortcutHelpSheetTests {
     #expect(help?.key == "? or ⌘/")
     let group = ShortcutHelpModel.rows.first { $0.id == ShortcutID.groupMode.rawValue }
     #expect(group?.key == "⌃⌘1 · ⌃⌘2")
+    // IMGMGR-495: the sheet lists ⌘0 — generated from the catalog, so this is its row, not a copy.
+    let viewerZoom = ShortcutHelpModel.rows.first { $0.id == ShortcutID.viewerZoomToggle.rawValue }
+    #expect(viewerZoom?.key == "⌘0")
+    #expect(viewerZoom?.meaning == ShortcutID.viewerZoomToggle.meaning)
+    #expect(viewerZoom?.accessibilityID == "shortcutHelpRow.viewerZoomToggle")
   }
 
   @Test("Every row carries the ASCII identifier the rendered sheet is addressed by")

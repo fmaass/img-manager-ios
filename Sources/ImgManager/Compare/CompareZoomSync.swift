@@ -144,15 +144,23 @@ struct CompareZoomSync: Equatable, Sendable {
   /// Double-tap on `pane`: back to fit when anything is zoomed, else 100 %.
   mutating func toggle(_ pane: Pane) {
     if isSynced {
-      if Pane.allCases.contains(where: { rendered($0).isZoomed }) {
-        resetToFit()
-      } else {
-        zoomToOneToOne()
-      }
+      toggleAll()
     } else if rendered(pane).isZoomed {
       own[pane] = Relative()
     } else {
       own[pane] = Relative(scale: geometry(of: pane).maxScale)
+    }
+  }
+
+  /// ⌘0 (IMGMGR-495): BOTH panes — back to fit when either is zoomed, else 100 %. The synced
+  /// double-tap's own rule (`toggle(_:)` calls this while synced), applied to the pair whatever
+  /// Sync zoom says, because a key has no pane to land on; the 100 % half is `zoomToOneToOne`,
+  /// which honours Sync zoom itself (one shared value, or each pane at its own 1:1).
+  mutating func toggleAll() {
+    if Pane.allCases.contains(where: { rendered($0).isZoomed }) {
+      resetToFit()
+    } else {
+      zoomToOneToOne()
     }
   }
 
