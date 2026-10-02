@@ -142,7 +142,8 @@ struct GridViewOptionsTests {
     // Diff-gate r1 blocker 2: every retained test called `keyboardActions.showShortcutHelp()`
     // directly, so replacing these declarations' `run` closures with no-ops left the suite
     // green — the menu entry the user actually presses was never exercised. This test invokes
-    // the DECLARATION, exactly as `AppCommands.entry(_:)`'s Button does.
+    // the DECLARATION, exactly as `AppCommands.entry(_:)`'s Button does — and, for `?` since
+    // IMGMGR-463, as `SilentKeyCommandHost`'s Button does: the same `run`, a different host.
     for id in ["view.help.question", "view.help.command"] {
       let store = makeStore()
       let declaration = AppCommands.declarations.first { $0.id == id }

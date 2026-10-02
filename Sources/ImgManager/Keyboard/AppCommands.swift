@@ -3,7 +3,9 @@ import SwiftUI
 /// One key equivalent (or one plain menu entry) this app declares, AS DATA. The `Commands`
 /// body below renders exactly this table and carries no second, hand-written list — which is
 /// what makes the catalog↔menu correspondence a TEST rather than a comment: deleting a menu
-/// entry means deleting a row here, and `ShortcutCatalogTests` reads the same rows.
+/// entry means deleting a row here, and `ShortcutCatalogTests` reads the same rows. Since
+/// IMGMGR-463 the table is rendered by two hosts split by `presentation`: the menu rows by that
+/// body, a command's silent second key by `SilentKeyCommandHost` — still one list.
 struct MenuCommandDeclaration: Identifiable {
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
   let id: String
@@ -20,6 +22,19 @@ struct MenuCommandDeclaration: Identifiable {
   let modifiers: EventModifiers
   /// Which focused value activating it dispatches into, and what it does there.
   let target: Target
+  /// Whether the binding draws a menu row. IMGMGR-463 (p4128 D10): one row per command — a
+  /// command's second key is still declared HERE, so every reconciliation test still sees it,
+  /// but it is handled silently by `SilentKeyCommandHost` rather than drawn as a twin row.
+  let presentation: Presentation
+
+  /// How a declaration reaches the keyboard (IMGMGR-463).
+  enum Presentation {
+    /// A row of the Grid or View menu, rendered by `AppCommands.menuContent(_:)`.
+    case menuRow
+    /// Bound, enabled and dispatched exactly like its menu row, but drawn nowhere: a command's
+    /// secondary key (Space, bare A, `?`), rendered by `SilentKeyCommandHost`.
+    case silent
+  }
 
   /// The focused value an entry acts on. IMGMGR-495 adds the second case: ⌘0 acts on the
   /// mounted viewer's zoom (`ViewerZoomCommand`), which the scene publishes while Compare is open
@@ -55,7 +70,7 @@ struct MenuCommandDeclaration: Identifiable {
 
   private init(
     id: String, shortcut: ShortcutID?, title: String, key: KeyEquivalent?,
-    modifiers: EventModifiers, target: Target
+    modifiers: EventModifiers, target: Target, presentation: Presentation = .menuRow
   ) {
     self.id = id
     self.shortcut = shortcut
@@ -63,6 +78,19 @@ struct MenuCommandDeclaration: Identifiable {
     self.key = key
     self.modifiers = modifiers
     self.target = target
+    self.presentation = presentation
+  }
+
+  /// This command's secondary key, handled silently (IMGMGR-463). Everything but the id and the
+  /// key is COPIED from the menu row — catalog entry, title and target — so the silent binding
+  /// cannot dispatch, enable or be catalogued differently from the row it stands behind, and the
+  /// command's title is spelled once in this file.
+  func silentTwin(
+    id: String, key: KeyEquivalent, modifiers: EventModifiers
+  ) -> MenuCommandDeclaration {
+    MenuCommandDeclaration(
+      id: id, shortcut: shortcut, title: title, key: key, modifiers: modifiers, target: target,
+      presentation: .silent)
   }
 
   /// What activating it does, given the focused grid actions — a no-op on a viewer-zoom entry,
@@ -113,7 +141,13 @@ struct ShootWindowMenuEntry {
 /// A run of declarations rendered together, separated from its neighbours by one `Divider`.
 struct MenuCommandGroup: Identifiable {
   let id: String
+  /// Every binding of the group, silent ones included — what the reconciliation tests read.
   let items: [MenuCommandDeclaration]
+
+  /// What the menu draws: one row per command (IMGMGR-463).
+  var menuRows: [MenuCommandDeclaration] {
+    items.filter { $0.presentation == .menuRow }
+  }
 }
 
 /// The dispatcher/menu-bar infrastructure P3 fold item 1 requires: the scene-level
@@ -180,7 +214,7 @@ struct AppCommands: Commands {
   private func menuContent(_ groups: [MenuCommandGroup]) -> some View {
     let lastGroupID = groups.last?.id
     ForEach(groups) { group in
-      ForEach(group.items) { item in
+      ForEach(group.menuRows) { item in
         entry(item)
       }
       if group.id != lastGroupID {
@@ -245,16 +279,12 @@ extension AppCommands {
     // Space and Enter are ONE catalog entry (`ShortcutID.openSpaceEnter` — "Space and Enter
     // both mean 'open' on the web... one catalog entry, not two") but SwiftUI has no way to
     // bind two physical keys to a single `Button`, so this is two declarations dispatching the
-    // SAME `open()` call.
+    // SAME `open()` call. IMGMGR-463: Return is the menu row, Space its silent twin.
     MenuCommandGroup(
       id: "grid.open",
       items: [
-        MenuCommandDeclaration(
-          id: "grid.open.return", shortcut: .openSpaceEnter, title: "Open", key: .return,
-          modifiers: [], run: { $0.open() }),
-        MenuCommandDeclaration(
-          id: "grid.open.space", shortcut: .openSpaceEnter, title: "Open", key: .space,
-          modifiers: [], run: { $0.open() }),
+        openRow,
+        openRow.silentTwin(id: "grid.open.space", key: .space, modifiers: []),
       ]),
     // Clear's chrome surface is the LOUPE's own mark bar (`ShortcutCatalog`'s own doc comment:
     // "P4's own bar has no Clear button") — the keyboard shortcut itself is scene-level, so it
@@ -378,7 +408,8 @@ extension AppCommands {
     // discovery surface for what the app does with a keypress (p3220 §3.1) — and in BOTH forms,
     // decision 9's "the web set verbatim as the fast path AND Command-equivalents for
     // discovery": bare `A` is the web's own key, ⌘⇧A is its discovery twin. Two declarations,
-    // one action, exactly the shape `Open` and `Keyboard Shortcuts` already use.
+    // one action, exactly the shape `Open` and `Keyboard Shortcuts` already use. IMGMGR-463:
+    // ⌘⇧A is the menu row, bare A its silent twin.
     //
     // Plain ⌘A is deliberately NOT used — it is the established "Select All" and this app has a
     // Select mode of its own, the same argument `sceneToggle` records for ⌘G. The
@@ -386,31 +417,47 @@ extension AppCommands {
     MenuCommandGroup(
       id: "view.autoAdvance",
       items: [
-        MenuCommandDeclaration(
-          id: "view.autoAdvance.command", shortcut: .autoAdvance, title: "Advance After Marking",
-          key: KeyEquivalent("a"), modifiers: [.command, .shift],
-          run: { $0.toggleAutoAdvanceOnMark() }),
-        MenuCommandDeclaration(
-          id: "view.autoAdvance.bare", shortcut: .autoAdvance, title: "Advance After Marking",
-          key: KeyEquivalent("a"), modifiers: [], run: { $0.toggleAutoAdvanceOnMark() }),
+        autoAdvanceRow,
+        autoAdvanceRow.silentTwin(
+          id: "view.autoAdvance.bare", key: KeyEquivalent("a"), modifiers: []),
       ]),
     // `?` is the web set's own key and ⌘/ is its Command-equivalent — decision 9's "both,
-    // never one replacing the other". Two declarations, one action, exactly like Open above.
+    // never one replacing the other". Two declarations, one action, exactly like Open above;
+    // IMGMGR-463: ⌘/ is the menu row, `?` its silent twin.
     MenuCommandGroup(
       id: "view.help",
       items: [
-        MenuCommandDeclaration(
-          id: "view.help.command", shortcut: .help, title: "Keyboard Shortcuts",
-          key: KeyEquivalent("/"), modifiers: [.command], run: { $0.showShortcutHelp() }),
-        MenuCommandDeclaration(
-          id: "view.help.question", shortcut: .help, title: "Keyboard Shortcuts",
-          key: KeyEquivalent("?"), modifiers: [], run: { $0.showShortcutHelp() }),
+        helpRow,
+        helpRow.silentTwin(id: "view.help.question", key: KeyEquivalent("?"), modifiers: []),
       ]),
   ]
+
+  /// IMGMGR-463 (p4128 D10): the menu rows of the three commands bound to two keys. Each is
+  /// declared once, here, and its group pairs it with a `silentTwin` for the secondary key — so
+  /// the row and the silent binding share one title, one catalog entry and one action BY
+  /// CONSTRUCTION. The row carries the menu-bar key (Return, ⌘⇧A, ⌘/); the twin, the web's.
+  @MainActor static let openRow = MenuCommandDeclaration(
+    id: "grid.open.return", shortcut: .openSpaceEnter, title: "Open", key: .return,
+    modifiers: [], run: { $0.open() })
+
+  @MainActor static let autoAdvanceRow = MenuCommandDeclaration(
+    id: "view.autoAdvance.command", shortcut: .autoAdvance, title: "Advance After Marking",
+    key: KeyEquivalent("a"), modifiers: [.command, .shift],
+    run: { $0.toggleAutoAdvanceOnMark() })
+
+  @MainActor static let helpRow = MenuCommandDeclaration(
+    id: "view.help.command", shortcut: .help, title: "Keyboard Shortcuts",
+    key: KeyEquivalent("/"), modifiers: [.command], run: { $0.showShortcutHelp() })
 
   /// Every declaration in every menu, flattened — the set `ShortcutCatalogTests` reconciles
   /// against `ShortcutCatalog` in both directions.
   @MainActor static var declarations: [MenuCommandDeclaration] {
     (gridMenuGroups + viewMenuGroups).flatMap(\.items)
+  }
+
+  /// The bindings `SilentKeyCommandHost` renders — every declaration the menus do not draw
+  /// (IMGMGR-463). Derived from `declarations`, never listed a second time.
+  @MainActor static var silentDeclarations: [MenuCommandDeclaration] {
+    declarations.filter { $0.presentation == .silent }
   }
 }
