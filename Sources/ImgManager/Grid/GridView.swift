@@ -701,12 +701,19 @@ struct GridOptionsRow: View {
     .padding(.horizontal)
     .padding(.vertical, 6)
     .chromeFill(.thinMaterial)
-    // NO `.accessibilityIdentifier` on this HStack: an identifier set on a container OVERRIDES
-    // its descendants'. Observed on the iPhone 17 Pro gate leg — both controls came back as
-    // `identifier: 'gridOptionsRow'` and the row's own controls did not exist by their names,
-    // so they were unaddressable. The controls are what anything
-    // needs to name; the row is just where they sit on Compact.
+    // IMGMGR-509: `.contain` FIRST, then the row's identifier — the IMGMGR-280 order
+    // `loupeMarkBar` and `compareDecisionBar` already follow. An identifier set on this HStack
+    // WITHOUT `.contain` overrides its descendants': observed on the iPhone 17 Pro gate leg, both
+    // controls came back as `identifier: 'gridOptionsRow'` and did not exist by their own names.
+    // As a container the row keeps its identifier and the controls keep theirs, so a UI test can
+    // find `gridTriageButton` INSIDE the row (`OptionsRowFitUITests`, the Triage helpers) rather
+    // than anywhere in the app.
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier(Self.accessibilityIdentifier)
   }
+
+  /// IMGMGR-509: the row's container identifier (see the note at the end of `body`).
+  static let accessibilityIdentifier = "gridOptionsRow"
 
   /// One declared control. WP16 P3 (IMGMGR-295): the funnel is icon-only; `FilterPopoverUITests`
   /// asserts the row's last control (Triage since IMGMGR-464) is still hittable here — the "the

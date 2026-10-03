@@ -141,8 +141,9 @@ final class TriageUITests: OrientationPinnedUITestCase {
   }
 
   private func openTriage(_ app: XCUIApplication) {
-    // IMGMGR-462: Triage lives in the Compact options row, not the navigation bar.
-    let entry = app.descendants(matching: .any)["gridTriageButton"].firstMatch
+    // IMGMGR-462: Triage lives in the Compact options row, not the navigation bar — and
+    // IMGMGR-509 looks for it there, inside the row's container, not anywhere in the app.
+    let entry = gridTriageEntry(app)
     XCTAssertTrue(
       entry.waitForExistence(timeout: 15), "No 'gridTriageButton' in the grid's options row.")
     XCTAssertTrue(waitFor("isEnabled == true", entry), "Triage is disabled on a populated grid.")

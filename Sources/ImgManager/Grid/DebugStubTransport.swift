@@ -59,6 +59,10 @@
         // so the three tier branches would have repeated each other and a tier walk could have
         // passed against a shape the API never returns.
         let folderQuery = Self.queryParameters(of: request)
+        // IMGMGR-499: counted like the summaries below, so the home Refresh row's TREE reload is
+        // observable. The failing-archive branch above is not counted; no refresh test uses it.
+        let folderTreeProbe = self.probe
+        await MainActor.run { (folderTreeProbe ?? .shared).folderTreeRequests += 1 }
         return try jsonResponse(
           .ok,
           Components.Schemas.FolderTree(
@@ -116,11 +120,26 @@
           .ok, Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil))
       case Operations.GetImageApiImagesImageIdGet.id:
         return try jsonResponse(.ok, Self.fixtureDetail())
+      case Operations.GetProxyApiImagesImageIdProxyTierGet.id
+      where DebugStubLaunch.noPreviews
+        && Self.proxyTier(of: request) == ProxyTier.preview.rawValue:
+        // IMGMGR-502: no photograph has a preview — the server's 404 for a proxy it does not
+        // have, which Triage renders as its "No preview" placeholder.
+        return (HTTPResponse(status: .notFound), nil)
       case Operations.GetProxyApiImagesImageIdProxyTierGet.id:
         var response = HTTPResponse(status: .ok)
         response.headerFields[.contentType] = "image/jpeg"
-        let tier = request.path.flatMap { URLComponents(string: $0)?.path }?
-          .split(separator: "/").last.map(String.init)
+        let tier = Self.proxyTier(of: request)
+        // IMGMGR-502: ONE named photograph's preview is held back until the UI test releases
+        // it (`DebugPreviewHold`, never a timer); every other request answers at once. Gate
+        // flake: holding "every preview after the first" counted globally, so the grid's and
+        // the loupe's preview loads used up "the first" and Triage's own start got held.
+        if tier == ProxyTier.preview.rawValue,
+          let heldID = DebugStubLaunch.heldPreviewImageID,
+          Self.proxyImageID(of: request) == heldID
+        {
+          await DebugPreviewHold.shared.hold()
+        }
         return (response, HTTPBody(Self.fixtureProxy(tier: tier)))
       // IMGMGR-382: the look catalogue and the looked proxy, so the loupe's Looks control has
       // something to choose under `-UITestStubGrid`. The looked render is the same fixture with a
@@ -210,6 +229,22 @@
       default:
         return (HTTPResponse(status: .notFound), nil)
       }
+    }
+
+    /// The tier a `/api/images/{id}/proxy/{tier}` request names: the path's last component, read
+    /// exactly as the proxy branch always read it.
+    private static func proxyTier(of request: HTTPRequest) -> String? {
+      request.path.flatMap { URLComponents(string: $0)?.path }?
+        .split(separator: "/").last.map(String.init)
+    }
+
+    /// The image id a `/api/images/{id}/proxy/{tier}` request names: the path's third-from-last
+    /// component.
+    private static func proxyImageID(of request: HTTPRequest) -> Int? {
+      let components = (request.path.flatMap { URLComponents(string: $0)?.path } ?? "")
+        .split(separator: "/").map(String.init)
+      guard components.count >= 3 else { return nil }
+      return Int(components[components.count - 3])
     }
 
     /// The request's query as name → value. `request.path` carries the path AND the query (the
@@ -1012,6 +1047,27 @@
     /// other way to be driven through the real UI.
     static var failArchiveFolders: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestFailArchiveFolders")
+    }
+
+    /// IMGMGR-502: `-UITestHoldPreviewOf <image id>` — that ONE photograph's `preview`-tier
+    /// proxy is held until the UI test releases it (`DebugPreviewHold`); every other request
+    /// answers at once. The delayed preview Triage's photo area must not paper over with the
+    /// previous photograph. Independent of every other flag here.
+    static let holdPreviewArgument = "-UITestHoldPreviewOf"
+
+    static var heldPreviewImageID: Int? {
+      let arguments = ProcessInfo.processInfo.arguments
+      guard let index = arguments.firstIndex(of: holdPreviewArgument),
+        arguments.indices.contains(index + 1)
+      else { return nil }
+      return Int(arguments[index + 1])
+    }
+
+    static var holdsAPreview: Bool { heldPreviewImageID != nil }
+
+    /// IMGMGR-502: every `preview`-tier proxy answers 404, so Triage shows "No preview".
+    static var noPreviews: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestNoPreviews")
     }
   }
 

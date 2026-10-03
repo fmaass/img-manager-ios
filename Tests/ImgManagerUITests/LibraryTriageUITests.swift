@@ -49,7 +49,8 @@ final class LibraryTriageUITests: OrientationPinnedUITestCase {
     // options row since IMGMGR-462. This grid is titled by the tree's long name ("2026-08-27 —
     // Stub Shoot"), the title that pushed a bar-hosted Triage into the bar's "More" overflow,
     // so the entry must be hittable as it stands: no overflow opened, no tap spent.
-    let entry = app.descendants(matching: .any)["gridTriageButton"].firstMatch
+    // IMGMGR-509: inside the options row's container, never anywhere in the app.
+    let entry = gridTriageEntry(app)
     XCTAssertTrue(
       entry.waitForExistence(timeout: 30),
       "The shoot row did not reach a grid carrying 'gridTriageButton'.")

@@ -134,10 +134,18 @@ struct TriageView: View {
     .padding(.bottom, 8)
   }
 
+  /// The preview the photo area shows: the cursor's, or none — never the previous photograph's
+  /// while the cursor's is still loading (review B1). One value for the view AND its DEBUG probe
+  /// (IMGMGR-502), so the probe reports what is rendered rather than a second reading of it.
+  private var shownPreview: TriagePreview? {
+    guard let preview, preview.imageID == session.cursor else { return nil }
+    return preview
+  }
+
   private var photo: some View {
     Group {
-      if let preview, preview.imageID == session.cursor {
-        if let image = preview.image {
+      if let shownPreview {
+        if let image = shownPreview.image {
           PlatformImageView(image: image)
             .aspectRatio(contentMode: .fit)
         } else {
@@ -259,7 +267,42 @@ struct TriageView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.activity")
           .accessibilityValue(DebugProbe.shared.activity)
+        // IMGMGR-502: what the photo area renders — `loading` (the spinner), `<id>:image` or
+        // `<id>:none` (the "No preview" placeholder) — read off `shownPreview`, the value the
+        // photo itself renders from. The photo's own element collapses its children, so the
+        // placeholder text is not separately visible to a UI test.
+        Text("debugProbeTriagePreview")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.triagePreview")
+          .accessibilityValue(previewProbeValue)
+        // IMGMGR-502 review r1: under `-UITestHoldPreviewOf <id>` only, how many preview
+        // answers the fixture is parking, and the control a UI test taps to let them through
+        // (`DebugPreviewHold`). A real, tappable button, so the release is an explicit signal
+        // from the test rather than a timer in the transport.
+        if DebugStubLaunch.holdsAPreview {
+          Text("debugProbeHeldPreviews")
+            .font(.system(size: 1))
+            .foregroundStyle(.clear)
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("debugProbe.heldPreviews")
+            .accessibilityValue("heldPreviews=\(DebugProbe.shared.heldPreviews)")
+          Button("Release held preview") {
+            Task { await DebugPreviewHold.shared.release() }
+          }
+          .font(.caption2)
+          .frame(minWidth: 44, minHeight: 44)
+          .accessibilityIdentifier("debugReleaseHeldPreview")
+        }
       }
+    }
+
+    private var previewProbeValue: String {
+      guard let shownPreview else { return "loading" }
+      return "\(shownPreview.imageID):\(shownPreview.image == nil ? "none" : "image")"
     }
   #else
     private var debugProbeElement: some View { EmptyView() }

@@ -19,10 +19,12 @@ import SwiftUI
 struct QueueView: View {
   @Bindable var queueStore: QueueStore
   @Binding var selectedFolderID: Int?
-  /// What a pull-to-refresh does to the TREE — see `QueueHomeRefresh`. The tree's load is view
-  /// state inside `FolderTreeSection`, so the gesture reaches it by advancing the token that
-  /// section's `.task(id:)` keys on rather than by calling into it.
-  let onRefreshTree: () -> Void
+  /// What a pull-to-refresh runs: `QueueHomeRefresh.run(summaries:tree:)`, composed ONCE in
+  /// `RootView.refreshQueueHome()`. IMGMGR-499: the tree's View menu carries the gesture's visible
+  /// twin, and both run this same closure, so the gesture and the menu row cannot diverge. The
+  /// tree's load is view state inside `FolderTreeSection`, so the refresh reaches it by advancing
+  /// the token that section's `.task(id:)` keys on rather than by calling into it.
+  let onRefresh: @MainActor () async -> Void
   /// IMGMGR-389: how a PINNED row enters the grid — the very closure `RootView` hands the tree,
   /// hoisted there into one value, so the two surfaces of this home share one routing path. The
   /// tier is optional because a summary carries `source_tier` as a wire string and an unrecognised
@@ -99,9 +101,7 @@ struct QueueView: View {
         Section { treeSection }
       }
     }
-    .refreshable {
-      await QueueHomeRefresh.run(summaries: { await queueStore.refresh() }, tree: onRefreshTree)
-    }
+    .refreshable { await onRefresh() }
     .overlay(alignment: .top) {
       // Q3 "refresh over data": a small activity indicator, rows/expansion/scroll/selection all
       // retained underneath — never the centered first-load spinner.
@@ -114,7 +114,38 @@ struct QueueView: View {
           .padding(.top, 4)
       }
     }
+    .overlay(alignment: .topLeading) { debugProbeElement }
   }
+
+  /// DEBUG-ONLY, under the fixture launch argument, exactly like `ShootsHomeView`'s probe
+  /// (IMGMGR-499): the served summaries-request AND folder-tree-request counts, so a UI test sees
+  /// BOTH halves of a home refresh re-run. Its own identifier, because at Compact the Shoots
+  /// root's `debugProbe.summaries` can sit in the same hierarchy. No hit testing, so it cannot
+  /// take a tap meant for a row; in Release it is an `EmptyView`.
+  #if DEBUG
+    @ViewBuilder private var debugProbeElement: some View {
+      if DebugStubLaunch.isActive {
+        Text("debugProbeHomeRefresh")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier(QueueHomeRefresh.probeIdentifier)
+          .accessibilityValue(debugProbeValue)
+      }
+    }
+
+    private var debugProbeValue: String {
+      let probe = DebugProbe.shared
+      return "summariesRequests=\(probe.summariesRequests) "
+        + "folderTreeRequests=\(probe.folderTreeRequests) "
+        + "homeRefreshSummaries=\(probe.homeRefreshSummaries) "
+        + "homeRefreshTreeToken=\(probe.homeRefreshTreeToken) "
+        + "treeLoadCompletedToken=\(probe.treeLoadCompletedToken)"
+    }
+  #else
+    private var debugProbeElement: some View { EmptyView() }
+  #endif
 
   /// Two lines, never one: the adjudicated degraded copy, and — whenever the list underneath is
   /// a replayed answer rather than a live one — how old that answer is (IMGMGR-198). Rows stay
@@ -210,8 +241,18 @@ enum QueueHomePresentation {
 /// hands the gesture on as a token bump (`FolderTreeSection.reloadToken`) and returns without
 /// awaiting the fetch — the tree renders its own progress. The wiring itself (that `QueueView`
 /// calls this at all) is not reachable from a unit test; `TierHomeUITests` walks the surface.
+///
+/// IMGMGR-499: the gesture's visible twin is the tree View menu's "Refresh" row
+/// (`RootView.folderTreeViewMenuItem`, on the Compact Library tab and the Regular sidebar). It
+/// and the gesture both run `RootView.refreshQueueHome()`, the one place this is called with
+/// its two closures; `QueueHomeRefreshUITests` taps the row and reads both halves re-run.
 @MainActor
 enum QueueHomeRefresh {
+  /// The View menu's Refresh row (IMGMGR-499).
+  static let menuRowIdentifier = "queueHomeRefreshMenuRow"
+  /// The DEBUG fixture probe `QueueView` publishes both request counts on (IMGMGR-499).
+  static let probeIdentifier = "debugProbe.homeRefresh"
+
   static func run(summaries: () async -> Void, tree: () -> Void) async {
     await summaries()
     tree()

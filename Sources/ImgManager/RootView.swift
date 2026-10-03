@@ -647,11 +647,40 @@ struct RootView: View {
     case .queue:
       QueueView(
         queueStore: queueStore, selectedFolderID: $selectedFolderID,
-        onRefreshTree: { treeReloadToken += 1 },
+        onRefresh: { await refreshQueueHome() },
         // IMGMGR-389: the pinned section's rows route through the SAME closure the tree's do.
         onSelectShoot: onSelectShoot, showsNeedsReview: showsNeedsReview,
         showsSectionHeaders: showsSectionHeaders, treeSection: tree)
     }
+  }
+
+  /// IMGMGR-499: the home's ONE refresh — `QueueHomeRefresh.run` with its two closures, composed
+  /// here and nowhere else. The pull-to-refresh (`QueueView.onRefresh`) and its visible twin, the
+  /// tree View menu's "Refresh" row (`folderTreeViewMenuItem`), both run this, so the gesture and
+  /// the menu row cannot diverge.
+  ///
+  /// DEBUG only (reviews r1, r2), so a UI test attributes a re-run to THIS path — the launch load
+  /// and the foreground resume (`ForegroundRefresh`) fetch the same endpoints but never pass
+  /// through here: the summaries half counts itself once it has run, and the tree half records
+  /// the reload token it issued, whose completed load `FolderTreeSection` reports.
+  private func refreshQueueHome() async {
+    await QueueHomeRefresh.run(
+      summaries: {
+        await queueStore.refresh()
+        #if DEBUG
+          DebugProbe.shared.homeRefreshSummaries += 1
+        #endif
+      },
+      tree: {
+        let issued = treeReloadToken + 1
+        treeReloadToken = issued
+        // Review r2: the token THIS refresh issued, so a UI test can wait for the tree load
+        // that completes for it (`DebugProbe.treeLoadCompletedToken`) — not merely that this
+        // closure ran.
+        #if DEBUG
+          DebugProbe.shared.homeRefreshTreeToken = issued
+        #endif
+      })
   }
 
   /// The folder tree, built in ONE place for every surface that renders it (the split's sidebar,
@@ -759,6 +788,16 @@ struct RootView: View {
         GridMoreMenuItem(
           entry: GridMoreMenu.pruneMirroredArchive, store: gridStore,
           foldsClearIntoMore: false, openShootWindow: shootWindowOpener)
+        // IMGMGR-499: the visible twin of the home's pull-to-refresh, on both of the menu's
+        // surfaces (the Compact Library tab, the Regular sidebar) — the SAME `refreshQueueHome()`
+        // the gesture runs, as the Shoots title menu's Refresh row twins that tab's gesture. Two
+        // rows, depth 1: inside the ≤ 6 rows / depth ≤ 2 menu budget.
+        Button {
+          Task { await refreshQueueHome() }
+        } label: {
+          Label("Refresh", systemImage: "arrow.clockwise")
+        }
+        .accessibilityIdentifier(QueueHomeRefresh.menuRowIdentifier)
       } label: {
         Label("View", systemImage: "slider.horizontal.3")
       }

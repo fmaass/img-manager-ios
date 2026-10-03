@@ -47,6 +47,27 @@
     /// re-fetched, the same way the absorb counter above observes its request.
     var summariesRequests = 0
 
+    /// IMGMGR-499: how many `/api/folders` requests the fixture transport has answered this launch
+    /// (one per tier per tree load), so a UI test observes that the home's Refresh row re-ran the
+    /// TREE half of `QueueHomeRefresh` and not only the summaries.
+    var folderTreeRequests = 0
+
+    /// IMGMGR-502 review r1: how many preview answers `DebugPreviewHold` is parking right now —
+    /// the positive signal a UI test waits for before it releases them.
+    var heldPreviews = 0
+
+    /// IMGMGR-499 review r1: how many times `RootView.refreshQueueHome()` — the home's
+    /// pull-to-refresh and its View-menu twin, and nothing else — finished its summaries half.
+    /// Per-trigger, so the launch load and the foreground resume, which fetch the same
+    /// endpoints, can never pass for a tap on Refresh.
+    var homeRefreshSummaries = 0
+
+    /// IMGMGR-499 review r2: the tree reload token `refreshQueueHome()` last ISSUED (0: none
+    /// yet), and the highest token a tree load has COMPLETED for (`FolderTreeSection
+    /// .runTreeLoad`). A refresh's tree half is done when the second reaches the first.
+    var homeRefreshTreeToken = 0
+    var treeLoadCompletedToken = -1
+
     /// WP31 P1 (IMGMGR-460): how many `POST /api/marks/state` writes the fixture transport has
     /// served this launch — what makes "Skip performs no server write" falsifiable from a UI test.
     var markWrites = 0

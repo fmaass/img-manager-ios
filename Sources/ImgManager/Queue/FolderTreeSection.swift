@@ -155,8 +155,16 @@ struct FolderTreeSection: View {
   private func runTreeLoad() async {
     let generation = treeState.beginLoad()
     let fence = treeFence()
+    // IMGMGR-499 review r2: the token this load runs for, captured before it leaves.
+    let token = reloadToken
     let fresh = await FolderTreeLoad.perform(using: gridService)
     guard treeState.publish(fresh, generation: generation, cached: cachedTree) else { return }
+    #if DEBUG
+      // The completed load reports the token it ran for, so a UI test waits for the reload a
+      // Refresh tap issued rather than for any folder request.
+      DebugProbe.shared.treeLoadCompletedToken = max(
+        DebugProbe.shared.treeLoadCompletedToken, token)
+    #endif
     // Rule 6, the relaunch case: the selection is restored before there is a tree to find it in,
     // so the ancestors can only be opened once the rows exist.
     revealHighlightedFolder()
