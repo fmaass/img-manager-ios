@@ -76,6 +76,79 @@ final class PassSummaryHandoffUITests: OrientationPinnedUITestCase {
     try assertPassEndsOnLastPhotograph(by: "triageSkip", picks: 0)
   }
 
+  // MARK: - iPhone: a continuation arriving while the Pass Summary is up
+
+  /// IMGMGR-501: the receiving route against the REAL dismissal, not the gate's fakes. A Handoff
+  /// of this pass's own position arrives mid-session while the Pass Summary sheet is up — the
+  /// fixture trigger on the sheet (`-UITestMidSessionContinuation`) hands the sheet's own payload
+  /// to the running process's `continueTriage(userInfo:)`: the route dismisses the sheet, waits
+  /// for its `onDismiss`, and only then opens the loupe — at Compact, the loupe's cover, which
+  /// UIKit refuses while the sheet is still going. The launch probe, read before and after,
+  /// proves it was the same process throughout.
+  func testContinuationWhileThePassSummaryIsUpOpensTheLoupeAfterItsDismissal() throws {
+    let app = try launchedCompactGrid(extraArguments: ["-UITestMidSessionContinuation"])
+    let launch = try launchID(app)
+    openTriage(app)
+    let start = try XCTUnwrap(position(app), "Triage shows no 'i of N' position.")
+    decide(app, "triageSkip", expecting: start + 1)
+    waitForShownPhotograph(app)
+    let cursorID = try XCTUnwrap(photographID(app), "The Triage photograph names no file.")
+    element(app, "triageBack").tap()
+    XCTAssertTrue(
+      waitFor("exists == false", element(app, "triagePosition")), "Back did not close Triage.")
+
+    _ = try activityFields(app, source: "passSummary", imageID: cursorID)
+    let sheet = element(app, "passSummary.skipped")
+    XCTAssertTrue(sheet.waitForExistence(timeout: 15), "The Pass Summary sheet is not up.")
+
+    // Gate on 1676195: `app.open(url)` RELAUNCHED the app on the iPhone destination, so the
+    // payload reached a fresh process with no sheet. The fixture trigger on the sheet hands the
+    // sheet's own advertised payload to THIS process's receiving route instead.
+    let trigger = element(app, "debugTrigger.midSessionContinuation")
+    XCTAssertTrue(
+      trigger.waitForExistence(timeout: 10), "No fixture continuation trigger on the sheet.")
+    trigger.tap()
+
+    XCTAssertTrue(
+      waitFor("exists == false", sheet, timeout: 15), "The continuation left the sheet up.")
+    let back = element(app, "loupeBack")
+    XCTAssertTrue(
+      back.waitForExistence(timeout: 30), "The loupe did not open after the sheet's dismissal.")
+    XCTAssertFalse(sheet.exists, "The loupe opened with the Pass Summary sheet still up.")
+    attach(name: "IMGMGR-501-continued-over-pass-summary")
+
+    // The probes sit on the workspace, which the loupe's cover hides: read them after Back.
+    back.tap()
+    XCTAssertTrue(waitFor("exists == false", back, timeout: 15), "Back did not close the loupe.")
+    // Review advisory: a relaunch STOPS the test here — the ordering asserts below would only
+    // describe a fresh process and fail misleadingly.
+    guard try launchID(app) == launch else {
+      XCTFail(
+        "The app was RELAUNCHED during the continuation: the probes describe a fresh process "
+          + "that never showed the Pass Summary, so their order proves nothing.")
+      return
+    }
+    XCTAssertTrue(
+      waitFor("value == 'continuation=opened-\(cursorID)'", continuationProbe(app), timeout: 15),
+      "The continuation did not open \(cursorID): "
+        + "\(String(describing: continuationProbe(app).value)).")
+    // Review r1 + the review of ada3ad8: the ORDER at the route boundary pins that the route
+    // waited for the sheet's settlement — the sheet settled, and the very next route event is
+    // the loupe opening on the advertised photograph. WHICH path settled it (`onDismiss`, or
+    // the leaving grace while an `onDismiss` carries no generation) is a follow-up ticket.
+    let events = element(app, "debugProbe.routeEvents")
+    let order = ".*passSummarySheet:(onDismiss|grace)>openLoupe-\(cursorID)"
+    XCTAssertTrue(
+      waitFor(NSPredicate(format: "value MATCHES %@", order), events),
+      "The loupe did not open right after the sheet's settlement: "
+        + "\(String(describing: events.value)).")
+    let dismissal = element(app, "debugProbe.dismissal")
+    XCTAssertTrue(
+      waitFor("value MATCHES 'dismissal=passSummarySheet:(onDismiss|grace)'", dismissal),
+      "The route did not wait for the sheet's settlement: "
+        + "\(String(describing: dismissal.value)).")
+  }
+
   // MARK: - iPad: the receiving route
 
   /// Photograph 7015 is on the paged fixture shoot's SECOND page, so the route has to page. The
@@ -142,9 +215,9 @@ final class PassSummaryHandoffUITests: OrientationPinnedUITestCase {
     attach(name: "IMGMGR-461-pass-finished-\(identifier)")
   }
 
-  private func launchedCompactGrid() throws -> XCUIApplication {
+  private func launchedCompactGrid(extraArguments: [String] = []) throws -> XCUIApplication {
     let app = XCUIApplication()
-    app.launchArguments = ["-UITestStubGrid"]
+    app.launchArguments = ["-UITestStubGrid"] + extraArguments
     app.launch()
     XCTAssertTrue(
       app.buttons["gridPickButton"].waitForExistence(timeout: 30),
@@ -170,6 +243,14 @@ final class PassSummaryHandoffUITests: OrientationPinnedUITestCase {
       throw XCTSkip("Compact width: the receiving route is proven on the iPad destination.")
     }
     return app
+  }
+
+  /// This process's identity (`DebugProbe.launchID`), read off the workspace's probe.
+  private func launchID(_ app: XCUIApplication) throws -> String {
+    let probe = element(app, "debugProbe.launch")
+    XCTAssertTrue(probe.waitForExistence(timeout: 10), "No 'debugProbe.launch' on screen.")
+    XCTAssertTrue(waitFor("value BEGINSWITH 'launch='", probe), "The launch probe is empty.")
+    return try XCTUnwrap(probe.value as? String, "'debugProbe.launch' is unreadable.")
   }
 
   private func openTriage(_ app: XCUIApplication) {
@@ -243,7 +324,13 @@ final class PassSummaryHandoffUITests: OrientationPinnedUITestCase {
   private func waitFor(_ format: String, _ element: XCUIElement, timeout: TimeInterval = 10)
     -> Bool
   {
-    let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
+    waitFor(NSPredicate(format: format), element, timeout: timeout)
+  }
+
+  private func waitFor(
+    _ predicate: NSPredicate, _ element: XCUIElement, timeout: TimeInterval = 10
+  ) -> Bool {
+    let done = XCTNSPredicateExpectation(predicate: predicate, object: element)
     return XCTWaiter.wait(for: [done], timeout: timeout) == .completed
   }
 

@@ -977,6 +977,35 @@
       return arguments[index + 1]
     }
 
+    /// IMGMGR-501: the same JSON, delivered MID-SESSION as
+    /// `imgmanager://uitest-continue-activity?json=<payload>` — the launch argument above can
+    /// only continue before anything is presented, and the receiving route has to be proven
+    /// while the Pass Summary sheet is up. The scheme is the app's registered one
+    /// (`project.yml`); the host is not the sign-in callback's
+    /// (`NativeAuthContract.isOurCallback`), so the two never meet.
+    /// Nil for any other URL and outside fixture launches (`isFixture`, a unit test's input).
+    /// Debug-only like every flag here.
+    static let continueActivityURLHost = "uitest-continue-activity"
+
+    /// IMGMGR-501 (gate on 1676195): mounts a fixture-only button on the Pass Summary that hands
+    /// the sheet's OWN advertised payload to the running process's receiving route — a Handoff
+    /// arriving mid-session. `XCUIApplication.open(_:)` relaunched the app on the iPhone
+    /// destination, so the URL above never reached the process that showed the sheet.
+    /// Debug-only like every flag here.
+    static var armsMidSessionContinuation: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestMidSessionContinuation")
+    }
+
+    static func midSessionContinuationJSON(
+      from url: URL, isFixture: Bool = DebugStubLaunch.isActive
+    ) -> String? {
+      guard isFixture, url.scheme?.lowercased() == "imgmanager",
+        url.host()?.lowercased() == continueActivityURLHost,
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+      else { return nil }
+      return items.first { $0.name == "json" }?.value
+    }
+
     /// WP28 P3 (IMGMGR-450): which fixture folder the auto-select opens — the id that follows
     /// `-UITestSelectFolder` in the launch arguments, or folder 1 (the shipped default) when the
     /// flag is absent or its value is not an id. The Summary's cases need folders the fixture

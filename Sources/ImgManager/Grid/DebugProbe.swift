@@ -100,5 +100,22 @@
     /// (`PresentationDismissalGate`) — `<surface>:onDismiss`, or `<surface>:grace` for a
     /// presentation withdrawn before it ever appeared.
     var dismissal = ""
+
+    /// IMGMGR-501 (review r1): the receiving route's boundary events IN ORDER, newest last —
+    /// each gate settlement (`<surface>:<path>`) and the route's loupe open (`openLoupe-<id>`),
+    /// joined by `>` and capped at eight. The latest-only probes above cannot show an order;
+    /// a UI test reads this one to require the dismissal BEFORE the open.
+    var routeEvents = ""
+
+    /// IMGMGR-501 (gate on 1676195): this process's identity. A UI test reads it before and
+    /// after a mid-session step; a different value means the app was relaunched in between, and
+    /// whatever the probes say afterwards describes a fresh process.
+    let launchID = UUID().uuidString
+
+    func recordRouteEvent(_ event: String) {
+      var events = routeEvents.split(separator: ">").map(String.init)
+      events.append(event)
+      routeEvents = events.suffix(8).joined(separator: ">")
+    }
   }
 #endif

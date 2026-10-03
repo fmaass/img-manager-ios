@@ -67,10 +67,12 @@ private func displayAndDecide(_ session: TriageSession, _ verdict: TriageVerdict
   await session.decide(verdict)
 }
 
-/// Polls (bounded) until `condition` holds, so a suspended action is observed mid-flight.
+/// Polls (bounded) until `condition` holds, so a suspended action is observed mid-flight. Stops
+/// at once when the test's task is cancelled.
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async {
   for _ in 0..<200 where !condition() {
+    if Task.isCancelled { return }
     try? await Task.sleep(nanoseconds: 5_000_000)
   }
 }
@@ -338,7 +340,7 @@ struct TriageActivityAdvertiserTests {
   @Test("An open pass: current, eligible, decoding to the cursor; a new position reuses it")
   func openPassFollowsTheCursor() async throws {
     let session = TriageSession(store: PassFakeStore(ids: [1, 2, 3]))
-    let advertiser = TriageActivityAdvertiser(source: "triage")
+    let advertiser = TriageActivityAdvertiser(source: "triage", currency: TriageActivityCurrency())
     await displayAndDecide(session, .skip)
     advertiser.advertise(payload(session, pool: [1, 2, 3]))
 
@@ -370,7 +372,8 @@ struct TriageActivityAdvertiserTests {
     let presentation = try #require(
       PassSummaryPresentation.make(
         result: result, folderID: 1, tier: .local, folderTitle: "", pool: [1, 2]))
-    let advertiser = TriageActivityAdvertiser(source: "passSummary")
+    let advertiser = TriageActivityAdvertiser(
+      source: "passSummary", currency: TriageActivityCurrency())
     advertiser.advertise(presentation.handoff)
 
     let activity = try #require(advertiser.activity)
@@ -386,7 +389,7 @@ struct TriageActivityAdvertiserTests {
 
   @Test("Nothing to continue resigns; ending twice is harmless")
   func nilPayloadResigns() {
-    let advertiser = TriageActivityAdvertiser(source: "triage")
+    let advertiser = TriageActivityAdvertiser(source: "triage", currency: TriageActivityCurrency())
     advertiser.advertise(
       TriageActivity(folderID: 1, tier: nil, imageID: 5, index: nil, completed: false))
     #expect(advertiser.isCurrent)
@@ -395,6 +398,63 @@ struct TriageActivityAdvertiserTests {
     #expect(advertiser.activity == nil)
     advertiser.end()
     #expect(!advertiser.isCurrent)
+  }
+
+  /// IMGMGR-501: the Triage-to-Summary handover, Triage's content going FIRST — the pass ended
+  /// (its advertiser resigned) before the sheet appeared. The sheet's activity is a fresh one:
+  /// the resigned activity was invalidated and can never be made current again.
+  @Test("Handover, Triage disappears first: the summary's activity is current, and it is new")
+  func handoverTriageDisappearsFirst() throws {
+    let currency = TriageActivityCurrency()
+    let triage = TriageActivityAdvertiser(source: "triage", currency: currency)
+    let summary = TriageActivityAdvertiser(source: "passSummary", currency: currency)
+    let atTwo = TriageActivity(folderID: 1, tier: .local, imageID: 2, index: 2, completed: false)
+    let finished = TriageActivity(
+      folderID: 1, tier: .local, imageID: 3, index: 3, completed: true)
+
+    triage.advertise(atTwo)
+    let resigned = try #require(triage.activity)
+    triage.end()
+    #expect(currency.activity == nil, "Triage's end left its activity current.")
+
+    summary.advertise(finished)
+    let current = try #require(currency.activity, "No activity is current after the handover.")
+    #expect(current !== resigned, "The invalidated activity was made current again.")
+    #expect(summary.isCurrent)
+    #expect(!triage.isCurrent)
+    #expect(TriageActivity(userInfo: current.userInfo) == finished)
+  }
+
+  /// IMGMGR-501: the same handover with the sheet's content appearing FIRST, Triage's
+  /// disappearing after it. Triage's late `end()` must not resign the activity the summary
+  /// made current — one activity, current throughout, carrying the summary's payload.
+  @Test("Handover, the summary appears first: Triage's late end resigns nothing")
+  func handoverSummaryAppearsFirst() throws {
+    let currency = TriageActivityCurrency()
+    let triage = TriageActivityAdvertiser(source: "triage", currency: currency)
+    let summary = TriageActivityAdvertiser(source: "passSummary", currency: currency)
+    let atTwo = TriageActivity(folderID: 1, tier: .local, imageID: 2, index: 2, completed: false)
+    let finished = TriageActivity(
+      folderID: 1, tier: .local, imageID: 3, index: 3, completed: true)
+
+    triage.advertise(atTwo)
+    let first = try #require(currency.activity)
+    summary.advertise(finished)
+    #expect(currency.activity === first, "The handover made a second activity.")
+    #expect(summary.isCurrent)
+    #expect(!triage.isCurrent, "Two surfaces own the current activity.")
+
+    triage.end()
+    triage.advertise(nil)
+    let current = try #require(currency.activity, "Triage's late end resigned the summary's.")
+    #expect(current === first)
+    #expect(summary.isCurrent)
+    #expect(currency.activitiesMade == 1)
+    #expect(TriageActivity(userInfo: current.userInfo) == finished)
+
+    summary.end()
+    #expect(currency.activity == nil)
+    #expect(!summary.isCurrent)
   }
 }
 
@@ -612,6 +672,8 @@ struct TriageContinuationRouterTests {
     try? await Task.sleep(nanoseconds: 20_000_000)
     #expect(host.events == ["dismiss", "dismiss"])
 
+    gate.disappeared(.triageCover)
+
     gate.dismissed(.triageCover)
     #expect(await older.value == .superseded)
     #expect(await newest.value == .opened(imageID: 8003))
@@ -706,6 +768,15 @@ private final class FakeGraceClock {
     sleepers = []
     for sleeper in resumed { sleeper.resume() }
   }
+
+  /// Review r3: only the oldest pending sleep runs out.
+  func elapseOldest() {
+    guard !sleepers.isEmpty else { return }
+    sleepers.removeFirst().resume()
+  }
+
+  /// The withdrawal graces asked for, without the leaving graces (`.seconds(3)` by default).
+  var withdrawalGraces: Int { sleeps.filter { $0 == .milliseconds(1500) }.count }
 }
 
 /// Review round 1 (B1): the dismissal completion every incoming route awaits.
@@ -747,9 +818,13 @@ struct PresentationDismissalGateTests {
     for _ in 0..<20 { await Task.yield() }
     #expect(resumed.count == 0)
 
+    gate.disappeared(.triageCover)
+
     gate.dismissed(.triageCover)
     for _ in 0..<20 { await Task.yield() }
     #expect(resumed.count == 0, "The sheet is still on screen.")
+
+    gate.disappeared(.passSummarySheet)
 
     gate.dismissed(.passSummarySheet)
     await first.value
@@ -764,10 +839,13 @@ struct PresentationDismissalGateTests {
     let resumed = Resumed()
     gate.presented(.triageCover)
     let waiter = park(gate, resumed)
+    gate.disappeared(.passSummarySheet)
     gate.dismissed(.passSummarySheet)
     for _ in 0..<20 { await Task.yield() }
     #expect(resumed.count == 0)
     #expect(!gate.isSettled)
+
+    gate.disappeared(.triageCover)
 
     gate.dismissed(.triageCover)
     await waiter.value
@@ -798,6 +876,8 @@ struct PresentationDismissalGateTests {
     try? await Task.sleep(nanoseconds: 20_000_000)
     #expect(host.events == ["dismiss"], "A surface that appeared must wait for its onDismiss.")
     #expect(!gate.isSettled)
+
+    gate.disappeared(.triageCover)
 
     gate.dismissed(.triageCover)
     #expect(await route.value == .opened(imageID: 7015))
@@ -843,6 +923,285 @@ struct PresentationDismissalGateTests {
     for _ in 0..<20 { await Task.yield() }
     #expect(!gate.isSettled, "The old grace settled a NEW request.")
     #expect(gate.settlements.isEmpty)
+  }
+
+  /// IMGMGR-501: a re-request made while the surface is still on screen (or animating away) is
+  /// a NEW generation. The `onDismiss` that follows belongs to the presentation that was up; it
+  /// settles that one and never the request queued behind it.
+  @Test("A stale presentation's onDismiss does not settle a re-request made while it was up")
+  func staleDismissalDoesNotSettleAReRequest() async {
+    let gate = PresentationDismissalGate()
+    let resumed = Resumed()
+    let first = gate.requested(.triageCover)
+    gate.presented(.triageCover)
+    let second = gate.requested(.triageCover)
+    #expect(second > first, "The re-request shares the generation of the presentation on screen.")
+    #expect(gate.requested(.triageCover) == second, "Asking again minted a third generation.")
+    let waiter = park(gate, resumed)
+
+    gate.disappeared(.triageCover)
+
+    gate.dismissed(.triageCover)
+    for _ in 0..<20 { await Task.yield() }
+    #expect(!gate.isSettled, "The old presentation's onDismiss settled the re-request.")
+    #expect(resumed.count == 0)
+
+    gate.presented(.triageCover)
+    gate.disappeared(.triageCover)
+    gate.dismissed(.triageCover)
+    await waiter.value
+    #expect(resumed.count == 1)
+    #expect(
+      gate.settlements == [
+        Settlement(surface: .triageCover, path: .onDismiss),
+        Settlement(surface: .triageCover, path: .onDismiss),
+      ])
+  }
+
+  /// IMGMGR-501: a route withdraws a re-request that is still queued behind the presentation on
+  /// screen. That re-request will never present, so it takes the grace — counted from the old
+  /// presentation's `onDismiss`, never settled by it outright, and never waited on forever.
+  @Test("A withdrawn re-request takes the grace once the presentation before it is gone")
+  func withdrawnReRequestTakesTheGraceAfterTheOldDismissal() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    gate.requested(.passSummarySheet)
+    gate.presented(.passSummarySheet)
+    gate.requested(.passSummarySheet)
+    gate.withdrawUnappeared()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(clock.sleeps.isEmpty, "The grace started while the old presentation was still up.")
+
+    gate.disappeared(.passSummarySheet)
+
+    gate.dismissed(.passSummarySheet)
+    #expect(!gate.isSettled, "The old onDismiss settled the withdrawn re-request outright.")
+    await waitUntil { clock.withdrawalGraces == 1 }
+    #expect(clock.withdrawalGraces == 1, "The withdrawn re-request never took the grace.")
+
+    clock.elapse()
+    await waitUntil { gate.isSettled }
+    #expect(gate.isSettled)
+    #expect(
+      gate.settlements == [
+        Settlement(surface: .passSummarySheet, path: .onDismiss),
+        Settlement(surface: .passSummarySheet, path: .grace),
+      ])
+  }
+
+  /// IMGMGR-501 (review r1): the UNFAVOURABLE order — the successor's `onAppear` arrives before
+  /// the outgoing presentation's `onDismiss`. The successor names its generation, so it stays
+  /// marked as on screen: a later withdrawal arms no grace for it, and only its own `onDismiss`
+  /// settles it.
+  @Test("A successor that appears before the old onDismiss is never given the grace")
+  func successorAppearingBeforeTheOldDismissalKeepsWaiting() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    let first = gate.requested(.passSummarySheet)
+    gate.presented(.passSummarySheet, generation: first)
+    let second = gate.requested(.passSummarySheet)
+    gate.presented(.passSummarySheet, generation: second)
+    gate.disappeared(.passSummarySheet)
+    gate.dismissed(.passSummarySheet)
+    #expect(!gate.isSettled, "The old onDismiss settled the visible successor.")
+
+    gate.withdrawUnappeared()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(clock.withdrawalGraces == 0, "A successor on screen was given the grace.")
+    clock.elapse()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(!gate.isSettled)
+
+    gate.disappeared(.passSummarySheet)
+
+    gate.dismissed(.passSummarySheet)
+    #expect(gate.isSettled)
+    #expect(
+      gate.settlements == [
+        Settlement(surface: .passSummarySheet, path: .onDismiss),
+        Settlement(surface: .passSummarySheet, path: .onDismiss),
+      ])
+  }
+
+  /// IMGMGR-501 review r2 (1): A is withdrawn before it appears, B replaces it and appears, and
+  /// A's late `onDismiss` arrives. Nothing is leaving, so it settles nothing: B waits for its
+  /// own `onDisappear` + `onDismiss`, and A's grace expiring touches B neither.
+  @Test("A withdrawn predecessor's late onDismiss does not settle the presentation on screen")
+  func latePredecessorDismissalLeavesTheVisibleOneWaiting() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    let first = gate.requested(.passSummarySheet)
+    gate.withdrawUnappeared()
+    await waitUntil { clock.sleeps.count == 1 }
+    let second = gate.requested(.passSummarySheet)
+    #expect(second != first, "The replacement shares the withdrawn request's generation.")
+    gate.presented(.passSummarySheet, generation: second)
+
+    gate.dismissed(.passSummarySheet)
+    #expect(!gate.isSettled, "The predecessor's late onDismiss settled the visible one.")
+    clock.elapse()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(!gate.isSettled, "The predecessor's grace settled the visible one.")
+
+    gate.disappeared(.passSummarySheet, generation: second)
+    gate.dismissed(.passSummarySheet)
+    #expect(gate.isSettled)
+    #expect(gate.settlements == [Settlement(surface: .passSummarySheet, path: .onDismiss)])
+  }
+
+  /// IMGMGR-501 review r3: the same item disappears and appears again (still on screen). Its
+  /// leaving grace running out settles nothing.
+  @Test("Disappear, reappear, the leaving grace elapses: still registered")
+  func reappearanceVoidsTheLeavingGrace() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    let generation = gate.requested(.triageCover)
+    gate.presented(.triageCover, generation: generation)
+    gate.disappeared(.triageCover, generation: generation)
+    await waitUntil { clock.sleeps.count == 1 }
+    gate.presented(.triageCover, generation: generation)
+    clock.elapse()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(!gate.isSettled, "The leaving grace settled a presentation back on screen.")
+    #expect(gate.settlements.isEmpty)
+  }
+
+  /// IMGMGR-501 review r3: the same reappearance, then an identity-free `onDismiss` arrives
+  /// late. Nothing is leaving any more, so it settles nothing.
+  @Test("Disappear, reappear, a late identity-free onDismiss: still registered")
+  func reappearanceIgnoresALateDismissal() {
+    let gate = PresentationDismissalGate()
+    let generation = gate.requested(.triageCover)
+    gate.presented(.triageCover, generation: generation)
+    gate.disappeared(.triageCover, generation: generation)
+    gate.presented(.triageCover, generation: generation)
+    gate.dismissed(.triageCover)
+    #expect(!gate.isSettled, "A late onDismiss settled a presentation back on screen.")
+    #expect(gate.settlements.isEmpty)
+  }
+
+  /// IMGMGR-501 review r3: disappear, reappear, disappear again. The FIRST disappearance's
+  /// timer running out settles nothing; the second one's does.
+  @Test("An earlier disappearance's timer cannot expire a later disappearance")
+  func onlyTheCurrentDisappearanceExpires() async throws {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    let generation = gate.requested(.passSummarySheet)
+    gate.presented(.passSummarySheet, generation: generation)
+    gate.disappeared(.passSummarySheet, generation: generation)
+    // Post-r3 advisory: each timer is an unstructured task, and nothing orders when two of them
+    // reach the clock. The first one's sleep is registered BEFORE the second disappearance starts
+    // its own, so `elapseOldest()` really runs out the first disappearance's timer.
+    await waitUntil { clock.sleeps.count == 1 }
+    try #require(clock.sleeps.count == 1, "The first disappearance's timer never registered.")
+    gate.presented(.passSummarySheet, generation: generation)
+    gate.disappeared(.passSummarySheet, generation: generation)
+    await waitUntil { clock.sleeps.count == 2 }
+    try #require(clock.sleeps.count == 2, "The second disappearance's timer never registered.")
+
+    clock.elapseOldest()
+    for _ in 0..<20 { await Task.yield() }
+    #expect(!gate.isSettled, "The first disappearance's timer settled the second.")
+
+    clock.elapseOldest()
+    await waitUntil { gate.isSettled }
+    #expect(gate.isSettled, "The current disappearance's timer settled nothing.")
+    #expect(gate.settlements == [Settlement(surface: .passSummarySheet, path: .grace)])
+  }
+
+  /// IMGMGR-501 gate 2 on da41ad4 and the review of ada3ad8 (REVISE, blocking): the gate's
+  /// route events (`triageCover:grace>passSummarySheet:grace>openLoupe-3`) are consistent with an
+  /// identity-free `onDismiss` arriving before its content's `onDisappear`. Such an `onDismiss`
+  /// carries no generation, so it cannot be told apart from a withdrawn predecessor's late one:
+  /// holding it for the next `onDisappear` (ada3ad8) let a successor's brief disappearance be
+  /// settled by the predecessor's callback. Until `onDismiss` carries its generation, the
+  /// leaving grace is the safe fallback, and this test PINS it: the unattributed dismissal
+  /// settles nothing, the disappearance arms the leaving grace, and the grace settles it.
+  @Test("onDismiss before the content's onDisappear: not trusted, the leaving grace settles it")
+  func unattributedDismissalBeforeDisappearanceFallsBackToTheGrace() async throws {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    let generation = gate.requested(.triageCover)
+    gate.presented(.triageCover, generation: generation)
+    gate.dismissed(.triageCover)
+    #expect(!gate.isSettled, "An identity-free onDismiss settled a request nothing marked leaving.")
+    gate.disappeared(.triageCover, generation: generation)
+    #expect(!gate.isSettled, "The disappearance consumed the unattributed onDismiss.")
+    #expect(gate.settlements.isEmpty)
+    await waitUntil { clock.sleeps.count == 1 }
+    try #require(clock.sleeps == [.seconds(3)], "The leaving grace was not armed.")
+    clock.elapse()
+    await waitUntil { gate.isSettled }
+    #expect(gate.isSettled, "The leaving grace did not settle the presentation.")
+    #expect(gate.settlements == [Settlement(surface: .triageCover, path: .grace)])
+  }
+
+  /// IMGMGR-501 review r2 (2): SwiftUI may run a content's `onAppear` more than once.
+  @Test("A repeated onAppear for the same item is idempotent")
+  func repeatedAppearanceIsIdempotent() {
+    let gate = PresentationDismissalGate()
+    let generation = gate.requested(.triageCover)
+    gate.presented(.triageCover, generation: generation)
+    gate.presented(.triageCover, generation: generation)
+    gate.disappeared(.triageCover, generation: generation)
+    gate.dismissed(.triageCover)
+    #expect(gate.isSettled, "A repeated onAppear registered a second presentation.")
+    #expect(gate.settlements == [Settlement(surface: .triageCover, path: .onDismiss)])
+  }
+
+  /// IMGMGR-501 review r2 (3): the route withdraws a request that never appeared, and the flag
+  /// comes back (coalesced) before the grace runs out — one presentation, anew. The route waits
+  /// for THAT presentation's dismissal and then completes; it neither hangs nor slips through.
+  @Test("A withdrawal coalesced with a re-presentation still completes the route")
+  func coalescedWithdrawalAndRePresentationCompletesTheRoute() async {
+    let clock = FakeGraceClock()
+    let gate = PresentationDismissalGate { await clock.sleep($0) }
+    gate.requested(.triageCover)
+    let router = TriageContinuationRouter()
+    let host = FakeContinuationHost()
+    host.dismissalGate = gate
+
+    let ticket = router.begin()
+    let route = Task { await host.run(router, activity, ticket: ticket) }
+    await waitUntil { host.events == ["dismiss"] && clock.sleeps.count == 1 }
+    let again = gate.requested(.triageCover)
+    gate.presented(.triageCover, generation: again)
+    clock.elapse()
+    for _ in 0..<20 { await Task.yield() }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(host.events == ["dismiss"], "The route moved on while the re-presentation was up.")
+
+    gate.disappeared(.triageCover, generation: again)
+    gate.dismissed(.triageCover)
+    #expect(await route.value == .opened(imageID: 7015))
+    #expect(gate.settlements == [Settlement(surface: .triageCover, path: .onDismiss)])
+  }
+
+  /// IMGMGR-501 (review r1): the route over a Pass Summary that is up, its dismissal HELD. Nothing
+  /// past the dismissal step runs until the sheet's own `onDismiss` settles the gate.
+  @Test("A route over the Pass Summary opens the loupe only after the sheet's onDismiss")
+  func routeOverThePassSummaryWaitsForItsDismissal() async {
+    let gate = PresentationDismissalGate()
+    let sheet = gate.requested(.passSummarySheet)
+    gate.presented(.passSummarySheet, generation: sheet)
+    let router = TriageContinuationRouter()
+    let host = FakeContinuationHost()
+    host.summaryOpen = true
+    host.dismissalGate = gate
+
+    let ticket = router.begin()
+    let route = Task { await host.run(router, activity, ticket: ticket) }
+    await waitUntil { host.events == ["dismiss"] }
+    for _ in 0..<20 { await Task.yield() }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(host.events == ["dismiss"], "The route moved on while the sheet was still up.")
+
+    gate.disappeared(.passSummarySheet)
+
+    gate.dismissed(.passSummarySheet)
+    #expect(await route.value == .opened(imageID: 7015))
+    #expect(host.events.last == "openLoupe:7015 triage=false summary=false")
+    #expect(gate.settlements == [Settlement(surface: .passSummarySheet, path: .onDismiss)])
   }
 
   @Test("The default clock's grace is real and bounded")

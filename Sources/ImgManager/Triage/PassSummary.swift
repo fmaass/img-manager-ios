@@ -48,6 +48,9 @@ struct PassSummaryPresentation: Identifiable, Equatable, Sendable {
   let completed: Bool
   let folderTitle: String
   let handoff: TriageActivity?
+  /// IMGMGR-501 review r2: the `PresentationDismissalGate` generation this presentation was
+  /// requested under — set once, where the sheet is requested, and named by its content.
+  var gateGeneration: Int?
 
   /// Decision 4: a pass that ended with at least one action has a summary; with none it just
   /// closes (nil).

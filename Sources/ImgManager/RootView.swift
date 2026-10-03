@@ -198,6 +198,13 @@ struct RootView: View {
     .overlay(alignment: .topLeading) { materialsSettingsProbe }
     .task { await auth.bootstrap() }
     .onOpenURL { url in
+      // IMGMGR-501: a Handoff simulated MID-SESSION, fixture launches only — the UI test opens
+      // `imgmanager://uitest-continue-activity?json=…` while the Pass Summary is up
+      // (`DebugStubLaunch.midSessionContinuationJSON`), and the payload reaches the SAME
+      // `continueTriage(userInfo:)` the two entries below call.
+      #if DEBUG
+        if continueFromDebugURL(url) { return }
+      #endif
       NativeLoginCallbackInbox.shared.deliver(url)
     }
     // WP31 P2 (IMGMGR-461): a Triage pass handed off from another device. The DEBUG launch
@@ -412,21 +419,28 @@ struct RootView: View {
     // never up together. WP31 P2 (IMGMGR-461), plan decision 4: a pass that ended with at least
     // one action leaves a Pass Summary, presented over the grid once the cover is gone. A pass
     // ended by anything that already closed Triage (an incoming Handoff, decision 6) leaves none.
+    // IMGMGR-501 review r2: presented by ITEM — each presentation carries its own gate
+    // generation, which its content's onAppear and onDisappear name.
     .fullScreenCover(
-      isPresented: Binding(
-        get: { gridStore.isTriagePresented && layoutMode == .compact },
-        set: { presented in
-          if !presented { gridStore.closeTriage() }
+      item: Binding(
+        get: { GridStore.triageCoverIsHosted(in: layoutMode) ? gridStore.triageCover : nil },
+        set: { item in
+          if item == nil { gridStore.closeTriage() }
         }),
       onDismiss: {
-        passSummary = pendingPassSummary
-        pendingPassSummary = nil
         // Review round 2: the sheet is registered where it is requested — before the cover is
-        // settled, so a waiting route never slips between the two.
-        if passSummary != nil { gridStore.presentationGate.requested(.passSummarySheet) }
+        // settled, so a waiting route never slips between the two. IMGMGR-501 review r2: its
+        // generation travels inside the sheet's item.
+        if var summary = pendingPassSummary {
+          summary.gateGeneration = gridStore.presentationGate.requested(.passSummarySheet)
+          passSummary = summary
+        } else {
+          passSummary = nil
+        }
+        pendingPassSummary = nil
         gridStore.presentationGate.dismissed(.triageCover)
       }
-    ) {
+    ) { cover in
       TriageView(
         store: gridStore, shootTitle: currentBreadcrumb?.title ?? "",
         totalCount: currentImageCount,
@@ -440,7 +454,13 @@ struct RootView: View {
           gridStore.closeTriage()
         }
       )
-      .onAppear { gridStore.presentationGate.presented(.triageCover) }
+      // IMGMGR-501: the content names the presentation it belongs to — its item's generation.
+      .onAppear {
+        gridStore.presentationGate.presented(.triageCover, generation: cover.generation)
+      }
+      .onDisappear {
+        gridStore.presentationGate.disappeared(.triageCover, generation: cover.generation)
+      }
       // IMGMGR-463: as on the loupe's cover — the silent keys follow their menu rows here.
       .background { SilentKeyCommandHost() }
     }
@@ -451,7 +471,15 @@ struct RootView: View {
       onDismiss: { gridStore.presentationGate.dismissed(.passSummarySheet) }
     ) { presentation in
       PassSummarySheet(presentation: presentation, layoutMode: layoutMode)
-        .onAppear { gridStore.presentationGate.presented(.passSummarySheet) }
+        .onAppear {
+          gridStore.presentationGate.presented(
+            .passSummarySheet, generation: presentation.gateGeneration)
+        }
+        .onDisappear {
+          gridStore.presentationGate.disappeared(
+            .passSummarySheet, generation: presentation.gateGeneration)
+        }
+        .overlay { midSessionContinuationTrigger(presentation) }
     }
     // WP13 P4 (IMGMGR-215): the shortcut help sheet is hosted HERE, on the workspace, not in
     // `GridView` — `?`/⌘/ and the menu-bar View menu are scene-level, and on Regular-2/3 the
@@ -498,6 +526,8 @@ struct RootView: View {
     guard mode != layoutMode else { return }
     let previous = layoutMode
     layoutMode = mode
+    // IMGMGR-501: only Compact hosts Triage's cover, so only Compact may request it.
+    gridStore.hostsTriageCover = GridStore.triageCoverIsHosted(in: mode)
     // WP30 P3: iPhone-width has no Compare (p4128 "Open items" 2) — the loupe carries on alone.
     if mode == .compact { gridStore.closeCompare() }
     // WP28 P1 (IMGMGR-448): Regular→Compact with a shoot selected lands on its grid in Library.
@@ -851,7 +881,12 @@ struct RootView: View {
           gridStore.query.folderID == folderID && gridStore.query.sourceTier == tier
         },
         locate: { imageID in await gridStore.locateForContinuation(imageID: imageID) },
-        openLoupe: { imageID in gridStore.openLoupe(on: imageID) })
+        openLoupe: { imageID in
+          #if DEBUG
+            DebugProbe.shared.recordRouteEvent("openLoupe-\(imageID)")
+          #endif
+          gridStore.openLoupe(on: imageID)
+        })
       #if DEBUG
         DebugProbe.shared.continuation = outcome.probeValue
       #else
@@ -859,6 +894,43 @@ struct RootView: View {
       #endif
     }
   }
+
+  #if DEBUG
+    /// IMGMGR-501 (gate on 1676195): a Handoff arriving while the Pass Summary is up, in the
+    /// RUNNING process — the sheet's own advertised payload, through the same
+    /// `continueTriage(userInfo:)` both shipped entries call. Fixture launches armed with
+    /// `-UITestMidSessionContinuation` only; nothing at all otherwise.
+    @ViewBuilder
+    private func midSessionContinuationTrigger(_ presentation: PassSummaryPresentation)
+      -> some View
+    {
+      if DebugStubLaunch.isActive, DebugStubLaunch.armsMidSessionContinuation,
+        let handoff = presentation.handoff
+      {
+        Button("Continue here (fixture)") {
+          continueTriage(userInfo: handoff.userInfo)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityIdentifier("debugTrigger.midSessionContinuation")
+      }
+    }
+  #else
+    private func midSessionContinuationTrigger(_ presentation: PassSummaryPresentation)
+      -> some View
+    {
+      EmptyView()
+    }
+  #endif
+
+  #if DEBUG
+    /// IMGMGR-501: the mid-session continuation URL (`DebugStubLaunch.midSessionContinuationJSON`),
+    /// fixture launches only. True when the URL was this one and has been routed.
+    private func continueFromDebugURL(_ url: URL) -> Bool {
+      guard let json = DebugStubLaunch.midSessionContinuationJSON(from: url) else { return false }
+      continueTriage(userInfo: TriageActivity.userInfo(json: json))
+      return true
+    }
+  #endif
 
   /// Decision 6 (a): Triage and any Pass Summary go away before the shoot opens. The pass ends
   /// WITHOUT a summary — `onPassEnded` only leaves one while `isTriagePresented` is still true,
@@ -912,6 +984,22 @@ struct RootView: View {
             DebugProbe.shared.gridKeysWithheld = withheld
             DebugKeyReceipt.installIfNeeded()
           }
+        // IMGMGR-501 (review r1): the route's boundary events in order.
+        Text("debugProbeRouteEvents")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.routeEvents")
+          .accessibilityValue("routeEvents=\(DebugProbe.shared.routeEvents)")
+        // IMGMGR-501 (gate on 1676195): which process the probes describe.
+        Text("debugProbeLaunch")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.launch")
+          .accessibilityValue("launch=\(DebugProbe.shared.launchID)")
       }
     }
   #else

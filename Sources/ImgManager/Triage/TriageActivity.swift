@@ -127,33 +127,33 @@ struct TriageActivity: Equatable, Sendable {
   }
 }
 
-/// Review round 3: the advertising side, owned explicitly. SwiftUI's `.userActivity(_:isActive:_:)`
-/// never ran its update closure in the simulator (gate on 1bfc834: the activity probe stayed
-/// empty), so a surface that advertises holds one of these instead: it builds the
-/// `NSUserActivity` from a `TriageActivity`, keeps a STRONG reference to it (an activity nobody
-/// holds is released and stops being current), makes it current with `becomeCurrent()`, and
-/// resigns and invalidates it on `end()`. A new position reuses the same instance.
+/// IMGMGR-501: the ONE Triage activity the app keeps current, whichever surface advertises it.
 ///
-/// `UIWindowScene.userActivity` is deliberately left alone: SwiftUI owns it for the
-/// `WindowGroup(for:)` scene and its restoration, and `becomeCurrent()` is what Handoff reads.
+/// Triage and the Pass Summary each hold a `TriageActivityAdvertiser`, and the handover between
+/// them has no fixed order: the cover's content can disappear before the sheet's appears, or
+/// after it. Both advertisers therefore share this holder. Advertising reuses its one
+/// `NSUserActivity` and makes the advertiser that asked its OWNER; only the owner's `end()`
+/// resigns it. So in either order exactly one activity stays current, carrying the payload of
+/// whoever advertised last, and a late `end()` from the surface that was replaced resigns
+/// nothing.
 @MainActor
-final class TriageActivityAdvertiser {
-  /// The probe's `source=` — which surface advertises.
-  let source: String
-  /// The activity made current, held strongly until `end()`.
+final class TriageActivityCurrency {
+  /// The app's holder; a unit test makes its own.
+  static let shared = TriageActivityCurrency()
+
+  /// The activity made current, held strongly until its owner ends it.
   private(set) var activity: NSUserActivity?
-  private(set) var isCurrent = false
+  /// The advertiser whose payload `activity` carries.
+  private(set) weak var owner: TriageActivityAdvertiser?
+  /// How many `NSUserActivity` instances were made — read by the tests.
+  private(set) var activitiesMade = 0
 
-  init(source: String) {
-    self.source = source
-  }
+  init() {}
 
-  /// Makes `payload` the current activity; nil ends any advertising.
-  func advertise(_ payload: TriageActivity?) {
-    guard let payload else {
-      end()
-      return
-    }
+  /// Makes `payload` current on behalf of `advertiser`, which becomes the owner.
+  func makeCurrent(_ payload: TriageActivity, for advertiser: TriageActivityAdvertiser)
+    -> NSUserActivity
+  {
     let activity: NSUserActivity
     if let existing = self.activity {
       activity = existing
@@ -163,20 +163,70 @@ final class TriageActivityAdvertiser {
       activity = NSUserActivity(activityType: TriageActivity.activityType)
       payload.configure(activity)
       self.activity = activity
+      activitiesMade += 1
     }
+    owner = advertiser
     activity.becomeCurrent()
-    isCurrent = true
+    return activity
+  }
+
+  /// Resigns and invalidates the activity — only when `advertiser` still owns it.
+  func resign(for advertiser: TriageActivityAdvertiser) {
+    guard owner === advertiser, let activity else { return }
+    activity.resignCurrent()
+    activity.invalidate()
+    self.activity = nil
+    owner = nil
+  }
+}
+
+/// Review round 3: the advertising side, owned explicitly. SwiftUI's `.userActivity(_:isActive:_:)`
+/// never ran its update closure in the simulator (gate on 1bfc834: the activity probe stayed
+/// empty), so a surface that advertises holds one of these instead: it makes a `TriageActivity`
+/// current with `becomeCurrent()` through the shared `TriageActivityCurrency` (which keeps a
+/// STRONG reference — an activity nobody holds is released and stops being current), and
+/// resigns and invalidates it on `end()` while it is still the owner. A new position reuses the
+/// same instance.
+///
+/// `UIWindowScene.userActivity` is deliberately left alone: SwiftUI owns it for the
+/// `WindowGroup(for:)` scene and its restoration, and `becomeCurrent()` is what Handoff reads.
+@MainActor
+final class TriageActivityAdvertiser {
+  /// The probe's `source=` — which surface advertises.
+  let source: String
+  private let currency: TriageActivityCurrency
+
+  convenience init(source: String) {
+    self.init(source: source, currency: .shared)
+  }
+
+  init(source: String, currency: TriageActivityCurrency) {
+    self.source = source
+    self.currency = currency
+  }
+
+  /// The current activity while THIS advertiser owns it; nil otherwise.
+  var activity: NSUserActivity? {
+    currency.owner === self ? currency.activity : nil
+  }
+
+  var isCurrent: Bool { activity != nil }
+
+  /// Makes `payload` the current activity; nil ends any advertising of this advertiser's.
+  func advertise(_ payload: TriageActivity?) {
+    guard let payload else {
+      end()
+      return
+    }
+    let activity = currency.makeCurrent(payload, for: self)
     // Read back from the instance just made current — never re-encoded from the payload.
     TriageActivityProbe.record(activity, source: source)
   }
 
-  /// The surface went away or the pass ended: no longer offered to other devices.
+  /// The surface went away or the pass ended: no longer offered to other devices — unless
+  /// another surface has advertised since, which then keeps its activity current.
   func end() {
-    guard let activity else { return }
-    activity.resignCurrent()
-    activity.invalidate()
-    self.activity = nil
-    isCurrent = false
+    currency.resign(for: self)
   }
 }
 

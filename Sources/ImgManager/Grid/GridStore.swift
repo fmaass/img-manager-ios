@@ -296,7 +296,11 @@ final class GridStore {
   /// shape, because the control that raises it rides the grid's bar while `RootView` hosts the
   /// cover. Triage never touches `isLoupeOpen`: the two covers are separate surfaces, and
   /// `openTriage()` refuses while the loupe is open.
-  private(set) var isTriagePresented = false
+  var isTriagePresented: Bool { triageCover != nil }
+
+  /// IMGMGR-501 review r2: the cover's ITEM — set while Triage is presented, carrying the gate
+  /// generation its request was given, so the content names its own presentation.
+  private(set) var triageCover: TriagePresentation?
 
   /// Triage needs a photograph to start on — disabled while the scope is empty.
   var canOpenTriage: Bool { !actionableImages.isEmpty }
@@ -306,14 +310,24 @@ final class GridStore {
   /// cover's content appears still waits for it (`RootView` settles it from the cover).
   let presentationGate = PresentationDismissalGate()
 
+  /// IMGMGR-501: whether the current width hosts Triage's cover — Compact only. `RootView`
+  /// keeps it in step with its `layoutMode` (`applyWidth`); true at first, like that mode's
+  /// initial `.compact`. A Triage request at Regular would present no cover, so its gate
+  /// registration would never appear and the next Handoff route would wait out the whole
+  /// grace for nothing: `openTriage()` refuses there instead.
+  var hostsTriageCover = true
+
+  /// The layout → host mapping `RootView.applyWidth` applies, and the one the cover's binding
+  /// reads — one answer for both, so the request and the presentation cannot disagree.
+  static func triageCoverIsHosted(in mode: LayoutMode) -> Bool { mode == .compact }
+
   func openTriage() {
-    guard canOpenTriage, !isLoupeOpen else { return }
-    isTriagePresented = true
-    presentationGate.requested(.triageCover)
+    guard canOpenTriage, !isLoupeOpen, hostsTriageCover else { return }
+    triageCover = TriagePresentation(generation: presentationGate.requested(.triageCover))
   }
 
   func closeTriage() {
-    isTriagePresented = false
+    triageCover = nil
   }
 
   /// Dedicated flat previous/next (fold advisory: "don't overload row-relative `moveFocus`") —

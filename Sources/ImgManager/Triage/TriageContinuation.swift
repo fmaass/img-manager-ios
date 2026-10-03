@@ -113,6 +113,13 @@ enum TriagePresentedSurface: Hashable, Sendable {
   case passSummarySheet
 }
 
+/// IMGMGR-501 review r2: one presentation of Triage's cover — its item, immutable, carrying the
+/// gate generation its request was given.
+struct TriagePresentation: Identifiable, Equatable, Sendable {
+  let generation: Int
+  var id: Int { generation }
+}
+
 /// Review rounds 1–2 (B1): dismissal COMPLETION, shared by every incoming route.
 ///
 /// Clearing a presentation flag starts a dismissal; it does not finish one, and UIKit refuses a
@@ -141,77 +148,199 @@ final class PresentationDismissalGate {
     let path: Path
   }
 
-  private struct Entry {
-    let request: Int
+  /// One presentation request of a surface, by generation. IMGMGR-501: a surface's requests
+  /// queue in order, because one presentation of a surface can only follow the one before it.
+  /// `requested` hands out the generation and the content's `onAppear` names it back
+  /// (`presented(_:generation:)`), so whichever order a successor's `onAppear` and the
+  /// outgoing presentation's `onDismiss` arrive in, the visible one is marked appeared. An
+  /// `onDismiss` carries no identity, so review r2: the content's `onDisappear` names the
+  /// generation that is LEAVING (`disappeared(_:generation:)`), and an `onDismiss` without a
+  /// generation settles the oldest leaving request only — never one still on screen. A late
+  /// `onDismiss` of a presentation that was replaced before it ever appeared finds nothing
+  /// leaving and settles nothing.
+  private struct Request {
+    let generation: Int
     var appeared = false
     var withdrawn = false
+    var graceArmed = false
+    /// Review r3: the token of the disappearance in progress; nil while on screen. A
+    /// reappearance clears it, so no earlier timer or late `onDismiss` settles it.
+    var leavingToken: Int?
+    var leaving: Bool { leavingToken != nil }
   }
 
-  private var entries: [TriagePresentedSurface: Entry] = [:]
+  private var queues: [TriagePresentedSurface: [Request]] = [:]
   private var requestCount = 0
   private var waiters: [CheckedContinuation<Void, Never>] = []
   private let grace: Duration
   private let sleep: @MainActor (Duration) async -> Void
+  private let leavingGrace: Duration
+  private var leavingCount = 0
   /// The latest settlements, newest last (a handful kept).
   private(set) var settlements: [Settlement] = []
 
   /// `grace` and `sleep` are the fallback's bound and its clock — a test injects both.
+  /// `leavingGrace` bounds the wait for an `onDismiss` after its content's `onDisappear`, on the
+  /// same clock, so a leaving presentation is settled even if its `onDismiss` never names it.
   init(
     grace: Duration = .milliseconds(1500),
+    leavingGrace: Duration = .seconds(3),
     sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
   ) {
     self.grace = grace
+    self.leavingGrace = leavingGrace
     self.sleep = sleep
   }
 
-  var isSettled: Bool { entries.isEmpty }
+  var isSettled: Bool { queues.isEmpty }
 
-  /// The presentation was asked for: registered before anything can appear. Asking again for a
-  /// surface already registered (and not withdrawn) changes nothing.
-  func requested(_ surface: TriagePresentedSurface) {
-    if let entry = entries[surface], !entry.withdrawn { return }
+  /// The presentation was asked for: registered before anything can appear. Returns the
+  /// generation the presenting view hands back to `presented(_:generation:)`.
+  ///
+  /// Asking again while the newest request has not appeared (and was not withdrawn) is the same
+  /// presentation and changes nothing; asking again after a withdrawal replaces the withdrawn
+  /// request, voiding its grace. IMGMGR-501: asking again while the newest request IS on screen
+  /// is a re-request — a new presentation queued behind it, with a generation of its own.
+  @discardableResult
+  func requested(_ surface: TriagePresentedSurface) -> Int {
+    var queue = queues[surface] ?? []
+    if let last = queue.last, !last.appeared {
+      if !last.withdrawn { return last.generation }
+      queue.removeLast()
+    }
     requestCount += 1
-    entries[surface] = Entry(request: requestCount)
+    queue.append(Request(generation: requestCount))
+    queues[surface] = queue
+    return requestCount
   }
 
   /// The surface's content appeared (`onAppear`): from here only its `onDismiss` settles it.
-  func presented(_ surface: TriagePresentedSurface) {
-    if entries[surface] == nil { requested(surface) }
-    entries[surface]?.appeared = true
+  /// `generation` is the one the presenting view captured from `requested`; a generation no
+  /// longer registered (its grace ran out before it appeared) is registered again, appeared —
+  /// it is on screen. Without a generation (a caller that has none) the oldest unappeared
+  /// request is marked while nothing has appeared, or one is registered when nothing is.
+  func presented(_ surface: TriagePresentedSurface, generation: Int? = nil) {
+    var queue = queues[surface] ?? []
+    if let generation {
+      if let index = queue.firstIndex(where: { $0.generation == generation }) {
+        queue[index].appeared = true
+        // Review r3: it is on screen again — no longer leaving, and its timer is void.
+        queue[index].leavingToken = nil
+      } else {
+        queue.append(Request(generation: generation, appeared: true))
+      }
+    } else if !queue.contains(where: { $0.appeared }),
+      let index = queue.firstIndex(where: { !$0.appeared })
+    {
+      queue[index].appeared = true
+    } else if queue.isEmpty {
+      requestCount += 1
+      queue.append(Request(generation: requestCount, appeared: true))
+    }
+    queues[surface] = queue
   }
 
-  /// A surface's `onDismiss`. Once the last one is gone, every waiting route resumes. A surface
-  /// that was never registered is a no-op.
-  func dismissed(_ surface: TriagePresentedSurface) {
-    guard entries.removeValue(forKey: surface) != nil else { return }
+  /// The content of `generation` is leaving (`onDisappear`, the item's own generation): the
+  /// next `onDismiss` without a generation settles it. Bounded by `leavingGrace`. A generation
+  /// not registered is a no-op.
+  func disappeared(_ surface: TriagePresentedSurface, generation: Int? = nil) {
+    guard var queue = queues[surface] else { return }
+    let found: Int?
+    if let generation {
+      found = queue.firstIndex(where: { $0.generation == generation })
+    } else {
+      found = queue.firstIndex(where: { $0.appeared && !$0.leaving })
+    }
+    guard let index = found, !queue[index].leaving else { return }
+    leavingCount += 1
+    let token = leavingCount
+    queue[index].leavingToken = token
+    queues[surface] = queue
+    let leaving = queue[index].generation
+    Task {
+      await self.sleep(self.leavingGrace)
+      self.leavingExpired(surface, generation: leaving, token: token)
+    }
+  }
+
+  /// A surface's `onDismiss`: settles `generation`, or without one the oldest LEAVING request
+  /// (`disappeared`). Nothing leaving, or a generation not registered: a no-op — a late
+  /// `onDismiss` of a withdrawn predecessor never settles a presentation still on screen. Once
+  /// the last surface is gone, every waiting route resumes. A withdrawn re-request queued
+  /// behind the settled presentation starts its grace now.
+  func dismissed(_ surface: TriagePresentedSurface, generation: Int? = nil) {
+    guard var queue = queues[surface] else { return }
+    let found: Int?
+    if let generation {
+      found = queue.firstIndex(where: { $0.generation == generation })
+    } else {
+      found = queue.firstIndex(where: { $0.leaving })
+    }
+    guard let index = found else { return }
+    queue.remove(at: index)
+    queues[surface] = queue.isEmpty ? nil : queue
+    armReadyGraces(surface)
     record(surface, .onDismiss)
   }
 
-  /// A route has just cleared the flags. Every registered surface whose content never appeared
-  /// is settled after the grace — unless it appears meanwhile, or is requested anew. Calling it
-  /// again does not extend a grace already running.
+  /// A route has just cleared the flags. Every request whose content never appeared is settled
+  /// after the grace — unless it appears meanwhile, or is requested anew. Calling it again does
+  /// not extend a grace already running. A re-request queued behind a presentation still on
+  /// screen is marked withdrawn here; its grace starts once that presentation is gone.
   func withdrawUnappeared() {
-    for (surface, entry) in entries where !entry.appeared && !entry.withdrawn {
-      entries[surface]?.withdrawn = true
-      let request = entry.request
-      Task {
-        await self.sleep(self.grace)
-        self.graceExpired(surface, request: request)
+    for surface in Array(queues.keys) {
+      guard var queue = queues[surface] else { continue }
+      for index in queue.indices where !queue[index].appeared {
+        queue[index].withdrawn = true
       }
+      queues[surface] = queue
+      armReadyGraces(surface)
     }
   }
 
   /// Returns at once when nothing is registered; otherwise when the last surface is settled.
   func settled() async {
-    guard !entries.isEmpty else { return }
+    guard !queues.isEmpty else { return }
     await withCheckedContinuation { continuation in
       self.waiters.append(continuation)
     }
   }
 
-  private func graceExpired(_ surface: TriagePresentedSurface, request: Int) {
-    guard let entry = entries[surface], entry.request == request, !entry.appeared else { return }
-    entries[surface] = nil
+  /// Arms the grace of each withdrawn request with no appeared presentation in front of it.
+  private func armReadyGraces(_ surface: TriagePresentedSurface) {
+    guard var queue = queues[surface] else { return }
+    for index in queue.indices {
+      if queue[index].appeared { break }
+      guard queue[index].withdrawn, !queue[index].graceArmed else { continue }
+      queue[index].graceArmed = true
+      let generation = queue[index].generation
+      Task {
+        await self.sleep(self.grace)
+        self.graceExpired(surface, generation: generation)
+      }
+    }
+    queues[surface] = queue
+  }
+
+  private func leavingExpired(_ surface: TriagePresentedSurface, generation: Int, token: Int) {
+    guard var queue = queues[surface],
+      let index = queue.firstIndex(where: {
+        $0.generation == generation && $0.leavingToken == token
+      })
+    else { return }
+    queue.remove(at: index)
+    queues[surface] = queue.isEmpty ? nil : queue
+    armReadyGraces(surface)
+    record(surface, .grace)
+  }
+
+  private func graceExpired(_ surface: TriagePresentedSurface, generation: Int) {
+    guard var queue = queues[surface],
+      let index = queue.firstIndex(where: { $0.generation == generation }),
+      !queue[index].appeared
+    else { return }
+    queue.remove(at: index)
+    queues[surface] = queue.isEmpty ? nil : queue
     record(surface, .grace)
   }
 
@@ -220,8 +349,9 @@ final class PresentationDismissalGate {
     if settlements.count > 8 { settlements.removeFirst() }
     #if DEBUG
       DebugProbe.shared.dismissal = "\(surface):\(path.rawValue)"
+      DebugProbe.shared.recordRouteEvent("\(surface):\(path.rawValue)")
     #endif
-    guard entries.isEmpty else { return }
+    guard queues.isEmpty else { return }
     let resumed = waiters
     waiters = []
     for waiter in resumed { waiter.resume() }
