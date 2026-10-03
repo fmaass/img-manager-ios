@@ -79,8 +79,15 @@ struct CompareSession: Equatable, Sendable {
   let isSceneBand: Bool
   private(set) var panes: Panes
   var isPinned = false
-  /// One snapshot per verb that left an undo entry in the store's slot, newest last.
-  private(set) var history: [Panes] = []
+  /// The one pending Undo snapshot (IMGMGR-482): the pane pair as it was before the verb whose
+  /// `UndoEntry` holds the store's one slot, keyed by that entry's token. At most one, because
+  /// the store keeps one slot; a snapshot whose entry has left the slot is dropped, never kept
+  /// for a later `.restoredAll` of some other entry to pop.
+  struct PendingUndo: Equatable, Sendable {
+    let entryToken: UUID
+    let panes: Panes
+  }
+  private(set) var pendingUndo: PendingUndo?
 
   var left: Int { panes.left }
   var right: Int? { panes.right }
@@ -117,24 +124,38 @@ struct CompareSession: Equatable, Sendable {
   }
 
   /// Applies a verb's store outcome (plan decision 6): only `.committed` advances the panes. A
-  /// `.partial` verb left an entry too, so it records the (unchanged) pair for Undo to pop with
-  /// that entry; every other outcome left no entry of its own and changes nothing.
-  mutating func record(_ verb: CompareVerb, result: CompoundMarkResult) {
-    switch result {
-    case .committed:
-      history.append(panes)
-      advance(after: verb)
-    case .partial:
-      history.append(panes)
-    case .failed, .conflict, .scopeChanged, .refused:
-      break
+  /// verb that left an entry (`.committed`, `.partial`) replaces the pending snapshot with the
+  /// pair before it, keyed by `entryToken` — the token of the entry that verb recorded
+  /// (`CompoundMarkReport`). A conflict cleared the store's slot, so it drops the snapshot; the
+  /// other outcomes left the slot as it was and keep it. `entryToken` nil (pane-progression
+  /// tests): no snapshot can be keyed, so none is kept.
+  mutating func record(_ verb: CompareVerb, result: CompoundMarkResult, entryToken: UUID? = nil) {
+    if result.recordedUndoEntry {
+      pendingUndo = entryToken.map { PendingUndo(entryToken: $0, panes: panes) }
+    } else if result == .conflict {
+      pendingUndo = nil
     }
+    if result == .committed { advance(after: verb) }
   }
 
-  /// Undo's pane half: the prior pair comes back only when the store restored the whole entry.
-  mutating func undoCompleted(_ outcome: UndoOutcome) {
-    guard outcome == .restoredAll, let prior = history.popLast() else { return }
-    panes = prior
+  /// Undo's pane half (IMGMGR-482): the prior pair comes back only when the store restored the
+  /// WHOLE entry the pending snapshot is keyed by. An outcome for any other entry leaves the
+  /// panes where they are and drops the snapshot, whose entry is no longer in the slot.
+  mutating func undoCompleted(_ report: UndoReport) {
+    guard let pending = pendingUndo else { return }
+    guard report.entryToken == pending.entryToken else {
+      if report.entryToken != nil || report.outcome == .nothingToUndo { pendingUndo = nil }
+      return
+    }
+    switch report.outcome {
+    case .restoredAll:
+      panes = pending.panes
+      pendingUndo = nil
+    case .conflict:
+      pendingUndo = nil  // `handleConflict` cleared the slot
+    case .partial, .scopeChanged, .refused, .nothingToUndo:
+      break  // the entry, or its remainder under the same token, still holds the slot
+    }
   }
 
   /// A strip tap: `imageID` goes to the right pane and joins the seen set. The left image (whose

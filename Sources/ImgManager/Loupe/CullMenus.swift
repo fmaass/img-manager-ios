@@ -196,13 +196,21 @@ enum CullLockRow {
   }
 }
 
-/// Zoom to 100%: ✓ while the photograph shows 1:1 against the proxy — the same rounding the
-/// photograph's own spoken value uses (`LoupeZoomState.accessibilityValue`), so the row and the
-/// reading cannot disagree. Selecting it runs the loupe's ONE zoom toggle (`zoomToggleAction`).
+/// Zoom to 100%: ✓ while the photograph shows 1:1 against the proxy — within the one tolerance
+/// the zoom code uses, the whole-percent rounding of the photograph's own spoken value
+/// (`LoupeZoomState.isOneToOne`, read by `accessibilityValue`), so the row and the reading cannot
+/// disagree. Magnified past 1:1 is NOT 1:1 (IMGMGR-484: the check used to stay on for every
+/// rounded percentage >= 100). Selecting it runs the loupe's ONE zoom toggle (`zoomToggleAction`).
 enum CullZoomRow {
   static func isAtOneToOne(_ zoom: LoupeZoomState) -> Bool {
-    guard zoom.isZoomed, zoom.oneToOneScale > 0 else { return false }
-    return Int((zoom.scale / zoom.oneToOneScale * 100).rounded()) >= 100
+    isAtOneToOne(scale: zoom.scale, oneToOneScale: zoom.oneToOneScale)
+  }
+
+  /// The row's decision on bare values. `LoupeZoomState` clamps at 1:1 and its initializer is
+  /// private, so a state magnified past 1:1 cannot be built; this is where a test reaches the
+  /// row's own answer above the tolerance (review round 1, IMGMGR-484).
+  static func isAtOneToOne(scale: CGFloat, oneToOneScale: CGFloat) -> Bool {
+    LoupeZoomState.isOneToOne(scale: scale, oneToOneScale: oneToOneScale)
   }
 }
 

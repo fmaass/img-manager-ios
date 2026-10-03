@@ -27,6 +27,10 @@ struct PriorMarkSnapshot: Sendable, Equatable {
 struct UndoEntry: Sendable, Equatable {
   var appliedState: MarkStateValue
   var priorStates: [PriorMarkSnapshot]
+  /// This entry's identity (IMGMGR-482). Two entries with equal states and priors are still two
+  /// entries; a caller that pairs its own state with an entry (Compare's pending pane snapshot)
+  /// keys it by this. A partial undo's remainder is the SAME entry and keeps its token.
+  var token = UUID()
 
   var imageIDs: [Int] { priorStates.map(\.imageID) }
 }

@@ -53,6 +53,16 @@ extension XCTestCase {
   /// `DisclosureGroup` label publishes no open/closed state of its own. The app applies the
   /// opening in the same main-actor turn that publishes the rows, so a tier label on screen
   /// already carries its launch state when this reads it.
+  ///
+  /// Both handles are identifiers, never positions: every caller passes the tier's label
+  /// (`folderTreeTier-<label>`) and a child keyed by the server's folder id (`folderRow-<id>`,
+  /// `FolderTreeRowPresentation.rowIdentifier`), so a reordered tree changes nothing here
+  /// (IMGMGR-500).
+  ///
+  /// IMGMGR-500 AC1, recorded: the two-tap goal is MET for Incoming and the Shoots tab — owner
+  /// ruling of 2026-10-02 on IMGMGR-500 comment 10234: only Incoming auto-opens at Compact (its
+  /// shoots are two taps from Triage), and dated shoots filed under year/month are reached
+  /// through the Shoots tab, not by auto-opening more of the tree.
   func openTreeTier(_ tier: XCUIElement, showing child: XCUIElement) {
     if !child.exists { tier.tap() }
   }

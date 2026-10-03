@@ -95,6 +95,12 @@ final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
 
     // Opening SWAPS: the card leaves and its members take its place, each an ordinary tile.
     handle.tap()
+    // IMGMGR-481: the hierarchy as it stood right after the tap, so a lost tap is attributable
+    // (was the handle still closed, covered, or already open?) rather than a bare timeout.
+    let afterTap = XCTAttachment(string: app.debugDescription)
+    afterTap.name = "scene-handle-after-first-tap-hierarchy"
+    afterTap.lifetime = .keepAlways
+    add(afterTap)
     let member = app.descendants(matching: .any)["gridTile-3"].firstMatch
     XCTAssertTrue(
       member.waitForExistence(timeout: 15),

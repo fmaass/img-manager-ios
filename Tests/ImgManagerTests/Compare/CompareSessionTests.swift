@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import ImgManager
@@ -111,20 +112,22 @@ struct CompareSessionTests {
     let results: [CompoundMarkResult] = [.failed, .conflict, .scopeChanged, .refused]
     for result in results {
       var session = try open()
-      session.record(.keepLeft, result: result)
+      session.record(.keepLeft, result: result, entryToken: UUID())
       #expect(session.left == 10, "\(result)")
       #expect(session.right == 20, "\(result)")
-      #expect(session.history.isEmpty, "\(result)")
+      #expect(session.pendingUndo == nil, "\(result)")
     }
   }
 
-  @Test("A partial verb leaves the panes and pushes one history entry")
-  func partialPushesHistory() throws {
+  @Test("A partial verb leaves the panes and keys the one pending snapshot to its entry")
+  func partialKeysThePendingSnapshot() throws {
     var session = try open()
-    session.record(.keepLeft, result: .partial)
+    let entry = UUID()
+    session.record(.keepLeft, result: .partial, entryToken: entry)
     #expect(session.left == 10)
     #expect(session.right == 20)
-    #expect(session.history.count == 1)
+    #expect(session.pendingUndo?.entryToken == entry)
+    #expect(session.pendingUndo?.panes == session.panes)
   }
 
   // MARK: - Left ≠ right
@@ -167,14 +170,15 @@ struct CompareSessionTests {
   @Test("Exhaustion: no unseen candidate left → end state, verbs off, Undo and strip still live")
   func exhaustion() throws {
     var session = try open([10, 20, 30])
-    session.record(.keepLeft, result: .committed)
+    session.record(.keepLeft, result: .committed, entryToken: UUID())
     #expect(session.right == 30)
-    session.record(.keepLeft, result: .committed)
+    let last = UUID()
+    session.record(.keepLeft, result: .committed, entryToken: last)
     #expect(session.isExhausted)
     #expect(session.right == nil)
     #expect(session.markGroups(for: .keepLeft) == nil)
     #expect(session.title == "Compare · all 3 seen in scene")
-    session.undoCompleted(.restoredAll)
+    session.undoCompleted(UndoReport(outcome: .restoredAll, entryToken: last))
     #expect(session.right == 30)
     session.record(.keepLeft, result: .committed)
     session.showOnRight(20)
@@ -184,22 +188,76 @@ struct CompareSessionTests {
 
   // MARK: - Undo pairing
 
-  @Test("Undo pops the pane history only on .restoredAll")
-  func undoPopsOnlyOnRestoredAll() throws {
+  @Test("Undo restores the panes only on .restoredAll of the entry the snapshot is keyed by")
+  func undoRestoresOnlyOnRestoredAllOfItsEntry() throws {
     var session = try open()
-    session.record(.keepRight, result: .committed)
+    let entry = UUID()
+    session.record(.keepRight, result: .committed, entryToken: entry)
     let advanced = session.panes
-    let outcomes: [UndoOutcome] = [.partial, .scopeChanged, .conflict, .refused, .nothingToUndo]
+    let outcomes: [UndoOutcome] = [.partial, .scopeChanged, .refused]
     for outcome in outcomes {
-      session.undoCompleted(outcome)
+      session.undoCompleted(UndoReport(outcome: outcome, entryToken: entry))
       #expect(session.panes == advanced, "\(outcome)")
-      #expect(session.history.count == 1, "\(outcome)")
+      #expect(session.pendingUndo?.entryToken == entry, "\(outcome)")
     }
-    session.undoCompleted(.restoredAll)
+    session.undoCompleted(UndoReport(outcome: .restoredAll, entryToken: entry))
     #expect(session.left == 10)
     #expect(session.right == 20)
     #expect(session.panes.seen == [10, 20])
-    #expect(session.history.isEmpty)
+    #expect(session.pendingUndo == nil)
+  }
+
+  @Test("IMGMGR-482: a conflicted verb drops the snapshot; a failed or refused one keeps it")
+  func nonRecordingVerbsKeepOrDropTheSnapshot() throws {
+    var session = try open()
+    let entry = UUID()
+    session.record(.keepRight, result: .committed, entryToken: entry)
+    for result: CompoundMarkResult in [.failed, .scopeChanged, .refused] {
+      session.record(.keepLeft, result: result, entryToken: nil)
+      #expect(session.pendingUndo?.entryToken == entry, "\(result)")
+    }
+    session.record(.keepLeft, result: .conflict, entryToken: nil)
+    #expect(session.pendingUndo == nil)
+  }
+
+  @Test("IMGMGR-482: no stale snapshot after a conflict, a second verb or another entry's Undo")
+  func staleSnapshotIsNeverRestored() throws {
+    // After a conflict (handleConflict cleared the slot), a later .restoredAll of some other
+    // entry leaves the panes where they are. The pre-fix history popped the stale pair here.
+    var afterConflict = try open()
+    let first = UUID()
+    afterConflict.record(.keepRight, result: .committed, entryToken: first)
+    let advanced = afterConflict.panes
+    afterConflict.undoCompleted(UndoReport(outcome: .conflict, entryToken: first))
+    #expect(afterConflict.panes == advanced)
+    #expect(afterConflict.pendingUndo == nil)
+    afterConflict.undoCompleted(UndoReport(outcome: .restoredAll, entryToken: UUID()))
+    #expect(afterConflict.panes == advanced)
+
+    // After a second verb, only the second verb's pair is pending: its Undo restores it, and a
+    // further .restoredAll (of any entry) never reaches back to the first verb's pair.
+    var twoVerbs = try open()
+    let beforeFirst = twoVerbs.panes
+    twoVerbs.record(.keepLeft, result: .committed, entryToken: UUID())
+    let beforeSecond = twoVerbs.panes
+    let second = UUID()
+    twoVerbs.record(.keepLeft, result: .committed, entryToken: second)
+    let pending = CompareSession.PendingUndo(entryToken: second, panes: beforeSecond)
+    #expect(twoVerbs.pendingUndo == pending)
+    twoVerbs.undoCompleted(UndoReport(outcome: .restoredAll, entryToken: second))
+    #expect(twoVerbs.panes == beforeSecond)
+    twoVerbs.undoCompleted(UndoReport(outcome: .restoredAll, entryToken: UUID()))
+    #expect(twoVerbs.panes == beforeSecond)
+    #expect(twoVerbs.panes != beforeFirst)
+
+    // Another entry's .restoredAll while this session's snapshot is pending: the panes stay
+    // and the snapshot is dropped (its entry has left the slot).
+    var otherEntry = try open()
+    otherEntry.record(.keepLeft, result: .committed, entryToken: UUID())
+    let advancedAgain = otherEntry.panes
+    otherEntry.undoCompleted(UndoReport(outcome: .restoredAll, entryToken: UUID()))
+    #expect(otherEntry.panes == advancedAgain)
+    #expect(otherEntry.pendingUndo == nil)
   }
 
   // MARK: - Title

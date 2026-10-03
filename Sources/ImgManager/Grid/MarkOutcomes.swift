@@ -20,6 +20,23 @@ enum UndoOutcome: Equatable, Sendable {
   case nothingToUndo
 }
 
+/// What `GridStore.undoLastMarkReporting()` answers (IMGMGR-482): the outcome, and the token of
+/// the entry the undo read from the slot, so a caller that paired its own state with an entry
+/// (Compare's pending pane snapshot) acts only on an outcome for THAT entry. Nil when the call
+/// read no entry (`.refused`, `.nothingToUndo`).
+struct UndoReport: Equatable, Sendable {
+  let outcome: UndoOutcome
+  let entryToken: UUID?
+}
+
+/// What `GridStore.applyCompoundMarkReporting(_:)` answers (IMGMGR-482, review round 1): the
+/// verb's result and, when it recorded an undo entry (`.committed`, `.partial`), that entry's
+/// token — taken where the entry is built, so a caller never re-reads the mutable slot for it.
+struct CompoundMarkReport: Equatable, Sendable {
+  let result: CompoundMarkResult
+  let entryToken: UUID?
+}
+
 /// One homogeneous write of a compound verb: `state` applied to `imageIDs` in one call.
 struct CompoundMarkGroup: Equatable, Sendable {
   let state: MarkStateValue

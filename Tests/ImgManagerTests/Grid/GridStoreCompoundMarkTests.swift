@@ -183,6 +183,26 @@ struct GridStoreCompoundMarkTests {
     #expect(store.undo.entry?.priorStates.map { $0.imageID } == [2])
   }
 
+  @Test("IMGMGR-482: a compound mark reports the token of the entry it recorded")
+  func compoundMarkReportsTheRecordedToken() async {
+    let (store, _) = await loadedStore()
+    let report = await store.applyCompoundMarkReporting(keepLeft)
+    #expect(report.result == .committed)
+    #expect(report.entryToken != nil)
+    #expect(report.entryToken == store.undo.entry?.token)
+  }
+
+  @Test("IMGMGR-482: a partial undo's remainder keeps the entry's token; the report names it")
+  func partialUndoRemainderKeepsTheToken() async throws {
+    let (store, transport) = await loadedStore()
+    #expect(await store.applyCompoundMark(keepLeft) == .committed)
+    let token = try #require(store.undo.entry?.token)
+    await transport.setMarkStateOutcome(.serverError, forState: .pick)
+    let report = await store.undoLastMarkReporting()
+    #expect(report == UndoReport(outcome: .partial, entryToken: token))
+    #expect(store.undo.entry?.token == token)
+  }
+
   @Test("A generation change during the first group answers .scopeChanged")
   func generationChangeDuringFirstGroup() async {
     let (store, transport) = await loadedStore()
@@ -290,7 +310,7 @@ struct GridStoreCompoundMarkTests {
     #expect(await verb == .committed)
     #expect(store.compareSession?.right == 2)
     #expect(store.compareSession?.token == reopened.token)
-    #expect(store.compareSession?.history.isEmpty == true)
+    #expect(store.compareSession?.pendingUndo == nil)
   }
 
   // MARK: - Compare on the store
@@ -318,6 +338,25 @@ struct GridStoreCompoundMarkTests {
     #expect(!store.isCompareOpen)
     #expect(store.isLoupeOpen)
     #expect(store.focusedImageID == 1)
+  }
+
+  @Test("IMGMGR-482: Compare Undo of another entry's mark reports it and leaves the panes")
+  func compareUndoOfAnotherEntryLeavesThePanes() async throws {
+    let (store, _) = await loadedStore()
+    store.openLoupe(on: 1)
+    store.openCompare()
+    #expect(await store.compareDecide(.keepLeft) == .committed)
+    let advanced = try #require(store.compareSession?.panes)
+    #expect(advanced.right == 3)
+    // A mark outside Compare's verbs takes the store's one slot.
+    #expect(await store.applyMark(.pick, to: [3]))
+    // Undo restores THAT entry — every group, so `.restoredAll` — but it is not the entry the
+    // Keep left snapshot pairs with. The pre-fix history popped the (1, 2) pair here, showing a
+    // pair whose marks the Undo never touched.
+    #expect(await store.compareUndo() == .restoredAll)
+    #expect(state(store, 3) == MarkPayload.none)
+    #expect(store.compareSession?.panes == advanced)
+    #expect(store.compareSession?.pendingUndo == nil)
   }
 
   @Test("Any generation change while Compare is open ends it; the loupe stays")

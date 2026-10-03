@@ -546,27 +546,31 @@ final class GridStore {
     guard let session = compareSession, let groups = session.markGroups(for: verb) else {
       return .refused
     }
-    let result = await applyCompoundMark(groups)
+    // IMGMGR-482: the token of the entry THIS verb recorded, as the store built it — never a
+    // re-read of the mutable slot afterwards.
+    let report = await applyCompoundMarkReporting(groups)
+    let result = report.result
     // Equality includes the session's `token` (A1), so a reopened session on the same pair is
     // never mistaken for the one that asked.
     guard var current = compareSession, current == session else { return result }
-    current.record(verb, result: result)
+    current.record(verb, result: result, entryToken: report.entryToken)
     compareState = current
     focusedImageID = current.left
     return result
   }
 
-  /// Compare's Undo: the store's one undo slot, and the pane pair popped only when the whole
-  /// entry came back (`UndoOutcome.restoredAll`).
+  /// Compare's Undo: the store's one undo slot, and the pane pair restored only when the whole
+  /// entry came back (`UndoOutcome.restoredAll`) AND that entry is the one the session's pending
+  /// snapshot is keyed by (IMGMGR-482). Any other outcome is reported with the panes unchanged.
   @discardableResult
   func compareUndo() async -> UndoOutcome {
     guard let asked = compareSession?.token else { return .refused }
-    let outcome = await undoLastMark()
-    guard var current = compareSession, current.token == asked else { return outcome }
-    current.undoCompleted(outcome)
+    let report = await undoLastMarkReporting()
+    guard var current = compareSession, current.token == asked else { return report.outcome }
+    current.undoCompleted(report)
     compareState = current
     focusedImageID = current.left
-    return outcome
+    return report.outcome
   }
 
   /// A strip tap: the right pane shows `imageID` (never the left image).
@@ -1317,12 +1321,28 @@ final class GridStore {
         refreshedCursors[stackID] = members.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
       }
       guard generation == loadGeneration else { return false }
+      // IMGMGR-481: `openScenes` is a snapshot from BEFORE the awaits above. A scene the reader
+      // opened or closed while this refresh was on the wire is their own later decision, so it
+      // wins over the snapshot: assigning `survivingScenes` alone undid an open made mid-refresh
+      // (the lost first tap on a closed scene handle). A scene opened meanwhile keeps the
+      // membership its own fetch loaded (or is still loading), if the page still holds it.
+      let pageSceneIDs = Set(
+        page.rows.compactMap { row -> Int? in
+          guard case .stack(let stack) = row else { return nil }
+          return stack.stackId
+        })
+      let openedMeanwhile = sceneExpanded.subtracting(openScenes).intersection(pageSceneIDs)
+      let closedMeanwhile = openScenes.subtracting(sceneExpanded)
+      for stackID in openedMeanwhile {
+        refreshedMembers[stackID] = sceneMembers[stackID]
+        refreshedCursors[stackID] = sceneMemberCursors[stackID]
+      }
       sceneRows = page.rows
       sceneNextCursor = page.nextCursor
-      sceneExpanded = survivingScenes
+      sceneExpanded = survivingScenes.subtracting(closedMeanwhile).union(openedMeanwhile)
       sceneMembers = refreshedMembers
       sceneMemberCursors = refreshedCursors
-      sceneMembersInFlight = []
+      sceneMembersInFlight = sceneMembersInFlight.intersection(openedMeanwhile)
       // IMGMGR-261: the card summaries are dropped with the window they described. They are a
       // cached read of somebody else's state, so an authoritative re-read is exactly the moment
       // they stop being trustworthy; the visible cards fetch theirs again.
@@ -2905,6 +2925,22 @@ final class GridStore {
   /// refresh it awaits before answering `.committed` — so no later group is written under a
   /// generation the verb never saw and no entry is recorded for a scope already left.
   func applyCompoundMark(_ groups: [CompoundMarkGroup]) async -> CompoundMarkResult {
+    await applyCompoundMarkReporting(groups).result
+  }
+
+  /// `applyCompoundMark`, also naming the undo entry it recorded (IMGMGR-482): Compare keys its
+  /// one pending pane snapshot by this token.
+  func applyCompoundMarkReporting(_ groups: [CompoundMarkGroup]) async -> CompoundMarkReport {
+    var recorded: UUID?
+    let result = await performCompoundMark(groups, recordedEntry: &recorded)
+    return CompoundMarkReport(result: result, entryToken: recorded)
+  }
+
+  /// `applyCompoundMarkReporting`'s body; `recordedEntry` is set to the token of the entry it
+  /// records, at the line that records it.
+  private func performCompoundMark(
+    _ groups: [CompoundMarkGroup], recordedEntry: inout UUID?
+  ) async -> CompoundMarkResult {
     guard tryAcquireLane() else { return .refused }
     defer { releaseLane() }
     let generation = loadGeneration
@@ -2926,7 +2962,9 @@ final class GridStore {
         if committedState == nil { committedState = state }
       case .failed:
         guard let committedState else { return .failed }
-        undo.record(UndoEntry(appliedState: committedState, priorStates: committed))
+        let entry = UndoEntry(appliedState: committedState, priorStates: committed)
+        undo.record(entry)
+        recordedEntry = entry.token
         return .partial
       case .conflict:
         return .conflict
@@ -2936,7 +2974,9 @@ final class GridStore {
         continue
       }
     }
-    undo.record(UndoEntry(appliedState: committedState ?? firstState, priorStates: committed))
+    let entry = UndoEntry(appliedState: committedState ?? firstState, priorStates: committed)
+    undo.record(entry)
+    recordedEntry = entry.token
     return .committed
   }
 
@@ -2979,12 +3019,23 @@ final class GridStore {
   /// new, and `@discardableResult` keeps every existing caller compiling unchanged.
   @discardableResult
   func undoLastMark() async -> UndoOutcome {
-    guard tryAcquireLane() else { return .refused }
+    await undoLastMarkReporting().outcome
+  }
+
+  /// `undoLastMark`, also naming the entry it acted on (IMGMGR-482): the token of the entry it
+  /// read from the slot, which is what Compare keys its one pending pane snapshot by.
+  func undoLastMarkReporting() async -> UndoReport {
+    guard tryAcquireLane() else { return UndoReport(outcome: .refused, entryToken: nil) }
     guard let entry = undo.entry else {
       releaseLane()
-      return .nothingToUndo
+      return UndoReport(outcome: .nothingToUndo, entryToken: nil)
     }
     defer { releaseLane() }
+    return UndoReport(outcome: await restoreUndoEntry(entry), entryToken: entry.token)
+  }
+
+  /// `undoLastMarkReporting`'s body, run with the lane held and `entry` read from the slot.
+  private func restoreUndoEntry(_ entry: UndoEntry) async -> UndoOutcome {
     // Fold round 1, B2: ONE generation for the whole call, checked before each group is written
     // and after every await (the request AND the scene refresh), so a later group never writes
     // under a generation this undo never saw and the slot is never touched for a left scope.
@@ -3048,7 +3099,9 @@ final class GridStore {
     if remaining.isEmpty {
       undo.clear()
     } else {
-      undo.record(UndoEntry(appliedState: entry.appliedState, priorStates: remaining))
+      // The remainder is the same entry, so it keeps the token Compare's snapshot is keyed by.
+      undo.record(
+        UndoEntry(appliedState: entry.appliedState, priorStates: remaining, token: entry.token))
     }
     return remaining.isEmpty ? .restoredAll : .partial
   }

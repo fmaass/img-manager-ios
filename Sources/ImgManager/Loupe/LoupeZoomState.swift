@@ -118,14 +118,29 @@ struct LoupeZoomState: Equatable, Sendable {
   var accessibilityValue: String {
     let magnification: String
     if isZoomed {
-      let percent = Int((scale / oneToOneScale * 100).rounded())
-      magnification = percent >= 100 ? Self.name(.oneToOne) : "\(percent) %"
+      let percent = Self.percentOfOneToOne(scale: scale, oneToOneScale: oneToOneScale)
+      let atOneToOne = Self.isOneToOne(scale: scale, oneToOneScale: oneToOneScale)
+      magnification = atOneToOne ? Self.name(.oneToOne) : "\(percent) %"
     } else {
       magnification = Self.name(.fit).lowercased()
     }
     let x = Int(offset.width.rounded())
     let y = Int(offset.height.rounded())
     return "zoom \(magnification), pan \(x), \(y)"
+  }
+
+  /// Magnification as a whole percentage of 1:1 against the proxy — the zoom code's ONE
+  /// rounding. Both the spoken value and the More menu's "Zoom to 100%" check read it.
+  static func percentOfOneToOne(scale: CGFloat, oneToOneScale: CGFloat) -> Int {
+    guard oneToOneScale > 0 else { return 0 }
+    return Int((scale / oneToOneScale * 100).rounded())
+  }
+
+  /// Zoomed AND within the 1:1 tolerance (the whole-percent rounding rounds to exactly 100).
+  /// Above it is magnified past 1:1, below it is short of 1:1; neither is "100 %" (IMGMGR-484).
+  static func isOneToOne(scale: CGFloat, oneToOneScale: CGFloat) -> Bool {
+    guard scale > 1, oneToOneScale > 0 else { return false }
+    return percentOfOneToOne(scale: scale, oneToOneScale: oneToOneScale) == 100
   }
 
   // MARK: - Mutations

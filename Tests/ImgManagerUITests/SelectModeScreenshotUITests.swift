@@ -242,4 +242,66 @@ final class SelectModeScreenshotUITests: OrientationPinnedUITestCase {
         + "is not wired to the mark lane.")
     XCTAssertTrue(undo.isHittable, "Undo has no reachable hit region once it is enabled.")
   }
+
+  /// IMGMGR-498: Clear and Undo change the MARKS, not only the controls (IMGMGR-455 comment
+  /// 9870, "existence only"). Photograph 2 is unmarked in the fixture and carries a mark corner
+  /// on both destinations (`QuickPickUITests`); the corner's value is the mark the grid holds, so
+  /// it is what this reads. Selected, then picked through the bar, then cleared: the corner must
+  /// read "Not picked" — a Clear whose handler does nothing leaves it "Picked" and turns this
+  /// red — and Undo must bring the pick back.
+  func testClearOnAPickedSelectionClearsTheMarkAndUndoRestoresIt() throws {
+    let app = launchInSelectMode(landscape: false)
+    let caption = app.staticTexts["selectModeCaption"]
+    XCTAssertTrue(caption.waitForExistence(timeout: 30), "No Select mode row.")
+    let pick = app.buttons["gridPickButton"]
+    let clear = app.buttons["gridClearButton"]
+    let undo = app.buttons["gridUndoButton"]
+    let more = app.buttons["gridMoreMenu"]
+    XCTAssertTrue(pick.waitForExistence(timeout: 10), "The grid bar has no Pick control.")
+    XCTAssertTrue(undo.waitForExistence(timeout: 10), "The grid bar has no Undo control.")
+
+    let corner = app.descendants(matching: .any).matching(identifier: "tileMarkCorner-2")
+      .firstMatch
+    XCTAssertTrue(corner.waitForExistence(timeout: 15), "Photograph 2 carries no mark corner.")
+    XCTAssertEqual(corner.value as? String, "Not picked", "The fixture's photograph 2 is marked.")
+    tile(2, in: app).tap()
+    XCTAssertTrue(
+      waitFor("label == '1 selected'", caption), "Tapping photograph 2 did not select it.")
+
+    pick.tap()
+    XCTAssertTrue(waitFor("value == 'Picked'", corner), "The bar's Pick did not pick photograph 2.")
+    // Undo enables when the entry is recorded; in this flat fixture the lane is released in the
+    // same main-actor run (no scene to refresh), so the Clear below is never refused as busy.
+    XCTAssertTrue(waitFor("enabled == true", undo), "The Pick never committed.")
+
+    if !clear.exists {
+      XCTAssertTrue(
+        openPresentation(more, revealing: clear, timeout: 5),
+        "Clear is in neither the bar nor the More menu.")
+    }
+    clear.tap()
+    XCTAssertTrue(
+      waitFor("value == 'Not picked'", corner),
+      "Clear on a picked selection left the mark: \(String(describing: corner.value)).")
+    capture("select-clear-cleared")
+
+    // The grid exposes no lane-release signal and Undo is already enabled from the Pick, so an
+    // Undo that lands while Clear's write is still in flight is refused as a no-op. Retrying is
+    // idempotent: a refused Undo changed nothing, and one after a successful Undo finds the slot
+    // empty. Bounded, and every attempt waits on the condition itself.
+    for _ in 0..<3 where (corner.value as? String) != "Picked" {
+      undo.tap()
+      _ = waitFor("value == 'Picked'", corner, timeout: 5)
+    }
+    XCTAssertEqual(
+      corner.value as? String, "Picked", "Undo did not restore the pick that Clear removed.")
+  }
+
+  private func waitFor(_ format: String, _ element: XCUIElement, timeout: TimeInterval = 10)
+    -> Bool
+  {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: format), object: element)
+    return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+  }
 }

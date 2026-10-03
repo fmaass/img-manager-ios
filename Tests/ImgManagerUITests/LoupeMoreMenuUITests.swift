@@ -54,19 +54,25 @@ final class LoupeMoreMenuUITests: OrientationPinnedUITestCase {
     let undo = app.buttons["loupeUndoButton"]
     XCTAssertTrue(title.waitForExistence(timeout: 10), "The loupe has no title.")
     XCTAssertTrue(pick.waitForExistence(timeout: 10), "The loupe has no Pick control.")
+    XCTAssertTrue(undo.waitForExistence(timeout: 10), "The loupe has no Undo control.")
     driveToUnpicked(app, pick: pick)
 
     let frameBefore = title.label
     pick.tap()
     waitFor("value == 'Picked'", pick)
-    Thread.sleep(forTimeInterval: 1.0)
+    // IMGMGR-485: the write's own completion, not a sleep. Undo enables only once the entry is
+    // recorded AND the mark lane is released (`LoupeUndoButton`), and `applyLoupeMark` decides
+    // the advance synchronously after that release — so by the time Undo reads enabled, an
+    // advance that was going to happen locally has happened. 'Picked' is observed first: while
+    // the write is in flight Undo is disabled, so an Undo still enabled from the Clear above
+    // cannot satisfy this wait early.
+    waitFor("isEnabled == true", undo)
     XCTAssertEqual(
       title.label, frameBefore, "With Advance after marking OFF, Pick still moved the focus.")
 
     openMore(app, revealing: "loupeMore.advanceAfterMarking")
     element(app, "loupeMore.advanceAfterMarking").tap()
 
-    XCTAssertTrue(undo.waitForExistence(timeout: 10), "The loupe has no Undo control.")
     waitFor("isEnabled == true", undo)
     undo.tap()
     waitFor("value == 'Not picked'", pick)
@@ -117,6 +123,54 @@ final class LoupeMoreMenuUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       app.buttons["loupeBack"].waitForExistence(timeout: 10),
       "Cancelling tag entry left the loupe.")
+  }
+
+  /// IMGMGR-485: tag entry is hosted by the loupe while it is open and by the grid otherwise
+  /// (`TagEntryHost`). Raising and cancelling it from the loupe must leave nothing behind that
+  /// re-targets the grid's own Tag: after Back and a DIFFERENT grid focus, the grid's sheet writes
+  /// the grid's focused photograph (2), never the loupe's frame (1) — read off the fixture's wire
+  /// record of the tag edit, not off a sheet closing.
+  func testLoupeTagCancelThenGridTagTargetsTheGridsFocusedPhotograph() throws {
+    let app = launchAndOpenLoupe()
+    let sheet = app.navigationBars["Add tag"]
+    openMore(app, revealing: "loupeMore.tag")
+    element(app, "loupeMore.tag").tap()
+    XCTAssertTrue(
+      sheet.waitForExistence(timeout: 10), "More › Tag did not present the tag entry sheet.")
+    app.buttons["Cancel"].firstMatch.tap()
+    waitFor("exists == false", sheet)
+
+    let back = app.buttons["loupeBack"]
+    waitFor("isHittable == true", back)
+    back.tap()
+    waitFor("exists == false", back)
+
+    // The grid's focus is the loupe's frame (1); one tap on another tile moves it there.
+    let other = element(app, "gridTile-2")
+    XCTAssertTrue(other.waitForExistence(timeout: 15), "The grid has no second tile after Back.")
+    other.tap()
+    let gridTag = app.buttons["gridTagButton"]
+    XCTAssertTrue(gridTag.waitForExistence(timeout: 10), "The grid's bar has no Tag.")
+    waitFor("isEnabled == true", gridTag)
+    gridTag.tap()
+    XCTAssertTrue(
+      sheet.waitForExistence(timeout: 10), "The grid's Tag did not present the tag entry sheet.")
+    attach(app, name: "grid-tag-after-loupe-tag")
+
+    let field = app.textFields["Tag"]
+    XCTAssertTrue(field.waitForExistence(timeout: 10), "The tag entry sheet has no Tag field.")
+    field.tap()
+    field.typeText("wp398")
+    let add = app.buttons["Add"].firstMatch
+    waitFor("isEnabled == true", add)
+    add.tap()
+
+    let probe = element(app, "debugProbe.tagEdits")
+    XCTAssertTrue(probe.waitForExistence(timeout: 10), "The fixture publishes no tag-edit probe.")
+    waitFor(NSPredicate(format: "value == %@", "tagEdits=add(tag: wp398, imageIDs: [2])"), probe)
+    XCTAssertEqual(
+      probe.value as? String, "tagEdits=add(tag: wp398, imageIDs: [2])",
+      "The grid's tag sheet did not write exactly the grid's focused photograph.")
   }
 
   /// Lock Pick is the GRID's latch: ✓ on re-open, and after Back the grid's lock row is on.

@@ -51,6 +51,19 @@
     /// served this launch — what makes "Skip performs no server write" falsifiable from a UI test.
     var markWrites = 0
 
+    /// IMGMGR-485: every tag edit the fixture transport answered, as the WIRE call it received
+    /// (`add(tag: x, imageIDs: [2])`), so a UI test asserts which photograph a tag sheet wrote
+    /// rather than that the sheet closed.
+    var tagEdits: [String] = []
+
+    /// IMGMGR-483: every hardware key press the app received this launch, as
+    /// `<seq>:<key>:<disposition>` (`DebugKeyReceipt`), and whether the grid's key actions are
+    /// withheld right now — the disposition each receipt is stamped with.
+    var keyReceipts: [String] = []
+    /// The probe element's value: `keyReceipts=<seq>:<key>:<disposition>; …`.
+    var keyReceiptsValue: String { "keyReceipts=" + keyReceipts.joined(separator: "; ") }
+    var gridKeysWithheld = false
+
     /// WP31 P2 (IMGMGR-461): the activity a surface's `TriageActivityAdvertiser` last made
     /// current — type, Handoff eligibility and the decoded `userInfo` — read back from that
     /// `NSUserActivity` instance (`TriageActivityProbe`), so a UI test reads the activity itself,

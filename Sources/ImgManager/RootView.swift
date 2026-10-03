@@ -859,6 +859,20 @@ struct RootView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.dismissal")
           .accessibilityValue("dismissal=\(DebugProbe.shared.dismissal)")
+        // IMGMGR-483: every key press the app RECEIVED (`DebugKeyReceipt`), stamped with
+        // whether the grid's key actions were published (`grid`) or withheld by Compare
+        // (`withheld`) at that moment. The stamp is the published value itself, mirrored here.
+        Text("debugProbeKeyReceipts")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.keyReceipts")
+          .accessibilityValue(DebugProbe.shared.keyReceiptsValue)
+          .onChange(of: publishedKeyboardActions == nil, initial: true) { _, withheld in
+            DebugProbe.shared.gridKeysWithheld = withheld
+            DebugKeyReceipt.installIfNeeded()
+          }
       }
     }
   #else

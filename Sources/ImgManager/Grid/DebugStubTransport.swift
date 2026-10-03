@@ -200,6 +200,11 @@
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
       case Operations.EditMarkTagsApiMarksTagsPost.id:
+        // IMGMGR-485: recorded as the WIRE call BEFORE the answer goes back, the same way the
+        // scene edits above are, so a UI test reads which photographs the tag sheet wrote.
+        let record = await Self.tagEditRecord(body: body)
+        let tagProbe = self.probe
+        await MainActor.run { (tagProbe ?? .shared).tagEdits.append(record) }
         return try jsonResponse(
           .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
       default:
@@ -361,6 +366,19 @@
       }
       let ids = (object["image_ids"] as? [Int]).map { $0.map(String.init).joined(separator: ", ") }
       return "extract(stackID: \(stackID), imageIDs: [\(ids ?? "?")])"
+    }
+
+    /// `add(tag: T, imageIDs: [I, …])` — the wire fields of a tag edit. A body that does not
+    /// decode records its absence (`?`) rather than a plausible value.
+    private static func tagEditRecord(body: HTTPBody?) async -> String {
+      var object: [String: Any] = [:]
+      if let body, let data = try? await Data(collecting: body, upTo: 1 << 16) {
+        object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+      }
+      let operation = object["operation"] as? String ?? "?"
+      let tag = object["tag"] as? String ?? "?"
+      let ids = (object["image_ids"] as? [Int]).map { $0.map(String.init).joined(separator: ", ") }
+      return "\(operation)(tag: \(tag), imageIDs: [\(ids ?? "?")])"
     }
 
     /// The `stacks/{id}` segment of a scene-edit request path, or `nil` when the path names none.

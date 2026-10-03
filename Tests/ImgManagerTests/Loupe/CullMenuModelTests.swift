@@ -143,6 +143,39 @@ struct CullMenuModelTests {
     #expect(!CullZoomRow.isAtOneToOne(zoom))
   }
 
+  @Test("Zoom to 100%: checked only within the 1:1 tolerance — not below, not above")
+  func zoomRowIsCheckedOnlyWithinTheOneToOneTolerance() {
+    // 1:1 at scale 2.0. Whole-percent rounding is the tolerance: 99.75 % rounds to 100.
+    #expect(!LoupeZoomState.isOneToOne(scale: 1.5, oneToOneScale: 2))  // 75 %, below
+    #expect(!LoupeZoomState.isOneToOne(scale: 1.98, oneToOneScale: 2))  // 99 %, below
+    #expect(LoupeZoomState.isOneToOne(scale: 1.995, oneToOneScale: 2))  // 99.75 % → 100, at
+    #expect(LoupeZoomState.isOneToOne(scale: 2, oneToOneScale: 2))  // 100 %, at
+    #expect(LoupeZoomState.isOneToOne(scale: 2.008, oneToOneScale: 2))  // 100.4 % → 100, at
+    #expect(!LoupeZoomState.isOneToOne(scale: 2.02, oneToOneScale: 2))  // 101 %, above
+    #expect(!LoupeZoomState.isOneToOne(scale: 3, oneToOneScale: 2))  // 150 %, above
+    // The ROW itself, below / at / above: restoring its old `>= 100` turns the last line red.
+    #expect(!CullZoomRow.isAtOneToOne(scale: 1.98, oneToOneScale: 2))
+    #expect(CullZoomRow.isAtOneToOne(scale: 2, oneToOneScale: 2))
+    #expect(!CullZoomRow.isAtOneToOne(scale: 2.02, oneToOneScale: 2))
+    #expect(!CullZoomRow.isAtOneToOne(scale: 3, oneToOneScale: 2))
+    // Fit is never 1:1, even where 1:1 IS fit (zoom unavailable).
+    #expect(!LoupeZoomState.isOneToOne(scale: 1, oneToOneScale: 1))
+    #expect(!LoupeZoomState.isOneToOne(scale: 2, oneToOneScale: 0))
+    // The row reads exactly this predicate on a real zoom state.
+    var zoom = LoupeZoomState()
+    zoom.updateGeometry(
+      proxyPixels: CGSize(width: 1600, height: 1067), viewport: CGSize(width: 400, height: 800),
+      displayScale: 2)
+    zoom.magnify(to: 1.5)
+    zoom.endMagnify()
+    #expect(zoom.scale == 1.5)
+    #expect(!CullZoomRow.isAtOneToOne(zoom))
+    #expect(zoom.accessibilityValue.hasPrefix("zoom 75 %"))
+    zoom.magnify(to: 2)
+    #expect(CullZoomRow.isAtOneToOne(zoom))
+    #expect(zoom.accessibilityValue.hasPrefix("zoom 100 %"))
+  }
+
   // MARK: - Tag entry host
 
   @Test("Tag entry has exactly one host: the loupe while it is open, the grid otherwise")

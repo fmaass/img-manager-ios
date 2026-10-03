@@ -162,6 +162,14 @@ struct GridView: View {
           .accessibilityIdentifier("debugProbe.sceneEdit")
           .accessibilityValue(
             "sceneEdits=\(DebugProbe.shared.sceneEdits.joined(separator: "; "))")
+        // IMGMGR-485: the tag edits, on an element of their own for the same reason.
+        Text("debugProbeTagEdits")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.tagEdits")
+          .accessibilityValue("tagEdits=\(DebugProbe.shared.tagEdits.joined(separator: "; "))")
       }
     }
   #else

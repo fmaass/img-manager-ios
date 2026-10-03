@@ -120,13 +120,48 @@ final class CompareUITests: OrientationPinnedUITestCase {
         "Hardware keys do not reach the app on this destination, so isolation cannot be observed "
           + "here; the published-nil rule is CompareSessionTests.keyboardIsolation.")
     }
+    // IMGMGR-483 AC1: "Picked" is optimistic; the next tap waits for the write's own completion
+    // (the mark controls re-enable only once the mutation lane has released).
+    XCTAssertTrue(waitForEnabled(pick), "The mark lane never released after the P control.")
     clearTheFocusedMark(app)
+    // IMGMGR-483 AC2: a POSITIVE record that the keys ARRIVED while Compare was open. The gate's
+    // simulators deliver no ⌘ key equivalents (IMGMGR-508) and Compare handles no bare key of
+    // its own, so the DEBUG probe logs every press the app receives (`DebugKeyReceipt`, at
+    // `UIApplication.sendEvent`), stamped `withheld` while Compare withholds the grid's keys.
+    let receipts = element(app, "debugProbe.keyReceipts")
+    XCTAssertTrue(receipts.waitForExistence(timeout: 10), "The fixture has no key-receipt probe.")
+    // Positive control for the hook itself: the P typed above provably reached the app (it
+    // marked), so it must have left a `p:grid` receipt. If it did not, simulator key presses do
+    // not pass through `UIApplication.sendEvent` on this destination and receipt cannot be
+    // observed here; that is a skip with the reason, never a vacuous pass.
+    // Only an EMPTY log may skip: any receipt at all proves the hook sees keys here, and then a
+    // missing `p:grid` for the P that just marked is a failure, not a destination limit.
+    let anyReceipt = NSPredicate(format: "value CONTAINS %@", ":")
+    guard
+      XCTWaiter.wait(
+        for: [XCTNSPredicateExpectation(predicate: anyReceipt, object: receipts)], timeout: 5)
+        == .completed
+    else {
+      throw XCTSkip(
+        "The P that marked left no key receipt at all (\(String(describing: receipts.value))): "
+          + "key presses bypass UIApplication.sendEvent on this destination, so receipt in "
+          + "Compare cannot be observed here.")
+    }
+    XCTAssertTrue(
+      ((receipts.value as? String) ?? "").contains(":p:grid"),
+      "The P that marked was not received as p:grid: \(String(describing: receipts.value)).")
     openCompare(app)
 
+    let beforeCompareKeys = receiptCount(receipts)
     app.typeKey("p", modifierFlags: [])
     app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
-    // A negative has to wait, but on the condition itself (A3): an inverted expectation that
-    // fails the moment P's mark shows on the left thumbnail, instead of a blind sleep.
+    let compareKeys = ["p:withheld", "rightArrow:withheld"]
+    XCTAssertTrue(
+      waitForFreshReceipts(receipts, after: beforeCompareKeys, compareKeys),
+      "P and the arrow were not received while Compare withheld the keys: "
+        + "\(String(describing: receipts.value)).")
+    // The negative also waits on the condition itself (A3): an inverted expectation that fails
+    // the moment P's mark shows on the left thumbnail, instead of a blind sleep.
     let leftThumbnail = app.buttons["compareStripThumbnail-\(leftID)"]
     let marked = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "label ENDSWITH %@", ", picked"), object: leftThumbnail)
@@ -139,7 +174,12 @@ final class CompareUITests: OrientationPinnedUITestCase {
     app.buttons["compareBack"].tap()
     XCTAssertTrue(pick.waitForExistence(timeout: 10), "Back did not return to the loupe.")
     XCTAssertTrue(waitForValue(pick, "Not picked"), "The left image changed inside Compare.")
+    let beforeBackKey = receiptCount(receipts)
     app.typeKey("p", modifierFlags: [])
+    XCTAssertTrue(
+      waitForFreshReceipts(receipts, after: beforeBackKey, ["p:grid"]),
+      "P after Back was not received with the grid's keys published: "
+        + "\(String(describing: receipts.value)).")
     XCTAssertTrue(waitForValue(pick, "Picked"), "P does not mark again after Back.")
   }
 
@@ -201,6 +241,25 @@ final class CompareUITests: OrientationPinnedUITestCase {
     // A3: "Not picked" is optimistic and shows before the mutation lane releases; the mark
     // controls re-enable only once it has, which is what the next step needs.
     XCTAssertTrue(waitForEnabled(pick), "The mark lane never released after Clear.")
+  }
+
+  /// How many receipts the key-receipt probe holds (`keyReceipts=1:p:grid; 2:…`).
+  private func receiptCount(_ probe: XCUIElement) -> Int {
+    let value = (probe.value as? String) ?? ""
+    let list = value.hasPrefix("keyReceipts=") ? String(value.dropFirst(12)) : ""
+    return list.split(separator: ";").count
+  }
+
+  /// Waits until the probe ENDS with exactly `entries`, numbered from `count + 1` — fresh
+  /// receipts for these keys, in order, and nothing received after them.
+  private func waitForFreshReceipts(_ probe: XCUIElement, after count: Int, _ entries: [String])
+    -> Bool
+  {
+    let numbered = entries.enumerated().map { "\(count + $0.offset + 1):\($0.element)" }
+    let tail = (count == 0 ? "keyReceipts=" : "; ") + numbered.joined(separator: "; ")
+    let predicate = NSPredicate(format: "value ENDSWITH %@", tail)
+    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: probe)
+    return XCTWaiter.wait(for: [expectation], timeout: 10) == .completed
   }
 
   private func waitForEnabled(_ control: XCUIElement, timeout: TimeInterval = 10) -> Bool {

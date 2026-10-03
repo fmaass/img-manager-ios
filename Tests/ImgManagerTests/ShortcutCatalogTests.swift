@@ -315,8 +315,10 @@ struct ShortcutCatalogTests {
   @Test("No declaration binds C — with a positive control proving P IS bound (LSN-0033)")
   func noEntryDeclaresC() {
     let bound = AppCommands.declarations.compactMap { $0.key.map { String($0.character) } }
-    // `C` (compare) is cancelled outright (Amendment 7) — declared NOWHERE, never
-    // present-and-dead. `A` used to be asserted absent HERE for the same reason; WP13 P8
+    // `C` stays declared NOWHERE, never present-and-dead. Native Compare was cancelled by
+    // Amendment 7, then revived by the owner on 2026-09-27 (p4128) and shipped in WP30 P3 as
+    // the iPad loupe's 2-up, reached from its toolbar control only — p4128 §Keyboard reads
+    // "shortcuts unchanged", so Compare ships WITHOUT a `C` key. `A` used to be asserted absent HERE for the same reason; WP13 P8
     // (IMGMGR-214) shipped its surface, so the assertion moved to
     // `aIsActiveAndDeclaredExactlyOnceInAppCommands` below rather than being deleted.
     #expect(!bound.contains { $0.lowercased() == "c" })
