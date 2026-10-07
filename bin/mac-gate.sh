@@ -137,6 +137,11 @@
 #                 included; nothing was copied or run). A refusal still prints the summary line,
 #                 as `legs=REFUSED(<reason>) — NOT a full gate | | exit=2`;
 #             3 = another run of this branch holds the gate lock;
+#            16 = mount=16: the build host's build root is not proven to be the designated
+#                 merkur_build image (the guard refused, its answer could not be read, or the
+#                 guard in this tree is not the recorded copy), and no valid pending marker
+#                 allowed the refusal to be reported instead; nothing was written on the host and
+#                 no lock was taken;
 #             otherwise the exit code of the first failing step (which now includes
 #             `copyback`, `lock-release`, `lock-wait` and `remote-run` — see the leg list below).
 #
@@ -227,6 +232,8 @@ record() { # $1=name $2=exit-code
   step_summary="$step_summary $1=$2"
 }
 step_summary=""
+# Fields that are information, not an exit code, printed after every step's (mountguard=).
+summary_info=""
 
 # Set once the lock is genuinely ours (after acquire AND its readback both succeed) —
 # release_lock is a no-op before that, and idempotent after (guarded by lock_released),
@@ -294,7 +301,7 @@ trap release_lock EXIT
 
 summary_and_exit() {
   release_lock
-  gate_summary_line "$legs_field" "$step_summary" "$first_fail" | tee -a "$log"
+  gate_summary_line "$legs_field" "$step_summary$summary_info" "$first_fail" | tee -a "$log"
   exit "$first_fail"
 }
 
@@ -329,6 +336,67 @@ say "--- step: content manifest (controller side, HEAD=$head_sha) ---"
 local_manifest="$(gate_local_manifest)"
 manifest_count="$(printf '%s\n' "$local_manifest" | grep -c .)"
 say "controller manifest: $manifest_count tracked files at HEAD $head_sha, working tree clean (git status --porcelain: 0 bytes)"
+
+# --- The build root is the designated image (MEMNG-602). ---------------------------------
+# The build host's ~/build is meant to be the merkur_build disk image. When the image is not
+# mounted there macOS leaves the plain directory, and every byte this run would write lands
+# silently on the internal disk. So before the first ssh that writes (the host lock's mkdir
+# below), the guard vendored from memos-ng-ios (scripts/gate-mount-guard.sh, held to the sha256
+# scripts/GATE_MOUNT_GUARD_SOURCE records, so an edited guard never reaches the host) reads the
+# volume and this repo's one subtree on it, read-only, in report mode: while a valid pending marker
+# (~/.config/build-mount-guard/pending on the host) exists, a refusal is reported as
+# mountguard=pending:REFUSE and the run goes on; without one it is mount=16 and the run ends here.
+# Only one verdict line and one state line that agree are an answer: a guard that is missing,
+# could not run, timed out or said anything else has proved nothing, and refuses. A refusal sends
+# nothing more: no lock is held yet, so release_lock (the EXIT trap) makes no ssh either.
+say "--- step: mount ---"
+mount_rc=16
+mount_state=enforced
+mount_guard="$repo_root/scripts/gate-mount-guard.sh"
+mount_record="$repo_root/scripts/GATE_MOUNT_GUARD_SOURCE"
+mount_recorded="$(sed -n 's/^reference=.* sha256=\([0-9a-f]\{64\}\)$/\1/p' "$mount_record" 2>/dev/null)"
+mount_actual="$( { sha256sum "$mount_guard" 2>/dev/null || shasum -a 256 "$mount_guard" 2>/dev/null; } | awk 'NR == 1 {print $1}')"
+if [ ! -r "$mount_guard" ]; then
+  say "mount       : REFUSE the guard $mount_guard is not in this tree — nothing was sent"
+elif [ "$(wc -l < "$mount_record" 2>/dev/null | tr -d ' ')" != 1 ] || [ -z "$mount_recorded" ] \
+     || [ "$mount_actual" != "$mount_recorded" ]; then
+  say "mount       : REFUSE scripts/gate-mount-guard.sh has sha256 '${mount_actual:-unreadable}', scripts/GATE_MOUNT_GUARD_SOURCE records '${mount_recorded:-nothing}' — nothing was sent"
+else
+  # The answer lands in a file, never in a command substitution: $(…) strips every trailing
+  # newline, so a blank third line would vanish before it is counted and a three-line answer would
+  # pass as two (memos-ng-ios found this the same way). The file keeps every byte the host sent.
+  mount_answer="$artifacts/mount-answer.txt"
+  { cat "$mount_guard"; printf '%s\n' 'gate_mount_guard report img-manager-ios/gate'; } \
+    | timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' > "$mount_answer" 2>&1
+  mount_ssh_rc=$?
+  # The answer, verbatim and bracketed line by line, so stray whitespace, blank lines and noise show
+  # in the log; the `|| [ -n … ]` keeps a last line the host did not terminate.
+  while IFS= read -r mount_line || [ -n "$mount_line" ]; do say "mount       : [$mount_line]"; done < "$mount_answer"
+  mount_lines="$(awk 'END { print NR }' "$mount_answer")"
+  # The WHOLE answer is judged, never the lines that happen to look right: exactly two lines, the
+  # verdict and then the state, nothing else (stderr is in it, so noise refuses too); the two agree;
+  # and a pending state counts only with marker=valid. The marker states are the ones the guard can
+  # print (gate_mg_marker, and not-read outside report mode).
+  mount_marker_re='(valid|not-read|missing|unreadable|expired|other-host|unmeasured:(clock|ioreg)|malformed:[A-Za-z0-9._-]+)'
+  mount_first="$(sed -n 1p "$mount_answer")"
+  mount_second="$(sed -n 2p "$mount_answer")"
+  if [ "$mount_ssh_rc" -eq 0 ] && [ "$mount_lines" = 2 ] \
+     && printf '%s\n' "$mount_first" | grep -qE '^MOUNT (OK|REFUSE) ' \
+     && printf '%s\n' "$mount_second" | grep -qE "^mountguard=(enforced|pending:OK|pending:REFUSE) marker=$mount_marker_re\$"; then
+    mount_verdict="${mount_first#MOUNT }"; mount_verdict="${mount_verdict%% *}"
+    mount_state="${mount_second%% marker=*}"; mount_state="${mount_state#mountguard=}"
+    case "$mount_verdict:$mount_state:${mount_second##* marker=}" in
+      OK:enforced:valid) ;;
+      OK:enforced:*|OK:pending:OK:valid|REFUSE:pending:REFUSE:valid) mount_rc=0 ;;
+    esac
+    [ "$mount_rc" -eq 0 ] || mount_state=enforced
+  fi
+  [ "$mount_rc" -eq 0 ] \
+    || say "mount       : REFUSE (guard exit $mount_ssh_rc) — the build root is not proven to be the merkur_build image; nothing was written on the host"
+fi
+record mount "$mount_rc"
+summary_info="$summary_info mountguard=$mount_state"
+[ "$mount_rc" -eq 0 ] || summary_and_exit
 
 # --- Gate lock + rsync mirror (never a checkout — see header). ---------------------------
 say "--- step: rsync ---"

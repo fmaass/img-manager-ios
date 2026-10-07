@@ -81,7 +81,8 @@ echo "STUB_SAW_GEN=${GATE_QUEUE_GEN:-<unset>}"
 [ -z "${STUB_GATE_COMMIT:-}" ] || git commit -q --allow-empty -m "interloper $STUB_GATE_COMMIT"
 [ -z "${STUB_GATE_MOVE_TO:-}" ] || git branch -f "${STUB_GATE_MOVE_BRANCH:-lane}" "$STUB_GATE_MOVE_TO"
 sleep "${STUB_GATE_SLEEP:-1}"
-exit 0
+# MEMNG-602 case: the gate's own exit code, e.g. 16 for a refused build root. 0 unless a case asks.
+exit "${STUB_GATE_RC:-0}"
 STUB
 chmod +x "$repo/bin/mac-gate.sh"
 cp "$here/gate-lib.sh" "$repo/bin/gate-lib.sh"
@@ -1245,6 +1246,19 @@ if [ "$erc" -eq 2 ] && [ ! -f "$GATE_QUEUE_STATE/shape-legs-demo.spec" ]; then
   ok 22-legs-shape "a fourth field that is not legs=<list> refuses (rc=2): ${out##*$'\n'}"
 else
   bad 22-legs-shape "rc=$erc: $out"
+fi
+
+# ---- 26: a gate that refuses its build root (MEMNG-602) is a gate RESULT, not a queue refusal.
+# bin/mac-gate.sh exits 16 when the build host's ~/build is not proven to be the merkur_build image.
+# The queue records that code as the spec's rc and aggregates it to 1 — never 0 (it is no pass) and
+# never 7 (the spec was not refused by the queue; its gate ran and said no).
+STUB_GATE_SLEEP=0 STUB_GATE_RC=16 "$qs" enqueue "$wt2:$sha2:mount-refused-demo" > "$tmp/enq26.out" 2>&1
+erc=$?
+if [ "$erc" -eq 1 ] && [ "$(field mount-refused-demo state)" = done ] && [ "$(field mount-refused-demo rc)" = 16 ] \
+   && grep -q 'mount-refused-demo ref=.* rc=16 ' "$GATE_QUEUE_SUMMARY"; then
+  ok 26-mount-refused "a gate exiting 16 is recorded state=done rc=16, in the summary file as rc=16, and enqueue aggregates it to 1"
+else
+  bad 26-mount-refused "enqueue rc=$erc state='$(field mount-refused-demo state)' rc='$(field mount-refused-demo rc)' summary=$(grep mount-refused-demo "$GATE_QUEUE_SUMMARY" | tr '\n' ' ')"
 fi
 
 # ------------------------------------------------------------------------------- 5: list
