@@ -7,6 +7,8 @@ struct ImgManagerApp: App {
       // IMGMGR-478: a fixture launch starts on the shown Regular sidebar unless the test asks to
       // keep what the previous launch remembered (`DebugStubLaunch.keepsSidebarMemory`).
       DebugStubLaunch.resetSidebarMemoryUnlessKept()
+      // IMGMGR-548: and on the Settings sheet's own defaults (`DebugStubLaunch.keepsSettings`).
+      DebugStubLaunch.resetSettingsUnlessKept()
     #endif
   }
 

@@ -213,8 +213,8 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
       account.waitForExistence(timeout: 30), "The Shoots root carries no Account toolbar item.")
     account.tap()
     XCTAssertTrue(
-      app.navigationBars["Account"].waitForExistence(timeout: 10),
-      "Tapping Account on the Shoots root did not present the account sheet.")
+      app.navigationBars["Settings"].waitForExistence(timeout: 10),
+      "Tapping Account on the Shoots root did not present the Settings sheet.")
     app.buttons["Done"].firstMatch.tap()
 
     selectCompactTab(app, title: "Library")

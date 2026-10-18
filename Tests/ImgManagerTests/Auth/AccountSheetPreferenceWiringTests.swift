@@ -5,7 +5,8 @@ import Testing
 @testable import ImgManager
 
 /// WP13 P8 (IMGMGR-214): the account sheet's advance-on-mark row, asserted as far as a unit test
-/// can reach it.
+/// can reach it. IMGMGR-548: the account sheet became `SettingsSheetView`; the assertions are
+/// unchanged and now hold for the Settings sheet's Culling row.
 ///
 /// It reaches the BINDING, not the rendering. The row's own `Toggle` is bound to
 /// `AccountSheetView.preferences`, so what this suite pins is that the sheet is handed the app's
@@ -29,7 +30,9 @@ struct AccountSheetPreferenceWiringTests {
   @Test("The sheet holds the app's OWN preferences object, never a copy nobody else reads")
   func theSheetHoldsTheLivePreferencesObject() {
     let preferences = GridPreferences(defaults: makeEphemeralDefaults())
-    let sheet = AccountSheetView(auth: makeAuth(), preferences: preferences)
+    let sheet = SettingsSheetView(
+      auth: makeAuth(), preferences: preferences,
+      settings: SettingsPreferences(defaults: makeEphemeralDefaults()))
     #expect(sheet.preferences === preferences)
   }
 
@@ -37,7 +40,9 @@ struct AccountSheetPreferenceWiringTests {
   func aWriteThroughTheSheetReachesThePersistedPreference() {
     let defaults = makeEphemeralDefaults()
     let preferences = GridPreferences(defaults: defaults)
-    let sheet = AccountSheetView(auth: makeAuth(), preferences: preferences)
+    let sheet = SettingsSheetView(
+      auth: makeAuth(), preferences: preferences,
+      settings: SettingsPreferences(defaults: makeEphemeralDefaults()))
 
     // The row ships ON (the owner's 2026-08-30 decision); turning it off through the sheet's own
     // binding target must survive into a freshly constructed reader of the same suite.

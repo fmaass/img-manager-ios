@@ -43,7 +43,11 @@ struct RootView: View {
     SidebarVisibilityMemory.hiddenDefault
   @State private var connectivity: ConnectivityState
   @State private var auth: AuthSession
-  @State private var showAccountSheet = false
+  /// IMGMGR-548: the Settings sheet, opened by the account item and by the sidebar gear.
+  @State private var showSettingsSheet = false
+  /// IMGMGR-548: the Settings sheet's own preferences; `GridStore` reads the Tap to Pick default
+  /// through it (`RootView.makeGridStore`).
+  @State private var settings: SettingsPreferences
   /// WP8 P4: the grid store and its own API boundary (`GridService`, a sibling of `ImgManagerAPIService`
   /// — see that type's doc comment for why P4 does not extend P3's).
   @State private var gridStore: GridStore
@@ -125,7 +129,9 @@ struct RootView: View {
     _connectivity = State(initialValue: ConnectivityState(service: service))
     let gridService = GridService(client: client)
     self.gridService = gridService
-    _gridStore = State(initialValue: GridStore(service: gridService))
+    let settings = SettingsPreferences()
+    _settings = State(initialValue: settings)
+    _gridStore = State(initialValue: Self.makeGridStore(service: gridService, settings: settings))
     // One share pre-flight for the whole app: the docked and full-screen loupes are two
     // presentations of the same thing, and a prepared export (and its temp file) belongs to
     // neither of them alone. The SAME `GridService` is the master lane's byte source
@@ -310,6 +316,15 @@ struct RootView: View {
         regularSidebarHidden = hidden
       }
     }
+    // IMGMGR-548: Settings › Sidebar › "Show Sidebar" writes the same flag; apply it to the split.
+    // The echo of a split-side change answers nil (`visibilityAfterFlagChange`), so no loop.
+    .onChange(of: regularSidebarHidden) { _, hidden in
+      if let next = SidebarVisibilityMemory.visibilityAfterFlagChange(
+        columnVisibility, in: layoutMode, hidden: hidden)
+      {
+        columnVisibility = next
+      }
+    }
     .task {
       await connectivity.check()
       // WP13 P11: the restored/opened window's own shoot, applied through the ONE entry point —
@@ -388,8 +403,11 @@ struct RootView: View {
     // this host outlives the grid being swapped out for the docked loupe (the same reasoning P4
     // wrote down for the shortcut-help sheet below). Its BUTTON is what moved: see
     // `accountToolbarItem`.
-    .sheet(isPresented: $showAccountSheet) {
-      AccountSheetView(auth: auth, preferences: gridStore.preferences)
+    // IMGMGR-548: the account item and the sidebar gear both open Settings through this ONE host.
+    .sheet(isPresented: $showSettingsSheet) {
+      SettingsSheetView(
+        auth: auth, preferences: gridStore.preferences, settings: settings,
+        showsSidebarVisibilityRow: layoutMode != .compact)
     }
     // P5: full-screen loupe takeover — Compact only, where the loupe is ALWAYS full-screen.
     // The docked Regular-2/3 presentation lives in `contentColumn` instead, never here — this
@@ -573,7 +591,7 @@ struct RootView: View {
   private var accountToolbarItem: some ToolbarContent {
     ToolbarItem(placement: .primaryAction) {
       Button {
-        showAccountSheet = true
+        showSettingsSheet = true
       } label: {
         Label("Account", systemImage: "person.crop.circle")
       }
@@ -616,7 +634,28 @@ struct RootView: View {
     .toolbar {
       folderTreeViewMenuItem
       accountToolbarItem
+      settingsGearItem
     }
+  }
+
+  /// IMGMGR-548: the sidebar gear — Settings' second entry point, on the Regular sidebar column's
+  /// bottom bar. Compact has no sidebar, so no gear: its Shoots root keeps the one account item.
+  @ToolbarContentBuilder
+  private var settingsGearItem: some ToolbarContent {
+    ToolbarItem(placement: .bottomBar) {
+      Button {
+        showSettingsSheet = true
+      } label: {
+        Label("Settings", systemImage: "gearshape")
+      }
+      .accessibilityIdentifier("settingsGearButton")
+    }
+  }
+
+  /// IMGMGR-548: the app's grid store, wired to the Settings sheet's Tap to Pick default. A
+  /// static factory so a unit test can prove the wire (`SettingsInteractionTests`).
+  static func makeGridStore(service: GridService, settings: SettingsPreferences) -> GridStore {
+    GridStore(service: service, startsWithTapToPick: { settings.tapToPickDefault })
   }
 
   /// WP28 P2 (IMGMGR-449): the Regular shell — the split view in both of its shapes. The folder

@@ -177,7 +177,8 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
       "The Regular grid bar never rendered.")
     let census = chromeCensus(
       app, state: "regular3", titleMenu: true,
-      requiring: ["accountToolbarButton", "folderTreeViewMenu", "Info"]
+      // IMGMGR-548: the sidebar gear is chrome like the rest, measured to the same target.
+      requiring: ["accountToolbarButton", "settingsGearButton", "folderTreeViewMenu", "Info"]
         + Self.regularGridBarIdentifiers)
     var rows = census.rows
     rows += measureAppBars(

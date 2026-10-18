@@ -965,6 +965,29 @@
       defaults.removeObject(forKey: SidebarVisibilityMemory.hiddenKey)
     }
 
+    /// IMGMGR-548: the Settings sheet's own keys (`SettingsPreferences.persistedKeys`) are
+    /// forgotten the same way, so every fixture launch starts on their defaults — in particular
+    /// `culling.tapToPickDefault` OFF, so no suite that opens a shoot inherits a latched Tap to
+    /// Pick from an earlier test. `-UITestKeepSettings` keeps them; a test that needs one ON passes
+    /// the argument-domain override (`-culling.tapToPickDefault YES`), which is never written.
+    static var keepsSettings: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestKeepSettings")
+    }
+
+    @MainActor
+    static func resetSettingsUnlessKept(defaults: UserDefaults = .standard) {
+      guard isActive, !keepsSettings else { return }
+      forgetSettings(in: defaults)
+    }
+
+    /// The reset itself, pure over the suite so a unit test pins exactly what it removes.
+    @MainActor
+    static func forgetSettings(in defaults: UserDefaults) {
+      for key in SettingsPreferences.persistedKeys {
+        defaults.removeObject(forKey: key)
+      }
+    }
+
     /// WP31 P2 (IMGMGR-461): the JSON `userInfo` of a Triage Handoff to continue once the
     /// fixture's shoot has loaded — the value after `-UITestContinueActivity`. It feeds the SAME
     /// decode-and-route function `.onContinueUserActivity` calls, so the receiving side is

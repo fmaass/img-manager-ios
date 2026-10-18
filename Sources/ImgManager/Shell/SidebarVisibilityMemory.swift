@@ -25,6 +25,8 @@ enum SidebarVisibilityMemory {
   typealias Visibility = NavigationSplitViewVisibility
 
   /// Not a grid preference, so not one of `GridPreferences.persistedKeys`: the shell owns it.
+  /// IMGMGR-548: Settings › Sidebar › "Show Sidebar" is a second writer of the same key
+  /// (`SettingsToggle.sidebarVisible`); `visibilityAfterFlagChange` applies its write.
   static let hiddenKey = "shell.regularSidebarHidden"
   /// A fresh install shows the sidebar — `LayoutResolver.columnVisibility(for:)` decides how.
   static let hiddenDefault = false
@@ -64,6 +66,18 @@ enum SidebarVisibilityMemory {
   static func recordedHidden(_ visibility: Visibility, in mode: LayoutMode) -> Bool? {
     guard mode != .compact else { return nil }
     return isHidden(visibility)
+  }
+
+  /// IMGMGR-548: what the split should become when the remembered flag changes to `hidden` —
+  /// written by Settings, or echoed back by `RootView`'s own `onChange(of: columnVisibility)`.
+  /// nil when nothing is to change: at Compact (no sidebar), and whenever the split already
+  /// records `hidden`, which is what the echo of a split-side change always reads — so the two
+  /// writers converge instead of looping.
+  static func visibilityAfterFlagChange(
+    _ current: Visibility, in mode: LayoutMode, hidden: Bool
+  ) -> Visibility? {
+    guard let recorded = recordedHidden(current, in: mode), recorded != hidden else { return nil }
+    return columnVisibility(for: mode, sidebarHidden: hidden)
   }
 
   /// The grid bar carries the toggle while the sidebar is hidden at Regular — never at Compact.

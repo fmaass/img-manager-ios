@@ -76,7 +76,9 @@ final class GridPreferences {
   ///
   /// A view option, so it lives where the app's other view options already live — the More menu's
   /// view cluster — and not in a settings panel. (The web sibling needs a panel because the web
-  /// has no such menu; that difference is the disposition, not a divergence.) DISPLAY-only: what
+  /// has no such menu; that difference is the disposition, not a divergence.) IMGMGR-548: the
+  /// menu stays its quick toggle; Settings › Grid Display carries a second row over this SAME
+  /// property (`SettingsToggle.picksInGroups`), never a second store. DISPLAY-only: what
   /// this switches on is drawn, never made actionable, and it never enters `sceneMembers`.
   var picksInGroups: Bool {
     didSet { defaults.set(picksInGroups, forKey: Self.picksInGroupsKey) }
@@ -86,8 +88,10 @@ final class GridPreferences {
   /// folder whose dedup-adjusted count is zero (`FolderTreeModel.pruneMirrored`, the web's
   /// `folderTree.ts:188-197`). A VIEW option over the folder tree, so it lives with the app's
   /// other view options — the More menu's View section — and never in a settings panel of its
-  /// own. This type is the ONE place the switch is stored. WP29 P2 (IMGMGR-453): its one entry
-  /// point is the tree home's View menu; the grid's More menu no longer carries it.
+  /// own. This type is the ONE place the switch is stored. WP29 P2 (IMGMGR-453): its quick entry
+  /// point is the tree home's View menu; the grid's More menu no longer carries it. IMGMGR-548:
+  /// Settings › Storage carries a second row over this SAME property
+  /// (`SettingsToggle.pruneMirroredArchive`); the View menu row stays.
   var pruneMirroredArchive: Bool {
     didSet { defaults.set(pruneMirroredArchive, forKey: Self.pruneMirroredArchiveKey) }
   }

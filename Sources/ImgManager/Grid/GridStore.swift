@@ -239,6 +239,11 @@ final class GridStore {
   /// suite instead of the simulator's shared standard one.
   let preferences: GridPreferences
   private let pasteboard: any MarksPasteboard
+  /// IMGMGR-548: Settings › Culling › "Start with Tap to Pick" (`culling.tapToPickDefault`), read
+  /// when a shoot opens. A closure, not the preferences object, so the default is a constant
+  /// `false` that no test inherits from the simulator's standard suite; `RootView` hands in the
+  /// live `SettingsPreferences`.
+  private let startsWithTapToPick: @MainActor () -> Bool
 
   let selection = SelectionState()
   let pickLock = PickLockState()
@@ -729,11 +734,13 @@ final class GridStore {
   init(
     service: GridService,
     preferences: GridPreferences = GridPreferences(),
-    pasteboard: any MarksPasteboard = SystemMarksPasteboard()
+    pasteboard: any MarksPasteboard = SystemMarksPasteboard(),
+    startsWithTapToPick: @escaping @MainActor () -> Bool = { false }
   ) {
     self.service = service
     self.preferences = preferences
     self.pasteboard = pasteboard
+    self.startsWithTapToPick = startsWithTapToPick
     self.looks = LookModel(fetchCatalogue: { try await service.looks() })
   }
 
@@ -760,6 +767,10 @@ final class GridStore {
     query.folderID = folderID
     query.sourceTier = sourceTier
     pickLock.exit()
+    // IMGMGR-548: the reader's "Start with Tap to Pick" latches Pick on the NEW shoot — only on a
+    // real shoot change (the guard above returned for a re-select), through the menu's own
+    // `forceLatch`, which is a no-op unless idle.
+    if startsWithTapToPick() { pickLock.forceLatch(.pick) }
     selection.reset(.shootChange)
     focusedImageID = nil
     undo.clear()

@@ -119,12 +119,26 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
         + "Out are unreachable again (IMGMGR-255).")
     account.tap()
 
+    // IMGMGR-548: the account sheet is the Settings sheet now, and Sign Out sits in its FIRST
+    // group, so it is asserted before anything scrolls it away.
+    // Sign Out is the sheet's OTHER reason to exist, and IMGMGR-255's AC names it. Existence and
+    // hittability only, never a tap: the next stage is a real confirmation dialog over a real
+    // credential, and this suite must leave the simulator signed in for whatever runs next.
+    let signOut = app.buttons["Sign Out…"].firstMatch
+    XCTAssertTrue(
+      signOut.waitForExistence(timeout: 10),
+      "The account sheet's Sign Out control is not reachable.")
+    XCTAssertTrue(signOut.isHittable, "The account sheet's Sign Out control is not hittable.")
+
     // A `Toggle` in a `List` is a switch; the permissive query is the fallback, not the first
     // guess, because only the switch itself carries the on/off value this test reads.
+    // IMGMGR-548: Culling is the Settings sheet's fifth group, below the fold on both
+    // destinations, so the row is revealed by a bounded upward scroll first — through the
+    // permissive query, so one upward pass finds it whatever type it is exposed as.
+    let anyRow = app.descendants(matching: .any)["accountAutoAdvanceToggle"].firstMatch
+    _ = revealInSettings(anyRow, in: app)
     var row = app.switches["accountAutoAdvanceToggle"].firstMatch
-    if !row.waitForExistence(timeout: 10) {
-      row = app.descendants(matching: .any)["accountAutoAdvanceToggle"].firstMatch
-    }
+    if !row.exists { row = anyRow }
     if !row.exists {
       XCTContext.runActivity(named: "element tree with no advance-on-mark row") { activity in
         activity.add(XCTAttachment(string: app.debugDescription))
@@ -136,15 +150,6 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
       "The account sheet has no advance-on-mark row — the preference's second chrome surface, "
         + "the one that exists so the cadence is reachable without opening the loupe.")
     attach(name: "account-auto-advance-row")
-
-    // Sign Out is the sheet's OTHER reason to exist, and IMGMGR-255's AC names it. Existence and
-    // hittability only, never a tap: the next stage is a real confirmation dialog over a real
-    // credential, and this suite must leave the simulator signed in for whatever runs next.
-    let signOut = app.buttons["Sign Out…"].firstMatch
-    XCTAssertTrue(
-      signOut.waitForExistence(timeout: 10),
-      "The account sheet's Sign Out control is not reachable.")
-    XCTAssertTrue(signOut.isHittable, "The account sheet's Sign Out control is not hittable.")
 
     // A real write, read back through the same control: a row that renders but changes nothing
     // is exactly the "hidden preference with a decoration" this rule exists to prevent.
@@ -205,7 +210,7 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
         + "(IMGMGR-255).")
     account.tap()
 
-    let sheet = app.navigationBars["Account"]
+    let sheet = app.navigationBars["Settings"]
     XCTAssertTrue(
       sheet.waitForExistence(timeout: 10),
       "Tapping the Account toolbar item over an open shoot did not present the account sheet.")
@@ -268,6 +273,22 @@ final class LoupeAutoAdvanceScreenshotUITests: OrientationPinnedUITestCase {
       close.exists,
       "The loupe never opened from a tile tap — no cell was hit by any probe point.")
     return app
+  }
+
+  /// IMGMGR-548: scrolls the Settings sheet's list until `element` is on screen and hittable.
+  /// UPWARD ONLY and bounded: a downward swipe on a sheet's list at its top dismisses the sheet
+  /// on iPhone, and the rows this suite reads sit below the first group.
+  private func revealInSettings(
+    _ element: XCUIElement, in app: XCUIApplication, swipes: Int = 8
+  ) -> Bool {
+    if element.waitForExistence(timeout: 10), element.isHittable { return true }
+    let list = app.collectionViews["settingsList"]
+    let scroller = list.exists ? list : app.descendants(matching: .any)["settingsList"]
+    for _ in 0..<swipes {
+      scroller.swipeUp()
+      if element.exists, element.isHittable { return true }
+    }
+    return element.exists && element.isHittable
   }
 
   /// Flips a SwiftUI `Toggle` that lives in a `List` row, which a bare `element.tap()` does not.
