@@ -1258,5 +1258,157 @@ out="$("$qs" drop no-such-label 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && ok 5-missing "drop refuses an unknown label (rc=$rc)" \
                 || bad 5-missing "expected a refusal for an unknown label"
 
+# ---- 26: pid liveness in `list` is judged only inside the namespace the record came from
+# (IMGMGR-558). Lane m enqueues from INSIDE its container, whose pid namespace is not the
+# host's, so `kill -0` out here answers for whatever host process carries that number: the
+# container's live run read as `dead`, and the held line told a human to check a tree out by
+# hand while the gate was still running in it. A record written in this namespace keeps
+# alive/dead; another or no recorded namespace is `unknown (…)`, and the by-hand advice appears
+# only when the run that detached the tree is proven dead.
+advice='check it out on its branch by hand'
+ns_here="$(readlink /proc/self/ns/pid)"
+ns_other='pid:[1]'   # an inode no pid namespace has, so it can never equal ns_here
+wt3="$tmp/lane3"
+git -C "$repo" worktree add -q -b lane3 "$wt3"
+sha3="$(git -C "$wt3" rev-parse HEAD)"
+git -C "$wt3" checkout -q --detach "$sha3"
+git -C "$wt3" commit -q --allow-empty -m "made while a gate held the tree"
+sleep 300 & live26=$!; strays="$strays $live26"
+sleep 0 & dead26=$!; wait "$dead26"
+mkrec26() { # LABEL RUN_PID [pidns=VALUE] — a running record that detached $wt3
+  {
+    printf 'spec=%s\nworktree=%s\nref=%s\nlabel=%s\nlog=%s\nlock=%s\n' \
+      "$wt3:$sha3:$1" "$wt3" "$sha3" "$1" "$tmp/$1.log" "$GATE_QUEUE_LOCK"
+    printf 'enqueue_pid=%s\nflock_pid=%s\nrun_pid=%s\nstate=running\nrc=\nchecked_out=%s\n' "$2" "$2" "$2" "$sha3"
+    [ $# -lt 3 ] || printf '%s\n' "$3"
+  } > "$GATE_QUEUE_STATE/$1.spec"
+}
+mkrec26 ns-alive "$live26" "pidns=$ns_here"
+mkrec26 ns-dead "$dead26" "pidns=$ns_here"
+mkrec26 ns-foreign "$dead26" "pidns=$ns_other"
+mkrec26 ns-foreign-live "$live26" "pidns=$ns_other"
+mkrec26 ns-legacy "$dead26"
+mkrec26 ns-glob "$dead26" 'pidns=pid:*'   # a pattern that would match ns_here if compared as one
+row26()  { printf '%s\n' "$out" | grep "^$1 "; }
+held26() { printf '%s\n' "$out" | grep "^held .* by '$1' "; }
+if dead "$dead26" && alive "$live26"; then
+  out="$("$qs" list 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] && row26 ns-alive | grep -q "$live26 alive/$live26 alive"; then
+    ok 26-alive-here "a live pid recorded in this namespace reads alive: $(row26 ns-alive | tr -s ' ')"
+  else
+    bad 26-alive-here "rc=$rc: $(row26 ns-alive)"
+  fi
+  if row26 ns-dead | grep -q "$dead26 dead/$dead26 dead" && held26 ns-dead | grep -qF "$advice"; then
+    ok 26-dead-here "a reaped pid recorded in this namespace reads dead, and only then the held line advises checking out by hand"
+  else
+    bad 26-dead-here "row: $(row26 ns-dead) | held: $(held26 ns-dead)"
+  fi
+  if row26 ns-foreign | grep -q "$dead26 unknown (other pid namespace)/$dead26 unknown (other pid namespace)" \
+     && ! row26 ns-foreign | grep -q ' dead' && [ -n "$(held26 ns-foreign)" ] \
+     && ! held26 ns-foreign | grep -qF "$advice"; then
+    ok 26-other-ns "a record from another pid namespace reads unknown, still holds its tree, and carries no by-hand advice: $(held26 ns-foreign)"
+  else
+    bad 26-other-ns "row: $(row26 ns-foreign) | held: $(held26 ns-foreign)"
+  fi
+  if row26 ns-foreign-live | grep -q "$live26 unknown (other pid namespace)" && ! row26 ns-foreign-live | grep -q ' alive'; then
+    ok 26-other-ns-live "a host pid that happens to be alive is not claimed for a record from another namespace"
+  else
+    bad 26-other-ns-live "row: $(row26 ns-foreign-live)"
+  fi
+  if row26 ns-legacy | grep -q "$dead26 unknown (no namespace recorded)" && [ -n "$(held26 ns-legacy)" ] \
+     && ! held26 ns-legacy | grep -qF "$advice"; then
+    ok 26-legacy "a record written before pidns= reads unknown and carries no by-hand advice"
+  else
+    bad 26-legacy "row: $(row26 ns-legacy) | held: $(held26 ns-legacy)"
+  fi
+  if row26 ns-glob | grep -q "$dead26 unknown (other pid namespace)" && ! held26 ns-glob | grep -qF "$advice"; then
+    ok 26-glob-ns "a recorded namespace is compared as a string, never as a pattern: pid:* is another namespace"
+  else
+    bad 26-glob-ns "row: $(row26 ns-glob) | held: $(held26 ns-glob)"
+  fi
+else
+  bad 26-setup "precondition: pid $dead26 must be dead and pid $live26 alive"
+fi
+rm -f "$GATE_QUEUE_STATE"/ns-*.spec
+# The unknown changes only what `list` tells a human: admission still refuses the tree a
+# foreign-namespace record detached, exactly as it did when that record read `dead`.
+mkrec26 ns-foreign "$dead26" "pidns=$ns_other"
+out="$(GATE_QUEUE_LOCK="$tmp/gate26b.lock" "$qs" enqueue "$wt3:$sha3:ns-probe" 2>&1)"; rc=$?
+if [ "$rc" -eq 7 ] && [ ! -f "$GATE_QUEUE_STATE/ns-probe.spec" ]; then
+  ok 26-other-ns-admission "an enqueue onto the tree a foreign-namespace run detached is still refused (rc=7), no record written"
+else
+  bad 26-other-ns-admission "rc=$rc record=$([ -f "$GATE_QUEUE_STATE/ns-probe.spec" ] && echo WRITTEN || echo none): $out"
+fi
+# `done` is no proof the run exited: the enqueue writes it when the FLOCK wrapper returns, and a
+# killed wrapper leaves its child gating. A finished record from another namespace is still an
+# unknown, so it gets no by-hand advice either.
+sed -i 's/^state=running$/state=done/; s/^rc=$/rc=0\nrestore=skipped-head-moved/' "$GATE_QUEUE_STATE/ns-foreign.spec"
+out="$("$qs" list 2>&1)"
+if row26 ns-foreign | grep -q 'unknown (other pid namespace)' && [ -n "$(held26 ns-foreign)" ] \
+   && ! held26 ns-foreign | grep -qF "$advice"; then
+  ok 26-other-ns-finished "a finished foreign-namespace record still holds its detached tree and carries no by-hand advice"
+else
+  bad 26-other-ns-finished "row: $(row26 ns-foreign) | held: $(held26 ns-foreign)"
+fi
+# In THIS namespace the run pid decides for a finished record too: dead -> advice, alive -> none.
+rm -f "$GATE_QUEUE_STATE"/ns-*.spec
+mkrec26 ns-done-dead "$dead26" "pidns=$ns_here"
+mkrec26 ns-done-live "$live26" "pidns=$ns_here"
+sed -i 's/^state=running$/state=done/' "$GATE_QUEUE_STATE/ns-done-dead.spec" "$GATE_QUEUE_STATE/ns-done-live.spec"
+out="$("$qs" list 2>&1)"
+if dead "$dead26" && held26 ns-done-dead | grep -qF "$advice" \
+   && [ -n "$(held26 ns-done-live)" ] && ! held26 ns-done-live | grep -qF "$advice"; then
+  ok 26-done-here "a finished record from this namespace advises by hand only when its run pid is dead"
+else
+  bad 26-done-here "dead: $(held26 ns-done-dead) | live: $(held26 ns-done-live)"
+fi
+rm -f "$GATE_QUEUE_STATE"/ns-*.spec
+{ kill "$live26"; wait "$live26"; } 2>/dev/null
+# The real thing, when the kernel lets this user make one: the real enqueue run inside its own
+# pid (and mount) namespace, the way the lane container launches it, and `list` out here while
+# that gate holds the tree detached.
+if unshare -Urpf --mount-proc true 2>/dev/null; then
+  wt4="$tmp/lane4"
+  git -C "$repo" worktree add -q -b lane4 "$wt4"
+  sha4="$(git -C "$wt4" rev-parse HEAD)"
+  GATE_QUEUE_LOCK="$tmp/gate26.lock" STUB_GATE_SLEEP=8 \
+    unshare -Urpf --mount-proc "$qs" enqueue "$wt4:$sha4:ns-container" > "$tmp/enq26.out" 2>&1 &
+  uns26=$!; strays="$strays $uns26"
+  co26() { [ -n "$(field ns-container checked_out)" ]; }
+  if waitfor 20 co26 && state_is ns-container running; then
+    out="$("$qs" list 2>&1)"
+    if [ -n "$(field ns-container pidns)" ] && [ "$(field ns-container pidns)" != "$ns_here" ] \
+       && row26 ns-container | grep -q 'unknown (other pid namespace)' \
+       && ! row26 ns-container | grep -qE ' (dead|alive)' \
+       && ! held26 ns-container | grep -qF "$advice"; then
+      ok 26-unshare "a gate enqueued inside its own pid namespace reads unknown out here, with no by-hand advice while it runs: $(row26 ns-container | tr -s ' ')"
+    else
+      bad 26-unshare "pidns=$(field ns-container pidns) here=$ns_here | row: $(row26 ns-container) | held: $(held26 ns-container)"
+    fi
+    # The killed-flock-wrapper shape: the record says `done` while the gate is still running in
+    # that namespace. Stamped under the record's own lock, the way the enqueue writes it.
+    flock "$GATE_QUEUE_STATE/ns-container.lock" \
+      sed -i 's/^state=running$/state=done/; s/^rc=$/rc=0/' "$GATE_QUEUE_STATE/ns-container.spec"
+    out="$("$qs" list 2>&1)"
+    if alive "$uns26" && state_is ns-container done && [ -n "$(field ns-container checked_out)" ] \
+       && [ -n "$(held26 ns-container)" ] && ! held26 ns-container | grep -qF "$advice"; then
+      ok 26-unshare-done-stamped "a record stamped done while its gate still runs in another namespace keeps the hold and carries no by-hand advice"
+    else
+      bad 26-unshare-done-stamped "alive=$(alive "$uns26" && echo yes || echo no) state=$(field ns-container state) | held: $(held26 ns-container)"
+    fi
+  else
+    bad 26-unshare "the namespaced enqueue never reached a detached running state: $(cat "$tmp/enq26.out" 2>/dev/null)"
+  fi
+  wait "$uns26"; rc=$?
+  if [ "$rc" -eq 0 ] && state_is ns-container done && [ "$(git -C "$wt4" rev-parse --abbrev-ref HEAD)" = lane4 ]; then
+    ok 26-unshare-done "the namespaced gate finished (rc=0) and put its tree back on lane4"
+  else
+    bad 26-unshare-done "rc=$rc state=$(field ns-container state): $(cat "$tmp/enq26.out" 2>/dev/null)"
+  fi
+  rm -f "$GATE_QUEUE_STATE/ns-container.spec"
+else
+  echo "SKIP 26-unshare: unshare -Urpf --mount-proc is refused for this user; 26-other-ns stands in with a synthetic foreign pidns="
+fi
+
 [ "$fail" -eq 0 ] && echo "gate-queue-test: ALL PASS" || echo "gate-queue-test: FAILURES"
 exit "$fail"

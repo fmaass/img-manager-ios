@@ -144,8 +144,16 @@
 # lets go of it (clearing `checked_out` only on `ok`), and the enqueue process writes
 # `done rc=<n>` when the run returns — or the run writes `state=refused-held rc=7` plus
 # `refused=<holder>` when it finds the worktree held just before the detach (if a drop outlives
-# its enqueue process, the drop records the end and says so). `list` reads the records back and adds a `kill -0` liveness note per
-# pid, the worktree of every record, and a `held` line per worktree still under a record.
+# its enqueue process, the drop records the end and says so). Every write that stores one of the
+# three liveness pids (`enqueue_pid`, `flock_pid`, `run_pid`) also stores `pidns=`, the writer's
+# `readlink /proc/self/ns/pid`. ONE field serves all three because they cannot differ: the run is
+# the child of the flock the enqueue spawned, so the whole tree shares one pid namespace. The
+# pids a drop leaves behind (`dropped_by`, `hold_retired_by`) are bookkeeping, never judged for
+# liveness, and do not touch `pidns=` — a drop may run in another namespace (IMGMGR-558).
+# `list` reads the records back and adds a liveness note per pid — `alive`/`dead` only for a
+# record written in list's own pid namespace, `unknown (other pid namespace)` or
+# `unknown (no namespace recorded)` otherwise (lane m enqueues from inside its container) —
+# the worktree of every record, and a `held` line per worktree still under a record.
 #
 # Environment:
 #   GATE_QUEUE_LOCK     lock file that serializes the runs; resolved to an absolute path and
@@ -325,7 +333,7 @@ snap_get() { # SNAPSHOT KEY — the value from a snapshot taken by rec_snapshot
 #      the run. Verified against the LIVE worktree, never from the record alone, so checking the
 #      tree out by hand clears the hold with no record to edit.
 record_hold() {
-  local label="$1" scope="${2:-admission}" want="${3:-}" snap st wt co head rpid fpid fstart
+  local label="$1" scope="${2:-admission}" want="${3:-}" snap st wt co head rpid fpid fstart live
   snap="$(rec_snapshot "$label")" || {
     # The record's own writer holds its lock. Refusing is the safe direction, but only for the
     # worktree this record is actually about: an unlocked read that clearly names a DIFFERENT
@@ -389,6 +397,21 @@ record_hold() {
   fi
   git -C "$wt" symbolic-ref -q HEAD >/dev/null 2>&1 && return 1
   head="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" || head="<unreadable>"
+  # The by-hand advice only once the run that detached the tree is PROVEN over (IMGMGR-558): its
+  # run pid dead in the namespace that recorded it — whatever the state says. `done` is no proof:
+  # the enqueue writes it when the FLOCK wrapper returns, and a killed wrapper leaves its child
+  # gating. (`refused-held` never reaches this line: the run writes it and exits before it
+  # writes `run_pid` or `checked_out`, and every admission starts the record without them.)
+  # An unknown — a record from lane m's container, or one written before `pidns=` — may be a
+  # gate still working in that tree, and checking it out by hand would pull the tree from under
+  # it. The hold stands either way; only what it tells a human changes, so enqueue and drop
+  # decide exactly as before.
+  live="$(pid_liveness "$rpid" "$(snap_get "$snap" pidns)")"
+  if [ "$live" != dead ]; then
+    printf 'that run gated %s and the tree is DETACHED (at %s), but the run is not proven over (state=%s, run pid %s %s), so it may still be gating in that tree; leave it alone until the record finishes\n' \
+      "$co" "$head" "${st:-?}" "${rpid:--}" "$live"
+    return 0
+  fi
   printf 'that run gated %s and its restore was skipped (restore=%s), so the tree is still DETACHED (at %s); check it out on its branch by hand first\n' \
     "$co" "$(snap_get "$snap" restore)" "$head"
   return 0
@@ -441,10 +464,25 @@ legs_note() {
   [ -n "$l" ] && printf '%s' "$l" || printf -- '(full)'
 }
 
-pid_note() { # PID — "1234 alive" / "1234 dead" / "-"
+self_pidns() { readlink /proc/self/ns/pid 2>/dev/null; }
+
+# pid_liveness PID PIDNS — `alive` / `dead` / `unknown (other pid namespace)` /
+# `unknown (no namespace recorded)` for a pid a record stored, PIDNS being that record's
+# `pidns=` (IMGMGR-558). A pid number means something only inside the namespace that wrote it:
+# lane m enqueues from inside its container, and `kill -0` out here answers for whatever host
+# process happens to carry that number — dead for a live gate, or alive for a dead one. So
+# alive/dead is decided only when the record came from this namespace; anything else is an
+# UNKNOWN, and no reader of this treats an unknown as dead.
+pid_liveness() {
+  [ -n "${2:-}" ] || { printf 'unknown (no namespace recorded)'; return 0; }
+  [ "$2" = "$(self_pidns)" ] || { printf 'unknown (other pid namespace)'; return 0; }
+  if kill -0 "$1" 2>/dev/null; then printf 'alive'; else printf 'dead'; fi
+}
+
+pid_note() { # PID PIDNS — "1234 alive" / "1234 dead" / "1234 unknown (…)" / "-"
   case "${1:-}" in
     ''|*[!0-9]*) printf -- '-' ;;
-    *) if kill -0 "$1" 2>/dev/null; then printf '%s alive' "$1"; else printf '%s dead' "$1"; fi ;;
+    *) printf '%s %s' "$1" "$(pid_liveness "$1" "${2:-}")" ;;
   esac
 }
 
@@ -621,7 +659,7 @@ cmd_run() {
   # empty pid while a gate really is starting under it, and a drop would read it as an orphan.
   # Only filled in when empty: the enqueue's own write is the same value.
   if [ -z "$(rec_get "$label" flock_pid)" ]; then
-    rec_set "$label" "flock_pid=$PPID" "flock_start=$(proc_starttime "$PPID")" "pid_from=run"
+    rec_set "$label" "flock_pid=$PPID" "flock_start=$(proc_starttime "$PPID")" "pid_from=run" "pidns=$(self_pidns)"
   fi
   if [ -n "$(rec_get "$label" drop_requested)" ]; then
     rec_lock_close
@@ -649,7 +687,7 @@ cmd_run() {
   # process's argv entry for entry, and a fifth operand would have to be threaded through it for
   # no gain. Empty = a full gate, which is what mac-gate.sh reads an unset MAC_GATE_LEGS as.
   legs="$(rec_get "$label" legs)" || legs=""
-  rec_set "$label" "state=running" "run_pid=$$" "started=$(now)"
+  rec_set "$label" "state=running" "run_pid=$$" "started=$(now)" "pidns=$(self_pidns)"
   branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   # No --ignored: gitignored working files are allowed (see the header); tracked modifications
   # and untracked non-ignored files are what would reach the mirror and fail the manifest leg.
@@ -768,7 +806,7 @@ cmd_enqueue() {
     gen="$(date +%s)-$$-$RANDOM"
     rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" "legs=$legs" \
       "lock=$LOCK" "enqueue_pid=$$" "flock_pid=" "flock_start=" "run_pid=" "state=waiting" \
-      "rc=" "enqueued=$(now)" "gen=$gen"
+      "rc=" "enqueued=$(now)" "gen=$gen" "pidns=$(self_pidns)"
     # Released before the spawn so the child cannot inherit this descriptor's lock. A drop in
     # the gap sees an empty flock_pid and refuses; no other enqueue can pass the O_EXCL create.
     rec_lock_close
@@ -797,7 +835,7 @@ cmd_enqueue() {
     # comparison cannot go stale between the two.
     rec_lock_open "$label"
     if rec_owns_generation "$label" "$gen"; then
-      rec_set "$label" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")"
+      rec_set "$label" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")" "pidns=$(self_pidns)"
     fi
     rec_lock_close
     [ -z "${GATE_QUEUE_PAUSE_PID_WRITE:-}" ] || : > "${GATE_QUEUE_PAUSE_PID_WRITE}.done"
@@ -831,7 +869,7 @@ cmd_enqueue() {
 }
 
 cmd_list() {
-  local rec label st holder="unknown (no record is in state=running)" n=0 hold held=0
+  local rec label st ns holder="unknown (no record is in state=running)" n=0 hold held=0
   echo "lock    : $LOCK"
   echo "state   : $STATE"
   echo "summary : $SUMMARY"
@@ -839,7 +877,7 @@ cmd_list() {
     [ -e "$rec" ] || continue
     label="$(basename "$rec" .spec)"
     [ "$(rec_get "$label" state)" = "running" ] || continue
-    holder="$label (run pid $(pid_note "$(rec_get "$label" run_pid)"), worktree $(rec_get "$label" worktree))"
+    holder="$label (run pid $(pid_note "$(rec_get "$label" run_pid)" "$(rec_get "$label" pidns)"), worktree $(rec_get "$label" worktree))"
   done
   echo "holder  : $holder   # flock has no holder API; this is derived from the records"
   # Which trees are held, and therefore must not be committed into (IMGMGR-398). A `held` line
@@ -859,10 +897,11 @@ cmd_list() {
     label="$(basename "$rec" .spec)"
     n=$((n + 1))
     st="$(rec_get "$label" state)"
+    ns="$(rec_get "$label" pidns)" || ns=""
     printf '%-22s %-8s %-4s %-14s %-24s %-42s %-30s %s\n' \
       "$label" "${st:-?}" "$(rec_get "$label" rc)" \
-      "$(pid_note "$(rec_get "$label" enqueue_pid)")" \
-      "$(pid_note "$(rec_get "$label" flock_pid)")/$(pid_note "$(rec_get "$label" run_pid)")" \
+      "$(pid_note "$(rec_get "$label" enqueue_pid)" "$ns")" \
+      "$(pid_note "$(rec_get "$label" flock_pid)" "$ns")/$(pid_note "$(rec_get "$label" run_pid)" "$ns")" \
       "$(rec_get "$label" ref)" "$(legs_note "$label")" \
       "$(rec_get "$label" worktree)"
   done
