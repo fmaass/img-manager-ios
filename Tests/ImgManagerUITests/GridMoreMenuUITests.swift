@@ -59,7 +59,9 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     let expected = [
       // WP29 P1 (IMGMGR-452): Select left More for the bar's own `gridSelectCommand`.
       "gridMoreMenu.more.copyForLightroom",
-      "gridMoreMenu.more.filenamePlates",
+      // IMGMGR-539 (R3-5): Filename plates moved into the Tile overlays submenu; its row here is
+      // the submenu (`testFilenamePlatesToggleOnAndOff` opens it).
+      "gridMoreMenu.more.tileOverlays",
       // IMGMGR-261: the picks-in-groups switch lives in THIS menu — the app's existing
       // view-options surface — and never in a settings panel of its own.
       // WP29 P2 (IMGMGR-453): Density left for the Arrange popover.
@@ -145,10 +147,11 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     beforeAttachment.lifetime = .keepAlways
     add(beforeAttachment)
 
+    // IMGMGR-539: More › View › Tile overlays ▸ › Filename plates.
     let toggle = app.descendants(matching: .any)["gridMoreMenu.more.filenamePlates"]
     XCTAssertTrue(
-      openMoreMenu(in: app, revealing: toggle, timeout: 5),
-      "No Filename plates entry in the menu.")
+      openTileOverlays(in: app, revealing: toggle, timeout: 5),
+      "No Filename plates entry in the Tile overlays submenu.")
     toggle.tap()
 
     // Positive control in the same check: the grid is still there, so "plates visible" below is
@@ -171,7 +174,7 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
     add(onAttachment)
 
     let toggleAgain = app.descendants(matching: .any)["gridMoreMenu.more.filenamePlates"]
-    XCTAssertTrue(openMoreMenu(in: app, revealing: toggleAgain, timeout: 5))
+    XCTAssertTrue(openTileOverlays(in: app, revealing: toggleAgain, timeout: 5))
     toggleAgain.tap()
     XCTAssertTrue(app.buttons["Dislike"].waitForExistence(timeout: 10))
     var gone = false

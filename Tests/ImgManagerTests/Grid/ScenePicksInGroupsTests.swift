@@ -33,8 +33,9 @@ struct ScenePicksInGroupsTests {
     let ids = GridMoreMenu.entries.map(\.id)
     #expect(ids.contains("more.picksInGroups"))
     #expect(ids.filter { $0 == "more.picksInGroups" }.count == 1)
-    // Positive control: the decided set really was enumerated.
-    #expect(ids.contains("more.filenamePlates"))
+    // Positive control: the decided set really was enumerated (Filename plates sits in the
+    // Tile overlays submenu since IMGMGR-539, so the walk includes nested entries).
+    #expect(GridMoreMenu.allEntries.map(\.id).contains("more.filenamePlates"))
   }
 
   /// The pivot itself, stated as a TABLE rather than checked against whatever the app happens to

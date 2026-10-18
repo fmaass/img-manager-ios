@@ -71,7 +71,9 @@ struct MarkPaletteTests {
     #expect(abs(got.blue - CGFloat(expected.blue)) <= 1, "blue, \(role)")
   }
 
-  @Test("Only Pick, Dislike and Edited take a colour — not Select, Good or changed-elsewhere")
+  @Test(
+    "Only Pick, Dislike and Edited take a colour — no other badge does"
+  )
   func badgeTruthTable() {
     #expect(TileBadgeItem.pick.markRole == .pick)
     #expect(TileBadgeItem.dislike.markRole == .dislike)
@@ -80,10 +82,13 @@ struct MarkPaletteTests {
     // never look like this app's writable Pick (the web pins that as a value test); Select's tick
     // and the changed-elsewhere glyph are not verdicts at all.
     #expect(TileBadgeItem.selected.markRole == nil)
-    #expect(TileBadgeItem.good.markRole == nil)
+    // IMGMGR-539 (R3-5): the Good slot became the Lightroom rating — still Lightroom's read-only
+    // fact, so still white — and the source kind is a provenance glyph, not a verdict.
+    #expect(TileBadgeItem.lightroomRating.markRole == nil)
     #expect(TileBadgeItem.changedElsewhere.markRole == nil)
-    // A seventh badge added later has to answer this question deliberately.
-    #expect(TileBadgeItem.allCases.count == 6)
+    #expect(TileBadgeItem.sourceKind.markRole == nil)
+    // An eighth badge added later has to answer this question deliberately.
+    #expect(TileBadgeItem.allCases.count == 7)
   }
 
   @Test("The badge SF-Symbols are byte-identical to 4753450 — colour never replaces shape")
@@ -92,7 +97,7 @@ struct MarkPaletteTests {
     #expect(TileBadgeItem.pick.systemImage == "hand.thumbsup.fill")
     #expect(TileBadgeItem.dislike.systemImage == "hand.thumbsdown.fill")
     #expect(TileBadgeItem.edited.systemImage == "pencil.circle.fill")
-    #expect(TileBadgeItem.good.systemImage == "star.fill")
+    #expect(TileBadgeItem.lightroomRating.systemImage == "star.fill")
     #expect(TileBadgeItem.changedElsewhere.systemImage == "arrow.triangle.2.circlepath")
   }
 

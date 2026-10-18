@@ -45,7 +45,8 @@ struct GridViewMoreMenuTests {
         // "more.pruneMirroredArchive" for the tree's View menu, its one home.
         // WP29 P4 (IMGMGR-455): the four scene edits left for the Select bar's Scene ▸.
         // WP29 P3 (IMGMGR-454): the ticket's order — View · Actions · Shoot.
-        "more.filenamePlates", "more.picksInGroups",
+        // IMGMGR-539 (R3-5): Filename plates moved into the Tile overlays submenu.
+        "more.tileOverlays", "more.picksInGroups",
         "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
         "more.status",
       ])
@@ -53,7 +54,7 @@ struct GridViewMoreMenuTests {
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Filename plates", "Picks in groups", "Clear mark", "Copy for Lightroom",
+        "Tile overlays", "Picks in groups", "Clear mark", "Copy for Lightroom",
         "Open in New Window", "Status",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
@@ -156,7 +157,10 @@ struct GridViewMoreMenuTests {
   /// requires an observable effect of invoking the entry's own closure).
   @Test("Every entry does something observable — no placeholder rows")
   func everyEntryDoesSomethingObservable() async {
-    for entry in GridMoreMenu.entries {
+    // IMGMGR-539: `allEntries`, so the walk reaches the Tile overlays submenu's leaves too — a
+    // walk over the top-level `entries` alone would skip all five overlay toggles.
+    var overlayLeavesProbed = 0
+    for entry in GridMoreMenu.allEntries {
       let (store, transport, pasteboard, _) = makeStore()
       await transport.setListImagesPage(
         .init(items: [makeImage(id: 1, mark: .pick)], limit: 100, nextCursor: nil))
@@ -201,6 +205,43 @@ struct GridViewMoreMenuTests {
         set(store, true)
         #expect(isOn(store), "the plates toggle did not turn on")
         #expect(store.preferences.filenamePlates, "the toggle did not reach the preference")
+        overlayLeavesProbed += 1
+
+      case "more.tileOverlays":
+        guard case .submenu(let children) = entry.surface else {
+          Issue.record("more.tileOverlays is not a submenu entry")
+          continue
+        }
+        #expect(
+          children.map(\.id) == [
+            "more.overlayMarks", "more.overlayEdited", "more.overlayLightroomRating",
+            "more.overlaySourceKind", "more.filenamePlates",
+          ])
+
+      case "more.overlayMarks", "more.overlayEdited", "more.overlayLightroomRating",
+        "more.overlaySourceKind":
+        guard case .toggle(let isOn, let set) = entry.surface else {
+          Issue.record("\(entry.id) is not a toggle entry")
+          continue
+        }
+        let preference: [String: Bool] = [
+          "more.overlayMarks": store.preferences.overlayMarks,
+          "more.overlayEdited": store.preferences.overlayEdited,
+          "more.overlayLightroomRating": store.preferences.overlayLightroomRating,
+          "more.overlaySourceKind": store.preferences.overlaySourceKind,
+        ]
+        let before = isOn(store)
+        #expect(before == preference[entry.id], "\(entry.id) does not read its preference")
+        set(store, !before)
+        #expect(isOn(store) == !before, "\(entry.id) did not flip")
+        let after: [String: Bool] = [
+          "more.overlayMarks": store.preferences.overlayMarks,
+          "more.overlayEdited": store.preferences.overlayEdited,
+          "more.overlayLightroomRating": store.preferences.overlayLightroomRating,
+          "more.overlaySourceKind": store.preferences.overlaySourceKind,
+        ]
+        #expect(after[entry.id] == !before, "\(entry.id) did not reach its preference")
+        overlayLeavesProbed += 1
 
       case "more.picksInGroups":
         guard case .toggle(let isOn, let set) = entry.surface else {
@@ -240,6 +281,7 @@ struct GridViewMoreMenuTests {
         )
       }
     }
+    #expect(overlayLeavesProbed == 5, "the walk did not reach the five Tile overlays toggles")
   }
 
   /// The plan's named test. The plate's text IS `ImageSummary.filename`, verbatim, and never
@@ -572,7 +614,8 @@ struct GridMoreMenuSectionsTests {
   /// element-wise here.
   /// WP29 P3 (IMGMGR-454) reordered the same six ids into the ticket's shape.
   private let shippedOrder = [
-    "more.filenamePlates", "more.picksInGroups",
+    // IMGMGR-539 (R3-5): the Tile overlays submenu took Filename plates' place in View.
+    "more.tileOverlays", "more.picksInGroups",
     "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
     "more.status",
   ]
@@ -629,7 +672,8 @@ struct GridMoreMenuSectionsTests {
       (
         "more.section.view", "View",
         // WP29 P2 (IMGMGR-453): Density and the archive prune left this run.
-        ["more.filenamePlates", "more.picksInGroups"]
+        // IMGMGR-539 (R3-5): Filename plates sits inside Tile overlays now.
+        ["more.tileOverlays", "more.picksInGroups"]
       ),
       (
         // WP29 P3 (IMGMGR-454): was "more.section.marks" / "Marks"; Clear mark stays (folded,
@@ -685,14 +729,16 @@ struct GridMoreMenuSectionsTests {
       GridMoreMenu.entries.map(\.accessibilityIdentifier) == [
         // WP29 P2 (IMGMGR-453): Density and the archive prune left; the prune keeps its
         // identifier in the tree's View menu. WP29 P3 (IMGMGR-454): reordered, none renamed.
-        "gridMoreMenu.more.filenamePlates", "gridMoreMenu.more.picksInGroups",
+        // IMGMGR-539 (R3-5): Filename plates keeps its identifier inside the Tile overlays
+        // submenu (`allEntries`); the submenu row is the new top-level identifier.
+        "gridMoreMenu.more.tileOverlays", "gridMoreMenu.more.picksInGroups",
         "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.openInNewWindow",
         "gridMoreMenu.more.status",
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
-        "textformat", "checkmark.square",
+        "rectangle.on.rectangle", "checkmark.square",
         ActionBarMarkControl.clear.systemImage, "doc.on.clipboard", "macwindow.badge.plus",
         "info.circle",
       ])
@@ -735,21 +781,27 @@ struct GridPreferencesTests {
 
   @Test("The store owns exactly the keys it declares")
   func theStoreOwnsExactlyTheKeysItDeclares() {
-    // WP13 P8 (IMGMGR-214) added the second key this type owns, IMGMGR-261 the third and
-    // IMGMGR-362 the fourth; the inventory is asserted exactly, so a fifth arriving silently is a
-    // failure here rather than a surprise later. The literals are spelled out rather than read
-    // back off the constants they name — a test that asks a constant to describe itself could
-    // not tell a rename from a rewrite, and these strings are what a reader's device already has
-    // on disk.
+    // WP13 P8 (IMGMGR-214) added the second key this type owns, IMGMGR-261 the third,
+    // IMGMGR-362 the fourth and IMGMGR-539 (R3-5) the four Tile overlays keys, fifth to eighth;
+    // the inventory is asserted exactly, so a ninth arriving silently is a failure here rather
+    // than a surprise later. The literals are spelled out rather than read back off the constants
+    // they name — a test that asks a constant to describe itself could not tell a rename from a
+    // rewrite, and these strings are what a reader's device already has on disk.
     let owned = [
       GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey,
       GridPreferences.picksInGroupsKey, GridPreferences.pruneMirroredArchiveKey,
+      GridPreferences.overlayMarksKey, GridPreferences.overlayEditedKey,
+      GridPreferences.overlayLightroomRatingKey, GridPreferences.overlaySourceKindKey,
     ]
     #expect(GridPreferences.persistedKeys == owned)
     #expect(GridPreferences.filenamePlatesKey == "grid.filenamePlates")
     #expect(GridPreferences.autoAdvanceOnMarkKey == "loupe.autoAdvanceOnMark")
     #expect(GridPreferences.picksInGroupsKey == "grid.picksInGroups")
     #expect(GridPreferences.pruneMirroredArchiveKey == "grid.pruneMirroredArchive")
+    #expect(GridPreferences.overlayMarksKey == "grid.overlay.marks")
+    #expect(GridPreferences.overlayEditedKey == "grid.overlay.edited")
+    #expect(GridPreferences.overlayLightroomRatingKey == "grid.overlay.lightroomRating")
+    #expect(GridPreferences.overlaySourceKindKey == "grid.overlay.sourceKind")
   }
 
   /// IMGMGR-362 (WP21 P3): the archive prune is OFF until the reader asks for it (owner decision,

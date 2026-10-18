@@ -106,10 +106,12 @@ struct SceneCardView: View {
       }
     }
     .frame(width: size.width, height: size.height)
-    .task(id: "\(cover.id)|\(tier.rawValue)") {
-      let token = ProxyIdentity.token(from: cover.proxies.additionalProperties[tier.rawValue]?.url)
-      if let data = await store.proxyData(imageID: cover.id, tier: tier, identityToken: token),
-        let decoded = PlatformImage(data: data)
+    // R3-15: the same local proxy identity as `TileView`, so an adopted cover reloads.
+    .task(id: TileLoadKey.make(image: cover, tier: tier)) {
+      let key = TileLoadKey.make(image: cover, tier: tier)
+      if let data = await store.proxyData(identity: key),
+        let decoded = PlatformImage(data: data),
+        !Task.isCancelled
       {
         coverImage = decoded
       }

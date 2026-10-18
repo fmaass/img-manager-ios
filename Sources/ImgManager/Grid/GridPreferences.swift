@@ -29,6 +29,7 @@ final class GridPreferences {
   /// popover and ⌘1…⌘6 since WP29 P2), never two properties that can disagree.
   static let persistedKeys: [String] = [
     filenamePlatesKey, autoAdvanceOnMarkKey, picksInGroupsKey, pruneMirroredArchiveKey,
+    overlayMarksKey, overlayEditedKey, overlayLightroomRatingKey, overlaySourceKindKey,
   ]
 
   static let filenamePlatesKey = "grid.filenamePlates"
@@ -53,6 +54,21 @@ final class GridPreferences {
   /// ("Show mirrored folders"); the KEY here is named for what turning it on does, so the stored
   /// value and the row's words cannot disagree.
   static let pruneMirroredArchiveDefault = false
+
+  /// R3-5 (IMGMGR-539): the More › View › Tile overlays toggles. Filename is the existing
+  /// `filenamePlates` key, reused so a shipped setting carries over. Changed-elsewhere and the
+  /// Select tick are mandatory and have no key.
+  static let overlayMarksKey = "grid.overlay.marks"
+  static let overlayMarksDefault = true
+
+  static let overlayEditedKey = "grid.overlay.edited"
+  static let overlayEditedDefault = true
+
+  static let overlayLightroomRatingKey = "grid.overlay.lightroomRating"
+  static let overlayLightroomRatingDefault = false
+
+  static let overlaySourceKindKey = "grid.overlay.sourceKind"
+  static let overlaySourceKindDefault = false
 
   private let defaults: UserDefaults
 
@@ -96,6 +112,22 @@ final class GridPreferences {
     didSet { defaults.set(pruneMirroredArchive, forKey: Self.pruneMirroredArchiveKey) }
   }
 
+  var overlayMarks: Bool {
+    didSet { defaults.set(overlayMarks, forKey: Self.overlayMarksKey) }
+  }
+
+  var overlayEdited: Bool {
+    didSet { defaults.set(overlayEdited, forKey: Self.overlayEditedKey) }
+  }
+
+  var overlayLightroomRating: Bool {
+    didSet { defaults.set(overlayLightroomRating, forKey: Self.overlayLightroomRatingKey) }
+  }
+
+  var overlaySourceKind: Bool {
+    didSet { defaults.set(overlaySourceKind, forKey: Self.overlaySourceKindKey) }
+  }
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     self.filenamePlates = Self.boolPreference(
@@ -110,6 +142,16 @@ final class GridPreferences {
     self.pruneMirroredArchive = Self.boolPreference(
       from: defaults.object(forKey: Self.pruneMirroredArchiveKey),
       default: Self.pruneMirroredArchiveDefault)
+    self.overlayMarks = Self.boolPreference(
+      from: defaults.object(forKey: Self.overlayMarksKey), default: Self.overlayMarksDefault)
+    self.overlayEdited = Self.boolPreference(
+      from: defaults.object(forKey: Self.overlayEditedKey), default: Self.overlayEditedDefault)
+    self.overlayLightroomRating = Self.boolPreference(
+      from: defaults.object(forKey: Self.overlayLightroomRatingKey),
+      default: Self.overlayLightroomRatingDefault)
+    self.overlaySourceKind = Self.boolPreference(
+      from: defaults.object(forKey: Self.overlaySourceKindKey),
+      default: Self.overlaySourceKindDefault)
   }
 
   /// GUARD-TYPED, never `UserDefaults.bool(forKey:)`: that accessor COERCES — it reads a string

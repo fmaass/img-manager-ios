@@ -139,12 +139,15 @@ struct ArrangeModelTests {
     #expect(!model.isChecked(size200))
   }
 
-  @Test("Nothing new is persisted: GridPreferences still owns exactly its four keys")
+  @Test("No arrangement is persisted: GridPreferences owns exactly its eight keys")
   func noNewPersistedKey() {
+    // IMGMGR-539 (R3-5) added the four Tile overlays keys; none of them is an arrangement.
     #expect(
       GridPreferences.persistedKeys == [
         GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey,
         GridPreferences.picksInGroupsKey, GridPreferences.pruneMirroredArchiveKey,
+        GridPreferences.overlayMarksKey, GridPreferences.overlayEditedKey,
+        GridPreferences.overlayLightroomRatingKey, GridPreferences.overlaySourceKindKey,
       ])
     let words = ["sort", "direction", "groupby", "grouping", "rowheight", "thumbnail", "zoom"]
     let arrangementKeys = GridPreferences.persistedKeys.filter { key in

@@ -83,11 +83,84 @@ struct GridBreadcrumbTests {
     }
   }
 
-  @Test("Count text: zero, one, many and absent")
+  @Test("Count text: zero, one, many, grouped and absent")
   func countText() {
     #expect(GridBreadcrumb.countText(0) == "0 photos")
     #expect(GridBreadcrumb.countText(1) == "1 photo")
     #expect(GridBreadcrumb.countText(12) == "12 photos")
+    #expect(GridBreadcrumb.countText(1726) == "1,726 photos")
     #expect(GridBreadcrumb.countText(nil) == nil)
+  }
+
+  // MARK: - R3-11: the subtitle of counts
+
+  private func decided(
+    picked: Int = 0, edited: Int = 0, disliked: Int = 0, unmarked: Int = 0,
+    sync: Components.Schemas.FolderSyncCounts? = nil
+  ) -> Components.Schemas.FolderSummary {
+    Components.Schemas.FolderSummary(
+      cameraPreviewOnly: 0, decided: picked + disliked, disliked: disliked, edited: edited,
+      folderId: 1, kind: "dated", lastTouched: nil, nothingLeftUnmarked: false,
+      path: "photo_incoming/stub", picked: picked, previewOutstanding: 0,
+      readiness: .init(rawValue: "review_in_progress")!, sourceTier: "local", sync: sync,
+      total: 99, unmarked: unmarked, withMasters: 0)
+  }
+
+  @Test("R3-11 example 1: photos, picks and edited, verbatim")
+  func exampleOne() {
+    let line = GridBreadcrumb.subtitle(
+      photoCount: 184, summary: decided(picked: 23, edited: 12), untouched: nil)
+    #expect(line == "184 photos · 23 picks · 12 edited")
+  }
+
+  @Test("R3-11 example 2 (formatter only — production passes untouched nil until P8/P10)")
+  func exampleTwo() {
+    let line = GridBreadcrumb.subtitle(photoCount: 1726, summary: decided(), untouched: true)
+    #expect(line == "1,726 photos · untouched")
+  }
+
+  @Test("R3-11 example 3: the segment verbatim, and as the last segment of a full line")
+  func exampleThree() {
+    let sync = Components.Schemas.FolderSyncCounts(never: 9, refused: 4, stale: 3, synced: 50)
+    #expect(GridBreadcrumb.notInLightroomText(decided(sync: sync)) == "12 marks not in Lightroom")
+    let line = GridBreadcrumb.subtitle(
+      photoCount: 184, summary: decided(picked: 23, edited: 12, sync: sync), untouched: nil)
+    #expect(line == "184 photos · 23 picks · 12 edited · 12 marks not in Lightroom")
+  }
+
+  @Test("Singulars: 1 photo, 1 pick, 1 mark not in Lightroom; edited does not change")
+  func singulars() {
+    let sync = Components.Schemas.FolderSyncCounts(never: 1, refused: 0, stale: 0, synced: 0)
+    let line = GridBreadcrumb.subtitle(
+      photoCount: 1, summary: decided(picked: 1, edited: 1, sync: sync), untouched: nil)
+    #expect(line == "1 photo · 1 pick · 1 edited · 1 mark not in Lightroom")
+  }
+
+  @Test("Zero segments are omitted; no unmarked, undecided or dislike count ever appears")
+  func zeroAndUndecidedOmitted() {
+    let sync = Components.Schemas.FolderSyncCounts(never: 0, refused: 7, stale: 0, synced: 3)
+    let line = GridBreadcrumb.subtitle(
+      photoCount: 12, summary: decided(disliked: 4, unmarked: 900, sync: sync), untouched: false)
+    #expect(line == "12 photos")
+    for word in ["unmarked", "dislike", "undecided", "900", "4", "7", "untouched"] {
+      #expect(line?.contains(word) == false)
+    }
+  }
+
+  @Test("No summary: just the photo count; no photo count: no subtitle at all")
+  func missingInputs() {
+    #expect(GridBreadcrumb.subtitle(photoCount: 12, summary: nil, untouched: nil) == "12 photos")
+    let orphan = decided(picked: 3)
+    #expect(GridBreadcrumb.subtitle(photoCount: nil, summary: orphan, untouched: true) == nil)
+  }
+
+  @Test("The breadcrumb looks the folder's summary up by id and never states untouched")
+  func breadcrumbUsesTheFolderSummary() {
+    let sync = Components.Schemas.FolderSyncCounts(never: 3, refused: 0, stale: 2, synced: 0)
+    let other = summary(folderId: 2, path: "photo_incoming/parent")
+    let crumb = GridBreadcrumb.make(
+      folderID: 1, treeFolders: tree, cachedTreeFolders: nil,
+      summaries: [other, decided(picked: 10, edited: 5, sync: sync)])
+    #expect(crumb?.subtitle == "12 photos · 10 picks · 5 edited · 5 marks not in Lightroom")
   }
 }

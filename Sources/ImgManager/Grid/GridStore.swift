@@ -3133,7 +3133,9 @@ final class GridStore {
 
   // MARK: - Proxy pixels
 
-  private var proxyCache: [String: Data] = [:]
+  /// Keyed by the LOCAL identity (token + reported dimensions, R3-15), so a row adopted to a new
+  /// grid edge never reads the old file's bytes back from here.
+  private var proxyCache: [ProxyLocalIdentity: Data] = [:]
 
   /// The `ProxyAvailability` `GridTierResolver.plan` wants for one image's tier, derived from
   /// the loaded `ProxyState` — never probes the network to answer this.
@@ -3154,25 +3156,39 @@ final class GridStore {
   /// `nil` on 404/unreachable — the caller renders a failure placeholder, never retries in a
   /// loop.
   func proxyData(imageID: Int, tier: ProxyTier, identityToken: String?) async -> Data? {
-    if let cached = proxyCache[Self.proxyCacheKey(imageID, tier, identityToken)] { return cached }
-    return await requestProxy(imageID: imageID, tier: tier, identityToken: identityToken)
+    await proxyData(
+      identity: ProxyLocalIdentity(imageID: imageID, tier: tier, token: identityToken))
   }
 
-  private static func proxyCacheKey(_ imageID: Int, _ tier: ProxyTier, _ token: String?) -> String {
-    "\(imageID)|\(tier.rawValue)|\(token ?? "")"
+  /// `proxyData` for a caller that knows the proxy's reported dimensions (the grid tile and the
+  /// scene card): a dimension change is a cache miss even when the token is unchanged or nil.
+  ///
+  /// The HTTP layer needs no second guard (round-3 advisory 1). The live session is
+  /// `URLSession.shared` with its default cache, and a versioned proxy is answered `immutable`
+  /// for a year, so an unchanged `?v=` URL WOULD be served from that cache. It never names new
+  /// pixels: the backend derives `v` from `(source_hash, render_profile)`
+  /// (`availability.identity_token`), and the grid edge is in that profile's fingerprint
+  /// (`profile.RenderProfile.fingerprint`, `grid=<edge>`), so an
+  /// adopted row reports a new `v` — a new URL — together with its new dimensions. A nil token
+  /// sends no `v`, which the backend answers `no-cache`, so URLSession revalidates against the
+  /// file's own ETag.
+  func proxyData(identity: ProxyLocalIdentity) async -> Data? {
+    if let cached = proxyCache[identity] { return cached }
+    return await requestProxy(identity: identity)
   }
 
   /// The unlooked proxy request itself, cache or no cache — `proxyData`'s miss path, and the
   /// looked fallback's enqueue (IMGMGR-382).
-  private func requestProxy(imageID: Int, tier: ProxyTier, identityToken: String?) async -> Data? {
-    let key = Self.proxyCacheKey(imageID, tier, identityToken)
+  private func requestProxy(identity: ProxyLocalIdentity) async -> Data? {
     do {
-      switch try await service.proxy(imageID: imageID, tier: tier, v: identityToken) {
+      let result = try await service.proxy(
+        imageID: identity.imageID, tier: identity.tier, v: identity.token)
+      switch result {
       case .ok(let data):
-        proxyCache[key] = data
+        proxyCache[identity] = data
         return data
       case .notModified:
-        return proxyCache[key]
+        return proxyCache[identity]
       case .notFound:
         return nil
       }
@@ -3237,12 +3253,12 @@ final class GridStore {
   /// looked 404 queues nothing, and the unlooked request is what does — but bytes already cached
   /// are shown at once rather than after that round trip.
   private func fallbackProxyData(imageID: Int, identityToken: String?) async -> Data? {
-    let key = Self.proxyCacheKey(imageID, .preview, identityToken)
-    guard let cached = proxyCache[key] else {
-      return await requestProxy(imageID: imageID, tier: .preview, identityToken: identityToken)
+    let identity = ProxyLocalIdentity(imageID: imageID, tier: .preview, token: identityToken)
+    guard let cached = proxyCache[identity] else {
+      return await requestProxy(identity: identity)
     }
     fallbackProxyRequest = Task { [weak self] in
-      _ = await self?.requestProxy(imageID: imageID, tier: .preview, identityToken: identityToken)
+      _ = await self?.requestProxy(identity: identity)
     }
     return cached
   }

@@ -16,6 +16,30 @@ enum GridRowHeight: CGFloat, CaseIterable, Sendable {
   case step400 = 400
 }
 
+/// R3-12 (IMGMGR-539): the gutter between tiles — 1 pt at the two smallest steps, where a 2-pt
+/// gap reads as a grid of lines, and 2 pt above. ONE value serves the in-row gap the packer
+/// subtracts AND the vertical gap between rows, so the rendered gaps and the packing arithmetic
+/// always agree (a mismatch overflows the row).
+enum GridGutter {
+  static func spacing(for rowHeight: GridRowHeight) -> CGFloat {
+    switch rowHeight {
+    case .step120, .step160: return 1
+    case .step200, .step260, .step320, .step400: return 2
+    }
+  }
+
+  /// The inset the grid's scroll content keeps on every side (`GridView.scrollArea`'s padding).
+  static let contentInset: CGFloat = 2
+
+  /// The width a justified row is packed into: the measured pane less the inset on BOTH sides.
+  /// Packed against the bare pane, a full row overflowed its container by twice the inset, and
+  /// the ≥44-pt tile frame let the stack absorb that by narrowing the widest tile's slot — the
+  /// photograph then overhung its slot into the gutter (iPhone, 200 step: tiles abutting).
+  static func packingWidth(forPane paneWidth: CGFloat) -> CGFloat {
+    max(paneWidth - 2 * contentInset, 0)
+  }
+}
+
 /// The two proxy tiers this screen ever requests (fold item 2's closed set; no new tier is
 /// invented here). Matches the `tier` PATH parameter's two documented values verbatim
 /// (`get_proxy_api_images__image_id__proxy__tier__get`'s description: "grid or preview").
@@ -87,9 +111,33 @@ enum TilePresentation: Equatable, Sendable {
 /// (`JustifiedRowLayout.pack`), because capping one tile in isolation breaks the row's uniform
 /// height (exactly what the gate's "reflow/cap the ROW not individual tiles" blocker named).
 enum GridTierResolver {
-  /// "Grid is allowed through exactly 400 pixels then preview" — the pixel-domain (not
-  /// point-domain) ceiling that decides which tier a required pixel count maps to.
-  static let gridTierPixelCeiling: Int = 400
+  /// R3-15: the CLIENT maximum for the grid tier — "grid is allowed through 800 pixels, then
+  /// preview" once the backend serves an 800-px grid edge. It is never assumed: the ceiling a
+  /// tile actually uses is `gridCeiling(servedGridEdge:)`, which follows the edge the server
+  /// reports for that image's own grid proxy and falls back to `assumedGridEdge`.
+  static let gridTierPixelCeiling: Int = 800
+
+  /// The grid edge used whenever the served edge is unknown (grid pending, failed, missing, or
+  /// no dimensions) — the pre-R3-15 profile, so the client never assumes 800 before the backend
+  /// flip (P19).
+  static let assumedGridEdge: Int = 400
+
+  /// The served grid edge for one image: the LONG side of an `ok` grid proxy. The backend renders
+  /// each tier with the long side set to exactly the tier edge (portrait and landscape alike) and
+  /// refuses a source smaller than the edge, so `max(width, height)` is that edge. Anything but
+  /// `ok` is unknown (nil).
+  static func servedGridEdge(_ grid: ProxyAvailability) -> Int? {
+    guard case .ok(let width, let height) = grid else { return nil }
+    let edge = max(width, height)
+    return edge > 0 ? edge : nil
+  }
+
+  /// The pixel ceiling for one tile: the served edge clamped to
+  /// `[assumedGridEdge, gridTierPixelCeiling]`. The lower clamp keeps every served edge at or
+  /// below 400 exactly as before; the upper clamp is the client maximum.
+  static func gridCeiling(servedGridEdge: Int?) -> Int {
+    min(max(servedGridEdge ?? assumedGridEdge, assumedGridEdge), gridTierPixelCeiling)
+  }
 
   /// `size` is the tile's actual rendered size in POINTS (the real edge, post-justification,
   /// pre-any-pixel-availability capping); `displayScale` is the real screen scale.
@@ -97,8 +145,13 @@ enum GridTierResolver {
     (Double(max(size.width, size.height)) * Double(displayScale)).rounded(.up)
   }
 
-  static func chooseTier(for size: CGSize, displayScale: CGFloat) -> ProxyTier {
-    requiredPixels(for: size, displayScale: displayScale) <= Double(gridTierPixelCeiling)
+  /// `servedGridEdge` is the image's own served grid edge (`servedGridEdge(_:)`); nil (the
+  /// default) means unknown, which keeps the 400-px rule.
+  static func chooseTier(
+    for size: CGSize, displayScale: CGFloat, servedGridEdge: Int? = nil
+  ) -> ProxyTier {
+    let ceiling = gridCeiling(servedGridEdge: servedGridEdge)
+    return requiredPixels(for: size, displayScale: displayScale) <= Double(ceiling)
       ? .grid : .preview
   }
 }

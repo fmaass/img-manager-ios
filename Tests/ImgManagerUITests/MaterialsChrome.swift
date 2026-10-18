@@ -11,14 +11,27 @@ extension XCTestCase {
 
   /// WP29 P1 (IMGMGR-452): every label the grid's title-menu trigger is accepted under, as one
   /// ICU pattern (matched whole by `MATCHES`): one of `names`, then optionally the Regular
-  /// breadcrumb's count subtitle ("1 photo", "12 photos" — `GridBreadcrumb.countText`, for ANY
-  /// folder's count, since the system may fold the subtitle into the trigger's label), then
-  /// optionally ", Actions Menu" (the iOS 26.5 Compact form). Any other suffix is not the
-  /// trigger. No names matches nothing.
+  /// breadcrumb's subtitle (for ANY folder's counts, since the system may fold the subtitle into
+  /// the trigger's label), then optionally ", Actions Menu" (the iOS 26.5 Compact form). Any
+  /// other suffix is not the trigger. No names matches nothing.
+  ///
+  /// IMGMGR-539 (R3-11): the subtitle is rebuilt from `GridBreadcrumb.subtitle`'s CLOSED
+  /// vocabulary, in its order — "N photo(s)", then optionally " · N pick(s)", " · N edited",
+  /// " · untouched", " · N mark(s) not in Lightroom" — with grouped digits only. An unknown
+  /// segment (an unmarked or dislike count), a reordered one or a malformed number is not the
+  /// trigger.
   static func titleMenuLabelPattern(_ names: [String]) -> String {
     guard !names.isEmpty else { return "(?!)" }
     let alternatives = names.map { NSRegularExpression.escapedPattern(for: $0) }
-    return "(?:\(alternatives.joined(separator: "|")))(?:, [0-9]+ photos?)?(?:, Actions Menu)?"
+    return "(?:\(alternatives.joined(separator: "|")))(?:, \(titleSubtitlePattern))?"
+      + "(?:, Actions Menu)?"
+  }
+
+  /// The subtitle group of `titleMenuLabelPattern` (R3-11's closed vocabulary).
+  static var titleSubtitlePattern: String {
+    let count = "[0-9]{1,3}(?:,[0-9]{3})*"
+    return "\(count) photos?(?: · \(count) picks?)?(?: · \(count) edited)?(?: · untouched)?"
+      + "(?: · \(count) marks? not in Lightroom)?"
   }
 
   /// `titleMenuLabelPattern` for a label already read (the census walks snapshots).

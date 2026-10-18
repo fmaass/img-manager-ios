@@ -106,8 +106,10 @@ struct ShellToolbarLayoutTests {
         ? ShellToolbarLayout.compactOptionsRow : []
       let ids =
         (bar + row).compactMap(\.accessibilityIdentifier)
-        + GridMoreMenu.entries.map(\.accessibilityIdentifier)
+        + GridMoreMenu.allEntries.map(\.accessibilityIdentifier)
       #expect(Set(ids).count == ids.count, "Duplicated identifier at \(mode): \(ids)")
+      // IMGMGR-539: the walk reaches the Tile overlays submenu's leaves.
+      #expect(ids.contains("gridMoreMenu.more.overlayMarks"))
       // Positive control: the three surfaces really were enumerated.
       #expect(ids.contains("gridMoreMenu.more.clearMark"))
       #expect(ids.contains("inspectorChromeButton"))

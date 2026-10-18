@@ -44,9 +44,12 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     "gridUndoButton", "gridTagButton",
   ]
 
-  /// Folder 1's tree name, which the Regular sidebar has loaded, and its server count.
+  /// Folder 1's tree name, which the Regular sidebar has loaded, and its server counts: the
+  /// tree's 12 photographs, then the stub summary's 10 picks, 5 edited and never 3 + stale 2
+  /// marks not yet written (IMGMGR-539, R3-11's subtitle of counts).
   private static let folderOneName = "2026-08-27 — Stub Shoot"
-  private static let folderOneCount = "12 photos"
+  private static let folderOneCount =
+    "12 photos · 10 picks · 5 edited · 5 marks not in Lightroom"
 
   private static let clusterGap: CGFloat = 16
   private static let titleTolerance: CGFloat = 24

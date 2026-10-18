@@ -35,10 +35,16 @@ final class LoupeMoreMenuUITests: OrientationPinnedUITestCase {
     let moreOwn = app.descendants(matching: .any)
       .matching(NSPredicate(format: "identifier BEGINSWITH %@", "loupeMore.")).count
     XCTAssertEqual(moreOwn, 5, "More carries a row beyond the spec's six (Share + five).")
+    // Grid tiles excluded: at Compact the loupe is a cover over the LIVE grid, whose tiles stay
+    // in the tree, and a tile with the Lightroom rating overlay on is spoken "Lightroom rating
+    // N" (IMGMGR-539). Anything else that says Lightroom — a More row included — still counts.
+    let lightroomOutsideTiles = NSPredicate(
+      format: "label CONTAINS[c] %@ AND NOT (identifier BEGINSWITH %@)", "Lightroom", "gridTile-")
+    // Counted outside the assertion: NSPredicate is not Sendable, and handing the local to the
+    // main-actor `matching(_:)` from inside XCTAssertEqual's autoclosure is a Swift 6 race error.
+    let lightroomCount = app.descendants(matching: .any).matching(lightroomOutsideTiles).count
     XCTAssertEqual(
-      app.descendants(matching: .any)
-        .matching(NSPredicate(format: "label CONTAINS[c] %@", "Lightroom")).count, 0,
-      "More carries a Lightroom row — owner decision D-a dropped it.")
+      lightroomCount, 0, "More carries a Lightroom row — owner decision D-a dropped it.")
     attach(app, name: "loupe-more-open")
   }
 

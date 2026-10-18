@@ -20,6 +20,8 @@ struct GridMoreMenuEntry: Identifiable, Sendable {
     /// `ShootWindowOpener` alongside the store, which is also what lets a test substitute a spy
     /// and prove the enabled control actually fires rather than being a no-op.
     case sceneWindow(@MainActor @Sendable (GridStore, ShootWindowOpener) -> Void)
+    /// R3-5 (IMGMGR-539): a nested menu of further entries — More › View › Tile overlays ▸.
+    case submenu([GridMoreMenuEntry])
   }
 
   /// Stable and unique — the menu `ForEach`'s identity. Never an index (IMGMGR-210).
@@ -90,7 +92,9 @@ enum GridMoreMenu {
       // WP29 P2 (IMGMGR-453): Density left for the Arrange popover's thumbnail sizes, and Hide
       // mirrored archive left for its one home, the tree's View menu (`RootView`), which renders
       // the same static `pruneMirroredArchive` entry. 12 → 10 rows.
-      entries: [filenamePlates, picksInGroups]),
+      // IMGMGR-539 (R3-5): Filename plates moved into the Tile overlays submenu, beside the
+      // four new overlay toggles. Same identifier, same key.
+      entries: [tileOverlays, picksInGroups]),
     GridMoreMenuSection(
       id: "more.section.actions", title: "Actions",
       // WP29 P1 (IMGMGR-452): Select left this run for the grid's bar (`GridSelectCommand`),
@@ -109,6 +113,76 @@ enum GridMoreMenu {
   /// existing reader (`GridMoreMenuContent`, `GridMoreMenuTests`, `ScenePicksInGroupsTests`,
   /// `ShootSceneValueTests`) keeps working because the shape and the order are unchanged.
   static let entries: [GridMoreMenuEntry] = sections.flatMap(\.entries)
+
+  /// Every entry INCLUDING those nested in a submenu, depth-first in menu order — what the
+  /// identifier-uniqueness and every-entry-does-something walks read (IMGMGR-539).
+  static let allEntries: [GridMoreMenuEntry] = flattened(entries)
+
+  private static func flattened(_ entries: [GridMoreMenuEntry]) -> [GridMoreMenuEntry] {
+    entries.flatMap { entry -> [GridMoreMenuEntry] in
+      guard case .submenu(let children) = entry.surface else { return [entry] }
+      return [entry] + flattened(children)
+    }
+  }
+
+  /// R3-5 (IMGMGR-539): More › View › Tile overlays ▸ — which facts every tile draws. Marks and
+  /// Edited are on by default, the rest off; changed-elsewhere and the Select tick are mandatory
+  /// and have no row. The two-badge cap and the badge priority order are unchanged.
+  static let tileOverlays = GridMoreMenuEntry(
+    id: "more.tileOverlays",
+    accessibilityIdentifier: "gridMoreMenu.more.tileOverlays",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "rectangle.on.rectangle",
+    title: { _ in "Tile overlays" },
+    isEnabled: { _ in true },
+    surface: .submenu([
+      overlayMarks, overlayEdited, overlayLightroomRating, overlaySourceKind, filenamePlates,
+    ]))
+
+  static let overlayMarks = GridMoreMenuEntry(
+    id: "more.overlayMarks",
+    accessibilityIdentifier: "gridMoreMenu.more.overlayMarks",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "hand.thumbsup",
+    title: { _ in "Marks" },
+    isEnabled: { _ in true },
+    surface: .toggle(
+      isOn: { $0.preferences.overlayMarks },
+      set: { store, isOn in store.preferences.overlayMarks = isOn }))
+
+  static let overlayEdited = GridMoreMenuEntry(
+    id: "more.overlayEdited",
+    accessibilityIdentifier: "gridMoreMenu.more.overlayEdited",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "pencil.circle",
+    title: { _ in "Edited" },
+    isEnabled: { _ in true },
+    surface: .toggle(
+      isOn: { $0.preferences.overlayEdited },
+      set: { store, isOn in store.preferences.overlayEdited = isOn }))
+
+  /// Read-only: the tile draws Lightroom's own rating ("★N"); there is nothing to tap.
+  static let overlayLightroomRating = GridMoreMenuEntry(
+    id: "more.overlayLightroomRating",
+    accessibilityIdentifier: "gridMoreMenu.more.overlayLightroomRating",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "star",
+    title: { _ in "Lightroom rating" },
+    isEnabled: { _ in true },
+    surface: .toggle(
+      isOn: { $0.preferences.overlayLightroomRating },
+      set: { store, isOn in store.preferences.overlayLightroomRating = isOn }))
+
+  static let overlaySourceKind = GridMoreMenuEntry(
+    id: "more.overlaySourceKind",
+    accessibilityIdentifier: "gridMoreMenu.more.overlaySourceKind",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "camera",
+    title: { _ in "Source kind" },
+    isEnabled: { _ in true },
+    surface: .toggle(
+      isOn: { $0.preferences.overlaySourceKind },
+      set: { store, isOn in store.preferences.overlaySourceKind = isOn }))
 
   /// A SECOND ENTRY POINT to the store's one clear action, never a second implementation: the
   /// menu entry, the `U` key equivalent and the View menu's Clear all dispatch into
@@ -315,6 +389,20 @@ struct GridMoreMenuItem: View {
     case .sceneWindow(let run):
       Button {
         run(store, openShootWindow)
+      } label: {
+        Label(entry.title(store), systemImage: entry.systemImage)
+      }
+      .disabled(!entry.isEnabled(store))
+      .labelStyle(.titleAndIcon)
+      .accessibilityIdentifier(identifier)
+
+    case .submenu(let children):
+      Menu {
+        ForEach(children) { child in
+          GridMoreMenuItem(
+            entry: child, store: store, foldsClearIntoMore: foldsClearIntoMore,
+            openShootWindow: openShootWindow)
+        }
       } label: {
         Label(entry.title(store), systemImage: entry.systemImage)
       }

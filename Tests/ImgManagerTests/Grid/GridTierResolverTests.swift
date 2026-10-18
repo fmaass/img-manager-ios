@@ -66,4 +66,62 @@ struct GridTierResolverTests {
     let raw = GridRowHeight.allCases.map(\.rawValue).sorted()
     #expect(raw == [120, 160, 200, 260, 320, 400])
   }
+
+  // MARK: - R3-15: the ceiling follows the SERVED grid edge
+
+  @Test(
+    "Served edge 800: square tiles of 260/320/400pt at 2x (520/640/800px) pick grid",
+    arguments: [260.0, 320.0, 400.0])
+  func servedEdge800PicksGridThrough400pt(points: Double) {
+    let size = CGSize(width: points, height: points)
+    #expect(
+      GridTierResolver.chooseTier(for: size, displayScale: 2.0, servedGridEdge: 800) == .grid)
+  }
+
+  @Test(
+    "Served edge 400: the same 260/320/400pt tiles at 2x still pick preview",
+    arguments: [260.0, 320.0, 400.0])
+  func servedEdge400PicksPreview(points: Double) {
+    let size = CGSize(width: points, height: points)
+    #expect(
+      GridTierResolver.chooseTier(for: size, displayScale: 2.0, servedGridEdge: 400) == .preview)
+  }
+
+  @Test("Unknown served edge assumes 400 — the client never assumes 800 before the flip")
+  func unknownEdgeAssumes400() {
+    let size = CGSize(width: 260, height: 260)
+    #expect(GridTierResolver.chooseTier(for: size, displayScale: 2.0) == .preview)
+    #expect(
+      GridTierResolver.chooseTier(for: size, displayScale: 2.0, servedGridEdge: nil) == .preview)
+    #expect(GridTierResolver.gridCeiling(servedGridEdge: nil) == 400)
+  }
+
+  @Test("The served edge is the LONG side of an ok grid proxy, portrait or landscape")
+  func portraitServedEdgeIsLongEdge() {
+    #expect(GridTierResolver.servedGridEdge(.ok(width: 600, height: 800)) == 800)
+    #expect(GridTierResolver.servedGridEdge(.ok(width: 533, height: 800)) == 800)
+    #expect(GridTierResolver.servedGridEdge(.ok(width: 800, height: 533)) == 800)
+    #expect(GridTierResolver.servedGridEdge(.pending) == nil)
+    #expect(GridTierResolver.servedGridEdge(.permanentFail) == nil)
+    #expect(GridTierResolver.servedGridEdge(.missing) == nil)
+    #expect(GridTierResolver.servedGridEdge(.ok(width: 0, height: 0)) == nil)
+  }
+
+  @Test("Boundary: 400pt at 2x is grid at served 800; 401pt tips to preview")
+  func boundary401pt() {
+    let exact = CGSize(width: 400, height: 300)
+    let over = CGSize(width: 401, height: 300)
+    #expect(
+      GridTierResolver.chooseTier(for: exact, displayScale: 2.0, servedGridEdge: 800) == .grid)
+    #expect(
+      GridTierResolver.chooseTier(for: over, displayScale: 2.0, servedGridEdge: 800) == .preview)
+  }
+
+  @Test("The served edge is clamped to the client range 400...800")
+  func clamp() {
+    #expect(GridTierResolver.gridCeiling(servedGridEdge: 1600) == 800)
+    #expect(GridTierResolver.gridCeiling(servedGridEdge: 300) == 400)
+    #expect(GridTierResolver.gridCeiling(servedGridEdge: 600) == 600)
+    #expect(GridTierResolver.gridTierPixelCeiling == 800)
+  }
 }

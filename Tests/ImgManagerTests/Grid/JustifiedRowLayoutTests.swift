@@ -93,11 +93,12 @@ struct JustifiedRowLayoutTests {
     // requiredPixels = max(1600,400)*2 = 3200. Preview only actually has 1600x400 (long edge
     // 1600) -> capScale = 1600/3200 = 0.5 -> rendered width 800pt, height 200pt.
     let tiles = [JustifiedTile(id: .image(1), aspectRatio: 4.0)]
+    // R3-15: pass 1 reads the grid entry first for the served edge (400 here, so the 3200px
+    // requirement is preview either way), then asks for the chosen tier.
     let rows = JustifiedRowLayout.packWithTierPlan(
       tiles: tiles, paneWidth: 4000, targetRowHeight: 400, displayScale: 2.0
     ) { _, tier in
-      #expect(tier == .preview)
-      return .ok(width: 1600, height: 400)
+      tier == .grid ? .ok(width: 400, height: 100) : .ok(width: 1600, height: 400)
     }
     guard case .display(let tier, let size) = rows[0][0].plan else {
       Issue.record("expected .display, got \(rows[0][0].plan)")
@@ -116,5 +117,44 @@ struct JustifiedRowLayoutTests {
       tiles: [], paneWidth: 400, targetRowHeight: 200, displayScale: 1.0
     ) { _, _ in .missing }
     #expect(rows.isEmpty)
+  }
+
+  @Test(
+    "R3-15: one row mixing a served-800 and a served-400 grid proxy picks grid and preview per tile"
+  )
+  func mixedServedEdgesInOneRow() {
+    // Two square tiles at 300pt, scale 2 -> 600px required: within tile 1's served 800 edge
+    // (grid), beyond tile 2's served 400 edge (preview) — the mix P3c adoption produces.
+    let tiles = [
+      JustifiedTile(id: .image(1), aspectRatio: 1.0),
+      JustifiedTile(id: .image(2), aspectRatio: 1.0),
+    ]
+    let paneWidth: CGFloat = 602  // 300 + 300 + 2pt spacing
+    var asked: [GridDisplayID: [ProxyTier]] = [:]
+    let rows = JustifiedRowLayout.packWithTierPlan(
+      tiles: tiles, paneWidth: paneWidth, targetRowHeight: 300, displayScale: 2.0
+    ) { displayID, tier in
+      asked[displayID, default: []].append(tier)
+      switch (displayID, tier) {
+      case (.image(1), .grid): return .ok(width: 800, height: 800)
+      case (.image(2), .grid): return .ok(width: 400, height: 400)
+      default: return .ok(width: 1600, height: 1600)
+      }
+    }
+    #expect(rows.count == 1)
+    guard case .display(let tierA, let sizeA) = rows[0][0].plan,
+      case .display(let tierB, let sizeB) = rows[0][1].plan
+    else {
+      Issue.record("expected both tiles to display, got \(rows)")
+      return
+    }
+    #expect(tierA == .grid)
+    #expect(tierB == .preview)
+    // The row cap is unchanged: 800px grid and 1600px preview both cover 600px -> no cap.
+    #expect(abs(sizeA.height - 300) < 1)
+    #expect(abs(sizeB.height - 300) < 1)
+    // The grid answer is reused for a grid tile; only the preview tile asks twice.
+    #expect(asked[.image(1)] == [.grid])
+    #expect(asked[.image(2)] == [.grid, .preview])
   }
 }

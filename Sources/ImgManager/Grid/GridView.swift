@@ -108,6 +108,8 @@ struct GridView: View {
         .overlay {
           if displayRows.isEmpty && !store.isLoadingPage {
             ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
+              // R3-12: drawn over the black canvas, so it takes the canvas's dark scheme.
+              .environment(\.colorScheme, .dark)
           }
         }
       ConflictRecoveryBanner(store: store)
@@ -170,7 +172,29 @@ struct GridView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.tagEdits")
           .accessibilityValue("tagEdits=\(DebugProbe.shared.tagEdits.joined(separator: "; "))")
+        // IMGMGR-539: the gutter and the Tile overlays the grid hands its tiles, read from the
+        // same calls `scrollArea` and `cell(for:plan:)` make — corroboration for the wiring
+        // test, which measures the rendered gaps and reads each tile's drawn badges itself.
+        Text("debugProbeGridChrome")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.gridChrome")
+          .accessibilityValue(gridChromeProbeValue)
       }
+    }
+
+    private var gridChromeProbeValue: String {
+      let gutter = Int(GridGutter.spacing(for: store.rowHeight))
+      let overlays = TileOverlaySet(preferences: store.preferences)
+      let flags: [(String, Bool)] = [
+        ("marks", overlays.marks), ("edited", overlays.edited),
+        ("lightroomRating", overlays.lightroomRating), ("sourceKind", overlays.sourceKind),
+        ("filename", overlays.filename),
+      ]
+      let on = flags.filter { $0.1 }.map { $0.0 }
+      return "gutter=\(gutter);overlays=\(on.joined(separator: ","))"
     }
   #else
     private var debugProbeElement: some View { EmptyView() }
@@ -245,10 +269,12 @@ struct GridView: View {
   /// `pointerGestureInstaller` rather than a bare `.gesture(...)` call — see that property's doc
   /// comment.
   private var scrollArea: some View {
+    // R3-12: the same gutter the packer subtracts (`renderRows`), so the rendered gaps match.
+    let gutter = GridGutter.spacing(for: store.rowHeight)
     let content = AnyView(
       ScrollViewReader { scrollProxy in
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: 2) {
+          LazyVStack(alignment: .leading, spacing: gutter) {
             // Rows are identified by their LEADING cell's display id, never by index: with
             // index identity, a row-count shrink (entering/leaving Scene mode, collapsing a
             // stack) can leave SwiftUI evaluating a stale row body whose index no longer
@@ -264,7 +290,7 @@ struct GridView: View {
               case .header(let header):
                 GroupSectionHeaderView(header: header)
               case .tiles(let rowModel):
-                HStack(spacing: 2) {
+                HStack(spacing: gutter) {
                   ForEach(rowModel.cells, id: \.id) { packed in
                     if let row = rowsByID[packed.id] {
                       cell(for: row, plan: packed.plan)
@@ -287,11 +313,18 @@ struct GridView: View {
             }
           }
           .scrollTargetLayout()
-          .padding(2)
+          // The packer subtracts this on both sides (`GridGutter.packingWidth`).
+          .padding(GridGutter.contentInset)
           // IMGMGR-469: at Regular the photographs continue under the floating sidebar. On the
           // scroll CONTENT only, never on a control or the bar (ADR-N1 Amendment 1).
           .gridBackgroundExtension(for: layoutMode)
         }
+        // R3-12: a pure-black canvas behind the photographs, under the safe areas the content
+        // already uses. The dark scheme is scoped to the scroll content, so headers and
+        // placeholders (semantic styles) stay legible on black in light mode; the chrome rows,
+        // the bar and the banners keep the system's scheme.
+        .background(.black)
+        .environment(\.colorScheme, .dark)
         // WP16 P2 (IMGMGR-298): the offset is kept in STORE-owned state, so it survives this view
         // being rebuilt — see `GridStore.gridScrollAnchor` for why the view cannot keep it itself.
         // IMGMGR-473: recorded here and restored once, never bound (see `scrollAnchorRestored`).
@@ -336,7 +369,9 @@ struct GridView: View {
         // menu's toggle and what every tile draws are the same fact.
         showsFilenamePlate: store.preferences.filenamePlates,
         store: store,
-        hasMarkCorner: hasMarkCorner
+        hasMarkCorner: hasMarkCorner,
+        // R3-5 (IMGMGR-539): the Tile overlays toggles, read here for the same reason.
+        overlays: TileOverlaySet(preferences: store.preferences)
       )
       .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
       .overlay(alignment: .topTrailing) {
@@ -468,7 +503,9 @@ struct GridView: View {
       groupBy: store.activeGrouping.groupByKey,
       headers: store.groupHeaders,
       timezone: store.groupTimezone,
-      paneWidth: paneWidth, targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale
+      paneWidth: GridGutter.packingWidth(forPane: paneWidth),
+      targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale,
+      spacing: GridGutter.spacing(for: store.rowHeight)
     ) { displayID, tier in
       guard let row = byID[displayID] else { return .missing }
       switch row {

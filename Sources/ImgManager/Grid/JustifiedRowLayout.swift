@@ -106,11 +106,16 @@ extension JustifiedRowLayout {
         var tier: ProxyTier
         var availability: ProxyAvailability
       }
+      // R3-15: the grid ceiling follows THIS image's served grid edge (its own grid proxy's
+      // long side), so rows mixed 400/800 during adoption each pick the right tier.
       let resolved = row.map { tile -> Resolved in
-        let tier = GridTierResolver.chooseTier(for: tile.size, displayScale: displayScale)
+        let grid = availability(tile.id, .grid)
+        let tier = GridTierResolver.chooseTier(
+          for: tile.size, displayScale: displayScale,
+          servedGridEdge: GridTierResolver.servedGridEdge(grid))
         return Resolved(
           id: tile.id, naturalSize: tile.size, tier: tier,
-          availability: availability(tile.id, tier))
+          availability: tier == .grid ? grid : availability(tile.id, tier))
       }
 
       // Pass 2: the ROW's cap scale — the smallest ratio (available pixels / required pixels)
