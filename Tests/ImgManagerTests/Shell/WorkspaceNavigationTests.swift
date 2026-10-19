@@ -44,9 +44,9 @@ struct WorkspaceNavigationTests {
   func openPassesANilTierThrough() {
     let nav = WorkspaceNavigation()
     let spy = RouteSpy()
-    nav.open(folderID: 21, tier: nil, from: .search, via: spy.route)
+    nav.open(folderID: 21, tier: nil, from: .library, via: spy.route)
     #expect(spy.calls == ["21|nil"])
-    #expect(nav.gridHost == .search)
+    #expect(nav.gridHost == .library)
   }
 
   @Test("A then B from another tab: B's tab hosts, A's stack is cleared (the A→B→return case)")
@@ -64,13 +64,12 @@ struct WorkspaceNavigationTests {
     #expect(nav.path(for: .shoots).isEmpty)
   }
 
-  @Test("open clears EVERY other tab, including one that never hosted")
+  @Test("open clears every other tab")
   func openClearsEveryOtherTab() {
     let nav = WorkspaceNavigation()
     let spy = RouteSpy()
-    nav.open(folderID: 3, tier: .local, from: .search, via: spy.route)
+    nav.open(folderID: 3, tier: .local, from: .library, via: spy.route)
     nav.open(folderID: 5, tier: .local, from: .shoots, via: spy.route)
-    #expect(nav.path(for: .search).isEmpty)
     #expect(nav.path(for: .library).isEmpty)
     #expect(nav.path(for: .shoots) == [.workspace])
   }
@@ -130,7 +129,7 @@ struct WorkspaceNavigationTests {
   @Test("Regular→Compact without a selection leaves every stack at its root")
   func regularToCompactWithoutASelection() {
     let nav = WorkspaceNavigation()
-    nav.showSelectedShoot(in: .search)
+    nav.showSelectedShoot(in: .shoots)
     nav.applyLayoutChange(from: .regular2, to: .compact, hasSelectedShoot: false)
     #expect(nav.gridHost == nil)
     for tab in CompactTab.allCases {
@@ -169,8 +168,8 @@ struct WorkspaceNavigationTests {
   @Test("endSession returns to the launch state: Shoots, no host, every stack at its root")
   func endSessionResetsToLaunchState() {
     let nav = WorkspaceNavigation()
-    nav.open(folderID: 4, tier: nil, from: .search) { _, _ in }
-    #expect(nav.path(for: .search) == [.workspace])
+    nav.open(folderID: 4, tier: nil, from: .library) { _, _ in }
+    #expect(nav.path(for: .library) == [.workspace])
     nav.activeTab = .library
     nav.endSession()
     #expect(nav.activeTab == .shoots)
@@ -178,41 +177,5 @@ struct WorkspaceNavigationTests {
     for tab in CompactTab.allCases {
       #expect(nav.path(for: tab).isEmpty)
     }
-  }
-}
-
-@MainActor
-@Suite("FolderSearchModel — one query shared across tab switches")
-struct FolderSearchModelTests {
-  @Test("starts empty and keeps what was typed")
-  func keepsItsText() {
-    let search = FolderSearchModel()
-    #expect(search.text.isEmpty)
-    search.text = "Wandern"
-    #expect(search.text == "Wandern")
-  }
-
-  /// WP28 P2 (IMGMGR-449): `RootView` owns ONE `FolderSearchModel` for both shells — the Compact
-  /// Search tab's field and the Regular grid's toolbar search edit the same object — and a width
-  /// change reaches only the navigation. This pins that the transition itself leaves the term
-  /// alone; that both surfaces are bound to this one object is `RootView`'s wiring.
-  @Test("The folder search text survives a Regular → Compact → Regular width change")
-  func folderSearchSurvivesAWidthRoundTrip() {
-    let nav = WorkspaceNavigation()
-    let search = FolderSearchModel()
-    search.text = "wandern"
-    nav.applyLayoutChange(from: .regular3, to: .compact, hasSelectedShoot: true)
-    #expect(search.text == "wandern")
-    nav.applyLayoutChange(from: .compact, to: .regular2, hasSelectedShoot: true)
-    #expect(search.text == "wandern")
-  }
-
-  /// Final audit F4: the previous account's query never carries into the next session.
-  @Test("endSession clears the query")
-  func endSessionClearsTheQuery() {
-    let search = FolderSearchModel()
-    search.text = "wandern"
-    search.endSession()
-    #expect(search.text.isEmpty)
   }
 }

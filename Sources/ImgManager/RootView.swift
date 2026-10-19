@@ -74,8 +74,6 @@ struct RootView: View {
   /// WP31 P2 (IMGMGR-461), plan decision 6: the receiving route of a Triage Handoff; its ticket
   /// fence lets a newer continuation supersede an older one.
   @State private var continuationRouter = TriageContinuationRouter()
-  /// WP28 P1: the folder search text, hoisted so every search surface shares one query.
-  @State private var folderSearch: FolderSearchModel
   /// WP28 P1: the folder tree's load and expansion, shared by every surface that renders it.
   @State private var folderTree: FolderTreeState
   /// The inspector's one flag at every width (WP28 P3, IMGMGR-450: the system `.inspector` on
@@ -162,13 +160,11 @@ struct RootView: View {
     // to end with the session the same way the queue does (see `FolderTreeState.endSession`).
     let folderTree = FolderTreeState()
     _folderTree = State(initialValue: folderTree)
-    // Final audit F4: the Compact tabs' paths and the folder search text are hoisted here too,
-    // so they end with the session at the same boundary, in the same synchronous run.
+    // Final audit F4: the Compact tabs' paths are hoisted here too, so they end with the session
+    // at the same boundary, in the same synchronous run.
     let navigation = WorkspaceNavigation()
     _navigation = State(initialValue: navigation)
-    let folderSearch = FolderSearchModel()
-    _folderSearch = State(initialValue: folderSearch)
-    erasedBox.handler = { [weak queueStore, weak folderTree, weak navigation, weak folderSearch] in
+    erasedBox.handler = { [weak queueStore, weak folderTree, weak navigation] in
       // FENCE FIRST, and synchronously — this closure is `@MainActor`, so nothing suspends
       // before this line. Clearing the file first (as this did) left a window between the two
       // awaits in which a fetch could resume against an un-advanced generation and write the
@@ -176,7 +172,6 @@ struct RootView: View {
       queueStore?.endSession()
       folderTree?.endSession()
       navigation?.endSession()
-      folderSearch?.endSession()
       await queueSnapshotStore.clear()
     }
     _queueStore = State(initialValue: queueStore)
@@ -293,7 +288,7 @@ struct RootView: View {
     Group {
       // WP28 P1 (IMGMGR-448): the Compact layout mode renders the tab shell; every Regular state
       // keeps the split (`regularShell`), unchanged but for the shared `WorkspaceContent`
-      // destination and (WP28 P2) the toolbar search. The
+      // destination (R3-18, IMGMGR-550, removed WP28 P2's toolbar search). The
       // decision is `layoutMode` alone — width and size class, never the device idiom.
       if layoutMode == .compact {
         compactShell
@@ -621,9 +616,8 @@ struct RootView: View {
   /// column's sole content whenever nothing is awaiting review.
   @ViewBuilder
   private var sidebar: some View {
-    // WP28 P2 (IMGMGR-449): narrowed by the grid's toolbar search (`RegularFolderSearch`), the
-    // one search surface at Regular; the tree renders no field of its own.
-    let tree = folderTreeSection(searchQuery: folderSearch.text, onSelect: selectShoot)
+    // R3-18 (IMGMGR-550): no search surface narrows the tree any more.
+    let tree = folderTreeSection(onSelect: selectShoot)
     // The app-level controls on the app-level column: the persistent bar on Regular-2/3 —
     // `LayoutResolver` never hides this column (`.doubleColumn`/`.all`). At Compact the tab shell
     // carries them instead: Account on the Shoots root, the View menu on the Library root.
@@ -658,10 +652,8 @@ struct RootView: View {
     GridStore(service: service, startsWithTapToPick: { settings.tapToPickDefault })
   }
 
-  /// WP28 P2 (IMGMGR-449): the Regular shell — the split view in both of its shapes. The folder
-  /// search is NOT attached here: on the split it also rode the docked loupe's bar, and the loupe
-  /// chrome is out of this phase's scope. `WorkspaceContent` attaches it to the GRID branch alone
-  /// (`RegularFolderSearch`), bound to the same `FolderSearchModel` the sidebar's tree filters by.
+  /// WP28 P2 (IMGMGR-449): the Regular shell — the split view in both of its shapes. R3-18
+  /// (IMGMGR-550) removed its toolbar folder search.
   private var regularShell: some View {
     // One 2-column split (sidebar | workspace) at Regular-2 and Regular-3 alike, in the system
     // default style. WP28 P3 (IMGMGR-450) retired the 3-column branch: the inspector is the
@@ -752,11 +744,12 @@ struct RootView: View {
       })
   }
 
-  /// The folder tree, built in ONE place for every surface that renders it (the split's sidebar,
-  /// the Compact Library and Search tabs). All of them share `folderTree` — one load, one set of
-  /// open rows — and differ only in what narrows the rows and where a row tap lands.
+  /// The folder tree, built in ONE place for every surface that renders it (the split's sidebar
+  /// and the Compact Library tab). Both share `folderTree` — one load, one set of open rows — and
+  /// differ only in where a row tap lands. R3-18 (IMGMGR-550): no search narrows it, so the
+  /// section's query is always empty.
   private func folderTreeSection(
-    searchQuery: String, onSelect: @escaping (Int, GridSourceTier?) -> Void
+    onSelect: @escaping (Int, GridSourceTier?) -> Void
   ) -> FolderTreeSection {
     FolderTreeSection(
       // The same loader the rest of the app's covers come through (WP16 P5): one cache,
@@ -785,21 +778,20 @@ struct RootView: View {
       // `selectShoot(folderID:sourceTier:)` records, and it is the only notion of "the open
       // folder" that outlives both a Compact pop-back (which clears the List's selection)
       // and the column-count swap this very view performs (which destroys the tree's state).
-      openedFolderID: gridStore.query.folderID, treeState: folderTree, searchQuery: searchQuery,
+      openedFolderID: gridStore.query.folderID, treeState: folderTree, searchQuery: "",
       onSelect: { folderID, sourceTier in onSelect(folderID, sourceTier) })
   }
 
   // MARK: - The Compact shell (WP28 P1, IMGMGR-448)
 
-  /// `layoutMode == .compact`'s whole chrome: three tabs over the ONE workspace destination. A
+  /// `layoutMode == .compact`'s whole chrome: two tabs over the ONE workspace destination. A
   /// Back out of the hosting tab's grid clears the List selection, exactly as the collapsed
   /// split's pop-back did — the open folder's highlight survives through `openedFolderID`.
   private var compactShell: some View {
     CompactShell(
-      navigation: navigation, search: folderSearch,
-      badgeCount: CompactTab.badgeCount(summaries: queueStore.summaries),
+      navigation: navigation, badgeCount: CompactTab.badgeCount(summaries: queueStore.summaries),
       onHostPopped: { selectedFolderID = nil }, shoots: shootsRoot, library: libraryRoot,
-      searchRoot: searchRoot, destination: contentColumn)
+      destination: contentColumn)
   }
 
   /// The Shoots tab: Needs review, then Recent. Account's ONE Compact home (p4128 R2-Inventory)
@@ -818,22 +810,11 @@ struct RootView: View {
   @ViewBuilder
   private var libraryRoot: some View {
     let open = openShoot(from: .library)
-    let tree = folderTreeSection(searchQuery: "", onSelect: open)
+    let tree = folderTreeSection(onSelect: open)
     queueHome(showsNeedsReview: false, onSelectShoot: open, tree: tree)
       .toolbar {
         folderTreeViewMenuItem
       }
-  }
-
-  /// The Search tab: the SAME tree, narrowed by the tab bar's search field (`folderSearch`), with
-  /// no inline field of its own.
-  private var searchRoot: some View {
-    List(selection: $selectedFolderID) {
-      Section {
-        folderTreeSection(searchQuery: folderSearch.text, onSelect: openShoot(from: .search))
-      }
-    }
-    .navigationTitle(CompactTab.search.title)
   }
 
   /// IMGMGR-362 (WP21 P3), the plan's Compact REACHABILITY answer, verified in the code rather
@@ -1053,8 +1034,8 @@ struct RootView: View {
     let breadcrumb = currentBreadcrumb
     return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
-      folderSearch: folderSearch, queueStore: queueStore, breadcrumb: breadcrumb,
-      showInspector: $showInspector, columnVisibility: $columnVisibility)
+      queueStore: queueStore, breadcrumb: breadcrumb, showInspector: $showInspector,
+      columnVisibility: $columnVisibility)
   }
 }
 

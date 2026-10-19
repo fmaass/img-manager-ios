@@ -9,7 +9,7 @@ enum WorkspaceRoute: Hashable, Sendable {
 /// WP28 P1 (IMGMGR-448): the Compact shell's navigation state, and the explicit ownership rule
 /// for the ONE `GridStore` every tab shares.
 ///
-/// Three tabs each keep their own stack, but there is one grid store, so at most one stack may
+/// The tabs each keep their own stack, but there is one grid store, so at most one stack may
 /// show the workspace at a time: `gridHost` names it. Opening a shoot from any tab routes through
 /// the caller's single `selectShoot` path, makes that tab the host and CLEARS every other tab's
 /// path — so a stack retained behind another tab can never be showing a different shoot's store
@@ -84,22 +84,5 @@ final class WorkspaceNavigation {
     activeTab = .shoots
     gridHost = nil
     paths = [:]
-  }
-}
-
-/// WP28 P1 (IMGMGR-448), plan Decision 5: the folder search text, hoisted out of
-/// `FolderTreeSection` so one query serves whichever surface renders the field — the Compact
-/// Search tab's `.searchable` today, the Regular shell's toolbar search in P2 — and survives a
-/// tab switch. It searches the already-loaded folder NAMES, in memory, exactly as the inline
-/// field it replaces did.
-@MainActor
-@Observable
-final class FolderSearchModel {
-  var text = ""
-
-  /// The session boundary, beside `WorkspaceNavigation.endSession()`: the previous account's
-  /// query names ITS folders, so it never carries into the next session.
-  func endSession() {
-    text = ""
   }
 }

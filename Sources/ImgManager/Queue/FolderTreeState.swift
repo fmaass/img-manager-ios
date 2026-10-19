@@ -2,8 +2,8 @@ import Foundation
 import Observation
 
 /// WP28 P1 (IMGMGR-448): the folder tree's view state, hoisted out of `FolderTreeSection` so the
-/// surfaces that render the tree share it — the split's sidebar at Regular, and at Compact both
-/// the Library tab and the Search tab (plan: "one shared tree model, so loading and expansion are
+/// surfaces that render the tree share it — the split's sidebar at Regular and the Library tab at
+/// Compact (plan: "one shared tree model, so loading and expansion are
 /// shared with Library"). `FolderTreeModel` stays what it is, the pure functions that turn this
 /// state into rows; this object only holds what those functions read.
 ///
@@ -56,7 +56,7 @@ final class FolderTreeState {
   /// IMGMGR-462 (WP31 P3): opens `compactLaunchTiers` ONCE per session, at Compact, on the first
   /// published load that answered for Incoming. Additive (it never closes anything) and one-shot:
   /// after it ran, the reader's own disclosure choices stand — a tier closed by hand stays closed
-  /// through a pull-to-refresh, a second mounted section (the Search tab shares this state) and a
+  /// through a pull-to-refresh, a second mounted section sharing this state and a
   /// relaunch of the load. Regular is untouched: the split's sidebar launches exactly as before,
   /// and a Regular load does not consume the one-shot, so a later Compact mount (an iPad window
   /// narrowed into Slide Over) still opens the way the phone does.

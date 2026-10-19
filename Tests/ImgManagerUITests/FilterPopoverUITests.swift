@@ -236,6 +236,22 @@ final class FilterPopoverUITests: OrientationPinnedUITestCase {
       "The popover offers only one camera body — the section is not reading the response's own "
         + "value list.")
 
+    // R3-18 (IMGMGR-550): the Keyword row — the fixture's own keywords, enabled, with counts,
+    // and no synthetic overflow notice under them.
+    let landscape = row(app, "keyword", "landscape")
+    XCTAssertTrue(
+      landscape.waitForExistence(timeout: 5),
+      "The popover has no Keyword row for the fixture's own keyword (R3-18).")
+    XCTAssertTrue(landscape.isEnabled, "A Keyword row with results is not tappable.")
+    XCTAssertFalse(
+      row(app, "keyword", "more").exists,
+      "The Keyword row shows an overflow notice; the fixture has no keyword named 'more'.")
+    XCTAssertEqual(count(of: landscape), 7, "The Keyword row does not state the server's count.")
+    for value in ["portrait", "street"] {
+      XCTAssertTrue(
+        row(app, "keyword", value).exists, "The Keyword row `\(value)` is not in the popover.")
+    }
+
     // The stated cap's notice row (diff-gate B1). It is asserted here by ABSENCE and not added to
     // the `declared` addressability set above, which asserts presence: the DEBUG fixture answers
     // `camera` with two bodies — inside `FilterPopoverModel.cameraValueLimit` — so nothing was

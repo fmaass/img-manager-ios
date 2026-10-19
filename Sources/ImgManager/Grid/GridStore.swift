@@ -1021,6 +1021,15 @@ final class GridStore {
   /// paging generation fence), and a failed fetch leaves the last good counts standing rather
   /// than blanking the tab — absence renders as absence, never as zeros.
   func refreshFacets() async {
+    // R3-18 / plan Decision 7 (IMGMGR-550): never a bare `/api/facets` — unscoped, it cancels at
+    // 30 s in production (IMGMGR-384) — and never the previous folder's counts under no folder.
+    // A held scoped response is dropped by the fetch's own `self.query == requested` fence.
+    guard query.folderID != nil else {
+      facets = nil
+      facetsIdentity = nil
+      facetsRefresh = nil
+      return
+    }
     await refreshDerived(
       isSatisfied: facetsIdentity == query && facets != nil,
       inFlight: { self.facetsRefresh },

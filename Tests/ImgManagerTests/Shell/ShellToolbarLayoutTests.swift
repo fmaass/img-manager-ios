@@ -22,11 +22,12 @@ struct ShellToolbarLayoutTests {
     "gridMoreMenu",
   ]
 
-  @Test("Regular: Info, then Search · Select · Filter · Arrange · More, in that order")
+  /// R3-18 (IMGMGR-550): the system search left the bar; the rest keeps p4128's order.
+  @Test("Regular: Info, then Select · Filter · Arrange · More, in that order")
   func regularOrderIsTheSpecOrder() {
     #expect(
       ShellToolbarLayout.regularGridBar == [
-        .info, .search, .select, .filter, .arrange, .more,
+        .info, .select, .filter, .arrange, .more,
       ])
     for mode in [LayoutMode.regular2, .regular3] {
       let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
@@ -167,33 +168,28 @@ struct ShellToolbarLayoutTests {
     #expect(store.isTriagePresented == false, "Triage opened on an empty scope")
   }
 
-  @Test("The identifiers are distinct and are the shipped ones; search has none of the app's")
+  @Test("The identifiers are distinct and are the shipped ones, one per control")
   func identifiersAreTheShippedOnes() {
     let identifiers = ShellToolbarControl.allCases.compactMap(\.accessibilityIdentifier)
     #expect(Set(identifiers).count == identifiers.count)
     #expect(
       Set(identifiers)
         == Set(Self.regularIdentifiers + ["gridTriageButton"]))
-    #expect(ShellToolbarControl.search.accessibilityIdentifier == nil)
+    #expect(identifiers.count == ShellToolbarControl.allCases.count)
   }
 
-  @Test("The rendered order is the declared order; only the search item leaves the groups")
-  func renderedOrderIsTheDeclaredOrder() {
+  /// IMGMGR-390: the OS folds a crowded bar from its trailing end, so Info — the escape hatch
+  /// that collapses the Regular-3 inspector — must lead every bar the chrome control is on. Since
+  /// R3-18 (IMGMGR-550) `ShellToolbarGroup` renders the list as one group, in this order.
+  @Test("Info leads every bar that carries it, at every width")
+  func infoLeadsEveryBar() {
     for mode in [LayoutMode.compact, .regular2, .regular3] {
-      for chrome in [true, false] {
-        let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: chrome)
-        let runs = ShellToolbarRuns(bar)
-        #expect(runs.flattened == bar, "At \(mode) the bar renders \(runs.flattened), not \(bar)")
-        let grouped = runs.leading + runs.trailing
-        #expect(!grouped.contains(.search), "The search item rides a group at \(mode)")
-      }
+      let bar = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: true)
+      #expect(bar.first == .info, "At \(mode) the bar starts with \(String(describing: bar.first))")
+      let without = ShellToolbarLayout.gridBar(for: mode, inspectorUsesChromeControl: false)
+      #expect(!without.contains(.info), "At \(mode) Info stays without the chrome control")
+      #expect(without == bar.filter { $0 != .info })
     }
-    let regular = ShellToolbarRuns(ShellToolbarLayout.regularGridBar)
-    #expect(regular.leading == [.info])
-    #expect(regular.search)
-    #expect(regular.trailing == [.select, .filter, .arrange, .more])
-    #expect(ShellToolbarRuns([]).flattened == [])
-    #expect(ShellToolbarRuns([.info, .select]).trailing == [])
   }
 
   @Test("The Regular sidebar's section names and identifiers")

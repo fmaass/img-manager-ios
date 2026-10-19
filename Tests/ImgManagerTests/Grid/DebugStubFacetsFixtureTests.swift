@@ -118,5 +118,15 @@ struct DebugStubFacetsFixtureTests {
     func totalMatchesTheFixturePage() {
       #expect(fixture().total == 12)
     }
+
+    /// R3-18 (IMGMGR-550): the Keyword row's UI leg reads these. In the server's own order —
+    /// count DESC, then keyword — including one tie, so the popover's count order is exercised on
+    /// the real surface and not only in the model tests.
+    @Test("Keyword arrives count-descending, with a tie, in the server's order")
+    func keywordArrivesCountDescendingWithATie() {
+      let keyword = fixture().keyword ?? []
+      #expect(keyword.map(\.value) == ["landscape", "portrait", "street"])
+      #expect(keyword.map(\.count) == [7, 5, 5])
+    }
   #endif
 }

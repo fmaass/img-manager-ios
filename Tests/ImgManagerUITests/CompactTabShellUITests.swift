@@ -1,8 +1,8 @@
 import XCTest
 
-/// WP28 P1 (IMGMGR-448) acceptance: the Compact shell — three tabs, Shoots · Library · Search,
-/// with the Needs-review badge on Shoots, one grid host across the tabs, search in the tab bar and
-/// Account's one Compact home on the Shoots root.
+/// WP28 P1 (IMGMGR-448) acceptance: the Compact shell — two tabs, Shoots · Library (R3-18,
+/// IMGMGR-550, removed the Search tab), with the Needs-review badge on Shoots, one grid host
+/// across the tabs and Account's one Compact home on the Shoots root.
 ///
 /// Compact is a WIDTH, read off the screen (`rendersCompactShell`), never the device idiom. On the
 /// iPad destination the Regular split renders instead: (a) asserts that no tab bar exists there,
@@ -14,11 +14,11 @@ import XCTest
 /// grid tile's identifier name its folder (`gridTile-<folderID * 1000 + n>`).
 final class CompactTabShellUITests: OrientationPinnedUITestCase {
 
-  private static let tabTitles = ["Shoots", "Library", "Search"]
+  private static let tabTitles = ["Shoots", "Library"]
 
-  /// (a) Exactly three tab buttons in the system tab bar — Shoots, Library, Search, in that order.
+  /// (a) Exactly two tab buttons in the system tab bar — Shoots, Library, in that order (R3-18).
   /// Read by LABEL: the `tab.*` identifiers on the tab labels never reach the system tab button.
-  func testTheCompactShellHasExactlyThreeTabs() throws {
+  func testTheCompactShellHasExactlyTwoTabs() throws {
     let app = launch()
     let tabBar = app.tabBars.firstMatch
 
@@ -38,7 +38,7 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
     if ordered != Self.tabTitles { recordTree(tabBar, named: "tab bar") }
     XCTAssertEqual(
       ordered, Self.tabTitles,
-      "The Compact tab bar is not exactly Shoots, Library and Search, in that order.")
+      "The Compact tab bar is not exactly Shoots and Library, in that order.")
   }
 
   /// (b) DIAGNOSTIC, not the badge: the Shoots tab's content root reports the Needs-review count,
@@ -150,39 +150,10 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
       "The Library grid shows photographs of another folder: \(tiles.sorted()).")
   }
 
-  /// (e) The Search tab filters the shared tree by the tab bar's field and opens the grid.
-  func testTheSearchTabFiltersTheTreeAndOpensTheGrid() throws {
-    let app = launch(extraArguments: ["-UITestPerFolderGrid"])
-    try skipUnlessCompact(app)
-
-    selectCompactTab(app, title: "Search")
-    let field = app.searchFields.firstMatch
-    XCTAssertTrue(field.waitForExistence(timeout: 15), "The Search tab carries no search field.")
-    XCTAssertFalse(
-      app.textFields["folderTreeSearchField"].exists,
-      "The inline folder search field rendered at Compact beside the Search tab's field.")
-    let name = "The Search tab's field (`app.searchFields.firstMatch`)"
-    guard focusForTyping(field, named: name) else { return }
-    field.typeText("Wandern")
-
-    let match = element(app, "folderRow-3")
-    XCTAssertTrue(
-      match.waitForExistence(timeout: 15), "The search kept no row for the matching folder.")
-    XCTAssertTrue(
-      element(app, "folderRow-1").waitForNonExistence(timeout: 10),
-      "A folder whose name does not match stayed in the searched tree.")
-    attachScreenshot(named: "IMGMGR-448-search-tab-filtered")
-
-    match.tap()
-    XCTAssertTrue(
-      element(app, "gridTile-3001").waitForExistence(timeout: 30),
-      "Tapping the search result did not open folder 3's grid.")
-  }
-
-  /// (f) Account is reachable from the Shoots root — and the Library root does not carry a second
-  /// (g) Plan D3: the search field is drawn for the Search tab only. Shoots and Library render
-  /// their content (each root's own row is the positive control) with no search field at all.
-  func testOnlyTheSearchTabCarriesASearchField() throws {
+  /// (g) R3-18 (IMGMGR-550): no tab carries a search field and the tab bar has no Search button.
+  /// Shoots and Library render their content first (each root's own row is the positive
+  /// control), so the absences cannot be a shell that never built.
+  func testNoCompactTabCarriesASearchField() throws {
     let app = launch()
     try skipUnlessCompact(app)
 
@@ -190,19 +161,17 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
       element(app, "needsReviewRow-1").waitForExistence(timeout: 30),
       "The Shoots root never rendered, so the absence below would prove nothing.")
     XCTAssertEqual(app.searchFields.count, 0, "The Shoots tab draws a search field.")
+    XCTAssertFalse(
+      app.tabBars.firstMatch.buttons["Search"].exists, "The tab bar still has a Search tab.")
 
     selectCompactTab(app, title: "Library")
     XCTAssertTrue(
       element(app, "folderTreeViewMenu").waitForExistence(timeout: 15),
       "The Library root never rendered, so the absence below would prove nothing.")
     XCTAssertEqual(app.searchFields.count, 0, "The Library tab draws a search field.")
-
-    selectCompactTab(app, title: "Search")
-    XCTAssertTrue(
-      app.searchFields.firstMatch.waitForExistence(timeout: 15),
-      "The Search tab carries no search field.")
   }
 
+  /// (f) Account is reachable from the Shoots root — and the Library root does not carry a second
   /// one: the Shoots root is its ONE Compact home.
   func testAccountIsReachableFromTheShootsRoot() throws {
     let app = launch()

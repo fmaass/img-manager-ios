@@ -766,7 +766,7 @@ struct GridOptionsRow: View {
     // title and icon (the bordered row style shows both), so it is chrome, never a gesture.
     case .triage: GridTriageControl(store: store)
     // Not options-row members (`ShellToolbarLayout.compactOptionsRow`).
-    case .info, .search, .select, .more: EmptyView()
+    case .info, .select, .more: EmptyView()
     }
   }
 }

@@ -290,13 +290,15 @@ struct FilterPopoverModelTests {
       exactRows?.rows.contains(where: { $0.value == FilterPopoverModel.overflowValue }) == false)
   }
 
-  @Test("The declared sections are Rating, Mark, Edited, Type and Camera, in the owner's order")
+  @Test("The declared sections are Rating, Mark, Edited, Type, Camera and Keyword, in order")
   func theDeclaredSectionSet() {
     #expect(
-      FilterPopoverModel.sections.map(\.field) == [.rating, .mark, .hasMaster, .ext, .camera])
+      FilterPopoverModel.sections.map(\.field) == [
+        .rating, .mark, .hasMaster, .ext, .camera, .keyword,
+      ])
     #expect(
       FilterPopoverModel.sections.map(\.title) == [
-        "Rating", "Mark", "Edited", "Type", "Camera",
+        "Rating", "Mark", "Edited", "Type", "Camera", "Keyword",
       ])
     let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
     #expect(row(live, .hasMaster, "true")?.title == "Edited in Lightroom")

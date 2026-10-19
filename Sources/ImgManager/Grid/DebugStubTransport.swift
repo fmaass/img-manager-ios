@@ -558,6 +558,11 @@
     /// over this exact response, so a later edit that quietly drops the zero-count row — and with
     /// it the popover's zero-disabled UI coverage — fails a named unit test instead of silently
     /// making a UI leg vacuous.
+    ///
+    /// R3-18 (IMGMGR-550) adds `keyword`, so the popover's Keyword row renders enabled rows in UI
+    /// runs. Shaped like `_keyword_facet`'s answer — count DESC, then keyword, with one tie — and,
+    /// unlike the other dimensions, NOT a partition of the twelve: a photograph carries several
+    /// keywords or none, and the server counts distinct images per keyword.
     static func fixtureFacets() -> Components.Schemas.ImageFacets {
       Components.Schemas.ImageFacets(
         camera: [
@@ -566,6 +571,10 @@
         ],
         ext: [.init(count: 9, value: "jpg"), .init(count: 3, value: "arw")],
         hasMaster: [.init(count: 5, value: "true"), .init(count: 7, value: "false")],
+        keyword: [
+          .init(count: 7, value: "landscape"), .init(count: 5, value: "portrait"),
+          .init(count: 5, value: "street"),
+        ],
         mark: [
           .init(count: 4, value: "pick"), .init(count: 0, value: "dislike"),
           .init(count: 8, value: "none"),

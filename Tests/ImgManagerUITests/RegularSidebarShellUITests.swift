@@ -1,13 +1,13 @@
 import UIKit
 import XCTest
 
-/// WP28 P2 (IMGMGR-449) acceptance (AC3): the Regular shell's sidebar, toolbar search and grid
-/// bar.
+/// WP28 P2 (IMGMGR-449) acceptance (AC3): the Regular shell's sidebar and grid bar.
 ///
 /// (a) the sidebar names two sections — "Shoots" above the pinned Needs-review rows, "Library"
 ///     above the tree's tier rows;
 /// (b) nothing in the app is a navigation rail (no identifier or label contains "rail");
-/// (c) the toolbar search is a button that expands to a field, and typing filters the tree;
+/// (c) removed by R3-18 (IMGMGR-550) with the toolbar search itself; its absence is
+///     `GridToolbarUITests.testTheRegularShellCarriesNoSearch`;
 /// (d) moved to `GridToolbarUITests` by WP29 P1 (IMGMGR-452): the six named bar screenshots and
 ///     the collapsed all-hittable contract now ride the bar's own acceptance tests, beside the
 ///     order, cluster and title assertions the new bar adds.
@@ -92,85 +92,7 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
     assertNoRailElement(in: app, context: "Regular-3 collapsed")
   }
 
-  // MARK: - (c) Toolbar search
-
-  func testTheToolbarSearchExpandsToAFieldAndTypingFiltersTheTree() throws {
-    let app = try launched(.regular3, home: true)
-
-    // The inline field is gone: the toolbar search is the one search surface at Regular.
-    XCTAssertFalse(
-      app.textFields["folderTreeSearchField"].exists,
-      "The tree still renders its inline search field beside the toolbar search.")
-    // Positive control for the filter below: the row it must remove is there before it runs.
-    let tier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
-    XCTAssertTrue(tier.waitForExistence(timeout: 15), "The Incoming tier never appeared.")
-    let rootShoot = app.descendants(matching: .any)["folderRow-1"].firstMatch
-    if !rootShoot.exists { tier.tap() }
-    XCTAssertTrue(
-      rootShoot.waitForExistence(timeout: 10),
-      "Positive control failed: Incoming's root shoot (folder 1) is not in the tree.")
-
-    guard let field = expandRegularToolbarSearch(app, context: "Regular-3 collapsed (c)") else {
-      XCTFail(
-        "The toolbar search did not expand to a field: no hittable Search button and no search "
-          + "field took a tap (`RootView.regularShell`).")
-      return
-    }
-
-    // No return: submitting unfocuses the minimised field (see `clearFocusedSearchField`).
-    field.typeText("zzzz-no-such-folder")
-    let noMatches = app.descendants(matching: .any)["folderTreeNoMatches"].firstMatch
-    XCTAssertTrue(
-      noMatches.waitForExistence(timeout: 10),
-      "A search matching nothing produced no empty state — the sidebar tree is not filtered by "
-        + "the toolbar search.")
-
-    clearFocusedSearchField(field)
-    XCTAssertTrue(searchFieldIsCleared(field), "The no-match term was not cleared.")
-    field.typeText("wandern")
-    XCTAssertTrue(
-      rootShoot.waitForNonExistence(timeout: 10),
-      "A shoot whose name does not contain the term stayed in the tree.")
-    let match = app.descendants(matching: .any)["folderRow-3"].firstMatch
-    XCTAssertTrue(
-      match.waitForExistence(timeout: 10), "The matching shoot is not in the filtered tree.")
-    attach(named: "IMGMGR-449-toolbar-search-filters-tree")
-  }
-
-  // MARK: - The docked loupe keeps its chrome
-
-  /// The toolbar search rides the GRID's bar, never the docked loupe's (the loupe chrome is out of
-  /// P2's scope): absent while the loupe is docked in the grid's place, back once it closes.
-  func testTheToolbarSearchIsAbsentOverTheDockedLoupeAndBackAfterIt() throws {
-    let app = try launched(.regular3)
-    let search = regularToolbarSearchButton(app)
-    XCTAssertTrue(
-      search.waitForExistence(timeout: 10),
-      "Positive control failed: the grid's bar carries no toolbar search before the loupe opens.")
-
-    let close = app.buttons["loupeBack"]
-    let tile = app.descendants(matching: .any).matching(identifier: "gridTile-1").firstMatch
-    XCTAssertTrue(tile.waitForExistence(timeout: 15), "The fixture's first tile never appeared.")
-    // `GridStore.tapTile`: a tap on an unfocused tile moves focus, a tap on the focused one opens.
-    for _ in 0..<3 where !close.exists {
-      tile.tap()
-      _ = close.waitForExistence(timeout: 3)
-    }
-    XCTAssertTrue(close.exists, "Tapping gridTile-1 never opened the docked loupe.")
-    XCTAssertFalse(search.exists, "A toolbar search control shows over the docked loupe.")
-    XCTAssertFalse(
-      app.searchFields.firstMatch.exists, "A search field shows over the docked loupe.")
-    attach(named: "IMGMGR-449-docked-loupe-no-search")
-
-    close.tap()
-    XCTAssertTrue(
-      close.waitForNonExistence(timeout: 10), "The docked loupe did not close from loupeBack.")
-    XCTAssertTrue(
-      search.waitForExistence(timeout: 10),
-      "The toolbar search did not come back on the grid's bar after the loupe closed.")
-  }
-
-  // MARK: - (e) IMGMGR-478: a hidden sidebar has a way back, and is remembered
+  // MARK: - (e) The hidden sidebar's way back
 
   func testRegular3HiddenSidebarComesBackFromTheGridBarAndSurvivesARelaunch() {
     assertHiddenSidebarRoundTrip(.regular3)

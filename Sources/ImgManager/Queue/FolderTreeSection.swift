@@ -88,15 +88,14 @@ struct FolderTreeSection: View {
   let openedFolderID: Int?
   /// WP28 P1 (IMGMGR-448): the tree's load and the reader's expansion, hoisted out of this view's
   /// `@State` into one `RootView`-owned object, so every surface that renders the tree — the
-  /// split's sidebar, the Compact Library tab and the Compact Search tab — shares one answer and
+  /// split's sidebar and the Compact Library tab — shares one answer and
   /// one set of open rows, and a column swap no longer throws either away.
   @Bindable var treeState: FolderTreeState
-  /// What the rows are narrowed by (`FolderSearchModel.text` where a search surface exists, ""
-  /// for the Compact Library tab, which is the unfiltered tree). WP28 P2 (IMGMGR-449): the tree
-  /// renders no search field of its own — the Compact Search tab's `.searchable` and the Regular
-  /// split's toolbar search are the two surfaces, one per shell, over one query (plan Decision 5).
-  /// Either way it searches the already-loaded folder NAMES, in memory: never `GridImagesQuery.q`
-  /// (an image-level browse filter, a different question) and never a second server call.
+  /// What the rows are narrowed by. R3-18 (IMGMGR-550) removed both search surfaces (the Compact
+  /// Search tab and the Regular toolbar search), so every caller passes "" today; the matching
+  /// stays because it is tested model behaviour and costs nothing while empty. It searches the
+  /// already-loaded folder NAMES, in memory: never `GridImagesQuery.q` (an image-level browse
+  /// filter, a different question) and never a second server call.
   let searchQuery: String
   let onSelect: (Int, GridSourceTier) -> Void
 

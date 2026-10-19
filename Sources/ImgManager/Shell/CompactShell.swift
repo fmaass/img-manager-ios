@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// WP28 P1 (IMGMGR-448): the Compact shell (p4128 D3) — three tabs, Shoots · Library · Search,
-/// with search in the tab bar, rendered only when `layoutMode == .compact`.
+/// WP28 P1 (IMGMGR-448): the Compact shell (p4128 D3) — two tabs, Shoots · Library, rendered only
+/// when `layoutMode == .compact`. R3-18 (IMGMGR-550) removed the Search tab and its field.
 ///
-/// System components only (ADR-N1): `TabView` + `Tab`, a `.search`-role tab whose own stack
-/// carries `.searchable` (the system's bottom-search composition), `.badge` and
-/// `.tabBarMinimizeBehavior`. Nothing here draws glass of its own.
+/// System components only (ADR-N1): `TabView` + `Tab`, `.badge` and `.tabBarMinimizeBehavior`.
+/// Nothing here draws glass of its own.
 ///
 /// Each tab is a `NavigationStack` over `WorkspaceNavigation`'s path for that tab, and its ONLY
 /// destination is the shared workspace — rendered solely in the tab `WorkspaceNavigation` names
@@ -13,16 +12,14 @@ import SwiftUI
 ///
 /// Generic over its roots so `RootView` keeps owning every store, closure and toolbar item they
 /// need; this type owns only the arrangement.
-struct CompactShell<Shoots: View, Library: View, SearchRoot: View, Destination: View>: View {
+struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
   @Bindable var navigation: WorkspaceNavigation
-  @Bindable var search: FolderSearchModel
   /// `CompactTab.badgeCount(summaries:)` — 0 renders no badge.
   let badgeCount: Int
   /// A Back out of the grid in the hosting tab.
   let onHostPopped: () -> Void
   let shoots: Shoots
   let library: Library
-  let searchRoot: SearchRoot
   let destination: Destination
 
   var body: some View {
@@ -37,14 +34,6 @@ struct CompactShell<Shoots: View, Library: View, SearchRoot: View, Destination: 
         stack(for: .library, root: library)
       } label: {
         tabLabel(.library)
-      }
-      Tab(value: CompactTab.search, role: .search) {
-        // On the Search tab's own stack, never the `TabView`: applied there, the system also drew
-        // the field in the Shoots and Library navigation bars, where it filtered nothing (D3).
-        stack(for: .search, root: searchRoot)
-          .searchable(text: $search.text, prompt: "Search folders")
-      } label: {
-        tabLabel(.search)
       }
     }
     // iPhone behaviour; the system ignores it where the tab bar does not minimise.

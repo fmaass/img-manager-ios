@@ -2,15 +2,12 @@ import SwiftUI
 
 /// WP28 P2 (IMGMGR-449): the controls the grid's chrome carries — the grid view options, the
 /// inspector's persistent chrome control (IMGMGR-338 calls them host chrome) and, since WP29 P1
-/// (IMGMGR-452), the system search, Select and More. Each case names the accessibility
-/// identifier its control already ships with; none is renamed.
+/// (IMGMGR-452), Select and More. R3-18 (IMGMGR-550) removed the system search item. Each case
+/// names the accessibility identifier its control already ships with; none is renamed.
 enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
   /// The inspector's Info button. Root-owned: `WorkspaceContent` builds it, because what it
   /// toggles is the inspector topology, which the grid does not know about.
   case info
-  /// WP29 P1: the SYSTEM search item (`DefaultToolbarItem(kind: .search)`), placed by the app
-  /// among its own items. The search itself is unchanged: WP28's folder-tree search.
-  case search
   /// WP29 P1: Select, moved out of the More menu onto the bar. Same identifier, same action.
   case select
   /// WP16 P3 (IMGMGR-295), decision 1: filtering reaches the grid's own chrome.
@@ -25,11 +22,10 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
   /// home is Compact's options row (IMGMGR-462), never a bar.
   case triage
 
-  /// Nil for the system search item, which carries no identifier of the app's.
+  /// Every control ships an identifier of the app's (optional for a future system item).
   var accessibilityIdentifier: String? {
     switch self {
     case .info: "inspectorChromeButton"
-    case .search: nil
     case .select: "gridSelectCommand"
     case .filter: "gridFilterControl"
     case .arrange: GridArrangeControl.accessibilityIdentifier
@@ -49,16 +45,17 @@ enum ShellToolbarControl: CaseIterable, Hashable, Sendable {
 /// - Info leads. While the Regular-3 inspector is expanded the grid is a narrow column and the
 ///   fold takes several items; Info is the escape hatch that collapses it, so the fold must never
 ///   reach it (IMGMGR-390, `Regular3CollapsedChromeUITests`).
-/// - WP29 P1 (IMGMGR-452): then the spec's trailing group, in p4128's order — Search · Select ·
-///   Filter · Arrange · More. WP29 P2 (IMGMGR-453) put Arrange in its slot.
+/// - WP29 P1 (IMGMGR-452): then the spec's trailing group, in p4128's order — Select · Filter ·
+///   Arrange · More. WP29 P2 (IMGMGR-453) put Arrange in its slot; R3-18 (IMGMGR-550) removed
+///   the system search that stood before Select.
 enum ShellToolbarLayout {
   /// Every Regular width, both inspector states (`WorkspaceChromeHost.gridColumn`).
   static let regularGridBar: [ShellToolbarControl] = [
-    .info, .search, .select, .filter, .arrange, .more,
+    .info, .select, .filter, .arrange, .more,
   ]
 
-  /// WP29 P1: Compact's navigation bar — Info, and Select beside it. Search is the Search tab
-  /// there and More stays on the bottom action bar.
+  /// WP29 P1: Compact's navigation bar — Info, and Select beside it. More stays on the bottom
+  /// action bar.
   ///
   /// IMGMGR-462 (WP31 P3): back to its pre-WP31 members. WP31 P1 had Triage leading this bar,
   /// and on iOS 26 a long title (a shoot's tree name, "2026-08-27 — Stub Shoot") pushed all
@@ -92,45 +89,17 @@ enum ShellToolbarLayout {
   }
 }
 
-/// WP29 P1 (IMGMGR-452): a `ShellToolbarLayout` list cut where the toolbar renders it. The
-/// system search is toolbar content (`DefaultToolbarItem`), never a view inside a group, so the
-/// app's controls ride the two group runs on either side of it. Pure, so a unit test pins that
-/// the rendered order IS the declared order (`flattened == controls`) at every width.
+/// Renders a `ShellToolbarLayout` list as ONE `ToolbarItemGroup`, in the declared order — Info
+/// first, so the OS's fold from the trailing end never reaches it (IMGMGR-390). Until R3-18
+/// (IMGMGR-550) the list was cut into two groups around the system search item
+/// (`DefaultToolbarItem(kind: .search)`); with the search gone there is nothing to cut around.
+/// System components only, no background of its own (ADR-N1).
 ///
-/// Filter rides the trailing run. The plan's own `ToolbarItem` for it (to carry a count badge)
-/// was built and gated on c96429a: on iPad the standalone item never re-rendered after a filter
-/// landed (its value stayed "Off" — `FilterPopoverUITests`, `GridToolbarUITests` (d)), a
-/// regression of shipped behaviour. The badge is UNRESOLVED per the plan's fallback (the dot
-/// stays); SDK 26.5 has no `ToolbarItem` badge at all (`SDKSurfaceProbe`).
-struct ShellToolbarRuns: Equatable, Sendable {
-  /// The app's controls before the search item — Info at every width.
-  private(set) var leading: [ShellToolbarControl] = []
-  private(set) var search = false
-  /// After the search item — Select, Filter, Arrange and More at Regular.
-  private(set) var trailing: [ShellToolbarControl] = []
-
-  init(_ controls: [ShellToolbarControl]) {
-    for control in controls {
-      if control == .search {
-        search = true
-      } else if search {
-        trailing.append(control)
-      } else {
-        leading.append(control)
-      }
-    }
-  }
-
-  /// The order the toolbar renders: leading group, search item, trailing group.
-  var flattened: [ShellToolbarControl] {
-    leading + (search ? [.search] : []) + trailing
-  }
-}
-
-/// Renders a `ShellToolbarLayout` list as `ShellToolbarRuns` cuts it: the app's runs are
-/// `ToolbarItemGroup`s and the system search a `DefaultToolbarItem` — the declared order either
-/// way. Whether the system draws them as one glass cluster is decided by the gate's screenshots,
-/// not here: system components only, no background of its own (ADR-N1).
+/// Filter rides the group. The plan's own `ToolbarItem` for it (to carry a count badge) was built
+/// and gated on c96429a: on iPad the standalone item never re-rendered after a filter landed (its
+/// value stayed "Off" — `FilterPopoverUITests`, `GridToolbarUITests` (d)), a regression of
+/// shipped behaviour. The badge is UNRESOLVED per the plan's fallback (the dot stays); SDK 26.5
+/// has no `ToolbarItem` badge at all (`SDKSurfaceProbe`).
 struct ShellToolbarGroup<Info: View>: ToolbarContent {
   let controls: [ShellToolbarControl]
   let store: GridStore
@@ -139,22 +108,10 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
   /// WP29 P1: handed to the bar's More, whose "Open in New Window" row needs it.
   let openShootWindow: ShootWindowOpener
 
-  private var runs: ShellToolbarRuns { ShellToolbarRuns(controls) }
-
   var body: some ToolbarContent {
     ToolbarItemGroup(placement: .primaryAction) {
-      ForEach(runs.leading, id: \.self) { control in
+      ForEach(controls, id: \.self) { control in
         rendered(control)
-      }
-    }
-    if runs.search {
-      DefaultToolbarItem(kind: .search, placement: .primaryAction)
-    }
-    if !runs.trailing.isEmpty {
-      ToolbarItemGroup(placement: .primaryAction) {
-        ForEach(runs.trailing, id: \.self) { control in
-          rendered(control)
-        }
       }
     }
   }
@@ -163,10 +120,8 @@ struct ShellToolbarGroup<Info: View>: ToolbarContent {
   private func rendered(_ control: ShellToolbarControl) -> some View {
     switch control {
     case .info: info
-    // Rendered by `DefaultToolbarItem` in `body`; never a view of the app's.
-    case .search: EmptyView()
     case .select: GridSelectControl(store: store)
-    // The shipped funnel and its dot, unchanged (see `ShellToolbarRuns` for the badge).
+    // The shipped funnel and its dot, unchanged (see `ShellToolbarGroup` for the badge).
     case .filter: GridFilterControl(store: store)
     case .arrange: GridArrangeControl(store: store)
     case .more: GridToolbarMoreMenu(store: store, openShootWindow: openShootWindow)

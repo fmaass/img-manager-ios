@@ -22,14 +22,15 @@ struct CompactTabTests {
 
   // MARK: - The tabs
 
-  @Test("exactly three tabs, in the order Shoots, Library, Search")
-  func threeTabsInOrder() {
-    #expect(CompactTab.allCases == [.shoots, .library, .search])
+  /// R3-18 (IMGMGR-550): the Search tab is gone.
+  @Test("exactly two tabs, in the order Shoots, Library")
+  func twoTabsInOrder() {
+    #expect(CompactTab.allCases == [.shoots, .library])
   }
 
   @Test("each tab's identifier is the one the UI tests address")
   func identifiers() {
-    #expect(CompactTab.allCases.map(\.identifier) == ["tab.shoots", "tab.library", "tab.search"])
+    #expect(CompactTab.allCases.map(\.identifier) == ["tab.shoots", "tab.library"])
   }
 
   // MARK: - The badge

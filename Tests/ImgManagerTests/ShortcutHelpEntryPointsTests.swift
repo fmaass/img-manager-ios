@@ -84,13 +84,13 @@ struct ShortcutHelpEntryPointsTests {
 
   /// No chrome control opens the sheet (owner ruling 2026-10-02). The type's cases are pinned
   /// LITERALLY, so the deleted `.shortcutHelp` — or any new control — fails here until it is
-  /// named; each remaining case's action is its own (Info, Search, Select, Filter, Arrange, More,
-  /// Triage), and none ships the removed identifier.
+  /// named; each remaining case's action is its own (Info, Select, Filter, Arrange, More, Triage),
+  /// and none ships the removed identifier. R3-18 (IMGMGR-550) also removed Search.
   @Test("No ShellToolbarControl case opens the sheet")
   func noToolbarControlOpensTheSheet() {
     #expect(
       ShellToolbarControl.allCases == [
-        .info, .search, .select, .filter, .arrange, .more, .triage,
+        .info, .select, .filter, .arrange, .more, .triage,
       ])
     let identifiers = ShellToolbarControl.allCases.compactMap(\.accessibilityIdentifier)
     #expect(!identifiers.contains("gridShortcutHelpControl"))

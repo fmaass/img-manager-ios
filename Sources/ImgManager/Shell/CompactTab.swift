@@ -1,14 +1,14 @@
 import Foundation
 import ImgManagerAPI
 
-/// WP28 P1 (IMGMGR-448): the three tabs of the Compact shell (p4128 D3) — declared here as a
-/// value, rendered by `CompactShell`. "Compact" is the `.compact` layout mode, never a device:
-/// an iPad in a narrow Split View gets these tabs too, because `LayoutResolver` decides by width
-/// and size class alone.
+/// WP28 P1 (IMGMGR-448): the tabs of the Compact shell (p4128 D3) — declared here as a value,
+/// rendered by `CompactShell`. R3-18 (IMGMGR-550) removed the Search tab: two tabs remain.
+/// Nothing persists a tab, so no stored value can name the removed case. "Compact" is the
+/// `.compact` layout mode, never a device: an iPad in a narrow Split View gets these tabs too,
+/// because `LayoutResolver` decides by width and size class alone.
 enum CompactTab: String, CaseIterable, Hashable, Sendable {
   case shoots
   case library
-  case search
 
   /// The tab bar button's accessibility identifier — what the UI tests address.
   var identifier: String { "tab.\(rawValue)" }
@@ -17,7 +17,6 @@ enum CompactTab: String, CaseIterable, Hashable, Sendable {
     switch self {
     case .shoots: return "Shoots"
     case .library: return "Library"
-    case .search: return "Search"
     }
   }
 
@@ -25,7 +24,6 @@ enum CompactTab: String, CaseIterable, Hashable, Sendable {
     switch self {
     case .shoots: return "photo.on.rectangle.angled"
     case .library: return "folder"
-    case .search: return "magnifyingglass"
     }
   }
 

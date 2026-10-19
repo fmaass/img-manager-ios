@@ -102,6 +102,8 @@ struct FilterPopoverView: View {
   /// never built. Virtualisation buys nothing here anyway: the row set is FIXED and small (three
   /// rating, three mark, one Edited, plus however many file types the response holds), so building
   /// all of it costs one pass and makes "every declared row is addressable" structurally true.
+  /// R3-18 (IMGMGR-550) adds the Keyword section last, bounded at thirty rows
+  /// (`FilterPopoverModel.keywordValueLimit`), which keeps the eager pass small.
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 0) {

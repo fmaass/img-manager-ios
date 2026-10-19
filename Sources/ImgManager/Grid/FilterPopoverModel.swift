@@ -79,6 +79,12 @@ struct FilterPopoverSection: Identifiable, Sendable {
 ///     declaration below is empty (response-discovered, like Type).
 ///   - `camera_preview_only` is still NOT a stand-in and still not a row: it answers a different
 ///     question — "is this image's best source the camera's own preview".
+///
+/// **The Keyword row exists** (R3-18, IMGMGR-550, plan Decision 7): the search field left the
+/// toolbar and the Compact tab bar, so keyword lookup lives here — the server's own
+/// `ImageFacets.keyword` values (never derived client-side), in count order, at most thirty and
+/// no "More…" (`CapRule.reserveActive`). It reads the same folder-scoped facets response as
+/// every other section; `GridStore.refreshFacets` never asks without a folder.
 enum FilterPopoverModel {
 
   /// A declared value: fixed, named, and present whatever the response holds.
@@ -98,20 +104,43 @@ enum FilterPopoverModel {
     var values: [DeclaredValue] = []
     /// A response-discovered section's row cap, or nil for "however many the response holds".
     ///
-    /// Only Camera sets one, and it is a stated cap rather than a silent truncation (WP21 P2's
-    /// pivot). The server answers `_count_by` ordered by count DESC then value, capped at its own
+    /// Camera and Keyword set one, each under its own `capRule`. Camera's is a stated cap rather
+    /// than a silent truncation (WP21 P2's pivot). The server answers `_count_by` ordered by
+    /// count DESC then value, capped at its own
     /// `FACET_VALUE_LIMIT` of 30, so a photographer with many bodies could hand this popover
     /// thirty rows — and `FilterPopoverView` renders an EAGER `VStack` precisely because the row
     /// set is "FIXED and small". Twelve is the head of that list; `cappedRows` keeps whichever
     /// row is currently in force even when it falls outside the head, so no filter is ever
     /// unclearable from the surface that applied it, and appends one disabled `+N more cameras`
     /// row stating exactly how many bodies did not fit — the cap is announced on the surface, not
-    /// only in this comment. Type takes no cap: `ext` is a handful of file extensions.
+    /// only in this comment. Type takes no cap: `ext` is a handful of file extensions. Keyword's
+    /// cap is the server's own thirty (`reserveActive`, below).
     var valueLimit: Int?
+    /// How `valueLimit` is applied: Camera announces what did not fit; Keyword never exceeds its
+    /// limit and reserves the active value's slot.
+    var capRule: CapRule = .announce
+  }
+
+  /// The two ways a capped section is cut.
+  ///
+  /// - `announce`: Camera's shipped rule (`cappedRows`) — the head, the active row appended when
+  ///   it falls outside the head, and one disabled `+N more` statement.
+  /// - `reserveActive`: Keyword's rule (R3-18, plan Decision 7: "listing up to 30 values … no
+  ///   More…"; gate r1 B1) — never more than `valueLimit` rows and no synthetic overflow notice
+  ///   is generated. An active value outside the head takes the LAST slot, so the head shrinks
+  ///   by one rather than the section growing (`reservedRows`).
+  private enum CapRule {
+    case announce
+    case reserveActive
   }
 
   /// The head of the Camera section, stated (see `Declaration.valueLimit`).
   static let cameraValueLimit = 12
+
+  /// The Keyword section's ceiling: the server's own `FACET_VALUE_LIMIT` of thirty
+  /// (`app/api/images.py:262`), mirrored rather than invented — `_keyword_facet` never answers
+  /// with more, so this only bounds the active value's re-offer (`reservedRows`).
+  static let keywordValueLimit = 30
 
   /// The owner's own order (decision 1): ">=stars and the tri-state mark row (Pick / Unmarked /
   /// Dislike) plus Edited / Type … drill-ins".
@@ -139,9 +168,14 @@ enum FilterPopoverModel {
       field: .hasMaster, title: "Edited",
       values: [DeclaredValue(value: "true", title: "Edited in Lightroom", markRole: .edited)]),
     Declaration(field: .ext, title: "Type"),
-    // WP21 P2: response-discovered, last, and the only capped section. Last because it is the
-    // widest dimension and the owner's order names the judgement rows first.
+    // WP21 P2: response-discovered and capped, after the judgement rows the owner's order
+    // names first.
     Declaration(field: .camera, title: "Camera", valueLimit: cameraValueLimit),
+    // R3-18 (IMGMGR-550): the indexed XMP keywords with their counts, so keyword lookup survives
+    // the search field's removal. Last: the widest dimension, up to thirty rows.
+    Declaration(
+      field: .keyword, title: "Keyword", valueLimit: keywordValueLimit,
+      capRule: .reserveActive),
   ]
 
   /// The declaration at rest: every named row at zero, nothing active, nothing reachable. This is
@@ -270,7 +304,8 @@ enum FilterPopoverModel {
     _ declaration: Declaration, _ facets: Components.Schemas.ImageFacets?, _ query: GridImagesQuery
   ) -> [FilterPopoverRow] {
     let field = declaration.field
-    var rows = counts(field, facets).filter { isOfferable($0.value, field) }.map { count in
+    let offered = ordered(counts(field, facets).filter { isOfferable($0.value, field) }, field)
+    var rows = offered.map { count in
       row(
         field: field, value: count.value, title: field.displayValue(count.value),
         count: count.count, markRole: nil, query: query)
@@ -288,9 +323,40 @@ enum FilterPopoverModel {
       ]
     }
     if let limit = declaration.valueLimit {
-      rows = cappedRows(rows, limit: limit, field: field)
+      switch declaration.capRule {
+      case .announce: rows = cappedRows(rows, limit: limit, field: field)
+      case .reserveActive: rows = reservedRows(rows, limit: limit)
+      }
     }
     return rows
+  }
+
+  /// Keyword's rows in count order, highest first; equal counts keep the server's order (a stable
+  /// sort over the enumerated offsets). The server already answers `tally DESC, keyword`
+  /// (`_keyword_facet`), so this is a client guarantee rather than a re-ranking. Every other
+  /// dimension keeps the response order untouched.
+  private static func ordered(
+    _ counts: [Components.Schemas.FacetCount], _ field: InspectorFacetField
+  ) -> [Components.Schemas.FacetCount] {
+    guard field == .keyword else { return counts }
+    let sorted = counts.enumerated().sorted { lhs, rhs in
+      if lhs.element.count != rhs.element.count { return lhs.element.count > rhs.element.count }
+      return lhs.offset < rhs.offset
+    }
+    return sorted.map(\.element)
+  }
+
+  /// Keyword's cap (`CapRule.reserveActive`): at most `limit` rows, and no synthetic overflow
+  /// notice is generated. When the value in force sits outside the head — typically re-offered
+  /// at 0 because the response no longer carries it — it keeps the LAST slot and the head is the
+  /// `limit - 1` highest-count others, so the filter stays clearable from the surface that
+  /// applied it without the section growing past the server's thirty.
+  private static func reservedRows(_ rows: [FilterPopoverRow], limit: Int) -> [FilterPopoverRow] {
+    guard rows.count > limit else { return rows }
+    let head = Array(rows.prefix(limit))
+    if head.contains(where: \.isActive) { return head }
+    guard let active = rows.first(where: \.isActive) else { return head }
+    return Array(rows.filter { !$0.isActive }.prefix(limit - 1)) + [active]
   }
 
   /// Is this server-sent value one this surface can OFFER as a filter?

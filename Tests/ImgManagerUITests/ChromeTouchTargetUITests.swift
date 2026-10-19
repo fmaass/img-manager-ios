@@ -138,7 +138,7 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
       "The Shoots root never rendered.")
     let shoots = chromeCensus(
       roots, state: "shoots", titleMenu: true, stateTitles: [CompactTabTitle.shoots],
-      requiring: ["accountToolbarButton", "Shoots", "Library", "Search"])
+      requiring: ["accountToolbarButton", "Shoots", "Library"])
     var rows = shoots.rows
     var problems = shoots.problems
     selectCompactTab(roots, title: "Library")

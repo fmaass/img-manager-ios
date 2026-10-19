@@ -21,9 +21,6 @@ struct WorkspaceContent: View {
   let service: GridService
   let share: ShareExportStore
   let layoutMode: LayoutMode
-  /// WP28 P2 (IMGMGR-449): the shared folder search text, which the grid's toolbar search edits
-  /// at Regular and the sidebar's tree filters by.
-  let folderSearch: FolderSearchModel
   /// WP28 P3: the queue the Summary sheet reads its server counts from.
   let queueStore: QueueStore
   /// WP28 P3: the grid's navigation title (`WorkspaceTitle`), nil only when no folder is shown —
@@ -82,10 +79,6 @@ struct WorkspaceContent: View {
             // way back that is not the system toggle alone.
             GridBarSidebarToggle(layoutMode: layoutMode, columnVisibility: $columnVisibility)
           }
-          // WP28 P2: the Regular folder search, on the grid only — the docked loupe branch above
-          // carries none, so its chrome is unchanged — and never at Compact, whose Search tab is
-          // the one search surface there.
-          .modifier(RegularFolderSearch(search: folderSearch, isEnabled: layoutMode != .compact))
           // WP28 P3 (IMGMGR-450), Decision 1: the folder's name in the grid's principal slot, and
           // its title menu's one row, "Shoot Summary". WP29 P1 (IMGMGR-452): at Regular the slot
           // is p4128's breadcrumb (`GridBreadcrumbTitle`); Compact keeps its pushed title alone.
@@ -180,7 +173,7 @@ struct WorkspaceContent: View {
 /// a `Menu`. That is the plan's named pivot: the system title with `.navigationSubtitle` and
 /// `.toolbarTitleMenu` lead-aligned on iPadOS 26.5 (gate on c96429a: title minX 340, off its
 /// bar's midX by -81 pt at Regular-2 and -253 pt at Regular-3). Compact keeps the system title
-/// menu. Keyed on the WIDTH alone (like `RegularFolderSearch`), so a count that arrives later
+/// menu. Keyed on the WIDTH alone, so a count that arrives later
 /// never swaps the grid's view identity; the Summary row keeps its one identifier either way.
 struct GridBreadcrumbTitle: ViewModifier {
   let breadcrumb: GridBreadcrumb?
@@ -217,24 +210,5 @@ struct GridBreadcrumbTitle: ViewModifier {
       Label(ShootSummarySheet.sheetTitle, systemImage: "chart.bar.doc.horizontal")
     }
     .accessibilityIdentifier("shootSummaryTitleMenuRow")
-  }
-}
-
-/// WP28 P2 (IMGMGR-449), plan Decision 5: the Regular shell's folder search — a toolbar search
-/// that `.minimize` renders as a button and expands to a field when the reader asks for it. It
-/// edits the shared `FolderSearchModel`, so the sidebar's tree filters as the reader types.
-/// Disabled, it adds nothing at all.
-struct RegularFolderSearch: ViewModifier {
-  @Bindable var search: FolderSearchModel
-  let isEnabled: Bool
-
-  func body(content: Content) -> some View {
-    if isEnabled {
-      content
-        .searchable(text: $search.text, placement: .toolbar, prompt: "Search folders")
-        .searchToolbarBehavior(.minimize)
-    } else {
-      content
-    }
   }
 }

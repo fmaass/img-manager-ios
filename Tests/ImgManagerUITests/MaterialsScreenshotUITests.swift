@@ -25,8 +25,9 @@ import XCTest
 /// the modal is certainly addressable.
 ///
 /// In the default mode the matrix also runs the chrome touch-target census (ChromeCensus.swift)
-/// in the states only it reaches: search active, the inspector and summary sheets, the select
-/// bar and Regular-2. The loupe is in no matrix state and is not censused.
+/// in the states only it reaches: the inspector and summary sheets, the select bar and
+/// Regular-2 (R3-18, IMGMGR-550, removed the search-active state). The loupe is in no matrix
+/// state and is not censused.
 ///
 /// Layout is read from the measured window (Compact below the tab shell's ceiling, Regular-3 at
 /// or above the 1197 pt pin), never from a device idiom; a destination that cannot reach a matrix
@@ -80,7 +81,7 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
 
   // MARK: - iPhone (Compact)
 
-  /// shoots-home, library, search-active, grid-pushed, inspector-sheet, summary-sheet.
+  /// shoots-home, library, grid-pushed, inspector-sheet, summary-sheet.
   @MainActor
   func testCompactMaterialsMatrix() throws {
     guard beginMatrix() else { return }
@@ -101,15 +102,6 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
       anyElement(roots, "folderTreeViewMenu").waitForExistence(timeout: 15),
       "The Library root never rendered.")
     try capture(roots, "iphone", "library")
-
-    selectCompactTab(roots, title: "Search")
-    let field = roots.searchFields.firstMatch
-    XCTAssertTrue(field.waitForExistence(timeout: 15), "The Search tab carries no search field.")
-    guard focusForTyping(field, named: "The Search tab's field") else { return }
-    try capture(roots, "iphone", "search-active")
-    censusState(
-      roots, "iphone", "search-active",
-      alsoMeasure: [(ChromeOwnership.searchFieldKey, roots.searchFields.firstMatch)])
 
     let grid = launch(extraArguments: [], orientation: .portrait)
     XCTAssertTrue(
@@ -149,7 +141,7 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
 
   // MARK: - iPad (Regular)
 
-  /// regular3-collapsed, summary-sheet, regular3-inspector, search-active (one Regular-3 launch),
+  /// regular3-collapsed, summary-sheet, regular3-inspector (one Regular-3 launch),
   /// select-bar (a Select-mode launch), regular2-grid (a portrait launch).
   @MainActor
   func testRegularMaterialsMatrix() throws {
@@ -179,15 +171,6 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
     info.tap()
     XCTAssertTrue(
       app.buttons["Stats"].waitForNonExistence(timeout: 10), "Info did not hide the inspector.")
-
-    guard expandRegularToolbarSearch(app, context: "materials") != nil else {
-      XCTFail("The Regular toolbar search did not become active (see IMGMGR-449-SEARCH lines).")
-      return
-    }
-    try capture(app, "ipad", "search-active")
-    censusState(
-      app, "ipad", "search-active", titleMenu: true,
-      alsoMeasure: [(ChromeOwnership.searchFieldKey, app.searchFields.firstMatch)])
 
     let select = launch(extraArguments: ["-UITestEnterSelectMode"], orientation: .landscapeLeft)
     XCTAssertTrue(

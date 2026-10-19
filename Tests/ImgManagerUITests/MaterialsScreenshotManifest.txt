@@ -1,6 +1,7 @@
 # WP28 P4 (IMGMGR-451): the named materials screenshot matrix, plan Phase 4 (18 per destination);
 # WP30 P1 (IMGMGR-456) adds the loupe (iphone-loupe, ipad-regular2-loupe): 21 per destination.
 # WP30 P3 (IMGMGR-458) adds Compare on the iPad (ipad-regular2-compare): 21 iPhone, 24 iPad.
+# R3-18 (IMGMGR-550) removes search-active on both destinations: 18 iPhone, 21 iPad, 39 names.
 # <dest>-<surface>-<mode>.png; bin/gate-lib.sh gate_check_materials_manifest resolves each name
 # from the UI legs' exported attachments and fails when one is missing, empty, or byte-identical
 # to its default-mode sibling. MaterialsScreenshotUITests names its attachments from this list.
@@ -10,9 +11,6 @@ iphone-shoots-home-increase-contrast.png
 iphone-library-default.png
 iphone-library-reduce-transparency.png
 iphone-library-increase-contrast.png
-iphone-search-active-default.png
-iphone-search-active-reduce-transparency.png
-iphone-search-active-increase-contrast.png
 iphone-grid-pushed-default.png
 iphone-grid-pushed-reduce-transparency.png
 iphone-grid-pushed-increase-contrast.png
@@ -34,9 +32,6 @@ ipad-regular3-inspector-increase-contrast.png
 ipad-regular2-grid-default.png
 ipad-regular2-grid-reduce-transparency.png
 ipad-regular2-grid-increase-contrast.png
-ipad-search-active-default.png
-ipad-search-active-reduce-transparency.png
-ipad-search-active-increase-contrast.png
 ipad-summary-sheet-default.png
 ipad-summary-sheet-reduce-transparency.png
 ipad-summary-sheet-increase-contrast.png

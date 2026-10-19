@@ -757,19 +757,20 @@ fi
 # exported attachments (stub manifest.json files), and the mode runner against stub tools.
 # WP30 P1 (IMGMGR-456) added the loupe to both destinations: 21 per destination, 42 names.
 # WP30 P3 (IMGMGR-458) added Compare on the iPad only: 21 iPhone + 24 iPad, 45 names.
+# R3-18 (IMGMGR-550) removed search-active on both destinations: 18 iPhone + 21 iPad, 39 names.
 man="$here/../Tests/ImgManagerUITests/MaterialsScreenshotManifest.txt"
 man_shape=1
-[ "$(grep -c '^iphone-.*\.png$' "$man")" = 21 ] || man_shape=0
-[ "$(grep -c '^ipad-.*\.png$' "$man")" = 24 ] || man_shape=0
-for s in shoots-home library search-active grid-pushed inspector-sheet summary-sheet loupe; do
+[ "$(grep -c '^iphone-.*\.png$' "$man")" = 18 ] || man_shape=0
+[ "$(grep -c '^ipad-.*\.png$' "$man")" = 21 ] || man_shape=0
+for s in shoots-home library grid-pushed inspector-sheet summary-sheet loupe; do
   for m in default reduce-transparency increase-contrast; do grep -qx "iphone-$s-$m.png" "$man" || man_shape=0; done
 done
-for s in regular3-collapsed regular3-inspector regular2-grid search-active summary-sheet select-bar \
+for s in regular3-collapsed regular3-inspector regular2-grid summary-sheet select-bar \
   regular2-loupe regular2-compare; do
   for m in default reduce-transparency increase-contrast; do grep -qx "ipad-$s-$m.png" "$man" || man_shape=0; done
 done
-[ "$(grep -vc '^#' "$man")" = 45 ] || man_shape=0
-if [ "$man_shape" = 1 ]; then gok ms-manifest "45 names, 21 iPhone + 24 iPad, every surface in all three modes"; else gfail ms-manifest "the manifest is not the plan's 45-name matrix"; fi
+[ "$(grep -vc '^#' "$man")" = 39 ] || man_shape=0
+if [ "$man_shape" = 1 ]; then gok ms-manifest "39 names, 18 iPhone + 21 iPad, every surface in all three modes"; else gfail ms-manifest "the manifest is not the plan's 39-name matrix"; fi
 ms_fixture() {
   rm -rf "$tmp/ms"; mkdir -p "$tmp/ms/.gate-artifacts/screenshots/test-iphone" \
     "$tmp/ms/.gate-artifacts/screenshots/materials-test-iphone-reduce-transparency" \

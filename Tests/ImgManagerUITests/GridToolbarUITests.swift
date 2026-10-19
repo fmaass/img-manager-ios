@@ -2,7 +2,8 @@ import UIKit
 import XCTest
 
 /// WP29 P1 (IMGMGR-452): the Regular grid bar reads
-/// [sidebar toggle] · breadcrumb · [Info · Search · Select · Filter · Arrange · More].
+/// [sidebar toggle] · breadcrumb · [Info · Select · Filter · Arrange · More] (R3-18, IMGMGR-550,
+/// removed the Search item that stood after Info).
 ///
 /// Ticket acceptance probe: "toolbar groups render in the spec order, ≤ 3 groups, breadcrumb
 /// centred". WP29 P2 (IMGMGR-453) put Arrange (`gridArrangeControl`) in its slot.
@@ -32,8 +33,8 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
   /// Mirrors `LayoutResolver.regular3Threshold` (`LayoutPresentationTests` is the join).
   private static let regular3WidthThreshold: CGFloat = 1197
 
-  /// The app-declared items after the system search, in spec order.
-  private static let declaredAfterSearch = [
+  /// The app-declared items after Info, in spec order (R3-18 removed the system search between).
+  private static let declaredAfterInfo = [
     "gridSelectCommand", "gridFilterControl", "gridArrangeControl", "gridMoreMenu",
   ]
 
@@ -65,9 +66,21 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     assertAtMostThreeClusters(in: app, state: "r3")
     assertTitleCentred(in: app, state: "Regular-3 collapsed")
     capture(app, name: "ipad-bar-p1-r3")
-    // Moved here from `RegularSidebarShellUITests` (WP28 P2 evidence, unchanged names).
-    capture(app, name: "ipad-bar-regular3-collapsed-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular3-collapsed-search-active")
+    assertNoSearch(in: app, state: "Regular-3 collapsed")
+  }
+
+  // MARK: - R3-18: no search at Regular
+
+  /// R3-18 (IMGMGR-550) acceptance: the iPad's toolbar search is gone — no button labelled
+  /// Search anywhere (the grid's bar or the sidebar's) and no search field. The grid's own
+  /// controls are the positive control, so the absence is read off a rendered bar.
+  func testTheRegularShellCarriesNoSearch() throws {
+    let app = try launched(.regular3)
+    XCTAssertTrue(gridInfoControl(app).isHittable, "Info is not hittable — the bar never built.")
+    let filter = app.descendants(matching: .any)["gridFilterControl"].firstMatch
+    XCTAssertTrue(filter.waitForExistence(timeout: 10), "No Filter control on the grid's bar.")
+    assertNoSearch(in: app, state: "Regular-3 collapsed")
+    capture(app, name: "ipad-bar-r3-no-search")
   }
 
   // MARK: - Regular-3 expanded
@@ -106,7 +119,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
 
     // (a) expanded: each folded item is one tap into the system overflow away.
     var reach: [String] = []
-    for identifier in Self.declaredAfterSearch {
+    for identifier in Self.declaredAfterInfo {
       let control = app.descendants(matching: .any)[identifier].firstMatch
       if control.exists && control.isHittable {
         reach.append("\(identifier)=direct")
@@ -121,10 +134,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
           + "system overflow with the inspector expanded — a control lost its home.")
     }
     print("WP29-P1-REACH r3x: " + reach.joined(separator: " "))
-
-    // Moved here from `RegularSidebarShellUITests` (WP28 P2 evidence, unchanged names).
-    capture(app, name: "ipad-bar-regular3-expanded-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular3-expanded-search-active")
+    capture(app, name: "ipad-bar-regular3-expanded")
   }
 
   // MARK: - Regular-2
@@ -136,9 +146,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     assertAtMostThreeClusters(in: app, state: "r2")
     assertTitleCentred(in: app, state: "Regular-2")
     capture(app, name: "ipad-bar-p1-r2")
-    // Moved here from `RegularSidebarShellUITests` (WP28 P2 evidence, unchanged names).
-    capture(app, name: "ipad-bar-regular2-search-min")
-    activateSearchAndCapture(app, name: "ipad-bar-regular2-search-active")
+    assertNoSearch(in: app, state: "Regular-2")
   }
 
   // MARK: - (d) the Filter count, every width
@@ -212,9 +220,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
 
   private func assertEveryDeclaredItemIsHittable(in app: XCUIApplication, state: String) {
     XCTAssertTrue(gridInfoControl(app).isHittable, "Info is not hittable at \(state).")
-    XCTAssertTrue(
-      regularToolbarSearchButton(app).isHittable, "The toolbar search is not hittable at \(state).")
-    for identifier in Self.declaredAfterSearch {
+    for identifier in Self.declaredAfterInfo {
       let control = app.descendants(matching: .any)[identifier].firstMatch
       XCTAssertTrue(
         control.waitForExistence(timeout: 10), "`\(identifier)` is not on the bar at \(state).")
@@ -224,35 +230,30 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     }
   }
 
-  /// (a): the app-declared items in spec order. The system search's POSITION is the plan's named
-  /// pivot (Phase 1, "Known-unknown + pivot"): the gate on c96429a measured iPadOS 26.5 pinning
-  /// the minimized search to the trailing edge (Regular-2 search minX 982 vs Info 584 / Select
-  /// 640; Regular-3 collapsed 1326 vs 928 / 984). So the app's order is asserted, the search is
-  /// asserted PRESENT and hittable on the grid's bar, and its position is reported UNRESOLVED on
-  /// IMGMGR-452 with the `ipad-bar-p1-*` screenshots — never asserted green on a substitute.
+  /// R3-18 (IMGMGR-550): no button labelled Search anywhere in the app and no search field.
+  private func assertNoSearch(in app: XCUIApplication, state: String) {
+    XCTAssertFalse(
+      regularToolbarSearchButton(app).exists, "\(state): a Search button is still on screen.")
+    XCTAssertEqual(app.searchFields.count, 0, "\(state): a search field is still on screen.")
+  }
+
+  /// (a): the app-declared items in spec order. R3-18 (IMGMGR-550) removed the system search
+  /// whose position WP29 P1 reported UNRESOLVED; what remains is the app's own order.
   private func assertSpecOrder(in app: XCUIApplication, state: String) {
     let info = gridInfoControl(app)
-    let declared = Self.declaredAfterSearch.map {
+    let declared = Self.declaredAfterInfo.map {
       app.descendants(matching: .any)[$0].firstMatch
     }
     let infoX = info.frame.minX
     let xs = declared.map { $0.frame.minX }
-    let reading = zip(Self.declaredAfterSearch, xs).map { "\($0)=\($1)" }.joined(separator: " ")
-    let searchX = regularToolbarSearchButton(app).frame.minX
-    print("WP29-P1-ORDER \(state): info=\(infoX) search=\(searchX) \(reading)")
+    let reading = zip(Self.declaredAfterInfo, xs).map { "\($0)=\($1)" }.joined(separator: " ")
+    print("WP29-P1-ORDER \(state): info=\(infoX) \(reading)")
 
     let appOrder = [infoX] + xs
     XCTAssertEqual(
       appOrder, appOrder.sorted(),
       "\(state): the app-declared items are not in spec order Info · Select · Filter · Arrange "
         + "· More — \(reading), info=\(infoX).")
-
-    let search = regularToolbarSearchButton(app)
-    XCTAssertTrue(
-      search.exists && search.isHittable,
-      "\(state): the system search is not on the grid's bar (minX \(searchX)).")
-    let between = infoX < searchX && searchX < xs[0]
-    print("WP29-P1-SEARCH-POSITION UNRESOLVED \(state): between Info and Select=\(between)")
   }
 
   /// (b): hittable bar elements grouped by horizontal gaps; one bar, the grid's.
@@ -281,8 +282,9 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
     print(
       "WP29-P1-TITLE \(state): label=\"\(title.label)\" title=\(title.frame) bar=\(bar.frame) "
         + "offset=\(offset)")
-    // Centring is the owner's open question on IMGMGR-452, reported UNRESOLVED like the search
-    // position above: the gate on fce41c8 measured iPadOS 26.5 centring the title on the column
+    // Centring is the owner's open question on IMGMGR-452, reported UNRESOLVED like WP29's
+    // search position was: the gate on fce41c8 measured iPadOS 26.5 centring the title on the
+    // column
     // beside the floating sidebar (Regular-3 collapsed: midX 853 = centre of 330–1376, 165 pt
     // off the full bar) and moving it leading when six trailing items leave no room (Regular-2:
     // minX 340, 70.5 pt off). What the bar must never do is draw the title under its controls.
@@ -392,7 +394,7 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
 
   private func declaredLabels(in app: XCUIApplication, state: String) -> [String: String] {
     var labels: [String: String] = [:]
-    for identifier in Self.declaredAfterSearch {
+    for identifier in Self.declaredAfterInfo {
       let control = app.descendants(matching: .any)[identifier].firstMatch
       XCTAssertTrue(
         control.waitForExistence(timeout: 10), "`\(identifier)` is not on the bar at \(state).")
@@ -459,20 +461,6 @@ final class GridToolbarUITests: OrientationPinnedUITestCase {
   }
 
   // MARK: - Evidence
-
-  private func activateSearchAndCapture(
-    _ app: XCUIApplication, name: String, file: StaticString = #filePath, line: UInt = #line
-  ) {
-    guard expandRegularToolbarSearch(app, context: name) != nil else {
-      capture(app, name: "\(name)-NOT-EXPANDED")
-      XCTFail(
-        "\(name): the toolbar search did not activate (no hittable field taking typed text).",
-        file: file, line: line)
-      return
-    }
-    Thread.sleep(forTimeInterval: 1.0)
-    capture(app, name: name)
-  }
 
   private func capture(_ app: XCUIApplication, name: String) {
     logBarFrames(app, state: name)
