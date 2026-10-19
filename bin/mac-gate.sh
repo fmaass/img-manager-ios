@@ -119,6 +119,14 @@
 #                            RECORDS itself under its existing leg name, `rsync`. Prerequisites
 #                            (refused, never auto-added): build needs xcodegen; widget-embed
 #                            needs build; test-iphone, test-ipad and pins need xcodegen.
+#   MAC_GATE_ONLY_TESTING   comma-separated xcodebuild test identifiers, e.g.
+#                            ImgManagerUITests/ScenePushUITests/testPOnAFocusedCardSendsNoMarkRequest
+#                            (IMGMGR-571). The test-iphone and test-ipad legs then pass one
+#                            -only-testing:<id> each, and the materials-* re-runs and their
+#                            manifest checks do not run (they exist to cover the WHOLE materials
+#                            matrix, which a filtered leg did not capture). For fix loops only:
+#                            the SUMMARY line says ONLY_TESTING(<ids>) — NOT a full gate. Refused
+#                            (exit 2) when neither test leg is selected. Unset = the full suites.
 #   MAC_GATE_IPHONE_TYPE    simctl device type identifier for the iPhone destination
 #                            (default: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro)
 #   MAC_GATE_IPAD_TYPE      simctl device type identifier for the iPad destination
@@ -206,7 +214,13 @@ cd "$repo_root"
 # gate_legs_resolve prints its reason to stderr and nothing to stdout on a refusal.
 legs="$(gate_legs_resolve "$legs_sel")" \
   || die_refuse "unusable leg selection '$legs_sel' (see --help; --list-legs shows what would run)"
-legs_field="$(gate_legs_field "$legs")"
+only_testing="${MAC_GATE_ONLY_TESTING:-}"
+gate_only_testing_args "$only_testing" >/dev/null \
+  || die_refuse "unusable MAC_GATE_ONLY_TESTING '$only_testing' (comma-separated test identifiers, see --help)"
+if [ -n "$only_testing" ] && ! gate_leg_wanted test-iphone "$legs" && ! gate_leg_wanted test-ipad "$legs"; then
+  die_refuse "MAC_GATE_ONLY_TESTING is set but neither test-iphone nor test-ipad is selected"
+fi
+legs_field="$(gate_legs_field "$legs" "$only_testing")"
 if [ "$list_legs" -eq 1 ]; then
   # Decides and exits here, on this machine: nothing below is reached, so no MAC_GATE_HOST is
   # needed and no ssh happens. This is the locally testable half of the selection logic.
@@ -497,6 +511,9 @@ cd "__WORK__"
 LEGS="__LEGS__"
 . ./bin/gate-lib.sh || { echo "cannot source bin/gate-lib.sh"; exit 1; }
 want() { gate_leg_wanted "$1" "$LEGS"; }
+# MAC_GATE_ONLY_TESTING (IMGMGR-571), validated by the controller before anything ran; empty for
+# the full suites.
+ONLY_TESTING="__ONLY_TESTING__"
 
 summary=""
 step() { # $1=name -- rest is the command
@@ -642,23 +659,23 @@ if [ "$project_legs" = 1 ]; then
       # gate_export_screenshots). xcodebuild refuses an existing bundle path, so a previous
       # run's bundle is removed first.
       rm -rf "$derived/Results/test-iphone.xcresult"; mkdir -p "$derived/Results"
-      step test-iphone xcodebuild test \
-        -project ImgManager.xcodeproj -scheme ImgManager \
-        -destination "id=$iphone_udid" \
-        -derivedDataPath "$derived" \
-        -resultBundlePath "$derived/Results/test-iphone.xcresult" \
-        -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+      step test-iphone gate_xcodebuild_test "$iphone_udid" "$derived" "$derived/Results/test-iphone.xcresult" "$ONLY_TESTING"
       gate_export_screenshots test-iphone "$derived/Results/test-iphone.xcresult"
       summary="$summary screenshots-test-iphone=$?"
       # WP28 P4 (IMGMGR-451): the leg's run above captured the materials matrix in the DEFAULT
       # mode. Each extra mode sets its real setting on THIS leg's simulator and re-runs the
       # materials suite alone (gate-lib.sh), then the manifest check resolves all 18 names.
-      for mode in $GATE_MATERIALS_MODES; do
-        gate_materials_mode_run test-iphone "$iphone_udid" "$mode" "$derived"
-        summary="$summary materials-test-iphone-$mode=$?"
-      done
-      gate_check_materials_manifest iphone test-iphone
-      summary="$summary materials-manifest-test-iphone=$?"
+      # A filtered run (IMGMGR-571) captured no default-mode matrix, so the check could only go red.
+      if [ -z "$ONLY_TESTING" ]; then
+        for mode in $GATE_MATERIALS_MODES; do
+          gate_materials_mode_run test-iphone "$iphone_udid" "$mode" "$derived"
+          summary="$summary materials-test-iphone-$mode=$?"
+        done
+        gate_check_materials_manifest iphone test-iphone
+        summary="$summary materials-manifest-test-iphone=$?"
+      else
+        echo "--- materials-test-iphone skipped (ONLY_TESTING run) ---"
+      fi
     fi
 
     if want test-ipad; then
@@ -667,23 +684,23 @@ if [ "$project_legs" = 1 ]; then
       # gate_export_screenshots). xcodebuild refuses an existing bundle path, so a previous
       # run's bundle is removed first.
       rm -rf "$derived/Results/test-ipad.xcresult"; mkdir -p "$derived/Results"
-      step test-ipad xcodebuild test \
-        -project ImgManager.xcodeproj -scheme ImgManager \
-        -destination "id=$ipad_udid" \
-        -derivedDataPath "$derived" \
-        -resultBundlePath "$derived/Results/test-ipad.xcresult" \
-        -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+      step test-ipad gate_xcodebuild_test "$ipad_udid" "$derived" "$derived/Results/test-ipad.xcresult" "$ONLY_TESTING"
       gate_export_screenshots test-ipad "$derived/Results/test-ipad.xcresult"
       summary="$summary screenshots-test-ipad=$?"
       # WP28 P4 (IMGMGR-451): the leg's run above captured the materials matrix in the DEFAULT
       # mode. Each extra mode sets its real setting on THIS leg's simulator and re-runs the
       # materials suite alone (gate-lib.sh), then the manifest check resolves all 18 names.
-      for mode in $GATE_MATERIALS_MODES; do
-        gate_materials_mode_run test-ipad "$ipad_udid" "$mode" "$derived"
-        summary="$summary materials-test-ipad-$mode=$?"
-      done
-      gate_check_materials_manifest ipad test-ipad
-      summary="$summary materials-manifest-test-ipad=$?"
+      # A filtered run (IMGMGR-571) captured no default-mode matrix, so the check could only go red.
+      if [ -z "$ONLY_TESTING" ]; then
+        for mode in $GATE_MATERIALS_MODES; do
+          gate_materials_mode_run test-ipad "$ipad_udid" "$mode" "$derived"
+          summary="$summary materials-test-ipad-$mode=$?"
+        done
+        gate_check_materials_manifest ipad test-ipad
+        summary="$summary materials-manifest-test-ipad=$?"
+      else
+        echo "--- materials-test-ipad skipped (ONLY_TESTING run) ---"
+      fi
     fi
   fi
 
@@ -776,6 +793,8 @@ build_script="${build_script//__WORK__/$target_dir/work}"
 build_script="${build_script//__LEGS__/$legs}"
 build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
+# Last: an identifier may legally spell another placeholder, and nothing must rewrite it after.
+build_script="${build_script//__ONLY_TESTING__/$only_testing}"
 
 # --- Remote run: launched DETACHED on the Mac and polled over short ssh calls (IMGMGR-203). --
 # stop_remote_run: stop the detached run by PROCESS GROUP. The launch runs under job control,

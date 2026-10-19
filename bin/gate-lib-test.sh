@@ -541,7 +541,9 @@ else
   esac
 fi
 for leg in test-iphone test-ipad; do
-  n_bundle="$(grep -cF -- "-resultBundlePath \"\$derived/Results/$leg.xcresult\"" "$mg")"
+  # IMGMGR-571: the bundle is gate_xcodebuild_test's BUNDLE argument; its -resultBundlePath is
+  # read back from the argv in ot-argv-unset.
+  n_bundle="$(grep -cF -- "\"\$derived/Results/$leg.xcresult\" \"\$ONLY_TESTING\"" "$mg")"
   n_export="$(grep -cF -- "gate_export_screenshots $leg \"\$derived/Results/$leg.xcresult\"" "$mg")"
   n_record="$(grep -cF -- "summary=\"\$summary screenshots-$leg=\$?\"" "$mg")"
   if [ "$n_bundle" = 1 ] && [ "$n_export" = 1 ] && [ "$n_record" = 1 ]; then
@@ -1101,6 +1103,106 @@ for pair in test-iphone:iphone test-ipad:ipad; do
   fi
 done
 cd "$tmp"
+
+# --- IMGMGR-571: MAC_GATE_ONLY_TESTING. The test legs' xcodebuild argv, read back one argument
+# per line from a stub, is EXACTLY today's when the filter is empty and gains one
+# -only-testing:<id> per identifier when it is set; a malformed filter refuses before xcodebuild
+# runs (an empty expansion there would run the WHOLE suite under a run that claims a filter).
+cat > "$tmp/stub-argv-xcodebuild" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$STUB_LOG"
+STUB
+chmod +x "$tmp/stub-argv-xcodebuild"
+ot_run() { rm -f "$tmp/ot.argv"; GATE_XCODEBUILD="$tmp/stub-argv-xcodebuild" STUB_LOG="$tmp/ot.argv" gate_xcodebuild_test UDID-X /dd /dd/Results/leg.xcresult "$1"; }
+ot_base='test -project ImgManager.xcodeproj -scheme ImgManager -destination id=UDID-X -derivedDataPath /dd -resultBundlePath /dd/Results/leg.xcresult'
+ot_tail='-skipMacroValidation -onlyUsePackageVersionsFromResolvedFile'
+ot_run ""; rc=$?
+got="$(tr '\n' ' ' < "$tmp/ot.argv" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && [ "$got" = "$ot_base $ot_tail " ] && ! grep -q -- '-only-testing' "$tmp/ot.argv"; then
+  lok ot-argv-unset "no filter: the argv is the pre-IMGMGR-571 one, argument for argument, with no -only-testing"
+else
+  lfail ot-argv-unset "rc=$rc argv='$got'"
+fi
+ot_run "ImgManagerUITests/ScenePushUITests/testPOnAFocusedCardSendsNoMarkRequest,ImgManagerTests/Suite/fn()"; rc=$?
+got="$(tr '\n' ' ' < "$tmp/ot.argv" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && [ "$got" = "$ot_base -only-testing:ImgManagerUITests/ScenePushUITests/testPOnAFocusedCardSendsNoMarkRequest -only-testing:ImgManagerTests/Suite/fn() $ot_tail " ] \
+   && [ "$(grep -c -- '^-only-testing:' "$tmp/ot.argv")" = 2 ]; then
+  lok ot-argv-set "two identifiers: exactly two -only-testing arguments, each one whole: $(grep -- '^-only-testing:' "$tmp/ot.argv" | tr '\n' ' ')"
+else
+  lfail ot-argv-set "rc=$rc argv='$got'"
+fi
+for bad_ids in "A/B,,A/C" ",A/B" "A/B," "A/B C" "A/B;touch x" 'A/*' 'A/$(id)' "A/B'"; do
+  ot_run "$bad_ids" 2>"$tmp/ot.err"; rc=$?
+  if [ "$rc" -eq 2 ] && [ ! -e "$tmp/ot.argv" ]; then
+    lok ot-argv-refuse "'$bad_ids' refuses (rc=2) and xcodebuild never runs: $(cat "$tmp/ot.err")"
+  else
+    lfail ot-argv-refuse "'$bad_ids': rc=$rc argv=$(cat "$tmp/ot.argv" 2>&1 | tr '\n' ' ')"
+  fi
+done
+# Wiring: both test legs run through that one argv, the materials re-runs and their manifest
+# check are behind the filter guard, and the filter is substituted into the remote script LAST
+# (an identifier may legally spell another placeholder's name).
+for pair in test-iphone:iphone test-ipad:ipad; do
+  leg="${pair%%:*}"; dest="${pair##*:}"
+  n_call="$(grep -cF -- "step $leg gate_xcodebuild_test \"\$${dest}_udid\" \"\$derived\" \"\$derived/Results/$leg.xcresult\" \"\$ONLY_TESTING\"" "$mg")"
+  n_raw="$(grep -cF -- "step $leg xcodebuild test" "$mg")"
+  if [ "$n_call" = 1 ] && [ "$n_raw" = 0 ]; then
+    lok "ot-wiring-$leg" "the leg's xcodebuild test is gate_xcodebuild_test with the filter, once"
+  else
+    lfail "ot-wiring-$leg" "call=$n_call raw=$n_raw"
+  fi
+done
+n_guard="$(grep -c '^      if \[ -z "\$ONLY_TESTING" \]; then$' "$mg")"
+last_sub="$(grep '^build_script="\${build_script//' "$mg" | tail -1)"
+if [ "$n_guard" = 2 ] && [ "$last_sub" = 'build_script="${build_script//__ONLY_TESTING__/$only_testing}"' ]; then
+  lok ot-wiring-guard "materials re-runs guarded in both legs; the filter is the last substitution"
+else
+  lfail ot-wiring-guard "guards=$n_guard last='$last_sub'"
+fi
+# The summary line, through the real summary_and_exit: a filtered run is never mistakable for a
+# full gate, with or without a leg subset; a malformed filter, or one with no test leg to apply
+# to, refuses before anything runs.
+MAC_GATE_ONLY_TESTING="ImgManagerUITests/A/testB" dryrun --dry-run > "$tmp/ot1.out" 2>&1; lrc=$?
+sline="$(grep '^mac-gate SUMMARY:' "$tmp/ot1.out" | tail -1)"
+case "$sline" in
+  "mac-gate SUMMARY: legs=ONLY_TESTING(ImgManagerUITests/A/testB) — NOT a full gate |"*" test-iphone=dry-run test-ipad=dry-run "*"| exit=0") ot_shape=1 ;;
+  *) ot_shape=0 ;;
+esac
+if [ "$lrc" -eq 0 ] && [ "$ot_shape" -eq 1 ]; then
+  lok ot-summary-full "every leg plus a filter is NOT a full gate: ${sline%% |*}"
+else
+  lfail ot-summary-full "rc=$lrc line='$sline'"
+fi
+MAC_GATE_ONLY_TESTING="ImgManagerUITests/A/testB,ImgManagerUITests/C" dryrun --legs mirror,xcodegen,test-ipad --dry-run > "$tmp/ot2.out" 2>&1; lrc=$?
+sline="$(grep '^mac-gate SUMMARY:' "$tmp/ot2.out" | tail -1)"
+if [ "$lrc" -eq 0 ] \
+   && [ "$sline" = "mac-gate SUMMARY: legs=SUBSET(mirror,xcodegen,test-ipad) ONLY_TESTING(ImgManagerUITests/A/testB,ImgManagerUITests/C) — NOT a full gate | mirror=dry-run xcodegen=dry-run test-ipad=dry-run | exit=0" ]; then
+  lok ot-summary-subset "a leg subset plus a filter names both: ${sline%% |*}"
+else
+  lfail ot-summary-subset "rc=$lrc line='$sline'"
+fi
+( cd "$here/.." && env -u MAC_GATE_HOST MAC_GATE_ONLY_TESTING="ImgManagerUITests/A/testB" "$mg" --list-legs ) > "$tmp/ot3.out" 2>&1; lrc=$?
+if [ "$lrc" -eq 0 ] && [ "$(head -1 "$tmp/ot3.out")" = "legs=ONLY_TESTING(ImgManagerUITests/A/testB) — NOT a full gate" ]; then
+  lok ot-listmode "--list-legs says it too: $(head -1 "$tmp/ot3.out")"
+else
+  lfail ot-listmode "rc=$lrc out='$(cat "$tmp/ot3.out")'"
+fi
+MAC_GATE_ONLY_TESTING="A/B C" dryrun --dry-run > "$tmp/ot4.out" 2>&1; lrc=$?
+sline="$(grep '^mac-gate SUMMARY:' "$tmp/ot4.out" | tail -1)"
+case "$sline" in "mac-gate SUMMARY: legs=REFUSED("*"MAC_GATE_ONLY_TESTING"*") — NOT a full gate | | exit=2") ot_shape=1 ;; *) ot_shape=0 ;; esac
+if [ "$lrc" -eq 2 ] && [ "$ot_shape" -eq 1 ]; then
+  lok ot-refuse-shape "a malformed filter refuses the run (rc=2) with a summary line of its own"
+else
+  lfail ot-refuse-shape "rc=$lrc line='$sline'"
+fi
+MAC_GATE_ONLY_TESTING="ImgManagerUITests/A/testB" dryrun --legs mirror,manifest,lint --dry-run > "$tmp/ot5.out" 2>&1; lrc=$?
+sline="$(grep '^mac-gate SUMMARY:' "$tmp/ot5.out" | tail -1)"
+case "$sline" in "mac-gate SUMMARY: legs=REFUSED("*") — NOT a full gate | | exit=2") ot_shape=1 ;; *) ot_shape=0 ;; esac
+if [ "$lrc" -eq 2 ] && [ "$ot_shape" -eq 1 ]; then
+  lok ot-refuse-noleg "a filter with neither test leg selected refuses (rc=2) instead of running nothing it names"
+else
+  lfail ot-refuse-noleg "rc=$lrc line='$sline'"
+fi
 
 case "$summary" in *"t-clean=0"*"t-hit=1"*"t-noctl=1"*) echo "PASS summary: $summary" ;; *) echo "FAIL summary: $summary"; fail=1 ;; esac
 [ "$fail" -eq 0 ] && echo "gate-lib-test: ALL PASS" || echo "gate-lib-test: FAILURES"

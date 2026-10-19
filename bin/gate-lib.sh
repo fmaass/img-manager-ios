@@ -347,12 +347,19 @@ gate_legs_resolve() {
   printf '%s\n' "${out# }"
 }
 
-# gate_legs_field RESOLVED — the one field that tells a full gate from a subset, for the summary
-# line and for --list-legs. A subset says so in capitals AND lists exactly what ran: the merged-
-# main gate evidence in this estate cites the full leg list, and a subset run must never be
-# mistakable for one.
+# gate_legs_field RESOLVED [ONLY_TESTING] — the one field that tells a full gate from a subset, for
+# the summary line and for --list-legs. A subset says so in capitals AND lists exactly what ran: the
+# merged-main gate evidence in this estate cites the full leg list, and a subset run must never be
+# mistakable for one. A test filter (IMGMGR-571) is a subset of the TESTS even when every leg
+# ran, so it never prints `legs=full` either.
 gate_legs_field() {
-  if [ "$1" = "$GATE_LEGS_ALL" ]; then
+  if [ -n "${2:-}" ]; then
+    if [ "$1" = "$GATE_LEGS_ALL" ]; then
+      printf 'legs=ONLY_TESTING(%s) — NOT a full gate\n' "$2"
+    else
+      printf 'legs=SUBSET(%s) ONLY_TESTING(%s) — NOT a full gate\n' "$(printf '%s' "$1" | tr ' ' ',')" "$2"
+    fi
+  elif [ "$1" = "$GATE_LEGS_ALL" ]; then
     printf 'legs=full\n'
   else
     printf 'legs=SUBSET(%s) — NOT a full gate\n' "$(printf '%s' "$1" | tr ' ' ',')"
@@ -364,6 +371,49 @@ gate_legs_field() {
 # so bin/gate-queue.sh has a SUMMARY line to copy and a reader can tell a refusal from a crash.
 gate_legs_field_refused() {
   printf 'legs=REFUSED(%s) — NOT a full gate\n' "$1"
+}
+
+# gate_only_testing_args IDS — MAC_GATE_ONLY_TESTING (IMGMGR-571) as xcodebuild argv: one
+# `-only-testing:<id>` word per comma-separated identifier, space-joined, nothing for an empty IDS.
+# The words are expanded UNQUOTED by gate_xcodebuild_test and the filter is pasted into the remote
+# script's text, so an identifier may hold only [A-Za-z0-9_./()-] (the `()` is swift-testing's
+# function form): nothing that splits, globs, quotes or substitutes. Returns 2 and prints NOTHING
+# on stdout for anything else, an empty identifier included.
+gate_only_testing_args() {
+  local rest id out=""
+  [ -n "${1:-}" ] || return 0
+  case ",$1," in
+    *,,*) printf 'gate-lib: empty test identifier in %s\n' "'$1'" >&2; return 2 ;;
+    *[!A-Za-z0-9_./\(\),-]*)
+      printf 'gate-lib: test identifiers %s may hold only [A-Za-z0-9_./()-], comma-separated\n' "'$1'" >&2; return 2 ;;
+  esac
+  rest="$1"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *,*) id="${rest%%,*}"; rest="${rest#*,}" ;;
+      *)   id="$rest"; rest="" ;;
+    esac
+    out="$out -only-testing:$id"
+  done
+  printf '%s\n' "${out# }"
+}
+
+# gate_xcodebuild_test UDID DERIVED BUNDLE [ONLY_TESTING] — the ONE xcodebuild invocation of the
+# test-iphone and test-ipad legs, here so bin/gate-lib-test.sh can read its argv back. With no
+# filter the argv is exactly what those legs ran before IMGMGR-571. A filter that does not parse
+# refuses (2) instead of expanding to nothing, which would run the whole suite under a run that
+# claims a filter. GATE_XCODEBUILD replaces the tool in the test; it is word-split on purpose.
+gate_xcodebuild_test() {
+  local only
+  only="$(gate_only_testing_args "${4:-}")" || return 2
+  # shellcheck disable=SC2086 # $only is validated words, split on purpose
+  ${GATE_XCODEBUILD:-xcodebuild} test \
+    -project ImgManager.xcodeproj -scheme ImgManager \
+    -destination "id=$1" \
+    -derivedDataPath "$2" \
+    -resultBundlePath "$3" \
+    $only \
+    -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
 }
 
 # gate_summary_line LEGS_FIELD STEP_SUMMARY EXIT_CODE — the ONE definition of the gate's summary

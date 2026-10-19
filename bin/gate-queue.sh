@@ -108,8 +108,15 @@
 # the worktree's own bin/gate-lib.sh when it has one; the authority is bin/mac-gate.sh, which
 # re-resolves the selection against the GATED REF and refuses (rc 2) before it takes a lock.
 #
+# TEST FILTER (IMGMGR-571): a further optional field, `only-testing=<ids>` (in either order with
+# `legs=`), is handed over as MAC_GATE_ONLY_TESTING so a fix loop on one failing UI test does not
+# pay a whole destination suite. Stored as `only_testing=`, shown by `list`, and the summary line
+# reads `ONLY_TESTING(<ids>) — NOT a full gate`. The run sets MAC_GATE_ONLY_TESTING from the
+# record alone, so a value exported into the enqueue's environment never narrows a spec that did
+# not ask for it.
+#
 # Usage:
-#   bin/gate-queue.sh enqueue <worktree>:<ref>:<label>[:legs=<list>] [<spec> …]
+#   bin/gate-queue.sh enqueue <worktree>:<ref>:<label>[:legs=<list>][:only-testing=<ids>] [<spec> …]
 #   bin/gate-queue.sh list
 #   bin/gate-queue.sh drop <label> [--dry-run] [--force] [--lock-wait <seconds>]
 #   bin/gate-queue.sh drop <label> --finished [--dry-run]
@@ -459,9 +466,12 @@ rec_age_seconds() {
 # legs_note LABEL — the record's leg selection for `list`, or `(full)` when it has none. An
 # EMPTY `legs=` and a record written before IMGMGR-410 both mean the same thing: a full gate.
 legs_note() {
-  local l
+  local l l2
   l="$(rec_get "$1" legs)" || l=""
-  [ -n "$l" ] && printf '%s' "$l" || printf -- '(full)'
+  [ -n "$l" ] || l='(full)'
+  l2="$(rec_get "$1" only_testing)" || l2=""
+  [ -z "$l2" ] || l="$l only-testing=$l2"
+  printf '%s' "$l"
 }
 
 self_pidns() { readlink /proc/self/ns/pid 2>/dev/null; }
@@ -639,7 +649,7 @@ restore_worktree() {
 # with the queue lock held. Semantics unchanged from wp13-gate-queue-v4.sh except the branch
 # restore, which now refuses rather than rewinds (IMGMGR-398).
 cmd_run() {
-  local wt=$1 ref=$2 label=$3 log=$4 branch rc branch_at ref_sha hold legs stale
+  local wt=$1 ref=$2 label=$3 log=$4 branch rc branch_at ref_sha hold legs only stale
   rec_lock_open "$label"
   # FIRST OF ALL, before this run writes a single field: is this record still the one that queued
   # us? A drop can retire a spec while its child is still queued behind the queue lock, and the
@@ -687,6 +697,7 @@ cmd_run() {
   # process's argv entry for entry, and a fifth operand would have to be threaded through it for
   # no gain. Empty = a full gate, which is what mac-gate.sh reads an unset MAC_GATE_LEGS as.
   legs="$(rec_get "$label" legs)" || legs=""
+  only="$(rec_get "$label" only_testing)" || only=""
   rec_set "$label" "state=running" "run_pid=$$" "started=$(now)" "pidns=$(self_pidns)"
   branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
   # No --ignored: gitignored working files are allowed (see the header); tracked modifications
@@ -699,7 +710,7 @@ cmd_run() {
   # Only now is the tree provably this run's: the lock has covered the hold re-check, the
   # clean-tree refusal, the detach and the record of it as one unit.
   rec_lock_close
-  ( cd "$wt" && MAC_GATE_HOST=merkur MAC_GATE_BRANCH="$branch" MAC_GATE_LEGS="$legs" bin/mac-gate.sh ) > "$log" 2>&1
+  ( cd "$wt" && MAC_GATE_HOST=merkur MAC_GATE_BRANCH="$branch" MAC_GATE_LEGS="$legs" MAC_GATE_ONLY_TESTING="$only" bin/mac-gate.sh ) > "$log" 2>&1
   rc=$?
   cp "$wt/.gate-artifacts/test-iphone.log" "${log%.log}-test-iphone.log" 2>/dev/null
   cp "$wt/.gate-artifacts/test-ipad.log" "${log%.log}-test-ipad.log" 2>/dev/null
@@ -725,7 +736,7 @@ cmd_run() {
 
 cmd_enqueue() {
   [ $# -ge 1 ] || die 2 "enqueue needs at least one <worktree>:<ref>:<label> spec"
-  local spec wt rest ref label log fpid rc worst=0 refused=0 prev prev_pid rec hold own_hold resfile gen tail legs
+  local spec wt rest ref label log fpid rc worst=0 refused=0 prev prev_pid rec hold own_hold resfile gen tail legs only extra field
   mkdir -p "$STATE"
   [ -d "$(dirname "$LOCK")" ] || die 2 "the lock directory $(dirname "$LOCK") does not exist"
   for spec in "$@"; do
@@ -734,21 +745,45 @@ cmd_enqueue() {
       *) die 2 "bad spec '$spec': want <worktree>:<ref>:<label>" ;;
     esac
     wt=${spec%%:*}; rest=${spec#*:}; ref=${rest%%:*}; tail=${rest#*:}
-    # The optional FOURTH field (IMGMGR-410). A label may not contain a colon, so splitting on
-    # the third one is unambiguous and a three-field spec parses exactly as it always did.
-    legs=""
+    # The optional fields after the label (IMGMGR-410, IMGMGR-571). A label may not contain a
+    # colon, so splitting on the third one is unambiguous and a three-field spec parses exactly as
+    # it always did. Each field at most once: a second one would silently win.
+    legs=""; only=""; extra=""
     case "$tail" in
-      *:*) label=${tail%%:*}; legs=${tail#*:} ;;
+      *:*) label=${tail%%:*}; extra=${tail#*:} ;;
       *)   label=$tail ;;
     esac
     case "$label" in
       ''|*[!A-Za-z0-9._-]*) die 2 "bad label '$label': the record is a file name, so a label may hold only [A-Za-z0-9._-]" ;;
     esac
-    if [ -n "$legs" ]; then
-      case "$legs" in
-        legs=*) legs=${legs#legs=} ;;
-        *) die 2 "bad spec '$spec': the optional fourth field must be legs=<comma-separated legs>, got '$legs'" ;;
+    while [ -n "$extra" ]; do
+      case "$extra" in
+        *:*) field=${extra%%:*}; extra=${extra#*:}; [ -n "$extra" ] || die 2 "bad spec '$spec': trailing ':'" ;;
+        *)   field=$extra; extra="" ;;
       esac
+      case "$field" in
+        legs=*)
+          [ -z "$legs" ] || die 2 "bad spec '$spec': legs= given twice"
+          legs=${field#legs=}
+          [ -n "$legs" ] || die 2 "bad spec '$spec': legs= is empty; leave the field off for a full gate" ;;
+        only-testing=*)
+          [ -z "$only" ] || die 2 "bad spec '$spec': only-testing= given twice"
+          only=${field#only-testing=}
+          [ -n "$only" ] || die 2 "bad spec '$spec': only-testing= is empty; leave the field off for the full suites" ;;
+        *) die 2 "bad spec '$spec': an optional field must be legs=<comma-separated legs> or only-testing=<comma-separated test ids>, got '$field'" ;;
+      esac
+    done
+    if [ -n "$only" ]; then
+      case "$only" in
+        *[!A-Za-z0-9,._/\(\)-]*) die 2 "bad test filter '$only': it may hold only [A-Za-z0-9,._/()-]" ;;
+      esac
+      # Advisory like the leg list below: bin/mac-gate.sh re-checks it against the gated ref.
+      if [ -f "$wt/bin/gate-lib.sh" ]; then
+        ( . "$wt/bin/gate-lib.sh" && gate_only_testing_args "$only" >/dev/null ) \
+          || die 2 "bad test filter '$only' in spec '$spec' (see: $wt/bin/mac-gate.sh --help)"
+      fi
+    fi
+    if [ -n "$legs" ]; then
       case "$legs" in
         '') die 2 "bad spec '$spec': legs= is empty; leave the field off for a full gate" ;;
         *[!A-Za-z0-9,._-]*) die 2 "bad leg list '$legs': a leg list may hold only [A-Za-z0-9,._-]" ;;
@@ -804,7 +839,7 @@ cmd_enqueue() {
     # A generation token for this admission: a child queued for an earlier occupant of this label
     # compares it before it touches anything (round-5 review, 2c).
     gen="$(date +%s)-$$-$RANDOM"
-    rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" "legs=$legs" \
+    rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" "legs=$legs" "only_testing=$only" \
       "lock=$LOCK" "enqueue_pid=$$" "flock_pid=" "flock_start=" "run_pid=" "state=waiting" \
       "rc=" "enqueued=$(now)" "gen=$gen" "pidns=$(self_pidns)"
     # Released before the spawn so the child cannot inherit this descriptor's lock. A drop in

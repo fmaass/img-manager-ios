@@ -75,6 +75,9 @@ echo "mac-gate SUMMARY: legs=${MAC_GATE_LEGS:-full} | stub=0 branch=${MAC_GATE_B
 # IMGMGR-409 cases: the generation the enqueue forwarded through the environment reaches the
 # gate itself, so a test can prove the forwarding by reading it back rather than assuming it.
 echo "STUB_SAW_GEN=${GATE_QUEUE_GEN:-<unset>}"
+# IMGMGR-571 cases: the test filter the run handed over, turned into argv by the real gate-lib,
+# so a case reads back the -only-testing words the Mac's xcodebuild would get.
+echo "STUB_ONLY_ARGS=[$(. bin/gate-lib.sh && gate_only_testing_args "${MAC_GATE_ONLY_TESTING:-}")]"
 # …and, on demand, another enqueue takes the label over WHILE this gate runs, which is what the
 # run's re-check before the branch restore has to notice.
 [ -z "${STUB_USURP_LABEL:-}" ] || sed -i "s/^gen=.*/gen=usurped-by-another-enqueue/" "$GATE_QUEUE_STATE/$STUB_USURP_LABEL.spec"
@@ -1246,6 +1249,54 @@ if [ "$erc" -eq 2 ] && [ ! -f "$GATE_QUEUE_STATE/shape-legs-demo.spec" ]; then
 else
   bad 22-legs-shape "rc=$erc: $out"
 fi
+
+# ---- 27: a named-test filter travels through the queue (IMGMGR-571). The spec's optional
+# only-testing= field is stored in the record, shown by `list`, and handed to bin/mac-gate.sh as
+# MAC_GATE_ONLY_TESTING — and ONLY from the record: a spec without the field runs unfiltered even
+# when the enqueue's own environment carries one, so a stale export cannot narrow a full gate.
+ot_ids="ImgManagerUITests/ScenePushUITests/testPOnAFocusedCardSendsNoMarkRequest,ImgManagerTests/Suite/fn()"
+STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:only-demo:legs=mirror,xcodegen,test-iphone:only-testing=$ot_ids" > "$tmp/enq27.out" 2>&1
+erc=$?
+want27="STUB_ONLY_ARGS=[-only-testing:ImgManagerUITests/ScenePushUITests/testPOnAFocusedCardSendsNoMarkRequest -only-testing:ImgManagerTests/Suite/fn()]"
+if [ "$erc" -eq 0 ] && [ "$(field only-demo only_testing)" = "$ot_ids" ] \
+   && [ "$(field only-demo legs)" = "mirror,xcodegen,test-iphone" ] \
+   && grep -qxF "$want27" "$(field only-demo log)"; then
+  ok 27-only-through "the spec's only-testing= reached the record AND the gate's argv builder: $(grep '^STUB_ONLY_ARGS=' "$(field only-demo log)")"
+else
+  bad 27-only-through "rc=$erc only_testing='$(field only-demo only_testing)' legs='$(field only-demo legs)' log=$(cat "$(field only-demo log)" 2>&1) enq=$(cat "$tmp/enq27.out")"
+fi
+if "$qs" list 2>&1 | grep -F 'only-demo ' | grep -qF "only-testing=$ot_ids"; then
+  ok 27-only-list "list shows the test filter of the record"
+else
+  bad 27-only-list "$("$qs" list 2>&1 | grep only-demo)"
+fi
+MAC_GATE_ONLY_TESTING="ImgManagerUITests/Leaked" STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:unfiltered-demo" > "$tmp/enq27b.out" 2>&1
+erc=$?
+if [ "$erc" -eq 0 ] && [ -z "$(field unfiltered-demo only_testing)" ] \
+   && grep -qx 'STUB_ONLY_ARGS=\[\]' "$(field unfiltered-demo log)" \
+   && ! grep -q -- '-only-testing' "$(field unfiltered-demo log)" \
+   && ! "$qs" list 2>&1 | grep -F 'unfiltered-demo ' | grep -q 'only-testing='; then
+  ok 27-only-unset "a spec without the field produces no -only-testing at all, even with MAC_GATE_ONLY_TESTING exported to the enqueue"
+else
+  bad 27-only-unset "rc=$erc only_testing='$(field unfiltered-demo only_testing)' log=$(cat "$(field unfiltered-demo log)" 2>&1)"
+fi
+STUB_GATE_SLEEP=0 "$qs" enqueue "$wt2:$sha2:only-first:legs=mirror,xcodegen,test-ipad:only-testing=ImgManagerUITests/First" "$wt2:$sha2:plain-second" > "$tmp/enq27c.out" 2>&1
+erc=$?
+if [ "$erc" -eq 0 ] && grep -qx 'STUB_ONLY_ARGS=\[-only-testing:ImgManagerUITests/First\]' "$(field only-first log)" \
+   && grep -qx 'STUB_ONLY_ARGS=\[\]' "$(field plain-second log)"; then
+  ok 27-only-per-spec "two specs of one enqueue: the filter belongs to its own spec, the one queued after it runs unfiltered"
+else
+  bad 27-only-per-spec "rc=$erc first=$(grep '^STUB_ONLY' "$(field only-first log)" 2>&1) second=$(grep '^STUB_ONLY' "$(field plain-second log)" 2>&1)"
+fi
+for badspec in "only-testing=" "only-testing=A/B;rm" "only-testing=A/B,,A/C" "only-testing=A/B:only-testing=A/C" "legs=lint:legs=lint"; do
+  out="$("$qs" enqueue "$wt2:$sha2:bad-only-demo:$badspec" 2>&1)"; erc=$?
+  if [ "$erc" -eq 2 ] && [ ! -f "$GATE_QUEUE_STATE/bad-only-demo.spec" ]; then
+    ok "27-only-refuse" "'$badspec' refuses at admission (rc=2) and writes no record: ${out##*$'\n'}"
+  else
+    bad "27-only-refuse" "'$badspec': rc=$erc record=$([ -f "$GATE_QUEUE_STATE/bad-only-demo.spec" ] && echo WRITTEN || echo none): $out"
+    rm -f "$GATE_QUEUE_STATE/bad-only-demo.spec"
+  fi
+done
 
 # ------------------------------------------------------------------------------- 5: list
 out="$("$qs" list 2>&1)"; rc=$?
