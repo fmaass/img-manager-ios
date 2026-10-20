@@ -28,6 +28,7 @@ struct CompareView: View {
         CompareStrip(store: store, session: session)
       }
       ConflictRecoveryBanner(store: store)
+      UnsavedMarksBanner(store: store)
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("compareContent")

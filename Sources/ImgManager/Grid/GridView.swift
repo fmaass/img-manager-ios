@@ -126,6 +126,7 @@ struct GridView: View {
           }
         }
       ConflictRecoveryBanner(store: store)
+      UnsavedMarksBanner(store: store)
       GridNoticeBanner(store: store)
       MarksCopyBanner(store: store)
       ActionBarView(

@@ -166,6 +166,7 @@ struct LoupeView: View {
         filmstrip.make(store)
       }
       ConflictRecoveryBanner(store: store)
+      UnsavedMarksBanner(store: store)
     }
     // The loupe's own accessible subtree, one container a UI test can scope to (its bars are the
     // host's navigation bar and bottom toolbar). `.contain` FIRST, then the identifier — the

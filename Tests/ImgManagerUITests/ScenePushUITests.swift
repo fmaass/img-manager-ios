@@ -124,6 +124,42 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
     waitFor(app, "debugProbe.markRequests", "value ENDSWITH %@", "|pick:601", "P on 601 inside")
   }
 
+  /// IMGMGR-586 (comment 12426): three members picked through three entry points — the tile
+  /// corner, the bar's Pick on a focused member, the loupe's Pick — each write names its own
+  /// member, never the cover or the first member. Members 4, 5, 6 are the 2nd–4th of 3…7; 5 is
+  /// already picked, and the bar's Pick writes `pick` regardless (it sets, it does not toggle).
+  func testPicksOnThreeMembersEachWriteThatMember() throws {
+    let app = launched()
+    tapCardBody(app)
+    assertEntered(app, Self.scene)
+
+    let corner = element(app, "tileMarkCorner-4")
+    XCTAssertTrue(corner.waitForExistence(timeout: 15), "Member 4 carries no mark corner.")
+    corner.tap()
+    waitFor(app, "debugProbe.markRequests", "value == %@", "markRequests=pick:4", "corner on 4")
+
+    focus(5, in: app)
+    let barPick = app.buttons["gridPickButton"]
+    XCTAssertTrue(barPick.waitForExistence(timeout: 10), "The bar has no Pick control.")
+    barPick.tap()
+    waitFor(
+      app, "debugProbe.markRequests", "value == %@", "markRequests=pick:4|pick:5", "bar Pick on 5")
+
+    // Focus first, then a tap on the focused tile opens the loupe on it (spec 3220 §2.2).
+    focus(6, in: app)
+    element(app, "gridTile-6").tap()
+    XCTAssertTrue(app.buttons["loupeBack"].waitForExistence(timeout: 10), "No loupe on 6.")
+    let loupePick = app.buttons["loupePickButton"]
+    XCTAssertTrue(loupePick.waitForExistence(timeout: 10), "The loupe has no Pick control.")
+    loupePick.tap()
+    // The probes render from the active grid instance only, which the Regular loupe is not.
+    let back = app.buttons["loupeBack"]
+    if back.waitForExistence(timeout: 2) { back.tap() }
+    waitFor(
+      app, "debugProbe.markRequests", "value == %@", "markRequests=pick:4|pick:5|pick:6",
+      "loupe Pick on 6")
+  }
+
   /// T4 · kills M19a (the body tap routes `.stack` nowhere).
   func testCardBodyTapPushesTheScene() throws {
     let app = launched()

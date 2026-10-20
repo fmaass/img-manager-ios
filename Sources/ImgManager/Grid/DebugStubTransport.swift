@@ -33,6 +33,8 @@
     private var markState: [Int: String] = [:]
     /// WP442 P12 (T11, `-UITestSplitCreatesScene`): where the fixture scene was split, if it was.
     private var splitPoint: Int?
+    /// IMGMGR-586: how many mark writes this transport has refused (`-UITestFailMarkWrites`).
+    private var failedMarkWrites = 0
 
     /// A minimal valid 1×1 JPEG — the last-resort fallback where no drawing API exists.
     private static let tinyJPEG = Data(
@@ -247,11 +249,19 @@
         // WP442 P12 (§2.7): the append-only request log, recorded BEFORE the answer and whether
         // or not the write changes state; then the fixture state moves by real transitions.
         let (state, ids) = await Self.markRequest(body: body)
-        let entry = "\(state):\(ids.map(String.init).joined(separator: ","))"
+        var entry = "\(state):\(ids.map(String.init).joined(separator: ","))"
+        // IMGMGR-586: a refused write reaches the wire and is logged as such, and moves nothing.
+        let refuses = failedMarkWrites < DebugStubLaunch.failedMarkWriteCount
+        if refuses {
+          failedMarkWrites += 1
+          entry = "failed:" + entry
+        }
+        let loggedEntry = entry
         await MainActor.run {
           (markProbe ?? .shared).markWrites += 1
-          (markProbe ?? .shared).markRequests.append(entry)
+          (markProbe ?? .shared).markRequests.append(loggedEntry)
         }
+        if refuses { return (HTTPResponse(status: .serviceUnavailable), nil) }
         var changed = 0
         for id in ids where Self.seededState(id, marks: markState) != state {
           markState[id] = state
@@ -1253,6 +1263,17 @@
     /// IMGMGR-502: every `preview`-tier proxy answers 404, so Triage shows "No preview".
     static var noPreviews: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestNoPreviews")
+    }
+
+    /// IMGMGR-586: `-UITestFailMarkWrites <n>` — the first `n` mark writes answer 503 and the
+    /// rest succeed, which is the server going away and coming back: the only way to drive a
+    /// failed pick and its Retry through the real UI. Independent of every other flag here.
+    static var failedMarkWriteCount: Int {
+      let arguments = ProcessInfo.processInfo.arguments
+      guard let index = arguments.firstIndex(of: "-UITestFailMarkWrites"),
+        arguments.indices.contains(index + 1)
+      else { return 0 }
+      return Int(arguments[index + 1]) ?? 0
     }
   }
 

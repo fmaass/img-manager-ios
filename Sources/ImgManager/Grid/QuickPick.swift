@@ -144,10 +144,11 @@ enum TapToPickToggle {
 extension GridStore {
   /// IMGMGR-475 option 2: a tap on a tile's mark corner. In browse with no lock on it focuses
   /// THAT photograph (never opening the loupe) and toggles Pick on it through the shipped mark
-  /// path (`applyMark`: optimistic, undoable, one mutation lane — a second corner tap while the
-  /// first is in flight is refused, never a flip back). Focus moves BEFORE the write's first
-  /// suspension, so the badge and the bar's readout change together. Everywhere else it is the
-  /// tile's own tap.
+  /// path (`applyMark`: optimistic, undoable, one mutation lane — a second corner tap on the same
+  /// photograph while its write is in flight is refused, never a flip back; IMGMGR-586: a tap on
+  /// another photograph meanwhile is queued and lands after it). Focus moves BEFORE the
+  /// write's first suspension, so the badge and the bar's readout change together. Everywhere
+  /// else it is the tile's own tap.
   func tapMarkCorner(_ imageID: Int) async {
     switch QuickPickCorner.route(mode: selection.mode, latchedVerb: pickLock.latchedVerb) {
     case .tile:

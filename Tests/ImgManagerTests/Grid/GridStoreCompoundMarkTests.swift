@@ -132,21 +132,26 @@ struct GridStoreCompoundMarkTests {
     #expect(store.lastMutationError == .conflict)
   }
 
-  @Test("The lane is held for the whole verb: a concurrent applyMark is refused at each group")
+  @Test(
+    "The lane is held for the whole verb: a concurrent applyMark on one of its photographs is refused at each group"
+  )
   func laneHeldAcrossTheVerb() async {
     let (store, transport) = await loadedStore()
     let groups = keepLeft
     await transport.holdMarkStateRequests(true)
     async let verb = store.applyCompoundMark(groups)
 
+    // IMGMGR-586: a tap on ANOTHER photograph would queue behind the verb, so the refusal is
+    // asserted on the verb's own photographs -- including 2, whose group has not started yet.
     await transport.waitUntilMarkStateStarted()
     #expect(store.isMutatingMark)
-    #expect(await store.applyMark(.none, to: [3]) == false)
+    #expect(await store.applyMark(.none, to: [2]) == false)
     await transport.releaseMarkState()
 
     await transport.waitUntilMarkStateStarted()
     #expect(store.isMutatingMark)
-    #expect(await store.applyMark(.none, to: [3]) == false)
+    #expect(await store.applyMark(.none, to: [1]) == false)
+    #expect(store.laneWaiterCount == 0)
     await transport.holdMarkStateRequests(false)
     await transport.releaseMarkState()
 

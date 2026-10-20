@@ -303,11 +303,38 @@ struct GridStoreQuickPickTests {
     await transport.waitUntilMarkStateStarted()
     // Optimistic: the tile already reads picked while the request is out.
     #expect(mark(store, 2) == .pick)
+    // IMGMGR-586 keeps this refusal: the same photograph's own write is still out. Returning
+    // here at all proves it was not queued (a queued tap would wait for the held request).
     await store.tapMarkCorner(2)
+    #expect(store.laneWaiterCount == 0, "the repeat tap on the same photograph was queued")
     await transport.releaseMarkState()
     await first.value
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
     #expect(mark(store, 2) == .pick)
     #expect(store.undo.entry?.appliedState == .pick)
+  }
+
+  @Test("IMGMGR-586: a corner tap on another photograph while a write is in flight lands after it")
+  func cornerTapOnAnotherPhotoIsQueued() async {
+    let (store, transport) = await loadedStore()
+    await commits(transport, imageID: 2)
+    await transport.holdMarkStateRequests(true)
+    let first = Task { await store.tapMarkCorner(2) }
+    await transport.waitUntilMarkStateStarted()
+    // Photograph 3 reads Dislike, so its corner tap asks for Pick.
+    let second = Task { await store.tapMarkCorner(3) }
+    for _ in 0..<10_000 where store.laneWaiterCount < 1 { await Task.yield() }
+    #expect(store.laneWaiterCount == 1, "the tap on another photograph was dropped, not queued")
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    await first.value
+    await second.value
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 2)
+    #expect(await transport.lastMarkStateRequest?.imageIds == [3])
+    #expect(await transport.lastMarkStateRequest?.state == .pick)
+    #expect(mark(store, 2) == .pick)
+    #expect(mark(store, 3) == .pick)
   }
 
   @Test("Tap to Pick latches the Pick lock (mode-row caption) and a second press exits it")

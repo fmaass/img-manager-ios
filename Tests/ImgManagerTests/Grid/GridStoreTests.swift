@@ -1626,7 +1626,7 @@ struct GridStoreTests {
     #expect(!store.loupeExhausted)
   }
 
-  // MARK: - P5 BINDING: rapid double-mutation is refused, never interleaved (fold addendum)
+  // MARK: - P5 BINDING: rapid double-mutation is serialised, never interleaved (fold addendum)
 
   @Test(
     "A mark call while one is already in flight is REFUSED -- no snapshot, no second network call, no interleaved state"
@@ -1678,6 +1678,62 @@ struct GridStoreTests {
     await store.applyMark(.dislike, to: [1])
     #expect(store.images.first?.mark.state == .dislike)
     #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 2)
+  }
+
+  @Test(
+    "IMGMGR-586: a mark call on ANOTHER photograph while one is in flight is QUEUED and lands after it, never interleaved"
+  )
+  func markOnAnotherPhotoWhileOneIsInFlightIsQueued() async throws {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(
+      .init(
+        items: [
+          makeImage(id: 1, mark: .none, revision: "r0"),
+          makeImage(id: 2, mark: .none, revision: "s0"),
+        ], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 1, revision: "r1")])),
+      forState: .pick)
+    await transport.setMarkStateOutcome(
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 2, revision: "s1")])),
+      forState: .dislike)
+    await transport.holdMarkStateRequests(true)
+
+    async let firstCall: Bool = store.applyMark(.pick, to: [1])
+    await transport.waitUntilMarkStateStarted()
+    #expect(store.isMutatingMark)
+
+    // The tap on photograph 2 while photograph 1's write is out. Bounded, so a refused call
+    // fails here instead of hanging the suite.
+    async let secondCall: Bool = store.applyMark(.dislike, to: [2])
+    for _ in 0..<10_000 where store.laneWaiterCount < 1 { await Task.yield() }
+    #expect(store.laneWaiterCount == 1, "the tap on another photograph was not queued")
+
+    // Queued, not interleaved: no second network call yet, and photograph 2 is untouched -- the
+    // queued call has taken no snapshot and applied nothing optimistically.
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 1)
+    let none = Components.Schemas.MarkView.StatePayload.none
+    #expect(store.images.first(where: { $0.id == 2 })?.mark.state == none)
+
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    let first = await firstCall
+    let second = await secondCall
+
+    #expect(first)
+    #expect(second)
+    #expect(await transport.callCount(Operations.SetMarkStateApiMarksStatePost.id) == 2)
+    #expect(await transport.lastMarkStateRequest?.imageIds == [2])
+    #expect(await transport.lastMarkStateRequest?.state == .dislike)
+    #expect(await transport.lastMarkStateRequest?.preconditions?.first?.revision == "s0")
+    #expect(!store.isMutatingMark)
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.state == .pick)
+    #expect(store.images.first(where: { $0.id == 1 })?.mark.revision == "r1")
+    #expect(store.images.first(where: { $0.id == 2 })?.mark.state == .dislike)
+    #expect(store.images.first(where: { $0.id == 2 })?.mark.revision == "s1")
+    #expect(store.undo.entry?.appliedState == .dislike)
   }
 
   @Test("undoLastMark() is refused too while a mark mutation is in flight (same guard, same slot)")

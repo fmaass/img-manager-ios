@@ -2948,12 +2948,13 @@ final class GridStore {
   /// "the guard is the source of truth independent of the view" posture `activateLatchButton`'s
   /// own `selection.mode != .select` guard already uses.
   ///
-  /// P6: the SAME flag is now the "one ordered mark/refresh lane" (plan item 2) -- `applyMark`/
-  /// `undoLastMark` still REFUSE via `tryAcquireLane()` (unchanged posture), while
+  /// P6: the SAME flag is now the "one ordered mark/refresh lane" (plan item 2) --
+  /// `undoLastMark` still REFUSES via `tryAcquireLane()` (unchanged posture), while
   /// `authoritativeRefresh()` and `addTag` (diff-gate round 2, B5: a submitted tag must never be
   /// silently dropped by a busy lane -- its entry sheet is already dismissed by the time the
-  /// write runs, unlike Pick/Dislike's always-visible, always-re-tappable button) QUEUE via
-  /// `acquireLaneQueueing()` instead of refusing.
+  /// write runs) QUEUE via `acquireLaneQueueing()` instead of refusing. IMGMGR-586: `applyMark`
+  /// queues too now — a re-tappable button did not make a dropped tap visible, and picks were
+  /// lost that way — except on a photograph whose own write is pending (`pendingMarkIDs`).
   private(set) var isMutatingMark = false
 
   /// FIFO of calls waiting for a busy lane -- see `acquireLaneQueueing()`/`releaseLane()`.
@@ -2970,7 +2971,12 @@ final class GridStore {
   /// A pure read of the FIFO above; nothing acts on it.
   var laneWaiterCount: Int { laneWaiters.count }
 
-  /// The REFUSING acquisition `applyMark`/`undoLastMark` use: `false` (no-op for the caller) if
+  /// IMGMGR-586: photographs an `applyMark` call is writing or waiting to write. A tap on one of
+  /// these is refused (the IMGMGR-475 rule: an accidental double tap must not flip a pick back);
+  /// a tap on any other photograph queues.
+  private var pendingMarkIDs: Set<Int> = []
+
+  /// The REFUSING acquisition `undoLastMark` uses: `false` (no-op for the caller) if
   /// the lane is already held by anything (another mutation OR a refresh/tag-write in progress).
   private func tryAcquireLane() -> Bool {
     guard !isMutatingMark else { return false }
@@ -3161,9 +3167,21 @@ final class GridStore {
   func applyMark(
     _ state: MarkStateValue, to imageIDs: [Int], explicitPriors: [PriorMarkSnapshot]? = nil
   ) async -> Bool {
-    guard tryAcquireLane() else { return false }
+    // IMGMGR-586: QUEUES behind a busy lane, as `addTag` does. Refusing dropped every tap made
+    // while another mark write was out, with no signal, which over the VPN is most rapid taps.
+    // The priors are still captured only once the lane is held, so a queued tap snapshots the
+    // committed (or rolled-back) result of the write ahead of it, never its optimistic state —
+    // the P5 binding holds by ordering rather than by refusal. Taps land in tap order.
+    // The one refusal left: a photograph whose own write is still out (see `pendingMarkIDs`).
+    let submitted = explicitPriors.map { Set($0.map(\.imageID)) } ?? writableIDs(among: imageIDs)
+    guard submitted.isDisjoint(with: pendingMarkIDs) else { return false }
+    pendingMarkIDs.formUnion(submitted)
+    defer { pendingMarkIDs.subtract(submitted) }
+    await acquireLaneQueueing()
     defer { releaseLane() }
-    return await performMark(state, priors: explicitPriors ?? capturePriorSnapshots(for: imageIDs))
+    let priors = explicitPriors ?? capturePriorSnapshots(for: imageIDs)
+    recordDroppedWrites(submitted: submitted, written: Set(priors.map(\.imageID)))
+    return await performMark(state, priors: priors)
   }
 
   /// The mutation itself, WITHOUT its own lane acquisition — the same wrapper/core split
@@ -3183,6 +3201,51 @@ final class GridStore {
     case conflict
     case scopeChanged
     case nothingToWrite
+  }
+
+  /// IMGMGR-586: photographs whose mark write failed and has not been saved since, keyed by id.
+  /// A pick is a server write only, so a failure that merely rolled the tile back lost the pick
+  /// with no signal (owner report: picks made on one device never reached the other).
+  /// `UnsavedMarksBanner` states the count and offers Retry. One entry per photograph — the
+  /// latest failed state replaces an earlier one, and any later saved write to it removes it —
+  /// so a Retry can never resend a state the reader has since overridden. A scope change does
+  /// not clear it: the photographs are still unsaved wherever the reader went.
+  private(set) var unsavedMarks: [Int: UnsavedMark] = [:]
+
+  /// Re-sends every unsaved mark, one write per state, against the revision the failed write was
+  /// made against — the grid need not still show the photograph, and a photograph another device
+  /// changed meanwhile answers 409 and goes to the conflict banner instead of being overwritten
+  /// unseen. Queued on the lane like a tap; the record is read once the lane is held, so a second
+  /// Retry queued behind the first finds nothing left to send. A 409 stops the run, since the
+  /// conflict machine holds one batch at a time.
+  func retryUnsavedMarks() async {
+    guard !unsavedMarks.isEmpty else { return }
+    await acquireLaneQueueing()
+    defer { releaseLane() }
+    let pending = unsavedMarks.values
+    // Pending exactly as a tap's photographs are: Retry shows each one in its retried state, so a
+    // repeat tap during the write asks for the opposite and, queued, would undo the Retry once it
+    // landed. Claimed only once the lane is held (no other mark write is then out), and never an
+    // id a tap queued behind this Retry already holds — that tap releases its own.
+    let claimed = Set(pending.map(\.prior.imageID)).subtracting(pendingMarkIDs)
+    pendingMarkIDs.formUnion(claimed)
+    defer { pendingMarkIDs.subtract(claimed) }
+    for state: MarkStateValue in [.pick, .dislike, .none] {
+      let group = pending.filter { $0.state == state }.map(\.prior)
+      let priors = group.sorted { $0.imageID < $1.imageID }
+      guard !priors.isEmpty else { continue }
+      if await writeMark(state, priors: priors, recordsUndo: true) == .conflict { return }
+    }
+  }
+
+  func dismissUnsavedMarks() { unsavedMarks = [:] }
+
+  private func recordUnsaved(_ state: MarkStateValue, priors: [PriorMarkSnapshot]) {
+    for prior in priors { unsavedMarks[prior.imageID] = UnsavedMark(state: state, prior: prior) }
+  }
+
+  private func forgetUnsaved(_ priors: [PriorMarkSnapshot]) {
+    for prior in priors { unsavedMarks[prior.imageID] = nil }
   }
 
   /// `performMark`'s body. WP30 P3 (IMGMGR-458, plan decision 6): `recordsUndo` lets a compound
@@ -3211,6 +3274,8 @@ final class GridStore {
       // the fact that the write landed, so the queue's post-mutation re-read is never silently
       // skipped just because a scope change happened to race the network await.
       mutationCommitCount += 1
+      // IMGMGR-586: saved is saved, whichever scope the reader is in by now.
+      forgetUnsaved(priors)
       guard generation == loadGeneration else { return .scopeChanged }
       reconcileRevisions(applied.revisions ?? [])
       if recordsUndo { undo.record(UndoEntry(appliedState: state, priorStates: priors)) }
@@ -3221,9 +3286,16 @@ final class GridStore {
       await refreshScenesFor(priors.map(\.imageID))
       return .committed
     } catch {
+      let mutationError = (error as? GridServiceError) ?? .unreachable
+      // IMGMGR-586: recorded BEFORE the stale-generation escape — a write that failed while the
+      // reader changed scope is just as unsaved. A 409 is the conflict banner's instead.
+      if mutationError == .conflict {
+        forgetUnsaved(priors)
+      } else {
+        recordUnsaved(state, priors: priors)
+      }
       guard generation == loadGeneration else { return .scopeChanged }
       rollback(priors)
-      let mutationError = (error as? GridServiceError) ?? .unreachable
       lastMutationError = mutationError
       // P6 item 3: the whole recovery sequence (re-read + diff) runs HERE, still inside the
       // CALLER's lane hold (its `defer { releaseLane() }` has not fired yet — this core never
@@ -3273,6 +3345,11 @@ final class GridStore {
   ) async -> CompoundMarkResult {
     guard tryAcquireLane() else { return .refused }
     defer { releaseLane() }
+    // IMGMGR-586: its photographs are being written, so a tap on one is refused like a repeat
+    // tap (`pendingMarkIDs`); a tap on any other photograph queues behind the whole verb.
+    let verbIDs = Set(groups.flatMap(\.imageIDs))
+    pendingMarkIDs.formUnion(verbIDs)
+    defer { pendingMarkIDs.subtract(verbIDs) }
     let generation = loadGeneration
     var planned: [(state: MarkStateValue, priors: [PriorMarkSnapshot])] = []
     for group in groups {

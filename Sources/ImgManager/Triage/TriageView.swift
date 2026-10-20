@@ -72,6 +72,8 @@ struct TriageView: View {
       debugProbeElement
       header
       photo
+      // IMGMGR-586: Triage is a full-screen cover, so the grid's own banner is hidden behind it.
+      UnsavedMarksBanner(store: store)
       controls
     }
     .sensoryFeedback(.selection, trigger: session.committedMarks)
