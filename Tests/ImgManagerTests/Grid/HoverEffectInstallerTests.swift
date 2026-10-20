@@ -93,7 +93,7 @@ struct HoverEffectWiringTests {
 
     let cardSpy = Spy()
     var card = SceneCardView(
-      row: makeStackRow(id: 7), plan: plan, isExpanded: false, store: store)
+      row: makeStackRow(id: 7), plan: plan, store: store)
     card.hoverEffectInstaller = HoverEffectInstaller(onApply: { cardSpy.count += 1 })
     _ = card.body
     #expect(cardSpy.count == 1, "SceneCardView does not install the hover effect")

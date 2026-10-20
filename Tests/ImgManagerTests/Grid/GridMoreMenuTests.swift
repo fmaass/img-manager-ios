@@ -573,7 +573,7 @@ struct GridViewMoreMenuTests {
         items: [makeImage(id: 1), makeImage(id: 2), makeImage(id: 3)], limit: 100, stackId: 5),
       forStack: 5)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 2
   }
 

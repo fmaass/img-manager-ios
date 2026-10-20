@@ -178,4 +178,129 @@ struct WorkspaceNavigationTests {
       #expect(nav.path(for: tab).isEmpty)
     }
   }
+
+  // MARK: - WP442 P12 (IMGMGR-540): the scene route is a projection of the store
+
+  private let base: [WorkspaceRoute] = [.workspace]
+  private let inScene5: [WorkspaceRoute] = [.workspace, .scene(5)]
+
+  private func hosted(_ tab: CompactTab = .shoots) -> WorkspaceNavigation {
+    let nav = WorkspaceNavigation()
+    nav.showSelectedShoot(in: tab)
+    return nav
+  }
+
+  /// R1 · kills M15 (an effect computed without the projection: no leave on a Back).
+  @Test("R1 — the system Back out of a scene leaves it and keeps the host")
+  func systemBackFromTheSceneLeavesIt() {
+    let nav = hosted()
+    #expect(nav.presentedPath(for: .shoots, entered: 5) == inScene5)
+    let effect = nav.applyStackWrite(base, for: .shoots, entered: 5)
+    #expect(effect == StackWriteEffect(leavesScene: true, popsHost: false))
+    #expect(nav.gridHost == .shoots)
+    #expect(nav.path(for: .shoots) == base)
+    #expect(nav.presentedPath(for: .shoots, entered: nil) == base)
+  }
+
+  /// R2 · kills M15: the edge swipe reaches the binding as the very same write.
+  @Test("R2 — an edge swipe is the same binding write, from any hosting tab")
+  func anEdgeSwipeIsTheSameWrite() {
+    let nav = hosted(.library)
+    let effect = nav.applyStackWrite(base, for: .library, entered: 5)
+    #expect(effect.leavesScene)
+    #expect(!effect.popsHost)
+    #expect(nav.gridHost == .library)
+  }
+
+  /// R3 · kills M15 (pop-to-root treated as a scene Back only).
+  @Test("R3 — pop to root leaves the scene and releases the host")
+  func popToRootLeavesAndUnhosts() {
+    let nav = hosted()
+    let effect = nav.applyStackWrite([], for: .shoots, entered: 5)
+    #expect(effect == StackWriteEffect(leavesScene: true, popsHost: true))
+    #expect(nav.gridHost == nil)
+    #expect(nav.presentedPath(for: .shoots, entered: 5).isEmpty)
+  }
+
+  /// R4 · kills M15 (`applyStackWrite` ignores the echo).
+  @Test("R4 — the stack echoing the projection back is a no-op")
+  func anEchoIsANoOp() {
+    let nav = hosted()
+    #expect(nav.applyStackWrite(inScene5, for: .shoots, entered: 5) == .none)
+    #expect(nav.path(for: .shoots) == base)
+    #expect(nav.gridHost == .shoots)
+  }
+
+  /// R5 · kills M15: a pop that finishes after the store already left produces no second leave.
+  @Test("R5 — a stale scene write after the store left is ignored")
+  func aStaleSceneWriteAfterTheStoreLeftIsIgnored() {
+    let nav = hosted()
+    #expect(nav.applyStackWrite(base, for: .shoots, entered: nil) == .none)
+    #expect(nav.applyStackWrite(inScene5, for: .shoots, entered: nil) == .none)
+    #expect(nav.path(for: .shoots) == base, "a stale .scene was stored in the base path")
+    #expect(nav.presentedPath(for: .shoots, entered: nil) == base)
+  }
+
+  /// R6 · kills M14 (`showSelectedShoot` writes `.scene` into the base).
+  @Test("R6 — a programmatic host replacement is not a Back")
+  func programmaticHostReplacementIsNotABack() {
+    let nav = hosted(.library)
+    nav.showSelectedShoot(in: .shoots)
+    #expect(nav.path(for: .shoots) == base)
+    #expect(nav.presentedPath(for: .shoots, entered: 5) == inScene5)
+    #expect(nav.presentedPath(for: .library, entered: 5).isEmpty)
+    #expect(nav.applyStackWrite(inScene5, for: .shoots, entered: 5) == .none)
+  }
+
+  /// R7 · kills M16 (the projection ignores `gridHost`).
+  @Test("R7 — Regular→Compact presents the entered scene on the new host only")
+  func regularToCompactPresentsTheEnteredScene() {
+    let nav = WorkspaceNavigation()
+    nav.applyLayoutChange(from: .regular2, to: .compact, hasSelectedShoot: true)
+    #expect(nav.presentedPath(for: .library, entered: 5) == inScene5)
+    #expect(nav.presentedPath(for: .shoots, entered: 5).isEmpty)
+  }
+
+  /// R8 · kills M14: Compact→Regular writes nothing, the entry is the store's alone.
+  @Test("R8 — Compact→Regular writes no path")
+  func compactToRegularWritesNothing() {
+    let nav = hosted()
+    nav.applyLayoutChange(from: .compact, to: .regular3, hasSelectedShoot: true)
+    #expect(nav.path(for: .shoots) == base)
+    #expect(nav.gridHost == .shoots)
+    #expect(nav.presentedPath(for: .shoots, entered: 5) == inScene5)
+  }
+
+  /// R9 · kills M15: a retarget changes the projection in one step and its echo is a no-op.
+  @Test("R9 — a topology retarget is not a pop")
+  func aTopologyRetargetIsNotAPop() {
+    let nav = hosted()
+    #expect(nav.presentedPath(for: .shoots, entered: 5) == inScene5)
+    #expect(nav.presentedPath(for: .shoots, entered: 9) == [.workspace, .scene(9)])
+    #expect(nav.applyStackWrite([.workspace, .scene(9)], for: .shoots, entered: 9) == .none)
+    #expect(nav.path(for: .shoots) == base)
+  }
+
+  /// R10 · kills M16: no host after the session ends, so no scene is presented anywhere.
+  @Test("R10 — endSession drops the scene from every stack")
+  func endSessionDropsTheScene() {
+    let nav = hosted()
+    nav.endSession()
+    for tab in CompactTab.allCases {
+      #expect(nav.presentedPath(for: tab, entered: 5).isEmpty)
+    }
+  }
+
+  /// R11 · the `.group` route exists (P13's entry) with no UI and no projection.
+  @Test("R11 — the group route is hashable and never projected or stored")
+  func groupRouteIsHashableAndNeverProjected() {
+    let a = WorkspaceRoute.group(key: "camera", value: "X-T5")
+    #expect(Set([a, .group(key: "camera", value: "X-T5")]).count == 1)
+    #expect(a != .group(key: "camera", value: "X-H2"))
+    #expect(a.isEntry && !a.isScene)
+    let nav = hosted()
+    #expect(!nav.presentedPath(for: .shoots, entered: 5).contains(a))
+    _ = nav.applyStackWrite([.workspace, a], for: .shoots, entered: nil)
+    #expect(nav.path(for: .shoots) == base)
+  }
 }

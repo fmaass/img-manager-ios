@@ -165,18 +165,19 @@ struct LoupeFilmstripTests {
           makeImage(id: 501, captured: Date(timeIntervalSince1970: 1_700_000_000)),
           makeImage(id: 502, captured: Date(timeIntervalSince1970: 1_700_000_060)),
         ], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
-    await scene.toggleSceneExpanded(5)
+    await scene.enterScene(5)
     scene.openLoupe(on: 501)
     let opened = FilmstripView(store: scene)
-    // The projection the grid walks is unchanged and still holds the loose photograph...
-    #expect(scene.actionableImages.map(\.id) == [10, 501, 502])
-    // ...which is exactly what the strip no longer shows.
+    // WP442 P12: the projection the grid walks inside the scene is the scene...
+    #expect(scene.actionableImages.map(\.id) == [501, 502])
+    // ...and so is the strip — never the loose photograph or the cover.
     #expect(opened.frames.map(\.id) == [501, 502])
     #expect(opened.frames.contains(where: { $0.id == 10 }) == false)
     #expect(opened.frames.contains(where: { $0.id == 900 }) == false)
 
-    // And on the loose photograph itself there is no strip at all.
-    scene.loupeFocus(on: 10)
+    // And on the loose photograph itself (Back in the stream) there is no strip at all.
+    scene.leaveScene()
+    scene.openLoupe(on: 10)
     let loose = FilmstripView(store: scene)
     #expect(loose.scope == .hidden)
     #expect(loose.frames.isEmpty)
@@ -315,7 +316,7 @@ struct LoupeFilmstripTests {
           makeImage(id: 502, captured: Date(timeIntervalSince1970: 1_700_000_060)),
         ], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.openLoupe(on: 501)
 
     let strip = FilmstripView(store: store)
@@ -417,7 +418,7 @@ struct LoupeFilmstripTests {
       .init(items: [makeImage(id: 503)], limit: 100, nextCursor: nil, stackId: 5),
       forCursor: "mem-2")
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.openLoupe(on: 502)
 
     let loupe = LoupeView(
@@ -484,7 +485,7 @@ struct LoupeFilmstripTests {
       await transport.setStackMemberPage(
         .init(items: [], limit: 100, nextCursor: nil, stackId: 5), forCursor: "mem-2")
       await store.setDisplayMode(.scene)
-      await store.toggleSceneExpanded(5)
+      await store.enterScene(5)
       store.openLoupe(on: 502)
       #expect(store.sceneMemberCursors[5] == .more("mem-2"))
 
@@ -642,8 +643,8 @@ struct FilmstripScopeTests {
   @Test("A CLOSED scene's cached members are not a band")
   func aClosedScenesCachedMembersAreNotABand() {
     let band = [image(501), image(502)]
-    // `GridStore.toggleSceneExpanded` keeps a closed scene's members in hand on purpose (they are
-    // not re-fetched on reopen), so the fence that matters is `expanded`, not `members`.
+    // `GridStore.leaveScene` keeps a left scene's members in hand on purpose (they are not
+    // re-fetched on re-entry), so the fence that matters is `expanded`, not `members`.
     #expect(
       SceneRowBuilder.openSceneMembers(containing: 501, expanded: [], members: [5: band]) == nil)
     // Positive control: the same state with the scene OPEN answers with the band.
@@ -680,16 +681,16 @@ struct FilmstripScopeTests {
     await transport.setStackMemberPage(
       .init(items: [image(501), image(502)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     return store
   }
 
   @Test("Focus member -> loose -> member gives band, no strip, band again")
   func focusMovesFlipTheScopeWithNoStaleFrames() async {
     let store = await openedSceneStore()
-    // Premise: the grid's own projection holds all three the whole way through, so every change
-    // below is the STRIP's scope moving and nothing else.
-    #expect(store.actionableImages.map(\.id) == [10, 501, 502])
+    // Premise: the grid's own projection (WP442 P12: the entered scene) holds the same members
+    // the whole way through, so every change below is the STRIP's scope moving and nothing else.
+    #expect(store.actionableImages.map(\.id) == [501, 502])
 
     store.openLoupe(on: 501)
     #expect(FilmstripScope.resolve(for: store).frames.map(\.id) == [501, 502])
@@ -701,9 +702,9 @@ struct FilmstripScopeTests {
     store.loupeFocus(on: 502)
     #expect(FilmstripScope.resolve(for: store).frames.map(\.id) == [501, 502])
 
-    // Closing the scene takes the band away with it — the store drops focus on a photograph
+    // Leaving the scene takes the band away with it — the store drops focus on a photograph
     // nobody can see, and the strip has nothing left to be.
-    await store.toggleSceneExpanded(5)
+    store.leaveScene()
     #expect(store.focusedImageID == nil)
     #expect(FilmstripScope.resolve(for: store) == .hidden)
   }

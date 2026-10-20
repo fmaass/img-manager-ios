@@ -96,10 +96,10 @@ struct SceneBandTests {
     return row
   }
 
-  // MARK: - IMGMGR-240: the card is the CLOSED representation, so opening swaps it out
+  // MARK: - WP442 P12: a card PUSHES its scene; the stream never swaps the card out
 
-  @Test("An expanded scene renders exactly its members — the card leaves the sequence")
-  func expandedSceneReplacesItsCardWithItsMembers() async {
+  @Test("An entered scene's screen is exactly its members; the stream keeps the card")
+  func enteredSceneShowsItsMembersAndTheStreamKeepsTheCard() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
       .init(
@@ -113,57 +113,52 @@ struct SceneBandTests {
     // Collapsed first — the control case, and the half that must NOT change.
     #expect(store.sceneDisplayRows.map(\.id) == [.image(10), .stack(5)])
 
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
-    // The claim: N members, zero cards, in the scene's own position in the stream.
-    let rows = store.sceneDisplayRows
-    #expect(rows.map(\.id) == [.image(10), .image(501), .image(502), .image(503)])
+    // The claim: the scene screen is N members, zero cards; the stream behind it is unchanged.
+    #expect(store.displayRows(for: .stream).map(\.id) == [.image(10), .stack(5)])
+    let rows = store.displayRows(for: .scene(5))
+    #expect(rows.map(\.id) == [.image(501), .image(502), .image(503)])
     #expect(rows.contains { if case .stack = $0 { return true } else { return false } } == false)
     // No image id twice — the cover used to be drawn as the card AND again as the member it is.
     let ids = rows.compactMap(\.id.imageID)
     #expect(Set(ids).count == ids.count)
-    // The served rows are untouched: the swap is a DISPLAY derivation, so the scene keeps its
-    // place in capture order (the stored anchor) and its cursor.
+    // The served rows are untouched: the scene keeps its place in capture order (the stored
+    // anchor) and its cursor.
     #expect(store.sceneRows.count == 2)
     #expect(
       currentStackRow(store, at: 1)?.anchorTakenAt == Date(timeIntervalSince1970: 1_700_000_000))
     #expect(currentStackRow(store, at: 1)?.representative.id == 900)
     #expect(store.sceneNextCursor == "scene-cursor")
-    // Write-safety, both directions: expanded members ARE actionable, and the cover never is.
-    #expect(store.actionableImages.map(\.id) == [10, 501, 502, 503])
+    // Write-safety, both directions: entered members ARE actionable, and the cover never is.
+    #expect(store.actionableImages.map(\.id) == [501, 502, 503])
     #expect(store.actionableImages.contains { $0.id == 900 } == false)
   }
 
-  @Test("A scene opened but not yet loaded keeps its card — never zero rows")
+  @Test("A scene entered but not yet loaded shows Loading; the stream keeps its card")
   func expandedButUnloadedSceneKeepsItsCard() async {
     let (store, transport) = await loadedSceneStore()
     await transport.holdStackMembersRequests(true)
     await transport.setStackMemberPage(
       .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
 
-    let opening = Task { await store.toggleSceneExpanded(5) }
+    let opening = Task { await store.enterScene(5) }
     await transport.waitUntilStackMembersStarted()
 
-    // Expansion is committed before the membership settles. Without the card there would be
-    // nothing on screen for this scene at all — and no way back out of the state.
-    let rows = store.sceneDisplayRows
-    #expect(rows.map(\.id) == [.image(10), .stack(5)])
-    guard case .stack(_, let isExpanded) = rows[1] else {
-      Issue.record("row 1 is not a stack row")
-      await transport.releaseStackMembers()
-      await opening.value
-      await transport.holdStackMembersRequests(false)
-      return
-    }
-    #expect(isExpanded)
-    // And it is still not a write target while it waits.
-    #expect(store.actionableImages.map(\.id) == [10])
+    // The entry is committed before the membership settles: the screen says Loading, and the
+    // stream behind it still holds the card.
+    #expect(store.enteredSceneID == 5)
+    #expect(store.sceneScreenState(for: 5) == .loading)
+    #expect(store.displayRows(for: .stream).map(\.id) == [.image(10), .stack(5)])
+    // Nothing is a write target while it waits: not the card, not the stream behind it.
+    #expect(store.actionableImages.isEmpty)
 
     await transport.releaseStackMembers()
     await opening.value
     await transport.holdStackMembersRequests(false)
 
-    #expect(store.sceneDisplayRows.map(\.id) == [.image(10), .image(501)])
+    #expect(store.displayRows(for: .scene(5)).map(\.id) == [.image(501)])
+    #expect(store.sceneScreenState(for: 5) == .loaded)
   }
 
   // MARK: - IMGMGR-241: ✓N is a count, and it moves when a member is marked
@@ -175,7 +170,7 @@ struct SceneBandTests {
       .init(
         items: [makeImage(id: 501, revision: "m-rev-1")], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     // The server's answer after the pick: two members picked now, and the cover moved to one.
     let newCover = makeImage(id: 501, mark: .pick, revision: "m-rev-9")
@@ -211,7 +206,7 @@ struct SceneBandTests {
           makeImage(id: 502, mark: .pick, revision: "m-rev-2"),
         ], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     #expect(currentStackRow(store, at: 1)?.pickedCount == 1)
 
     await transport.setMarkStateOutcome(
@@ -252,30 +247,6 @@ struct SceneBandDerivationTests {
       ext: "raf", filename: "DSCF\(id).raf", folderId: 1, id: id,
       lightroom: .init(sidecarPresent: false), mark: .init(revision: "r0"),
       proxies: .init(additionalProperties: [:]), sourceTier: "local")
-  }
-
-  @Test("Each open band anchors its control on its FIRST member, and nothing else does")
-  func bandLeadsAreTheFirstMemberOfEachOpenBand() {
-    let leads = SceneRowBuilder.bandLeadMembers(
-      expanded: [5, 7, 9],
-      members: [5: [image(501), image(502)], 7: [image(701)], 9: []])
-
-    // 5 and 7 have bands; 9 is open but empty (its card is still on screen and carries its own
-    // handle), so it anchors nothing.
-    #expect(leads == [501: 5, 701: 7])
-    // A member that is not the lead gets no handle — one open scene, one control, however many
-    // justified rows its members reflow across.
-    #expect(leads[502] == nil)
-  }
-
-  @Test("A closed scene anchors nothing even when its members are still cached")
-  func aClosedSceneAnchorsNothing() {
-    // Closing does not discard the loaded membership (reopening is a display change, not a
-    // reason to ask again), so "has members" cannot be the test — being OPEN is.
-    let leads = SceneRowBuilder.bandLeadMembers(expanded: [], members: [5: [image(501)]])
-    #expect(leads.isEmpty)
-    // Positive control: the same membership DOES anchor once the scene is open.
-    #expect(SceneRowBuilder.bandLeadMembers(expanded: [5], members: [5: [image(501)]]) == [501: 5])
   }
 
   @Test("✓N counts only members it holds, only real crossings, and never below zero")
@@ -324,13 +295,11 @@ struct SceneBandDerivationTests {
 @Suite("Scene chrome accessibility — the handle's name and state, the card's own summary")
 struct SceneChromeAccessibilityTests {
 
-  @Test("The expand handle names the action and carries the open/closed state")
-  func theHandleNamesItsActionAndItsState() {
-    #expect(SceneHandleAccessibility.label(isExpanded: false) == "Open scene")
-    #expect(SceneHandleAccessibility.label(isExpanded: true) == "Close scene")
-    // The state half — SwiftUI has no `aria-expanded`, so it travels as the element's VALUE.
-    #expect(SceneHandleAccessibility.value(isExpanded: false) == "Closed")
-    #expect(SceneHandleAccessibility.value(isExpanded: true) == "Open")
+  /// WP442 P12: the handle PUSHES the scene, so it names that action and carries no open/closed
+  /// state any more — a card is never open in place.
+  @Test("The handle names its one action, Open scene")
+  func theHandleNamesItsAction() {
+    #expect(SceneHandleAccessibility.label == "Open scene")
   }
 
   /// WP21 P2 (IMGMGR-339): the pencil states `edited_count`, and states nothing at zero — the
@@ -369,12 +338,12 @@ struct SceneChromeAccessibilityTests {
       }
       #expect(SceneVerdictBadges.spokenEditsClause(count: count) == ", \(rendered) edited")
       let spoken = SceneVerdictBadges.spokenLabel(
-        memberCount: 9, pickedCount: 1, editedCount: count, isExpanded: false)
+        memberCount: 9, pickedCount: 1, editedCount: count)
       #expect(spoken.hasSuffix(", \(rendered) edited"))
       // ...and the base sentence is untouched in front of it.
       #expect(
         spoken
-          == SceneCardAccessibility.label(memberCount: 9, pickedCount: 1, isExpanded: false)
+          == SceneCardAccessibility.label(memberCount: 9, pickedCount: 1)
           + SceneVerdictBadges.spokenEditsClause(count: count))
     }
     // Nothing rendered, nothing said — the two agree at zero as well as above it.
@@ -389,33 +358,33 @@ struct SceneChromeAccessibilityTests {
   func theCardsSentenceCarriesTheEditedClause() {
     #expect(
       SceneVerdictBadges.spokenLabel(
-        memberCount: 5, pickedCount: 2, editedCount: 2, isExpanded: false)
-        == "Scene of 5 photos, closed, 2 picked, 2 edited")
+        memberCount: 5, pickedCount: 2, editedCount: 2)
+        == "Scene of 5 photos, 2 picked, 2 edited")
     #expect(
       SceneVerdictBadges.spokenLabel(
-        memberCount: 5, pickedCount: 0, editedCount: 3, isExpanded: true)
-        == "Scene of 5 photos, open, 3 edited")
+        memberCount: 5, pickedCount: 0, editedCount: 3)
+        == "Scene of 5 photos, 3 edited")
     // Nothing at zero: the sentence is exactly what the shipped function returns.
     #expect(
       SceneVerdictBadges.spokenLabel(
-        memberCount: 3, pickedCount: 2, editedCount: 0, isExpanded: false)
-        == SceneCardAccessibility.label(memberCount: 3, pickedCount: 2, isExpanded: false))
+        memberCount: 3, pickedCount: 2, editedCount: 0)
+        == SceneCardAccessibility.label(memberCount: 3, pickedCount: 2))
     #expect(
       SceneVerdictBadges.spokenLabel(
-        memberCount: 1, pickedCount: 0, editedCount: 0, isExpanded: false)
-        == "Scene of 1 photo, closed")
+        memberCount: 1, pickedCount: 0, editedCount: 0)
+        == "Scene of 1 photo")
   }
 
-  @Test("The card announces its size, its state and its pick COUNT — nothing at zero")
+  @Test("The card announces its size and its pick COUNT — nothing at zero")
   func theCardAnnouncesTheCountNotAFlag() {
     #expect(
-      SceneCardAccessibility.label(memberCount: 3, pickedCount: 0, isExpanded: false)
-        == "Scene of 3 photos, closed")
+      SceneCardAccessibility.label(memberCount: 3, pickedCount: 0)
+        == "Scene of 3 photos")
     #expect(
-      SceneCardAccessibility.label(memberCount: 3, pickedCount: 2, isExpanded: false)
-        == "Scene of 3 photos, closed, 2 picked")
+      SceneCardAccessibility.label(memberCount: 3, pickedCount: 2)
+        == "Scene of 3 photos, 2 picked")
     #expect(
-      SceneCardAccessibility.label(memberCount: 1, pickedCount: 1, isExpanded: true)
-        == "Scene of 1 photo, open, 1 picked")
+      SceneCardAccessibility.label(memberCount: 1, pickedCount: 1)
+        == "Scene of 1 photo, 1 picked")
   }
 }

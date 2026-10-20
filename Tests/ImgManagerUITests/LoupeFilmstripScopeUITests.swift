@@ -22,10 +22,8 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
 
   func testTheStripIsTheOpenSceneAndIsAbsentOnALoosePhotograph() throws {
     let app = launchSceneFixture()
-    expandTheFixtureScene(app)
 
-    // Half 1 — a LOOSE photograph, with the scene already open behind it. The loupe opens on it
-    // (a loose tile is the ONE tile a test may tap — see `openLoupe`) and carries no strip.
+    // Half 1 — a LOOSE photograph, in the stream. The loupe opens on it and carries no strip.
     openLoupe(app, onTile: "gridTile-1")
     let looseImage = element(app, "loupeImage")
     XCTAssertTrue(
@@ -41,9 +39,13 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
         .count, 0,
       "The strip is gone but its thumbnails are still in the tree.")
 
-    // Half 2 — a MEMBER, reached by ADVANCING rather than by tapping a member's tile. Same app,
-    // same launch, and the strip has to appear with the focus change (AC 5).
-    let strip = advanceIntoTheBand(app)
+    // Half 2 — a MEMBER. WP442 P12: a card PUSHES its scene, so the loupe is closed, the scene
+    // is entered, and the loupe opens on a member's own tile (no handle overlays a member now).
+    app.buttons["loupeBack"].tap()
+    expandTheFixtureScene(app)
+    openLoupe(app, onTile: "gridTile-4")
+    let strip = element(app, "loupeFilmstrip")
+    XCTAssertTrue(strip.waitForExistence(timeout: 10), "A member's loupe drew no filmstrip.")
     attach(name: "scene-loupe-member-band-only")
 
     let thumbnails = app.buttons.matching(
@@ -92,10 +94,10 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
   func testFocusingTheBandTailAsksForTheNextMembershipPage() throws {
     let app = launchSceneFixture()
     expandTheFixtureScene(app)
-    // Reached the same way as the scope test: open on a LOOSE tile and advance into the band. A
-    // member's own tile is not a tap target for a test — see `openLoupe`.
-    openLoupe(app, onTile: "gridTile-1")
-    let strip = advanceIntoTheBand(app)
+    // WP442 P12: inside the pushed scene a member's tile is an ordinary tap target.
+    openLoupe(app, onTile: "gridTile-4")
+    let strip = element(app, "loupeFilmstrip")
+    XCTAssertTrue(strip.waitForExistence(timeout: 10), "A member's loupe drew no filmstrip.")
 
     // The negative half, and the reason this test can fail: the second membership page has not
     // been asked for by anything yet — not by the grid (the band's tail is below the fold) and not
@@ -150,7 +152,7 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
     return app
   }
 
-  /// Opens the fixture's scene, and waits for its band to be on screen.
+  /// Pushes the fixture's scene, and waits for its members to be on screen.
   private func expandTheFixtureScene(_ app: XCUIApplication) {
     let handle = element(app, "sceneHandle-5000")
     XCTAssertTrue(handle.waitForExistence(timeout: 15), "The fixture scene's handle is missing.")
@@ -164,10 +166,9 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
   /// as several accessibility elements (`TileView`'s own note), and focusing it re-composes them,
   /// so an element bound before the first tap can be gone by the second.
   ///
-  /// Only ever pointed at a LOOSE tile. The band's leading member carries the scene's close
-  /// handle as an overlay (`GridView.bandHandle`), and the 2026-09-05 gate run failed exactly
-  /// there: the first tap on `gridTile-3` left neither a loupe nor a `gridTile-3` in the tree.
-  /// Members are reached by advancing instead — `advanceIntoTheBand`.
+  /// WP442 P12: the band handle that overlaid the leading member (the 2026-09-05 gate failure on
+  /// `gridTile-3`) is gone with the in-place band, so a member inside the pushed scene is an
+  /// ordinary tap target.
   private func openLoupe(_ app: XCUIApplication, onTile identifier: String) {
     XCTAssertTrue(
       element(app, identifier).waitForExistence(timeout: 20), "\(identifier) is not on screen.")
@@ -187,38 +188,6 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
       }
     }
     XCTAssertTrue(close.exists, "Tapping \(identifier) never opened the loupe.")
-  }
-
-  /// Walks the open loupe forward until the focused photograph is a member of the open scene, and
-  /// returns the strip that appearing proves it. `loupeNext` is a named, stable control on the
-  /// image, so this reaches a member without touching a tile at all — and the strip appearing on
-  /// the way is itself IMGMGR-406's AC 5 (the scope follows the focus).
-  private func advanceIntoTheBand(_ app: XCUIApplication) -> XCUIElement {
-    let strip = element(app, "loupeFilmstrip")
-    let next = app.buttons["loupeNext"]
-    XCTAssertTrue(
-      next.waitForExistence(timeout: 10),
-      "The loupe has no forward control — a member cannot be reached without tapping a tile.")
-    var advances = 0
-    while !strip.exists, advances < 5 {
-      XCTAssertTrue(
-        next.isEnabled,
-        "The loupe cannot advance any further and no band was reached (\(advances) advances).")
-      next.tap()
-      advances += 1
-      _ = strip.waitForExistence(timeout: 4)
-    }
-    if !strip.exists {
-      XCTContext.runActivity(named: "element tree with no strip after \(advances) advances") {
-        activity in
-        activity.add(XCTAttachment(string: app.debugDescription))
-      }
-    }
-    XCTAssertTrue(
-      strip.exists,
-      "Advancing \(advances) frames from the loose photograph never reached the scene's band — "
-        + "the fixture order is loose 1, loose 2, then the members of scene 5000.")
-    return strip
   }
 
   private func attach(name: String) {

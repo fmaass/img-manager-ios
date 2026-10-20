@@ -129,7 +129,9 @@ struct RootView: View {
     self.gridService = gridService
     let settings = SettingsPreferences()
     _settings = State(initialValue: settings)
-    _gridStore = State(initialValue: Self.makeGridStore(service: gridService, settings: settings))
+    // WP442 P12: bound first so the erasure handler below can leave the entered scene.
+    let gridStore = Self.makeGridStore(service: gridService, settings: settings)
+    _gridStore = State(initialValue: gridStore)
     // One share pre-flight for the whole app: the docked and full-screen loupes are two
     // presentations of the same thing, and a prepared export (and its temp file) belongs to
     // neither of them alone. The SAME `GridService` is the master lane's byte source
@@ -164,7 +166,7 @@ struct RootView: View {
     // at the same boundary, in the same synchronous run.
     let navigation = WorkspaceNavigation()
     _navigation = State(initialValue: navigation)
-    erasedBox.handler = { [weak queueStore, weak folderTree, weak navigation] in
+    erasedBox.handler = { [weak queueStore, weak folderTree, weak navigation, weak gridStore] in
       // FENCE FIRST, and synchronously — this closure is `@MainActor`, so nothing suspends
       // before this line. Clearing the file first (as this did) left a window between the two
       // awaits in which a fetch could resume against an un-advanced generation and write the
@@ -172,6 +174,7 @@ struct RootView: View {
       queueStore?.endSession()
       folderTree?.endSession()
       navigation?.endSession()
+      gridStore?.leaveScene(.sessionEnded)
       await queueSnapshotStore.clear()
     }
     _queueStore = State(initialValue: queueStore)
@@ -364,13 +367,6 @@ struct RootView: View {
           if DebugStubLaunch.enterSelectMode {
             gridStore.enterSelectExplicitly()
           }
-          // WP13 P2: likewise applied after the shoot loads — `selectShoot` calls
-          // `pickLock.exit()`, so latching before it would be silently undone. Mutually
-          // exclusive with the Select flag by construction: `lockFromMenu` refuses while Select
-          // is active, so passing both leaves Select, exactly as the shipped rule does.
-          if DebugStubLaunch.latchDislikeLock {
-            gridStore.lockFromMenu(.dislike)
-          }
           // WP14 lane B: likewise after the shoot loads — entering Scene mode reloads the window
           // for the CURRENT scope, so doing it first would only be undone. The preference is set
           // BEFORE the mode change so the first card that appears already knows whether to read
@@ -378,6 +374,14 @@ struct RootView: View {
           if DebugStubLaunch.enterSceneMode {
             gridStore.preferences.picksInGroups = true
             await gridStore.setDisplayMode(.scene)
+          }
+          // WP13 P2: likewise applied after the shoot loads — `selectShoot` calls
+          // `pickLock.exit()`, and so does `setDisplayMode` (WP442 P12, T2/T5), so latching before
+          // either would be silently undone. Mutually exclusive with the Select flag by
+          // construction: `lockFromMenu` refuses while Select is active, so passing both leaves
+          // Select, exactly as the shipped rule does.
+          if DebugStubLaunch.latchDislikeLock {
+            gridStore.lockFromMenu(.dislike)
           }
         }
         // WP31 P2 (IMGMGR-461): an incoming Handoff, simulated — after the fixture's own shoot
@@ -677,7 +681,8 @@ struct RootView: View {
   private var selectShoot: (Int, GridSourceTier?) -> Void {
     let store = gridStore
     return { folderID, sourceTier in
-      Task { await store.selectShoot(folderID: folderID, sourceTier: sourceTier) }
+      // WP442 P12: a row tap always lands on the folder's stream (it leaves an entered scene).
+      Task { await store.openShoot(folderID: folderID, sourceTier: sourceTier) }
     }
   }
 
@@ -790,8 +795,11 @@ struct RootView: View {
   private var compactShell: some View {
     CompactShell(
       navigation: navigation, badgeCount: CompactTab.badgeCount(summaries: queueStore.summaries),
-      onHostPopped: { selectedFolderID = nil }, shoots: shootsRoot, library: libraryRoot,
-      destination: contentColumn)
+      onHostPopped: { selectedFolderID = nil },
+      enteredSceneID: gridStore.enteredSceneID,
+      onScenePopped: { [gridStore] in gridStore.leaveScene(.userBack) },
+      shoots: shootsRoot, library: libraryRoot,
+      destination: { route in workspaceColumn(scope: Self.compactScope(for: route)) })
   }
 
   /// The Shoots tab: Needs review, then Recent. Account's ONE Compact home (p4128 R2-Inventory)
@@ -1028,13 +1036,23 @@ struct RootView: View {
 
   /// WP28 P1 (IMGMGR-448): the shared workspace destination — the split's detail at Regular and
   /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).
+  /// WP442 P12: a Compact route's constant grid scope; `.group` renders the stream for now (P13).
+  static func compactScope(for route: WorkspaceRoute) -> GridScope {
+    guard case .scene(let id) = route else { return .stream }
+    return .scene(id)
+  }
+
   private var contentColumn: some View {
+    workspaceColumn(scope: gridStore.activeScope)
+  }
+
+  private func workspaceColumn(scope: GridScope) -> some View {
     // WP28 P3: read here in the body, so the title follows the tree's and the queue's loads.
     // WP29 P1 (IMGMGR-452): the breadcrumb carries that title plus the tree's server count.
     let breadcrumb = currentBreadcrumb
     return WorkspaceContent(
       store: gridStore, service: gridService, share: shareExport, layoutMode: layoutMode,
-      queueStore: queueStore, breadcrumb: breadcrumb, showInspector: $showInspector,
+      scope: scope, queueStore: queueStore, breadcrumb: breadcrumb, showInspector: $showInspector,
       columnVisibility: $columnVisibility)
   }
 }

@@ -144,8 +144,24 @@ final class GridStore {
   /// Scene browse's OWN cursor. Never `nextCursor`: the two endpoints fingerprint their cursors
   /// differently and each refuses the other's with a 400 (`cursor_scope_mismatch`).
   private(set) var sceneNextCursor: String?
-  /// Which scenes the reader has opened.
-  private(set) var sceneExpanded: Set<Int> = []
+  /// WP442 P12 (IMGMGR-540): the ONE scene the reader has entered (pushed). The only writer is
+  /// `transitionScene(to:reason:)`; everything that used to read an "expanded" set derives from it.
+  private(set) var sceneEntry: SceneEntry?
+  var enteredSceneID: Int? { sceneEntry?.stackID }
+  /// Computed, never stored: the edit subject, the paging fences and the filmstrip read it, so
+  /// none of them can name a scene the display has left.
+  var sceneExpanded: Set<Int> { enteredSceneID.map { [$0] } ?? [] }
+  /// The scope the reader is looking at: the stream, or the entered scene.
+  var activeScope: GridScope { enteredSceneID.map(GridScope.scene) ?? .stream }
+  /// Bumped by every real transition; a topology completion navigates only while it still
+  /// matches the revision its edit started at.
+  @ObservationIgnored private(set) var sceneRevision = 0
+  /// Entered scenes whose membership (or stack-row lookup) failed; the screen offers Retry.
+  private(set) var sceneLoadFailed: Set<Int> = []
+  /// A topology destination that could not be told yet (a candidate read failed).
+  private(set) var sceneDestinationRetry: SceneDestinationRetry?
+  /// The entered scene's own scroll slot; cleared by every transition, so a scene opens at the top.
+  @ObservationIgnored var sceneScrollAnchor: GridDisplayID?
   /// Each opened scene's members, as `GET /api/stacks/{id}/members` served them: capture-ordered,
   /// tombstones included, and UNFILTERED — the card's `matched_count` is the filtered question.
   private(set) var sceneMembers: [Int: [Components.Schemas.ImageSummary]] = [:]
@@ -172,8 +188,38 @@ final class GridStore {
   /// The grid's row sequence in Scene mode: cards and loose photographs in the server's order,
   /// each opened scene followed by the members loaded for it.
   var sceneDisplayRows: [SceneDisplayRow] {
-    SceneRowBuilder.displayRows(
-      rows: sceneRows, expanded: sceneExpanded, members: sceneMembers)
+    SceneRowBuilder.displayRows(rows: sceneRows)
+  }
+
+  /// THE definition of what one grid instance renders. `.stream` keeps the Flat/Scene branch the
+  /// view used to hold; `.scene(id)` is the entered scene's members.
+  func displayRows(for scope: GridScope) -> [SceneDisplayRow] {
+    switch scope {
+    case .stream:
+      switch displayMode {
+      case .flat: return images.map(SceneDisplayRow.image)
+      case .scene: return sceneDisplayRows
+      }
+    case .scene(let id):
+      return SceneRowBuilder.enteredSceneRows(members: sceneMembers[id] ?? [])
+    }
+  }
+
+  /// The scene screen's state for an entered id.
+  func sceneScreenState(for stackID: Int) -> SceneScreenState {
+    SceneScreenState.resolve(
+      hasMembers: !(sceneMembers[stackID] ?? []).isEmpty,
+      isInFlight: sceneMembersInFlight.contains(stackID),
+      hasFailed: sceneLoadFailed.contains(stackID))
+  }
+
+  /// "Scene · N photos" from the card's `member_count`, falling back to the loaded count.
+  func sceneTitle(for stackID: Int) -> String {
+    let card = sceneRows.lazy.compactMap { row -> Int? in
+      guard case .stack(let stack) = row, stack.stackId == stackID else { return nil }
+      return stack.memberCount
+    }.first
+    return SceneScreenTitle.title(memberCount: card ?? sceneMembers[stackID]?.count ?? 0)
   }
 
   /// Which OPEN scene this photograph belongs to, as its band in display order — `nil` for a
@@ -203,7 +249,7 @@ final class GridStore {
   var actionableImages: [Components.Schemas.ImageSummary] {
     switch displayMode {
     case .flat: return images
-    case .scene: return SceneRowBuilder.actionableImages(sceneDisplayRows)
+    case .scene: return SceneRowBuilder.actionableImages(displayRows(for: activeScope))
     }
   }
 
@@ -766,6 +812,7 @@ final class GridStore {
       await authoritativeRefresh()
       return
     }
+    leaveScene(.scopeChanged)
     query.folderID = folderID
     query.sourceTier = sourceTier
     pickLock.exit()
@@ -790,6 +837,7 @@ final class GridStore {
     var next = query
     mutate(&next)
     guard next != query else { return }
+    leaveScene(.scopeChanged)
     query = next
     selection.reset(.queryGenerationChange)
     focusedImageID = nil
@@ -837,6 +885,7 @@ final class GridStore {
   /// of one control remembering to do it.
   func setDisplayMode(_ next: GridDisplayMode) async {
     guard next != displayMode else { return }
+    leaveScene(.scopeChanged)
     switch next {
     case .scene:
       suspendedPresentation = SortGroupPresentation(of: query)
@@ -1183,7 +1232,9 @@ final class GridStore {
     await reloadFirstPage()
   }
 
-  private func reloadFirstPage() async {
+  /// `revalidatesEntry`: a KEEP reload revalidates the entered scene once the rows are in; the
+  /// topology coordinator passes false because it resolves its own destination (§2.3a).
+  private func reloadFirstPage(revalidatesEntry: Bool = true) async {
     loadGeneration += 1
     let generation = loadGeneration
     isLoadingPage = true
@@ -1244,6 +1295,15 @@ final class GridStore {
     // A no-op whenever `group_by` is nil (Scene mode included, which clears the presentation on
     // the way in) and idempotent per query identity, so the common re-entry costs no request.
     guard generation == loadGeneration else { return }
+    // WP442 P12: a KEEP reload revalidates the entered scene against the new rows (B5).
+    if revalidatesEntry, displayMode == .scene, let entered = enteredSceneID {
+      if rowsLoaded {
+        await revalidateEnteredScene(generation: generation)
+        guard generation == loadGeneration else { return }
+      } else {
+        sceneLoadFailed.insert(entered)
+      }
+    }
     // WP14 (IMGMGR-251): and it runs only when the ROWS for this query actually arrived. The
     // catch above deliberately keeps the previous query's photographs on screen; fetching
     // headers anyway would vouch the NEW query's labels, counts and timezone, and the
@@ -1267,7 +1327,6 @@ final class GridStore {
   private func clearSceneWindow() {
     sceneRows = []
     sceneNextCursor = nil
-    sceneExpanded = []
     sceneMembers = [:]
     sceneMemberCursors = [:]
     sceneMembersInFlight = []
@@ -1336,57 +1395,75 @@ final class GridStore {
   /// rather than kept, and a failure anywhere leaves the existing window untouched — a partial
   /// refresh would be a window nobody asked for.
   private func refreshScenePage(generation: Int) async -> Bool {
-    let openScenes = sceneExpanded
+    // WP442 P12: the entered scene is KEPT and revalidated (B5): absence from page 1 is not
+    // evidence it is gone — a stack-row reread is, and only a 404 or an empty membership leaves.
+    let entered = enteredSceneID
+    let resolving = entered != nil && sceneDestinationRetry?.owner.stackID == entered
     do {
       let page = try await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
       guard generation == loadGeneration else { return false }
+      var rows = page.rows
       var refreshedMembers: [Int: [Components.Schemas.ImageSummary]] = [:]
       var refreshedCursors: [Int: SceneMemberCursor] = [:]
-      // Only scenes the refreshed page still contains: one the reader had open that a filter or
-      // a split has removed from the stream has no card to sit under any more.
-      let survivingScenes = Set(
-        page.rows.compactMap { row -> Int? in
-          guard case .stack(let stack) = row else { return nil }
-          return openScenes.contains(stack.stackId) ? stack.stackId : nil
-        })
-      for stackID in survivingScenes.sorted() {
-        let members = try await service.stackMembers(
-          stackID: stackID, cursor: nil, limit: Self.sceneMemberPageLimit)
-        guard generation == loadGeneration else { return false }
-        refreshedMembers[stackID] = members.items
-        refreshedCursors[stackID] = members.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
+      var gone = false
+      if let id = entered, !resolving {
+        sceneLoadFailed.remove(id)
+        if !rows.contains(where: { $0.displayID == .stack(id) }) {
+          do {
+            let row = try await service.stackRow(stackID: id, query: query)
+            guard generation == loadGeneration else { return false }
+            rows.insert(
+              .stack(row), at: SceneEditPlanner.insertionIndex(for: row.anchorTakenAt, in: rows))
+          } catch GridServiceError.notFound {
+            guard generation == loadGeneration else { return false }
+            gone = true
+          } catch {
+            guard generation == loadGeneration else { return false }
+            if enteredSceneID == id { sceneLoadFailed.insert(id) }
+            return false
+          }
+        }
+        if !gone {
+          do {
+            let members = try await service.stackMembers(
+              stackID: id, cursor: nil, limit: Self.sceneMemberPageLimit)
+            guard generation == loadGeneration else { return false }
+            if members.items.isEmpty && members.nextCursor == nil {
+              gone = true
+            } else {
+              refreshedMembers[id] = members.items
+              refreshedCursors[id] =
+                members.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
+            }
+          } catch GridServiceError.notFound {
+            guard generation == loadGeneration else { return false }
+            gone = true
+          }
+        }
       }
       guard generation == loadGeneration else { return false }
-      // IMGMGR-481: `openScenes` is a snapshot from BEFORE the awaits above. A scene the reader
-      // opened or closed while this refresh was on the wire is their own later decision, so it
-      // wins over the snapshot: assigning `survivingScenes` alone undid an open made mid-refresh
-      // (the lost first tap on a closed scene handle). A scene opened meanwhile keeps the
-      // membership its own fetch loaded (or is still loading), if the page still holds it.
-      let pageSceneIDs = Set(
-        page.rows.compactMap { row -> Int? in
-          guard case .stack(let stack) = row else { return nil }
-          return stack.stackId
-        })
-      let openedMeanwhile = sceneExpanded.subtracting(openScenes).intersection(pageSceneIDs)
-      let closedMeanwhile = openScenes.subtracting(sceneExpanded)
-      for stackID in openedMeanwhile {
-        refreshedMembers[stackID] = sceneMembers[stackID]
-        refreshedCursors[stackID] = sceneMemberCursors[stackID]
+      // A Back or a different enter made during the awaits wins: the scene entered NOW keeps
+      // what it already loaded.
+      let now = enteredSceneID
+      if let now, now != entered || resolving {
+        if let held = sceneMembers[now] { refreshedMembers[now] = held }
+        if let held = sceneMemberCursors[now] { refreshedCursors[now] = held }
       }
-      sceneRows = page.rows
+      sceneRows = rows
       sceneNextCursor = page.nextCursor
-      sceneExpanded = survivingScenes.subtracting(closedMeanwhile).union(openedMeanwhile)
       sceneMembers = refreshedMembers
       sceneMemberCursors = refreshedCursors
-      sceneMembersInFlight = sceneMembersInFlight.intersection(openedMeanwhile)
-      // IMGMGR-261: the card summaries are dropped with the window they described. They are a
-      // cached read of somebody else's state, so an authoritative re-read is exactly the moment
-      // they stop being trustworthy; the visible cards fetch theirs again.
+      sceneMembersInFlight = sceneMembersInFlight.intersection(now.map { [$0] } ?? [])
+      if gone, let id = entered, enteredSceneID == id { leaveScene(.sceneGone) }
+      // IMGMGR-261: a refresh re-reads every card, so a cached summary may now be stale.
       sceneInlinePicks = [:]
       sceneInlinePicksInFlight = []
       let actionable = actionableImages
       pruneSelectionOutside(actionable)
       publishRefreshedFocusAndUndo(actionable: actionable)
+      if resolving, let retry = sceneDestinationRetry, ownsNavigation(retry.owner) {
+        await resolveDestination(retry, dissolved: [], generation: generation)
+      }
       return true
     } catch {
       guard generation == loadGeneration else { return false }
@@ -1399,7 +1476,7 @@ final class GridStore {
   /// plus a FIRST membership page for each surviving open scene — so a photograph the reader
   /// selected deeper in a long scene, or further down the stream, can simply stop being loaded.
   /// Its id leaves the selection with it, for the same reason collapsing a card prunes
-  /// (`toggleSceneExpanded`): the selection is a set of ids, so nothing downstream can tell that
+  /// (`leaveScene`): the selection is a set of ids, so nothing downstream can tell that
   /// one of them is no longer on screen. `tagTargetImageIDs` would keep advertising it while
   /// `capturePriorTagSnapshots` drops anything outside `actionableImages` — a mixed selection
   /// would then write only its visible part and an all-hidden one would write nothing, in both
@@ -1594,36 +1671,133 @@ final class GridStore {
     return false
   }
 
-  /// Open or close ONE scene — the only thing a collapsed card can do.
-  ///
-  /// Opening fetches its MEMBERSHIP: every member including tombstones, in capture order,
-  /// deliberately unfiltered, because that is the authoritative answer to "what is in this
-  /// scene". Members already in hand are not re-fetched — closing and reopening is a display
-  /// change, not a reason to ask the server again.
-  ///
-  /// Closing PRUNES that scene's members from the selection. Not defensiveness: select a member
-  /// while the scene is open, close the scene, then press Pick — the mark path reads the
-  /// selection, and without this the write would land on photographs now hidden inside a
-  /// collapsed card, which is the exact thing the actionability boundary exists to prevent. The
-  /// ids come out at the moment they stop being visible.
-  func toggleSceneExpanded(_ stackID: Int) async {
-    guard displayMode == .scene else { return }
-    if sceneExpanded.contains(stackID) {
-      sceneExpanded.remove(stackID)
-      let hidden = sceneMembers[stackID] ?? []
-      if !hidden.isEmpty && !selection.members.isEmpty {
-        selection.removeHidden(hidden.map(\.id))
-      }
-      // Focus cannot stay on a photograph nobody can see any more.
-      if let focused = focusedImageID, hidden.contains(where: { $0.id == focused }) {
-        focusedImageID = nil
-        if isLoupeOpen { closeLoupe() }
-      }
-      return
+  // MARK: - Scene entry (WP442 P12, IMGMGR-540): one truth, one transition
+
+  /// THE only writer of `sceneEntry`. Runs synchronously, before any await, in this order; a
+  /// `.retarget` (topology result) skips the selection/focus/loupe reset because the coordinator
+  /// restores focus by rule right afterwards. It KEEPS the latch, undo, the query, the STREAM
+  /// scroll anchor and the members cache.
+  private func transitionScene(to next: SceneEntry?, reason: SceneTransitionReason) {
+    guard next != sceneEntry else { return }
+    if reason != .retarget {
+      selection.reset(.sceneTransition)
+      focusedImageID = nil
+      if isLoupeOpen { closeLoupe() }
     }
-    sceneExpanded.insert(stackID)
+    conflictRecovery = nil
+    dragSession = DragPaintSession()
+    dismissGridPresentations()
+    rows = []
+    sceneScrollAnchor = nil
+    sceneDestinationRetry = nil
+    sceneEntry = next
+    sceneRevision &+= 1
+  }
+
+  /// The store-bound presentations belong to the scope being left.
+  private func dismissGridPresentations() {
+    isTagEntryPresented = false
+    isStatusPresented = false
+    isSceneMergePickerPresented = false
+    isSceneAbsorbPickerPresented = false
+    sceneEditError = nil
+    sceneEditErrorKind = nil
+    pendingSceneEdit = nil
+  }
+
+  /// A card tap: push the scene. Refused outside Scene mode and for a card that is not listed.
+  func enterScene(_ stackID: Int) async {
+    guard displayMode == .scene else { return }
+    guard sceneRows.contains(where: { $0.displayID == .stack(stackID) }) else { return }
+    transitionScene(to: SceneEntry(stackID: stackID), reason: .userOpen)
     guard sceneMembers[stackID] == nil else { return }
     await fetchSceneMembers(stackID: stackID, cursor: nil)
+  }
+
+  /// Back (or any rule that leaves): the stream again.
+  func leaveScene(_ reason: SceneTransitionReason = .userBack) {
+    transitionScene(to: nil, reason: reason)
+  }
+
+  /// A folder row tap from any shell: always lands on the folder's stream, even for the same
+  /// folder.
+  func openShoot(folderID: Int, sourceTier: GridSourceTier? = nil) async {
+    leaveScene(.shootOpened)
+    await selectShoot(folderID: folderID, sourceTier: sourceTier)
+  }
+
+  /// The ONE store entry for card focus: a card holding real focus means no photograph does.
+  func cardDidTakeFocus(_ stackID: Int) {
+    focusedImageID = nil
+  }
+
+  /// W1: packed rows from one grid instance; refused unless that instance is the active one.
+  func publishRows(_ packed: [[GridDisplayID]], from scope: GridScope) {
+    guard scope == activeScope else { return }
+    rows = packed
+  }
+
+  /// W2: one scroll slot per scope. The stream slot is written only by a `.stream` instance; a
+  /// scene slot write is dropped unless that scene is the entered one.
+  func scrollAnchor(for scope: GridScope) -> GridDisplayID? {
+    switch scope {
+    case .stream: return gridScrollAnchor
+    case .scene: return sceneScrollAnchor
+    }
+  }
+
+  func recordScrollAnchor(_ id: GridDisplayID, for scope: GridScope) {
+    switch scope {
+    case .stream:
+      gridScrollAnchor = id
+    case .scene(let stackID):
+      guard enteredSceneID == stackID else { return }
+      sceneScrollAnchor = id
+    }
+  }
+
+  /// The scene screen's Retry: re-run a pending destination resolution, or revalidate.
+  func retryEnteredScene() async {
+    guard let id = enteredSceneID else { return }
+    let generation = loadGeneration
+    if let retry = sceneDestinationRetry, ownsNavigation(retry.owner) {
+      sceneLoadFailed.remove(id)
+      await resolveDestination(retry, dissolved: [], generation: generation)
+      return
+    }
+    await revalidateEnteredScene(generation: generation)
+  }
+
+  /// B5: keep the entered scene on a reload unless the server says it is gone. Page 1 holding
+  /// the card refetches its members; a card beyond page 1 is looked up and spliced back.
+  private func revalidateEnteredScene(generation: Int) async {
+    guard let id = enteredSceneID else { return }
+    if let retry = sceneDestinationRetry, retry.owner.stackID == id {
+      guard ownsNavigation(retry.owner) else { return }
+      await resolveDestination(retry, dissolved: [], generation: generation)
+      return
+    }
+    sceneLoadFailed.remove(id)
+    if !sceneRows.contains(where: { $0.displayID == .stack(id) }) {
+      do {
+        let row = try await service.stackRow(stackID: id, query: query)
+        guard generation == loadGeneration, enteredSceneID == id else { return }
+        if !sceneRows.contains(where: { $0.displayID == .stack(id) }) {
+          sceneRows.insert(
+            .stack(row),
+            at: SceneEditPlanner.insertionIndex(for: row.anchorTakenAt, in: sceneRows))
+        }
+      } catch GridServiceError.notFound {
+        guard generation == loadGeneration, enteredSceneID == id else { return }
+        leaveScene(.sceneGone)
+        return
+      } catch {
+        guard generation == loadGeneration, enteredSceneID == id else { return }
+        sceneLoadFailed.insert(id)
+        return
+      }
+    }
+    await fetchSceneMembers(stackID: id, cursor: nil)
   }
 
   /// Appear-driven membership paging: called when a member tile appears, it asks the ONE question
@@ -1657,6 +1831,7 @@ final class GridStore {
     guard !sceneMembersInFlight.contains(stackID) else { return }
     sceneMembersInFlight.insert(stackID)
     defer { sceneMembersInFlight.remove(stackID) }
+    sceneLoadFailed.remove(stackID)
     let generation = loadGeneration
     do {
       let page = try await service.stackMembers(
@@ -1666,7 +1841,12 @@ final class GridStore {
       guard generation == loadGeneration else { return }
       // And the reader may have closed the scene in the meantime: splicing members under a card
       // that is no longer open would put photographs on screen nobody asked to see.
-      guard sceneExpanded.contains(stackID) else { return }
+      guard enteredSceneID == stackID else { return }
+      if cursor == nil, page.items.isEmpty, page.nextCursor == nil {
+        // An empty membership is never shown: the scene is gone (B5).
+        leaveScene(.sceneGone)
+        return
+      }
       if cursor == nil {
         sceneMembers[stackID] = page.items
       } else {
@@ -1676,9 +1856,13 @@ final class GridStore {
       }
       sceneMemberCursors[stackID] = page.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
       lastPageLoadError = nil
+    } catch GridServiceError.notFound {
+      guard generation == loadGeneration, enteredSceneID == stackID else { return }
+      leaveScene(.sceneGone)
     } catch {
       guard generation == loadGeneration else { return }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+      if enteredSceneID == stackID { sceneLoadFailed.insert(stackID) }
     }
   }
 
@@ -1969,6 +2153,8 @@ final class GridStore {
   /// side, so the window the reader is looking at is still the truth.
   private func runSceneEdit(_ request: SceneEditRequest) async {
     guard !isSceneEditInFlight else { return }
+    // WP442 P12 (§2.3a): who may navigate when this edit completes — captured BEFORE the POST.
+    let owner = SceneEditOwner(stackID: enteredSceneID, revision: sceneRevision)
     isSceneEditInFlight = true
     defer { isSceneEditInFlight = false }
     do {
@@ -1976,7 +2162,7 @@ final class GridStore {
       sceneEditError = nil
       sceneEditErrorKind = nil
       pendingSceneEdit = nil
-      await reloadAfterTopologyEdit(result, request: request)
+      await reloadAfterTopologyEdit(result, request: request, owner: owner)
     } catch let error as StackEditError {
       // Whatever the refusal is, it belongs to THIS edit — set once, beside the failure, rather
       // than in each branch below.
@@ -2047,12 +2233,13 @@ final class GridStore {
   /// 4. **Restore focus** by rule (`SceneEditPlanner.restoredFocus`), and prune from the selection
   ///    anything the new window cannot show — the same invariant `refreshScenePage` keeps.
   private func reloadAfterTopologyEdit(
-    _ result: Components.Schemas.StackEditResult, request: SceneEditRequest
+    _ result: Components.Schemas.StackEditResult, request: SceneEditRequest,
+    owner: SceneEditOwner
   ) async {
-    let reopen = SceneEditPlanner.scenesToReopen(
-      previouslyExpanded: sceneExpanded, result: result)
-    await reloadFirstPage()
+    // Step 1: the KEEP reload; the destination is resolved below, not by revalidation.
+    await reloadFirstPage(revalidatesEntry: false)
     let generation = loadGeneration
+    // Step 2: every result stack is in the window (data, regardless of who navigates).
     var present = Set(
       sceneRows.compactMap { row -> Int? in
         guard case .stack(let stack) = row else { return nil }
@@ -2072,31 +2259,129 @@ final class GridStore {
         .stack(row), at: SceneEditPlanner.insertionIndex(for: row.anchorTakenAt, in: sceneRows))
       present.insert(stackID)
     }
-    for stackID in reopen where present.contains(stackID) {
-      await toggleSceneExpanded(stackID)
+    guard generation == loadGeneration else { return }
+    // Step 3: navigation belongs to the scene the edit started in, at its revision.
+    guard ownsNavigation(owner) else {
+      await restoreEnteredScene(dissolved: result.dissolvedStackIds, generation: generation)
+      return
     }
-    for stackID in result.stackIds where sceneExpanded.contains(stackID) {
-      await completeSceneMembers(stackID: stackID)
+    let pending = SceneDestinationRetry(
+      owner: owner, candidates: result.stackIds, anchorImageID: request.anchorImageID)
+    await resolveDestination(pending, dissolved: result.dissolvedStackIds, generation: generation)
+  }
+
+  /// §2.3a: ownership is re-checked after EVERY await of the coordinator.
+  private func ownsNavigation(_ owner: SceneEditOwner) -> Bool {
+    owner.stackID != nil && enteredSceneID == owner.stackID && sceneRevision == owner.revision
+  }
+
+  /// Steps 4, 4b and 5: load the candidates (to the completion cap, never through the members
+  /// cache), choose the destination, then commit synchronously after the last ownership check.
+  private func resolveDestination(
+    _ pending: SceneDestinationRetry, dissolved: [Int], generation: Int
+  ) async {
+    let candidates = pending.candidates
+    var loaded: [Int: CandidateMembers] = [:]
+    var failed: Set<Int> = []
+    var holder: Int?
+    for stackID in candidates {
+      let read = await loadCandidateMembers(stackID: stackID)
+      guard generation == loadGeneration else { return }
+      guard ownsNavigation(pending.owner) else {
+        await restoreEnteredScene(dissolved: dissolved, generation: generation)
+        return
+      }
+      guard let read else {
+        failed.insert(stackID)
+        continue
+      }
+      loaded[stackID] = read
+      if read.items.contains(where: { $0.id == pending.anchorImageID }) {
+        holder = stackID
+        break
+      }
+    }
+    let target: Int?
+    if let holder {
+      target = holder
+    } else if candidates.count <= 1 {
+      target = candidates.first
+    } else if failed.isEmpty {
+      target = candidates[0]
+    } else {
+      // Step 4b, UNRESOLVED: the anchor may sit in a part that was not read. No retarget and no
+      // install — the entered scene shows `.failed` with Retry, never another part's members.
+      sceneDestinationRetry = pending
+      if let entered = pending.owner.stackID { sceneLoadFailed.insert(entered) }
+      pruneSelectionOutside(actionableImages)
+      return
+    }
+    // Step 5: commit. Every owned commit drops the retry record first (r6).
+    sceneDestinationRetry = nil
+    // B5: an empty membership is never shown. A destination whose read came back empty and
+    // exhausted is gone, exactly as on a first entry — never an entered screen stuck on Loading.
+    let targetRead = target.flatMap { loaded[$0] }
+    let readEmpty = targetRead?.items.isEmpty == true && targetRead?.cursor == .exhausted
+    guard let target, !readEmpty else {
+      leaveScene(.sceneGone)
+      pruneSelectionOutside(actionableImages)
+      return
+    }
+    transitionScene(to: SceneEntry(stackID: target), reason: .retarget)
+    if let read = loaded[target] {
+      sceneMembers[target] = read.items
+      sceneMemberCursors[target] = read.cursor
+      sceneLoadFailed.remove(target)
+    } else {
+      sceneLoadFailed.insert(target)
     }
     let actionable = actionableImages
     pruneSelectionOutside(actionable)
     focusedImageID = SceneEditPlanner.restoredFocus(
-      anchorImageID: request.anchorImageID, actionable: actionable,
-      resultStackIDs: result.stackIds, members: sceneMembers)
+      anchorImageID: pending.anchorImageID, actionable: actionable,
+      resultStackIDs: candidates, members: sceneMembers)
     if focusedImageID == nil, isLoupeOpen { closeLoupe() }
   }
 
-  /// Page an opened scene's membership to the end, through the ONE membership pager. A page that
-  /// changes nothing (a failed read leaves the cursor where it was) ends the walk rather than
-  /// retrying it — the band keeps what it has, exactly as an ordinary "load more" failure does.
-  private func completeSceneMembers(stackID: Int) async {
-    var pages = 0
-    while pages < Self.sceneMemberCompletionPageCap {
-      guard let cursor = sceneMemberCursors[stackID], case .more = cursor else { return }
-      await loadMoreSceneMembers(stackID: stackID)
-      pages += 1
-      if sceneMemberCursors[stackID] == cursor { return }
+  /// Step 6, not owned: restore what is entered NOW (the reload dropped its members), or leave
+  /// it on server evidence that it dissolved. Never navigates otherwise.
+  private func restoreEnteredScene(dissolved: [Int], generation: Int) async {
+    if let now = enteredSceneID {
+      if dissolved.contains(now) {
+        leaveScene(.sceneGone)
+      } else if sceneMembers[now] == nil, !sceneMembersInFlight.contains(now) {
+        await revalidateEnteredScene(generation: generation)
+      }
     }
+    let actionable = actionableImages
+    pruneSelectionOutside(actionable)
+    if let focused = focusedImageID, !actionable.contains(where: { $0.id == focused }) {
+      focusedImageID = nil
+      if isLoupeOpen { closeLoupe() }
+    }
+  }
+
+  /// A candidate's membership, walked to the completion cap. It NEVER writes `sceneMembers`,
+  /// `sceneMemberCursors` or `sceneMembersInFlight`, so it cannot race the single-flight pager.
+  private func loadCandidateMembers(stackID: Int) async -> CandidateMembers? {
+    var items: [Components.Schemas.ImageSummary] = []
+    var cursor: String?
+    var pages = 0
+    repeat {
+      let page: StackMemberPageResult
+      do {
+        page = try await service.stackMembers(
+          stackID: stackID, cursor: cursor, limit: Self.sceneMemberPageLimit)
+      } catch {
+        return nil
+      }
+      let known = Set(items.map(\.id))
+      items += page.items.filter { !known.contains($0.id) }
+      cursor = page.nextCursor
+      pages += 1
+    } while cursor != nil && pages <= Self.sceneMemberCompletionPageCap
+    return CandidateMembers(
+      items: items, cursor: cursor.map(SceneMemberCursor.more) ?? .exhausted)
   }
 
   // MARK: - Focus / arrow navigation
@@ -2205,7 +2490,8 @@ final class GridStore {
     case .image(let imageID):
       await tapTile(imageID)
     case .stack(let stackID):
-      await toggleSceneExpanded(stackID)
+      // ADR-0005: a card is never a mark target; a tap pushes its scene in every mode.
+      await enterScene(stackID)
     }
   }
 

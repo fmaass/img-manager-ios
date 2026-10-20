@@ -106,11 +106,10 @@ struct GridStoreSceneTests {
 
     let rows = store.sceneDisplayRows
     #expect(rows.map(\.id) == [.image(10), .stack(5)])
-    guard case .stack(let row, let isExpanded) = rows[1] else {
+    guard case .stack(let row) = rows[1] else {
       Issue.record("row 1 is not a stack row")
       return
     }
-    #expect(!isExpanded)
     #expect(row.memberCount == 3)
     #expect(row.matchedCount == 2)
     #expect(row.anchorTakenAt == Date(timeIntervalSince1970: 1_700_000_000))
@@ -139,9 +138,10 @@ struct GridStoreSceneTests {
     store.pickLock.forceLatch(.pick)
     await store.tapCell(.stack(5))
     #expect(await transport.callCount(markOp) == 0)
-    #expect(store.sceneExpanded.contains(5))  // it did the ONE thing a card can do
-    await store.tapCell(.stack(5))  // and closes again
-    #expect(!store.sceneExpanded.contains(5))
+    #expect(store.enteredSceneID == 5)  // it did the ONE thing a card can do: push
+    store.leaveScene()  // and Back again
+    #expect(store.enteredSceneID == nil)
+    #expect(!store.actionableImages.contains { $0.id == 900 })
 
     // 2. A Pick-Lock pointer drag that crosses the card's frame.
     store.beginPointerDrag()
@@ -189,38 +189,41 @@ struct GridStoreSceneTests {
     let (store, transport) = await loadedSceneStore()
     let markOp = Operations.SetMarkStateApiMarksStatePost.id
     await transport.setStackMemberPage(
-      .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
-    await store.toggleSceneExpanded(5)
-    // POSITIVE CONTROL: the member really is a write target before the collapse below — a
-    // dropped write here is the RACE, not the "was never loaded" skip.
-    #expect(Set(store.actionableImages.map(\.id)) == [10, 501])
+      .init(
+        items: [makeImage(id: 501), makeImage(id: 502)], limit: 100, nextCursor: nil, stackId: 5),
+      forStack: 5)
+    await store.enterScene(5)
+    // POSITIVE CONTROL: both members really are write targets before the Back below — a
+    // dropped write here is the RACE, not the "was never loaded" skip. (WP442 P12: inside the
+    // scene ONLY its members are actionable, so the in-flight write is on a member too.)
+    #expect(Set(store.actionableImages.map(\.id)) == [501, 502])
 
     await transport.setMarkStateOutcome(
-      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 10, revision: "r1")])))
+      .success(.init(applied: 1, requested: 1, revisions: [.init(imageId: 501, revision: "r1")])))
     await transport.holdMarkStateRequests(true)
     store.pickLock.forceLatch(.pick)
     store.beginPointerDrag()
-    async let crossingA: Void = store.pointerDragCrossed(.image(10))
+    async let crossingA: Void = store.pointerDragCrossed(.image(501))
     await transport.waitUntilMarkStateStarted()
 
-    // The pointer crosses the member while the loose photograph's write is in flight...
-    await store.pointerDragCrossed(.image(501))
-    // ...and the scene closes under it. `query` never moves, so this is not a scope change the
-    // crossing can be discarded for — the photograph simply stopped being on screen, which is
-    // exactly how `capturePriorSnapshots` used to lose a queued write in silence.
-    await store.toggleSceneExpanded(5)
+    // The pointer crosses the second member while the first one's write is in flight...
+    await store.pointerDragCrossed(.image(502))
+    // ...and the reader goes Back under it. `query` never moves, so this is not a scope change
+    // the crossing can be discarded for — the photograph simply stopped being on screen, which
+    // is exactly how `capturePriorSnapshots` used to lose a queued write in silence.
+    store.leaveScene()
     #expect(store.actionableImages.map(\.id) == [10])
 
     await transport.holdMarkStateRequests(false)
     await transport.releaseMarkState()
     _ = await crossingA
 
-    // Nothing was written for the collapsed member — the actionable-only boundary still holds...
+    // Nothing was written for the member left behind — the actionable-only boundary holds...
     #expect(await transport.callCount(markOp) == 1)
-    #expect(await transport.lastMarkStateRequest?.imageIds == [10])
+    #expect(await transport.lastMarkStateRequest?.imageIds == [501])
     // ...and the crossing the reader made is accounted for rather than vanishing.
     #expect(
-      store.droppedWriteIDs == [501],
+      store.droppedWriteIDs == [502],
       "a queued crossing was dropped by the prune with no signal to the reader")
     #expect(GridNotices.notices(store: store).contains(.droppedWrites(count: 1)))
   }
@@ -315,7 +318,7 @@ struct GridStoreSceneTests {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
       .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     #expect(!store.sceneMembers.isEmpty)
 
     await transport.setListImagesPage(
@@ -326,7 +329,7 @@ struct GridStoreSceneTests {
     #expect(store.images.map(\.id) == [1, 2])
     #expect(store.nextCursor == "flat-again")  // page ONE's cursor, not a resumed scene cursor
     #expect(store.sceneRows.isEmpty)
-    #expect(store.sceneExpanded.isEmpty)
+    #expect(store.enteredSceneID == nil)
     #expect(store.sceneMembers.isEmpty)
     #expect(store.sceneNextCursor == nil)
     #expect(store.actionableImages.map(\.id) == [1, 2])
@@ -334,12 +337,10 @@ struct GridStoreSceneTests {
 
   // MARK: - Expansion, paging, single-flight, tombstones
 
-  /// IMGMGR-240 changed the shape of this: expanding SWAPS the card out for its members rather
-  /// than splicing them behind it, so the sequence is N members where the card stood. What the
-  /// test is really about — capture order, tombstones surviving, and members becoming ordinary
-  /// photographs — is unchanged, and `SceneBandTests` owns the swap itself.
-  @Test("Expanding renders the members in capture order in the card's place, tombstones included")
-  func expandingSplicesMembersInCaptureOrder() async {
+  /// WP442 P12: entering PUSHES the scene: its screen is the members in capture order,
+  /// tombstones included, and the stream behind it still holds the card.
+  @Test("Entering renders members in capture order, tombstones too; the stream keeps the card")
+  func enteringRendersMembersInCaptureOrder() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
       .init(
@@ -350,14 +351,14 @@ struct GridStoreSceneTests {
         ], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
 
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     #expect(
-      store.sceneDisplayRows.map(\.id)
-        == [.image(10), .image(501), .image(502), .image(503)])
-    // Members of an EXPANDED scene are ordinary photographs again — including the tombstone,
+      store.displayRows(for: .scene(5)).map(\.id) == [.image(501), .image(502), .image(503)])
+    #expect(store.displayRows(for: .stream).map(\.id) == [.image(10), .stack(5)])
+    // Members of the ENTERED scene are ordinary photographs again — including the tombstone,
     // which is part of the authoritative membership and must be visible rather than dropped.
-    #expect(store.actionableImages.map(\.id) == [10, 501, 502, 503])
+    #expect(store.actionableImages.map(\.id) == [501, 502, 503])
     #expect(store.actionableImages.first { $0.id == 502 }?.missing == true)
     #expect(store.sceneMemberCursors[5] == .exhausted)
   }
@@ -381,7 +382,7 @@ struct GridStoreSceneTests {
         == .placeholder(reason: .missing))
   }
 
-  @Test("Membership pages further, appending in place; the card never moves")
+  @Test("Membership pages further, appending in place; the stream never moves")
   func membershipPagesFurther() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
@@ -391,12 +392,14 @@ struct GridStoreSceneTests {
       .init(items: [makeImage(id: 502)], limit: 100, nextCursor: nil, stackId: 5),
       forCursor: "members-2")
 
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     #expect(store.sceneMemberCursors[5] == .more("members-2"))
+    let streamBefore = store.displayRows(for: .stream).map(\.id)
 
     await store.loadMoreSceneMembersIfNeeded(afterMemberID: 501)
 
-    #expect(store.sceneDisplayRows.map(\.id) == [.image(10), .image(501), .image(502)])
+    #expect(store.displayRows(for: .scene(5)).map(\.id) == [.image(501), .image(502)])
+    #expect(store.displayRows(for: .stream).map(\.id) == streamBefore)
     #expect(store.sceneMemberCursors[5] == .exhausted)
     // The SERVED row itself is untouched: still one scene, still in the same position in the
     // stream (IMGMGR-240 replaced its CARD in the display sequence, not the row behind it).
@@ -412,12 +415,12 @@ struct GridStoreSceneTests {
       .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
     await transport.holdStackMembersRequests(true)
 
-    let first = Task { await store.toggleSceneExpanded(5) }
+    let first = Task { await store.enterScene(5) }
     await transport.waitUntilStackMembersStarted()
 
     // A second open of the SAME scene while the first page is genuinely on the wire.
-    await store.toggleSceneExpanded(5)  // closes
-    await store.toggleSceneExpanded(5)  // opens again — must not start a second request
+    store.leaveScene()  // Back
+    await store.enterScene(5)  // pushes again — must not start a second request
 
     await transport.releaseStackMembers()
     await first.value
@@ -427,26 +430,25 @@ struct GridStoreSceneTests {
       await transport.callCount(Operations.ListStackMembersApiStacksStackIdMembersGet.id) == 1)
   }
 
-  @Test("Collapsing a scene takes its members out of the selection")
-  func collapsingPrunesTheSelection() async {
+  @Test("Leaving a scene clears the selection made inside it")
+  func leavingClearsTheSelection() async {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
       .init(
         items: [makeImage(id: 501), makeImage(id: 502)], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     store.enterSelectExplicitly()
-    store.selection.toggle(10)  // a loose photograph, elsewhere in the stream
-    store.selection.toggle(501)  // a member of the scene about to close
-    #expect(store.selection.members == [10, 501])
+    store.selection.toggle(501)
+    store.selection.toggle(502)
+    #expect(store.selection.members == [501, 502])
 
-    await store.toggleSceneExpanded(5)
+    store.leaveScene()
 
-    // Only the hidden member leaves; a selection made elsewhere is untouched, and Select mode
-    // itself is not exited — collapsing a card is not "Done".
-    #expect(store.selection.members == [10])
-    #expect(store.selection.mode == .select)
+    // WP442 P12: a scene transition resets the selection — it belonged to the screen left.
+    #expect(store.selection.members.isEmpty)
+    #expect(store.selection.mode == .browse)
   }
 
   @Test(
@@ -462,15 +464,15 @@ struct GridStoreSceneTests {
     await transport.setStackMemberPage(
       .init(items: [makeImage(id: 502)], limit: 100, nextCursor: nil, stackId: 5),
       forCursor: "members-2")
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     await store.loadMoreSceneMembersIfNeeded(afterMemberID: 501)
     #expect(store.sceneMembers[5]?.map(\.id) == [501, 502])
 
+    // WP442 P12: inside the entered scene only its members can be selected.
     store.enterSelectExplicitly()
-    store.selection.toggle(10)  // a loose photograph on page one
     store.selection.toggle(501)  // a member page one holds
-    store.selection.toggle(502)  // a member only page TWO holds — a mixed selection
-    #expect(store.selection.members == [10, 501, 502])
+    store.selection.toggle(502)  // a member only page TWO holds
+    #expect(store.selection.members == [501, 502])
 
     // The foreground / 409-recovery re-read. It republishes page one of the stream and one
     // membership page per open scene, so 502 stops being loaded.
@@ -481,11 +483,12 @@ struct GridStoreSceneTests {
     #expect(store.sceneMemberCursors[5] == .more("members-2"))
     // The vanished member left the selection with its tile; the two still on screen stayed, and
     // Select mode itself is not exited — a refresh is not "Done".
-    #expect(store.selection.members == [10, 501])
+    #expect(store.enteredSceneID == 5)
+    #expect(store.selection.members == [501])
     #expect(store.selection.mode == .select)
     // The write surface agrees with the screen exactly: no target outside the actionable
     // projection, which is what `capturePriorTagSnapshots` would otherwise drop in silence.
-    #expect(Set(store.tagTargetImageIDs) == Set([10, 501]))
+    #expect(Set(store.tagTargetImageIDs) == Set([501]))
     #expect(Set(store.tagTargetImageIDs) == Set(store.actionableImages.map(\.id)))
   }
 
@@ -496,17 +499,16 @@ struct GridStoreSceneTests {
     let (store, transport) = await loadedSceneStore()
     await transport.setStackMemberPage(
       .init(items: [makeImage(id: 501)], limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     store.enterSelectExplicitly()
-    store.selection.toggle(10)
     store.selection.toggle(501)
 
     let refreshed = await store.authoritativeRefresh()
 
     #expect(refreshed)
-    #expect(store.selection.members == [10, 501])
-    #expect(Set(store.tagTargetImageIDs) == Set([10, 501]))
+    #expect(store.selection.members == [501])
+    #expect(Set(store.tagTargetImageIDs) == Set([501]))
   }
 
   // MARK: - Members are ordinary photographs (gate correction 1), and the cover follows the write
@@ -521,7 +523,7 @@ struct GridStoreSceneTests {
         items: [makeImage(id: 501, revision: "m-rev-1"), makeImage(id: 502, revision: "m-rev-2")],
         limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     await transport.setMarkStateOutcome(
       .success(
@@ -548,7 +550,7 @@ struct GridStoreSceneTests {
       .init(
         items: [makeImage(id: 501, revision: "m-rev-1")], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     // The server's answer AFTER the pick: the cover moved to the picked member and the badges
     // changed. The anchor is deliberately different here so a merge that took the whole row
@@ -576,7 +578,7 @@ struct GridStoreSceneTests {
     #expect(merged.matchedCount == 4)
     // Everything else stayed: the anchor (position in capture order) and the expansion.
     #expect(merged.anchorTakenAt == Date(timeIntervalSince1970: 1_700_000_000))
-    #expect(store.sceneExpanded.contains(5))
+    #expect(store.enteredSceneID == 5)
     #expect(store.sceneMembers[5]?.map(\.id) == [501])
   }
 
@@ -591,7 +593,7 @@ struct GridStoreSceneTests {
         items: [makeImage(id: 501, revision: "m-rev-1"), makeImage(id: 502, mark: .dislike)],
         limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 501
     #expect(store.markTargetReadout == .uniform(.none))
 
@@ -674,38 +676,36 @@ struct SceneRowBuilderTests {
       pickedCount: 0, representative: image(cover), stackId: id)
   }
 
-  @Test("A COLLAPSED scene renders as the card alone and contributes nothing actionable")
+  @Test("In the stream a scene renders as the card alone and contributes nothing actionable")
   func collapsedSceneContributesNothing() {
     let rows = SceneRowBuilder.displayRows(
-      rows: [.image(image(1)), .stack(stack(5, cover: 900))], expanded: [], members: [:])
+      rows: [.image(image(1)), .stack(stack(5, cover: 900))])
     #expect(rows.map(\.id) == [.image(1), .stack(5)])
     #expect(SceneRowBuilder.actionableImages(rows).map(\.id) == [1])
   }
 
-  @Test("An EXPANDED scene IS its loaded members, which ARE actionable")
+  @Test("An ENTERED scene's screen IS its loaded members, which ARE actionable")
   func expandedSceneContributesItsMembers() {
-    let rows = SceneRowBuilder.displayRows(
-      rows: [.stack(stack(5, cover: 900)), .image(image(1))],
-      expanded: [5], members: [5: [image(501), image(502)]])
-    // IMGMGR-240: the members take the scene's own place — no card, and the cover is not drawn
-    // twice.
-    #expect(rows.map(\.id) == [.image(501), .image(502), .image(1)])
-    #expect(SceneRowBuilder.actionableImages(rows).map(\.id) == [501, 502, 1])
+    let rows = SceneRowBuilder.enteredSceneRows(members: [image(501), image(502)])
+    // WP442 P12: the scene screen holds the members only — no card, no cover drawn twice.
+    #expect(rows.map(\.id) == [.image(501), .image(502)])
+    #expect(SceneRowBuilder.actionableImages(rows).map(\.id) == [501, 502])
     #expect(!SceneRowBuilder.actionableImages(rows).contains { $0.id == 900 })
   }
 
-  @Test("An expanded scene whose members have not arrived yet renders as the card alone")
-  func expandedButUnloadedSceneRendersTheCardAlone() {
-    let rows = SceneRowBuilder.displayRows(
-      rows: [.stack(stack(5, cover: 900))], expanded: [5], members: [:])
-    #expect(rows.map(\.id) == [.stack(5)])
+  @Test("An entered scene whose members have not arrived yet shows Loading, never the card")
+  func expandedButUnloadedSceneShowsLoading() {
+    let rows = SceneRowBuilder.enteredSceneRows(members: [])
+    #expect(rows.isEmpty)
     #expect(SceneRowBuilder.actionableImages(rows).isEmpty)
+    #expect(
+      SceneScreenState.resolve(hasMembers: false, isInFlight: false, hasFailed: false) == .loading)
   }
 
   @Test("A photograph and a scene that share a number are different display identities")
   func imageAndStackIdsNeverCollide() {
     let rows = SceneRowBuilder.displayRows(
-      rows: [.image(image(7)), .stack(stack(7, cover: 900))], expanded: [], members: [:])
+      rows: [.image(image(7)), .stack(stack(7, cover: 900))])
     #expect(rows.map(\.id) == [.image(7), .stack(7)])
     #expect(GridDisplayID.image(7) != GridDisplayID.stack(7))
     #expect(GridDisplayID.stack(7).imageID == nil)

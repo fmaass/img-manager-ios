@@ -71,6 +71,12 @@
     /// WP31 P1 (IMGMGR-460): how many `POST /api/marks/state` writes the fixture transport has
     /// served this launch — what makes "Skip performs no server write" falsifiable from a UI test.
     var markWrites = 0
+    /// WP442 P12: APPEND-ONLY, one `"<state>:<ids,>"` per SetMarkState body, recorded before the
+    /// answer and whether or not it changes state.
+    var markRequests: [String] = []
+    /// WP442 P12: the two scroll slots, mirrored by the active grid instance (`none` = unset).
+    var streamAnchor = "none"
+    var sceneAnchor = "none"
 
     /// IMGMGR-485: every tag edit the fixture transport answered, as the WIRE call it received
     /// (`add(tag: x, imageIDs: [2])`), so a UI test asserts which photograph a tag sheet wrote

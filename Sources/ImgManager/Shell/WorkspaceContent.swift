@@ -21,6 +21,9 @@ struct WorkspaceContent: View {
   let service: GridService
   let share: ShareExportStore
   let layoutMode: LayoutMode
+  /// WP442 P12: the grid instance's CONSTANT scope — `.stream` for the workspace route, the
+  /// entered scene for a pushed `.scene` route; Regular passes `store.activeScope`.
+  let scope: GridScope
   /// WP28 P3: the queue the Summary sheet reads its server counts from.
   let queueStore: QueueStore
   /// WP28 P3: the grid's navigation title (`WorkspaceTitle`), nil only when no folder is shown —
@@ -39,6 +42,26 @@ struct WorkspaceContent: View {
   @Environment(\.openWindow) private var openWindow
 
   private var title: String? { breadcrumb?.title }
+
+  /// The scene this content shows, if any.
+  private var sceneID: Int? {
+    guard case .scene(let id) = scope else { return nil }
+    return id
+  }
+
+  private var isActive: Bool { scope == store.activeScope }
+
+  /// The navigation title: the folder's, or "Scene · N photos" inside a scene.
+  private var shownTitle: String {
+    if let sceneID { return store.sceneTitle(for: sceneID) }
+    return title ?? ""
+  }
+
+  /// D1: inside a scene the principal breadcrumb is the scene title with NO folder counts.
+  private var shownBreadcrumb: GridBreadcrumb? {
+    guard let sceneID else { return breadcrumb }
+    return GridBreadcrumb(title: store.sceneTitle(for: sceneID), subtitle: nil)
+  }
 
   private var shootWindowOpener: ShootWindowOpener {
     let open = openWindow
@@ -63,7 +86,8 @@ struct WorkspaceContent: View {
           LoupeView(store: store, layoutMode: layoutMode, share: share, chrome: loupeChrome)
         }
       } else {
-        GridView(store: store, layoutMode: layoutMode)
+        GridView(store: store, layoutMode: layoutMode, scope: scope)
+          .id(scope)
           .toolbar {
             // Fold item 7's persistent chrome control, unchanged in role: this ONE control is how
             // the inspector is reached at every width — never a second, width-specific surface.
@@ -82,13 +106,24 @@ struct WorkspaceContent: View {
           // WP28 P3 (IMGMGR-450), Decision 1: the folder's name in the grid's principal slot, and
           // its title menu's one row, "Shoot Summary". WP29 P1 (IMGMGR-452): at Regular the slot
           // is p4128's breadcrumb (`GridBreadcrumbTitle`); Compact keeps its pushed title alone.
-          .navigationTitle(title ?? "")
+          .navigationTitle(shownTitle)
+          .modifier(
+            SceneFolderSubtitle(
+              subtitle: sceneID != nil && layoutMode == .compact ? (title ?? "") : nil)
+          )
           .navigationBarTitleDisplayMode(.inline)
           .modifier(
             GridBreadcrumbTitle(
-              breadcrumb: breadcrumb, isRegular: layoutMode != .compact,
+              breadcrumb: shownBreadcrumb, isRegular: layoutMode != .compact,
               openSummary: { showSummary = true })
           )
+          .toolbar {
+            if sceneID != nil, layoutMode != .compact {
+              ToolbarItem(placement: .topBarLeading) {
+                SceneBackButton(folderTitle: title ?? "", store: store)
+              }
+            }
+          }
           .sheet(isPresented: $showSummary) {
             ShootSummarySheet(
               queueStore: queueStore, folderID: store.query.folderID, title: title,
@@ -96,7 +131,7 @@ struct WorkspaceContent: View {
           }
       }
     }
-    .inspector(isPresented: $showInspector) {
+    .inspector(isPresented: isActive ? $showInspector : .constant(false)) {
       InspectorView(store: store, service: service)
         .inspectorColumnWidth(
           min: InspectorColumnMetrics.minWidth, ideal: InspectorColumnMetrics.idealWidth,

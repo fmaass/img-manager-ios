@@ -1,8 +1,8 @@
 import XCTest
 
-/// WP14 lane B acceptance on the real thing: the in-place member band and its handle
-/// (IMGMGR-240), the ✓N pick count on a collapsed card (IMGMGR-241), and the picks a collapsed
-/// scene holds (IMGMGR-261).
+/// WP14 lane B acceptance on the real thing: the scene handle (IMGMGR-240; WP442 P12: it PUSHES
+/// the scene screen now), the ✓N pick count on the card (IMGMGR-241), and the picks a card holds
+/// (IMGMGR-261).
 ///
 /// Makes NO device-idiom decision. Where the app's own behaviour differs by layout — the inline
 /// picks ship on Regular only, a measured product decision — this test READS the decision the
@@ -32,18 +32,14 @@ final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
       card.label.contains("2 picked"),
       "The collapsed card does not announce its pick count. Label: '\(card.label)'")
 
-    // IMGMGR-240: a REAL control, named, with its state readable at rest — not a chevron that
-    // looks like one, and not a gesture the reader has to discover.
+    // IMGMGR-240: a REAL control, named — not a chevron that looks like one, and not a gesture
+    // the reader has to discover. WP442 P12: it has one action (push), so it carries no state.
     let handle = app.descendants(matching: .any)["sceneHandle-5000"].firstMatch
     XCTAssertTrue(
       handle.waitForExistence(timeout: 10),
-      "The scene has no expand handle — expansion is gesture-only again.")
-    XCTAssertTrue(handle.isHittable, "The expand handle exists but cannot be tapped where it is.")
-    XCTAssertEqual(
-      handle.label, "Open scene", "The handle does not name what it does while closed.")
-    XCTAssertEqual(
-      (handle.value as? String) ?? "", "Closed",
-      "The handle does not carry its open/closed state.")
+      "The scene has no open handle — opening is gesture-only again.")
+    XCTAssertTrue(handle.isHittable, "The open handle exists but cannot be tapped where it is.")
+    XCTAssertEqual(handle.label, "Open scene", "The handle does not name what it does.")
 
     // IMGMGR-261. The probe is used to OBSERVE which layout this destination resolved to, and for
     // nothing else — the expectation below is this test's own, written out here:
@@ -93,10 +89,11 @@ final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
     }
     attach(name: "scene-card-badges-and-handle")
 
-    // Opening SWAPS: the card leaves and its members take its place, each an ordinary tile.
+    // WP442 P12: opening PUSHES the scene screen — its members, each an ordinary tile, under
+    // the title "Scene · 41 photos".
     handle.tap()
     // IMGMGR-481: the hierarchy as it stood right after the tap, so a lost tap is attributable
-    // (was the handle still closed, covered, or already open?) rather than a bare timeout.
+    // (was the handle covered, or did the push never happen?) rather than a bare timeout.
     let afterTap = XCTAttachment(string: app.debugDescription)
     afterTap.name = "scene-handle-after-first-tap-hierarchy"
     afterTap.lifetime = .keepAlways
@@ -105,27 +102,27 @@ final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       member.waitForExistence(timeout: 15),
       "Opening the scene did not put its members on screen.")
+    XCTAssertTrue(
+      app.descendants(matching: .any).matching(
+        NSPredicate(
+          format: "label == %@ OR identifier == %@", "Scene · 41 photos", "Scene · 41 photos")
+      ).firstMatch.waitForExistence(timeout: 10),
+      "The pushed screen is not titled with the scene's photo count.")
     XCTAssertFalse(
       app.descendants(matching: .any)["sceneCard"].firstMatch.exists,
-      "The card is still on screen beside its own members — the band did not replace it.")
+      "The card is still on screen inside its own scene.")
+    attach(name: "scene-screen-pushed")
 
-    // The band keeps a way back, on the band itself: the handle moved onto the leading member.
-    let bandHandle = app.descendants(matching: .any)["sceneHandle-5000"].firstMatch
-    XCTAssertTrue(
-      bandHandle.waitForExistence(timeout: 10),
-      "The open band has no control — the only way to close the scene left with the card.")
-    XCTAssertEqual(
-      bandHandle.label, "Close scene", "The band's handle does not name the way back.")
-    XCTAssertEqual(
-      (bandHandle.value as? String) ?? "", "Open",
-      "The band's handle does not carry its open state.")
-    attach(name: "scene-band-open")
-
-    // ...and it really closes, so the control is wired rather than merely present.
-    bandHandle.tap()
+    // ...and Back really returns to the stream, so the push is a navigation, not an overlay.
+    let regularBack = app.buttons["sceneBackButton"]
+    if regularBack.exists {
+      regularBack.tap()
+    } else {
+      app.navigationBars.buttons.element(boundBy: 0).tap()
+    }
     XCTAssertTrue(
       app.descendants(matching: .any)["sceneCard"].firstMatch.waitForExistence(timeout: 15),
-      "Closing the band did not bring the card back.")
+      "Back did not bring the card back.")
   }
 
   private func attach(name: String) {

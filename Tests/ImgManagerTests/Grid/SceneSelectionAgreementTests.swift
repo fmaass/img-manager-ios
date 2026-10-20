@@ -71,7 +71,7 @@ struct SceneSelectionAgreementTests {
     await transport.setStackMemberPage(members([11, 12], of: 10), forStack: 10)
     await store.selectShoot(folderID: 1)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 2
     return (store, transport)
   }
@@ -111,7 +111,6 @@ struct SceneSelectionAgreementTests {
   @Test("Merge: enabled on S = {f, m} ⊆ X; disabled when S holds a photo outside X")
   func mergeAgreement() async {
     let (store, _) = await loadedStore()
-    await store.toggleSceneExpanded(6)
     select([2, 3], in: store)
     #expect(store.canMergeFocusedScene)
     #expect(enabled(SelectBarSceneMenu.merge, store))
@@ -313,14 +312,12 @@ struct SceneSelectionAgreementTests {
 
   // MARK: - R4-B1: agreement re-checked at submission
 
-  /// Open scenes X = 5 and Y = 6, S = {2, 3} ⊆ X, focus 2, the Merge picker open. A refresh moves
-  /// 2 into Y while keeping both scenes open, S and the focus — so the shipped re-derivation now
-  /// names Y. The guarded submit records NOTHING; the unguarded (shipped-default) submit shows
-  /// what it would have sent, which is why the guard exists.
+  /// Entered scene X = 5, S = {2, 3} ⊆ X, focus 2, the Merge picker open. A refresh moves 2 into
+  /// Y = 6. WP442 P12: there is ONE entered scene, so the re-derivation can no longer name Y —
+  /// the subject is the entered scene or nothing — and the guarded submit records NOTHING.
   @Test("R4-B1: a refresh that moves f into another scene makes the Merge picker submit nothing")
   func mergePickerSubmitsNothingAfterARefreshMovesTheFocus() async throws {
     let (store, transport) = await loadedStore(extraScene: true)
-    await store.toggleSceneExpanded(6)
     select([2, 3], in: store)
     store.focusedImageID = 2
     run(SelectBarSceneMenu.merge, store)
@@ -329,29 +326,19 @@ struct SceneSelectionAgreementTests {
     await transport.setStackMemberPage(members([1, 3], of: 5), forStack: 5)
     await transport.setStackMemberPage(members([7, 2, 8], of: 6), forStack: 6)
     #expect(await store.authoritativeRefresh())
-    #expect(store.sceneExpanded.isSuperset(of: [5, 6]))
-    #expect(store.focusedImageID == 2)
-    #expect(store.selection.members == [2, 3])
-    #expect(store.sceneEditSubject == SceneEditSubject(stackID: 6, focusedImageID: 2))
+    #expect(store.enteredSceneID == 5)
+    #expect(store.sceneEditSubject?.stackID != 6, "the subject named a scene that is not entered")
 
     await transport.setStackEditOutcome(.success(editResult(stacks: [6], dissolved: [10])))
     await SceneMergePicker.submit(
       kind: .mergeFocusedScene, targetStackID: 10, store: store,
       submissionGuard: SceneSelectionAgreement.pickerGuard(for: .mergeFocusedScene))
     #expect(await transport.recordedStackEdits.isEmpty)
-
-    // The named mutant: the shipped default guard would have merged the NEW focused scene.
-    await SceneMergePicker.submit(
-      kind: .mergeFocusedScene, targetStackID: 10, store: store, submissionGuard: { _ in true })
-    let mutant = await transport.recordedStackEdits
-    #expect(mutant.count == 1)
-    #expect(mutant.first.flatMap { decoded($0)["stack_ids"] as? [Int] } == [6, 10])
   }
 
   @Test("R4-B1 control: without the refresh the guarded Merge picker sends merge([X, Z])")
   func mergePickerControlWithoutARefresh() async throws {
     let (store, transport) = await loadedStore(extraScene: true)
-    await store.toggleSceneExpanded(6)
     select([2, 3], in: store)
     run(SelectBarSceneMenu.merge, store)
     await transport.setStackEditOutcome(.success(editResult(stacks: [5], dissolved: [10])))

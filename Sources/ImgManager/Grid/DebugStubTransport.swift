@@ -28,6 +28,12 @@
       self.probe = probe
     }
 
+    /// WP442 P12 (§2.7): the fixture's mark state, seeded from the static fixture and moved only
+    /// by real `SetMarkState` transitions (`"pick"`, `"dislike"`, `"none"` per image id).
+    private var markState: [Int: String] = [:]
+    /// WP442 P12 (T11, `-UITestSplitCreatesScene`): where the fixture scene was split, if it was.
+    private var splitPoint: Int?
+
     /// A minimal valid 1×1 JPEG — the last-resort fallback where no drawing API exists.
     private static let tinyJPEG = Data(
       base64Encoded:
@@ -166,13 +172,23 @@
       // Debug composition could not enter Scene mode with data at all, so the band, the ✓N badge
       // and the inline picks had no rendered evidence — only unit assertions.
       case Operations.BrowseStacksApiBrowseStacksGet.id:
-        return try jsonResponse(.ok, Self.fixtureStackPage())
+        return try jsonResponse(
+          .ok, Self.fixtureStackPage(marks: markState, splitPoint: splitPoint))
       case Operations.ListStackMembersApiStacksStackIdMembersGet.id:
         let memberCursor = request.path.flatMap { URLComponents(string: $0)?.queryItems }?
           .first(where: { $0.name == "cursor" })?.value
-        return try jsonResponse(.ok, Self.fixtureStackMemberPage(cursor: memberCursor))
+        let stackID = Self.sceneEditStackID(path: request.path).flatMap(Int.init)
+        return try jsonResponse(
+          .ok,
+          Self.fixtureStackMemberPage(
+            cursor: memberCursor, stackID: stackID ?? Self.fixtureStackID, marks: markState,
+            splitPoint: splitPoint))
       case Operations.GetStackApiStacksStackIdGet.id:
-        return try jsonResponse(.ok, Self.fixtureStackRow())
+        let stackID = Self.sceneEditStackID(path: request.path).flatMap(Int.init)
+        return try jsonResponse(
+          .ok,
+          Self.fixtureStackRow(
+            stackID: stackID ?? Self.fixtureStackID, marks: markState, splitPoint: splitPoint))
       // IMGMGR-347: the absorb the More menu's new row drives. Counted BEFORE the answer goes
       // back, through the same probe the facets fetch uses, so a UI test observes the REQUEST
       // rather than the sheet closing. The result names the fixture's own scene, which is what
@@ -195,6 +211,19 @@
           path: request.path, body: body)
         let sceneEditProbe = self.probe
         await MainActor.run { (sceneEditProbe ?? .shared).sceneEdits.append(record) }
+        // WP442 P12 (T11): with `-UITestSplitCreatesScene` a split of the fixture scene really
+        // makes a second scene, 5001, holding the tail from the split point.
+        if DebugStubLaunch.splitCreatesScene,
+          operationID == Operations.SplitStackApiStacksStackIdSplitPost.id,
+          let point = Self.splitPoint(in: record)
+        {
+          splitPoint = point
+          return try jsonResponse(
+            .ok,
+            Components.Schemas.StackEditResult(
+              dissolvedStackIds: [], loosenedImageIds: [],
+              stackIds: [Self.fixtureStackID, Self.fixtureSplitStackID]))
+        }
         return try jsonResponse(
           .ok,
           Components.Schemas.StackEditResult(
@@ -215,9 +244,22 @@
         // WP31 P1 (IMGMGR-460): counted BEFORE the answer goes back, through the same probe as the
         // absorb request, so a UI test reads how many mark writes really reached the wire.
         let markProbe = self.probe
-        await MainActor.run { (markProbe ?? .shared).markWrites += 1 }
+        // WP442 P12 (§2.7): the append-only request log, recorded BEFORE the answer and whether
+        // or not the write changes state; then the fixture state moves by real transitions.
+        let (state, ids) = await Self.markRequest(body: body)
+        let entry = "\(state):\(ids.map(String.init).joined(separator: ","))"
+        await MainActor.run {
+          (markProbe ?? .shared).markWrites += 1
+          (markProbe ?? .shared).markRequests.append(entry)
+        }
+        var changed = 0
+        for id in ids where Self.seededState(id, marks: markState) != state {
+          markState[id] = state
+          changed += 1
+        }
         return try jsonResponse(
-          .ok, Components.Schemas.MarksApplied(applied: 0, requested: 0, revisions: []))
+          .ok,
+          Components.Schemas.MarksApplied(applied: changed, requested: ids.count, revisions: []))
       case Operations.EditMarkTagsApiMarksTagsPost.id:
         // IMGMGR-485: recorded as the WIRE call BEFORE the answer goes back, the same way the
         // scene edits above are, so a UI test reads which photographs the tag sheet wrote.
@@ -474,6 +516,54 @@
         sourceKind: "camera_original", sourceLabel: "STUB_\(id).ARW", sourceTier: "local")
     }
 
+    /// WP442 P12 (T11): the scene a `-UITestSplitCreatesScene` split creates.
+    static let fixtureSplitStackID = 5001
+
+    private static func markRequest(body: HTTPBody?) async -> (String, [Int]) {
+      var object: [String: Any] = [:]
+      if let body, let data = try? await Data(collecting: body, upTo: 1 << 16) {
+        object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+      }
+      return (object["state"] as? String ?? "?", object["image_ids"] as? [Int] ?? [])
+    }
+
+    private static func splitPoint(in record: String) -> Int? {
+      guard let range = record.range(of: "atImageID: ") else { return nil }
+      return Int(record[range.upperBound...].prefix { $0.isNumber })
+    }
+
+    /// The fixture's own seed for one photograph (members 3 and 5 are picked).
+    private static func seededState(_ id: Int, marks: [Int: String]) -> String {
+      if let moved = marks[id] { return moved }
+      return id == 3 || id == 5 ? "pick" : "none"
+    }
+
+    private static func applying(
+      _ marks: [Int: String], to image: Components.Schemas.ImageSummary
+    ) -> Components.Schemas.ImageSummary {
+      guard let state = marks[image.id] else { return image }
+      var moved = image
+      switch state {
+      case "pick": moved.mark.state = .pick
+      case "dislike": moved.mark.state = .dislike
+      default: moved.mark.state = Components.Schemas.MarkView.StatePayload.none
+      }
+      return moved
+    }
+
+    /// One scene's members on page 1 (`tail` = the second page), with the split applied.
+    private static func members(
+      of stackID: Int, marks: [Int: String], splitPoint: Int?
+    ) -> (head: [Components.Schemas.ImageSummary], tail: [Components.Schemas.ImageSummary]) {
+      let all = fixtureStackMemberImages().map { applying(marks, to: $0) }
+      let pageTwo = [applying(marks, to: plainMember(id: fixtureSecondPageMemberID))]
+      guard let splitPoint, let cut = all.firstIndex(where: { $0.id == splitPoint }) else {
+        return (all, pageTwo)
+      }
+      if stackID == fixtureSplitStackID { return (Array(all[cut...]), []) }
+      return (Array(all[..<cut]), [])
+    }
+
     /// The card's own row. `representative` is a member whose `has_edit` is true, so the card
     /// draws the ✎ badge beside the ✓N one — the two-badge cluster the owner decided on.
     ///
@@ -482,50 +572,62 @@
     /// `has_edit` (`fixtureImages()` marks every third), which is the digit the pencil now
     /// states. Phase 1 landed the field at a placeholder 0; a zero here would draw no pencil at
     /// all and make the badge's UI leg vacuous.
-    private static func fixtureStackRow() -> Components.Schemas.StackBrowseStackRow {
-      let members = fixtureStackMemberImages()
-      // IMGMGR-406 (Codex round 4): the counts advertise the WHOLE scene, not the first page of
-      // it — the band serves `members.count` now and one more on the second membership page, and
-      // a card that promised 40 while its band ends at 41 would be the fixture lying about the
-      // very thing this scene exists to page.
-      let advertised = members.count + 1
+    private static func fixtureStackRow(
+      stackID: Int = fixtureStackID, marks: [Int: String] = [:], splitPoint: Int? = nil
+    ) -> Components.Schemas.StackBrowseStackRow {
+      let page = members(of: stackID, marks: marks, splitPoint: splitPoint)
+      let loaded = page.head + page.tail
       return Components.Schemas.StackBrowseStackRow(
-        anchorTakenAt: Date(timeIntervalSince1970: 1_788_000_000),
-        editedCount: members.filter { $0.hasEdit == true }.count, hasPick: true,
+        anchorTakenAt: Date(
+          timeIntervalSince1970: 1_788_000_000 + Double(stackID - fixtureStackID)),
+        editedCount: loaded.filter { $0.hasEdit == true }.count,
+        hasPick: loaded.contains { $0.mark.state == .pick },
         kind: .stack,
-        matchedCount: advertised, memberCount: advertised,
-        pickedCount: members.filter { $0.mark.state == .pick }.count,
-        representative: members[1], stackId: fixtureStackID)
+        matchedCount: loaded.count, memberCount: loaded.count,
+        pickedCount: loaded.filter { $0.mark.state == .pick }.count,
+        representative: loaded[min(1, loaded.count - 1)], stackId: stackID)
     }
 
     /// Loose photographs either side of the scene, so the band's POSITION in the stream is part
     /// of the rendered evidence rather than something to take on trust.
-    private static func fixtureStackPage() -> Components.Schemas.StackBrowsePage {
-      let loose = fixtureImages()
-      return Components.Schemas.StackBrowsePage(
-        items: [
-          .init(value1: .init(image: loose[0], kind: .image), value2: nil),
-          .init(value1: .init(image: loose[1], kind: .image), value2: nil),
-          .init(value1: nil, value2: fixtureStackRow()),
-          .init(value1: .init(image: loose[7], kind: .image), value2: nil),
-          .init(value1: .init(image: loose[8], kind: .image), value2: nil),
-        ], limit: 100, nextCursor: nil)
+    private static func fixtureStackPage(
+      marks: [Int: String] = [:], splitPoint: Int? = nil
+    ) -> Components.Schemas.StackBrowsePage {
+      let loose = fixtureImages().map { applying(marks, to: $0) }
+      var items: [Components.Schemas.StackBrowsePage.ItemsPayloadPayload] = [
+        .init(value1: .init(image: loose[0], kind: .image), value2: nil),
+        .init(value1: .init(image: loose[1], kind: .image), value2: nil),
+        .init(value1: nil, value2: fixtureStackRow(marks: marks, splitPoint: splitPoint)),
+      ]
+      if splitPoint != nil {
+        items.append(
+          .init(
+            value1: nil,
+            value2: fixtureStackRow(
+              stackID: fixtureSplitStackID, marks: marks, splitPoint: splitPoint)))
+      }
+      items += [
+        .init(value1: .init(image: loose[7], kind: .image), value2: nil),
+        .init(value1: .init(image: loose[8], kind: .image), value2: nil),
+      ]
+      return Components.Schemas.StackBrowsePage(items: items, limit: 100, nextCursor: nil)
     }
 
     /// Two membership pages (IMGMGR-406). Page one is the loaded band and names its successor;
     /// the second page is served only to a request that carries that cursor, which is what makes
     /// its one member evidence that somebody asked.
-    private static func fixtureStackMemberPage(cursor: String?)
-      -> Components.Schemas.StackMemberPage
-    {
+    private static func fixtureStackMemberPage(
+      cursor: String?, stackID: Int = fixtureStackID, marks: [Int: String] = [:],
+      splitPoint: Int? = nil
+    ) -> Components.Schemas.StackMemberPage {
+      let page = members(of: stackID, marks: marks, splitPoint: splitPoint)
       guard cursor == memberPageTwoCursor else {
         return Components.Schemas.StackMemberPage(
-          items: fixtureStackMemberImages(), limit: 100, nextCursor: memberPageTwoCursor,
-          stackId: fixtureStackID)
+          items: page.head, limit: 100,
+          nextCursor: page.tail.isEmpty ? nil : memberPageTwoCursor, stackId: stackID)
       }
       return Components.Schemas.StackMemberPage(
-        items: [plainMember(id: fixtureSecondPageMemberID)], limit: 100, nextCursor: nil,
-        stackId: fixtureStackID)
+        items: page.tail, limit: 100, nextCursor: nil, stackId: stackID)
     }
 
     private static let memberPageTwoCursor = "members-2"
@@ -706,7 +808,7 @@
         path: "photo_incoming"),
       .init(
         descendantImageCount: 12, id: 1, imageCount: 12, kind: "dated",
-        name: "2026-08-27 — Stub Shoot", parentId: 9, path: "photo_incoming/stub"),
+        name: DebugStubLaunch.fixtureShootTitle, parentId: 9, path: "photo_incoming/stub"),
       .init(
         descendantImageCount: 12, id: 2, imageCount: 0, kind: "other", name: "2026", parentId: 9,
         path: "photo_incoming/2026"),
@@ -761,7 +863,12 @@
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 25, decided: 12, disliked: 2, edited: 5, folderId: 1,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_421_712),
-          nothingLeftUnmarked: false, path: "photo_incoming/stub", picked: 10,
+          nothingLeftUnmarked: false,
+          // WP442 P12 (T7): the Compact shell names the shoot from this path's last component, so
+          // `-UITestLongFolderTitle` lengthens it here too.
+          path: DebugStubLaunch.longFolderTitle
+            ? "photo_incoming/\(DebugStubLaunch.longFixtureShootTitle)" : "photo_incoming/stub",
+          picked: 10,
           previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
           sourceTier: "local", sync: .init(never: 3, refused: 1, stale: 2, synced: 5), total: 40,
           unmarked: 28, withMasters: 15),
@@ -900,6 +1007,23 @@
     /// this whole file.
     static var enterSelectMode: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestEnterSelectMode")
+    }
+
+    /// WP442 P12 (T11): a split of the fixture scene creates scene 5001 holding the tail.
+    static var splitCreatesScene: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestSplitCreatesScene")
+    }
+
+    /// WP442 P12 (T7): an 80-character folder title for the fixture shoot.
+    static var longFolderTitle: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestLongFolderTitle")
+    }
+
+    static let longFixtureShootTitle =
+      "2026-08-27 — A Very Long Stub Shoot Title That Keeps Going Well Past Its Label!!"
+
+    static var fixtureShootTitle: String {
+      longFolderTitle ? longFixtureShootTitle : "2026-08-27 — Stub Shoot"
     }
 
     /// WP13 P2 (IMGMGR-222): a FIFTH, independent launch argument, for the same reason the

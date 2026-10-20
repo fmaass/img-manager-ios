@@ -60,7 +60,7 @@ struct GridStoreCompoundMarkTests {
     await transport.setStackMemberPage(memberPage, forStack: 5)
     await store.selectShoot(folderID: 1)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     // Preconditions: without them a refresh that never starts would hang the wait below.
     let memberIDs = store.sceneMembers[5]?.map { $0.id }
     try #require(memberIDs == [1, 2, 3])

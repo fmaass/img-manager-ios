@@ -88,12 +88,12 @@ enum SceneMemberCursor: Sendable, Equatable {
 /// raw `7`s would.
 enum SceneDisplayRow: Sendable, Equatable, Identifiable {
   case image(Components.Schemas.ImageSummary)
-  case stack(row: Components.Schemas.StackBrowseStackRow, isExpanded: Bool)
+  case stack(Components.Schemas.StackBrowseStackRow)
 
   var id: GridDisplayID {
     switch self {
     case .image(let image): return .image(image.id)
-    case .stack(let row, _): return .stack(row.stackId)
+    case .stack(let row): return .stack(row.stackId)
     }
   }
 
@@ -103,7 +103,7 @@ enum SceneDisplayRow: Sendable, Equatable, Identifiable {
   var aspectRatio: Double {
     switch self {
     case .image(let image): return image.aspectRatio ?? 1.0
-    case .stack(let row, _): return row.representative.aspectRatio ?? 1.0
+    case .stack(let row): return row.representative.aspectRatio ?? 1.0
     }
   }
 }
@@ -131,27 +131,22 @@ enum SceneRowBuilder {
   /// before the member request settles — so without this the scene would vanish from the stream
   /// entirely while it loaded, taking with it the only control left to close or retry it. That is
   /// why this never yields zero rows for a scene at any point of the lifecycle.
-  static func displayRows(
-    rows: [SceneBrowseRow],
-    expanded: Set<Int>,
-    members: [Int: [Components.Schemas.ImageSummary]]
-  ) -> [SceneDisplayRow] {
-    var out: [SceneDisplayRow] = []
-    for row in rows {
+  static func displayRows(rows: [SceneBrowseRow]) -> [SceneDisplayRow] {
+    // WP442 P12 (IMGMGR-540): the stream ALWAYS shows cards plus loose photographs; the in-place
+    // swap of a card for its members is gone — a card tap pushes the scene instead.
+    rows.map { row in
       switch row {
-      case .image(let image):
-        out.append(.image(image))
-      case .stack(let stack):
-        let isExpanded = expanded.contains(stack.stackId)
-        let band = isExpanded ? (members[stack.stackId] ?? []) : []
-        guard !band.isEmpty else {
-          out.append(.stack(row: stack, isExpanded: isExpanded))
-          continue
-        }
-        out.append(contentsOf: band.map(SceneDisplayRow.image))
+      case .image(let image): return .image(image)
+      case .stack(let stack): return .stack(stack)
       }
     }
-    return out
+  }
+
+  /// The entered scene's screen: its members, capture-ordered, tombstones included.
+  static func enteredSceneRows(
+    members: [Components.Schemas.ImageSummary]
+  ) -> [SceneDisplayRow] {
+    members.map(SceneDisplayRow.image)
   }
 
   /// The band of the OPEN scene this photograph belongs to, in display order — or `nil` because it
@@ -161,7 +156,7 @@ enum SceneRowBuilder {
   /// not "everything on screen", so it needs the membership question answered the same way the
   /// band itself is drawn — from `expanded` and `members`, the state `displayRows` above already
   /// renders, never a second fetch and never a cached band of a scene the reader has CLOSED
-  /// (`GridStore.toggleSceneExpanded` keeps those members in hand deliberately, so the fence on
+  /// (`GridStore.leaveScene` keeps those members in hand deliberately, so the fence on
   /// `expanded` is what keeps a closed scene's photographs out of every consumer of this).
   /// Iterating the expanded ids in sorted order keeps the answer deterministic even though a
   /// photograph can only ever be in one of them.
@@ -177,26 +172,6 @@ enum SceneRowBuilder {
       return band
     }
     return nil
-  }
-
-  /// Which member each open band hangs its own control on: the FIRST member of every scene whose
-  /// band is actually rendered, keyed by that member's image id.
-  ///
-  /// The band has no card to put a close control on any more — that is what the swap above costs
-  /// — so the control is drawn over the band's leading cell instead, which is the position the
-  /// card's own handle occupied a moment earlier. Derived rather than carried on the row so that
-  /// `SceneDisplayRow` keeps its two shapes and every existing `case .image(let image)` in the
-  /// tree still means exactly what it did.
-  static func bandLeadMembers(
-    expanded: Set<Int>,
-    members: [Int: [Components.Schemas.ImageSummary]]
-  ) -> [Int: Int] {
-    var leads: [Int: Int] = [:]
-    for stackID in expanded {
-      guard let lead = members[stackID]?.first else { continue }
-      leads[lead.id] = stackID
-    }
-    return leads
   }
 
   /// One member's pick transition, as the ✓N badge sees it (IMGMGR-241).

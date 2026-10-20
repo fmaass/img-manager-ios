@@ -99,7 +99,7 @@ struct GridStoreSceneEditTests {
     await transport.setStackMemberPage(members([7, 8], stackID: 6), forStack: 6)
     await store.selectShoot(folderID: 1)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 2
     return (store, transport)
   }
@@ -142,14 +142,15 @@ struct GridStoreSceneEditTests {
     // Nothing focused at all.
     store.focusedImageID = nil
     #expect(store.sceneEditSubject == nil)
-    // A member of a CLOSED scene: membership survives the collapse (reopening costs no request),
+    // A member of a LEFT scene: membership survives the Back (re-entering costs no request),
     // so this is the case a `sceneMembers` lookup alone would get wrong.
-    await store.toggleSceneExpanded(5)
+    store.leaveScene()
     store.focusedImageID = 2
     #expect(store.sceneMembers[5]?.map(\.id) == [1, 2, 3])
     #expect(store.sceneEditSubject == nil)
     // Positive control for the three nils above.
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
+    store.focusedImageID = 2
     #expect(store.sceneEditSubject == SceneEditSubject(stackID: 5, focusedImageID: 2))
   }
 
@@ -210,7 +211,7 @@ struct GridStoreSceneEditTests {
     await transport.setStackMemberPage(members([1, 2, 3], stackID: 5), forStack: 5)
     await store.selectShoot(folderID: 1)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 2
 
     #expect(store.sceneMergeTargets.map(\.stackID) == [7, 6])
@@ -295,13 +296,13 @@ struct GridStoreSceneEditTests {
     #expect(record.path.hasSuffix("/api/stacks/5/split"))
     #expect(decoded(record)["at_image_id"] as? Int == 2)
 
-    // The survivor was open and stays open; the NEW scene is open because the edit produced it.
-    #expect(store.sceneExpanded == [5, 9])
+    // WP442 P12: the screen retargets to the part whose LOADED members hold the anchor — the
+    // new scene 9, because the reader cut at 2.
+    #expect(store.enteredSceneID == 9)
     #expect(store.sceneMembers[9]?.map(\.id) == [2, 3])
+    #expect(store.displayRows(for: .scene(9)).map(\.id) == [.image(2), .image(3)])
     // …and the reader is left on the photograph they cut at, in its new home.
     #expect(store.focusedImageID == 2)
-    // Scene 6 was never open and is not opened by an edit that did not touch it.
-    #expect(!store.sceneExpanded.contains(6))
   }
 
   /// Coordinator case 3: the SURVIVOR is the server's choice — here the target, not the subject —
@@ -320,7 +321,7 @@ struct GridStoreSceneEditTests {
 
     await store.mergeFocusedScene(into: 6)
 
-    #expect(store.sceneExpanded == [6])
+    #expect(store.enteredSceneID == 6)
     #expect(store.sceneMembers[6]?.map(\.id) == [1, 2, 3, 7, 8])
     // The previously focused member is INSIDE the survivor, so it keeps the focus.
     #expect(store.focusedImageID == 2)
@@ -347,10 +348,10 @@ struct GridStoreSceneEditTests {
     #expect(store.focusedImageID == 1)
   }
 
-  /// Coordinator case 4: the EDITED scene comes back WHOLE — past page one — while a scene that
-  /// was merely reopened keeps a tap's contract of one page. The focus proves the completion
-  /// mattered: the member the reader was on is only on page two.
-  @Test("The edited scene is completed past page one; a merely reopened one is not")
+  /// Coordinator case 4: the EDITED scene comes back WHOLE — past page one — while a scene the
+  /// edit did not touch is not read past page one. The focus proves the completion mattered: the
+  /// member the reader was on is only on page two.
+  @Test("The edited scene is completed past page one; an untouched one is not")
   func onlyTheEditedSceneIsCompletedPastPageOne() async {
     let (store, transport) = makeStore()
     await transport.setBrowseStacksPage(
@@ -369,13 +370,8 @@ struct GridStoreSceneEditTests {
     await transport.setStackMemberPage(members([52, 53], stackID: 11), forCursor: "eleven-2")
     await store.selectShoot(folderID: 1)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
-    await store.toggleSceneExpanded(6)
-    await store.toggleSceneExpanded(11)
+    await store.enterScene(6)
     store.focusedImageID = 7  // subject = scene 6
-
-    // Before the edit, scene 11 holds its first page only.
-    #expect(store.sceneMembers[11]?.map(\.id) == [50, 51])
 
     // Merge 6 into 5; the server keeps 5. Its merged membership PAGES.
     await transport.setStackEditOutcome(.success(editResult(stacks: [5], dissolved: [6])))
@@ -392,13 +388,13 @@ struct GridStoreSceneEditTests {
 
     await store.mergeFocusedScene(into: 5)
 
-    // The EDITED scene came back whole — both pages.
+    // The EDITED scene came back whole — both pages — and the screen follows the survivor.
+    #expect(store.enteredSceneID == 5)
     #expect(store.sceneMembers[5]?.map(\.id) == [1, 2, 7, 8])
     // …which is the only reason the focus could land on a member of page two.
     #expect(store.focusedImageID == 7)
-    // The scene nobody edited was reopened as loaded as a tap leaves it: page one.
-    #expect(store.sceneExpanded.contains(11))
-    #expect(store.sceneMembers[11]?.map(\.id) == [50, 51])
+    // The scene nobody edited is never completed: no request for its second page.
+    #expect(!(await transport.recordedWire.contains { $0.path.contains("cursor=eleven-2") }))
   }
 
   /// The coordinator's unconditional clause (codex gate, blocker 2): "ensure the RESULT stacks are
@@ -431,7 +427,7 @@ struct GridStoreSceneEditTests {
     // Page forward through the ONE scene pager, the way the grid does, and open the scene there.
     await store.loadMoreScenesIfNeeded(currentRowID: .stack(6))
     #expect(store.sceneRows.map(\.displayID).contains(.stack(30)))
-    await store.toggleSceneExpanded(30)
+    await store.enterScene(30)
     store.focusedImageID = 42
     #expect(store.sceneEditSubject == SceneEditSubject(stackID: 30, focusedImageID: 42))
 
@@ -452,12 +448,12 @@ struct GridStoreSceneEditTests {
 
     await store.splitFocusedScene()
 
-    // Both result stacks are OPEN, whatever page they lived on…
-    #expect(store.sceneExpanded.contains(30), "the survivor was lost with its page")
-    #expect(store.sceneExpanded.contains(31), "the new scene was lost with its page")
-    // …the EDITED scenes came back whole…
+    // WP442 P12: the screen follows the part whose LOADED members hold the anchor (31), whatever
+    // page it lived on…
+    #expect(store.enteredSceneID == 31, "the new scene was lost with its page")
+    // …it came back whole, and it is what the screen displays…
     #expect(store.sceneMembers[31]?.map(\.id) == [42, 43])
-    #expect(store.sceneMembers[30]?.map(\.id) == [40, 41])
+    #expect(store.displayRows(for: .scene(31)).map(\.id) == [.image(42), .image(43)])
     // …and the reader is still on the photograph they cut at, in its new home.
     #expect(store.focusedImageID == 42)
     // Chronological order survives the ensure: the re-read rows sit after page one's, which is
@@ -494,7 +490,7 @@ struct GridStoreSceneEditTests {
     await store.setDisplayMode(.scene)
     await store.loadMoreScenesIfNeeded(currentRowID: .stack(6))
     #expect(store.sceneRows.map(\.displayID) == [.stack(5), .stack(6), .stack(20), .stack(30)])
-    await store.toggleSceneExpanded(30)
+    await store.enterScene(30)
     store.focusedImageID = 42
 
     await transport.setStackEditOutcome(.success(editResult(stacks: [30, 31])))
@@ -556,9 +552,8 @@ struct GridStoreSceneEditTests {
   @Test("Extraction sends the subject scene's selected members, in membership order, and no others")
   func extractionSendsTheIntersectionScopedToTheSubject() async throws {
     let (store, transport) = await loadedEditableStore()
-    await store.toggleSceneExpanded(6)
     store.selection.enterSelectExplicitly()
-    // Selected out of order, and across TWO open scenes.
+    // Selected out of order, and one id (8, a member of scene 6) outside the subject.
     store.selection.toggle(3)
     store.selection.toggle(2)
     store.selection.toggle(8)
@@ -584,10 +579,11 @@ struct GridStoreSceneEditTests {
     #expect(records.count == 1)
     let record = try #require(records.first)
     #expect(record.path.hasSuffix("/api/stacks/5/extract"))
-    // Membership order, scoped to the subject: 8 belongs to the OTHER open scene and is untouched.
+    // Membership order, scoped to the subject: 8 belongs to ANOTHER scene and is untouched.
     #expect(decoded(record)["image_ids"] as? [Int] == [2, 3])
     #expect(store.focusedImageID == 2)
-    #expect(store.sceneExpanded == [5, 9])
+    // WP442 P12: the screen follows the anchor into the extracted part.
+    #expect(store.enteredSceneID == 9)
   }
 
   @Test("Extraction is not offered for an empty selection, nor for a COMPLETE whole membership")
@@ -623,7 +619,7 @@ struct GridStoreSceneEditTests {
       members([1, 2], stackID: 5, nextCursor: "five-2"), forStack: 5)
     await store.selectShoot(folderID: 1)
     await store.setDisplayMode(.scene)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 2
     store.selection.enterSelectExplicitly()
     store.selection.toggle(1)
@@ -653,7 +649,7 @@ struct GridStoreSceneEditTests {
     // is still the truth.
     #expect(
       await transport.callCount(Operations.BrowseStacksApiBrowseStacksGet.id) == reloadsBefore)
-    #expect(store.sceneExpanded == [5])
+    #expect(store.enteredSceneID == 5)
 
     store.dismissSceneEditError()
     #expect(store.sceneEditError == nil)

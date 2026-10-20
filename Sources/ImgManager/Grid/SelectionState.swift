@@ -26,6 +26,8 @@ enum SelectionResetTrigger: Equatable, Sendable {
   case queryGenerationChange
   case fullReload
   case enteredLoupe
+  /// WP442 P12: entering or leaving a scene — the selection belongs to the scope being left.
+  case sceneTransition
 }
 
 /// Selection-set semantics (plan fold item 6, the P4-owned OPEN item, now pinned). Scope is one

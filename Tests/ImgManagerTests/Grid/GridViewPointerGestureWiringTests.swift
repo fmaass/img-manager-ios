@@ -43,7 +43,7 @@ struct GridViewPointerGestureWiringTests {
   @Test("body attaches the pointer-drag gesture through pointerGestureInstaller exactly once")
   func installerWasInvokedByBody() async {
     let (store, _) = makeStore()
-    var view = GridView(store: store, layoutMode: .compact)
+    var view = GridView(store: store, layoutMode: .compact, scope: .stream)
 
     var installCount = 0
     var capturedOnChanged: ((CGPoint) -> Void)?
@@ -71,7 +71,7 @@ struct GridViewPointerGestureWiringTests {
       .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
 
-    var view = GridView(store: store, layoutMode: .compact)
+    var view = GridView(store: store, layoutMode: .compact, scope: .stream)
     var capturedOnEnded: (() -> Void)?
     view.pointerGestureInstaller = PointerGestureInstaller { content, _, onEnded in
       capturedOnEnded = onEnded

@@ -162,15 +162,16 @@ extension View {
   /// The refusal surface: an ALERT carrying the typed decision, in `AccountSheetView`'s idiom —
   /// the app's ONE `.alert(presenting:)` with per-case buttons. Retry appears for exactly one
   /// failure, the busy folder, and replays the FROZEN payload.
-  func sceneEditAlert(store: GridStore) -> some View {
+  func sceneEditAlert(store: GridStore, active: Bool = true) -> some View {
     alert(
       SceneEditCopy.title,
-      isPresented: Binding(
-        get: { store.sceneEditError != nil },
-        set: { presented in
-          if !presented { store.dismissSceneEditError() }
-        }
-      ),
+      isPresented: PresentationGate.binding(
+        Binding(
+          get: { store.sceneEditError != nil },
+          set: { presented in
+            if !presented { store.dismissSceneEditError() }
+          }
+        ), active: active),
       presenting: store.sceneEditError
     ) { failure in
       // The buttons are DATA (`SceneEditAlert`), rendered here and nowhere else — and the replay

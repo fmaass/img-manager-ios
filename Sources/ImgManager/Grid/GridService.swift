@@ -223,6 +223,8 @@ struct GridService: Sendable {
       throw GridServiceError.unreachable
     case .undocumented(let statusCode, _):
       if statusCode == 400 { throw GridServiceError.cursorInvalid }
+      // WP442 P12: an undocumented 404 is the server's evidence that the scene is gone.
+      if statusCode == 404 { throw GridServiceError.notFound }
       throw GridServiceError.unreachable
     }
   }
@@ -244,6 +246,10 @@ struct GridService: Sendable {
         .init(path: .init(stackId: stackID), query: query.asStackRowQuery()))
     } catch {
       throw GridServiceError.unreachable
+    }
+    // WP442 P12: an undocumented 404 is the server's evidence that the scene is gone.
+    if case .undocumented(let statusCode, _) = output, statusCode == 404 {
+      throw GridServiceError.notFound
     }
     guard case .ok(let ok) = output, let row = try? ok.body.json else {
       throw GridServiceError.unreachable
@@ -776,6 +782,8 @@ struct StackMemberPageResult: Sendable, Equatable {
 /// there is still no server body, hostname, or transport string reachable from any case here.
 enum GridServiceError: Error, Sendable, Equatable {
   case unreachable
+  /// WP442 P12: `GET /api/stacks/{id}` or its members answered 404 — the scene is gone.
+  case notFound
   /// 409 on a mark mutation: a named precondition was stale, nothing was applied.
   case conflict
   /// 400 on `GET /api/images`: the cursor-fingerprint refusal (see `images(_:)`'s doc comment).

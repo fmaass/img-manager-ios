@@ -18,9 +18,13 @@ struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
   let badgeCount: Int
   /// A Back out of the grid in the hosting tab.
   let onHostPopped: () -> Void
+  /// WP442 P12: the grid store's entered scene (projected onto the host's stack) and the store's
+  /// leave, called when a USER write removed the scene from the stack.
+  var enteredSceneID: Int?
+  var onScenePopped: () -> Void = {}
   let shoots: Shoots
   let library: Library
-  let destination: Destination
+  let destination: (WorkspaceRoute) -> Destination
 
   var body: some View {
     TabView(selection: $navigation.activeTab) {
@@ -48,9 +52,9 @@ struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
   private func stack(for tab: CompactTab, root: some View) -> some View {
     NavigationStack(path: path(for: tab)) {
       root
-        .navigationDestination(for: WorkspaceRoute.self) { _ in
+        .navigationDestination(for: WorkspaceRoute.self) { route in
           if navigation.gridHost == tab {
-            destination
+            destination(route)
           }
         }
     }
@@ -59,12 +63,14 @@ struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
   private func path(for tab: CompactTab) -> Binding<[WorkspaceRoute]> {
     let navigation = self.navigation
     let onHostPopped = self.onHostPopped
+    let onScenePopped = self.onScenePopped
+    let entered = self.enteredSceneID
     return Binding(
-      get: { navigation.path(for: tab) },
+      get: { navigation.presentedPath(for: tab, entered: entered) },
       set: { newPath in
-        let wasHost = navigation.gridHost == tab
-        navigation.setPath(newPath, for: tab)
-        if wasHost, newPath.isEmpty { onHostPopped() }
+        let effect = navigation.applyStackWrite(newPath, for: tab, entered: entered)
+        if effect.leavesScene { onScenePopped() }
+        if effect.popsHost { onHostPopped() }
       })
   }
 }

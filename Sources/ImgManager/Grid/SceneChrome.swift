@@ -7,21 +7,17 @@ import SwiftUI
 /// what it does and says which state it is in" is a contract, and a contract belongs in a test
 /// that reads a string, not in a screenshot that has to be looked at.
 enum SceneHandleAccessibility {
-  static func label(isExpanded: Bool) -> String { isExpanded ? "Close scene" : "Open scene" }
-  /// The state half. SwiftUI has no `aria-expanded` trait, so the state travels as the element's
-  /// VALUE — which is what VoiceOver reads immediately after the label, and what XCUITest can
-  /// assert on.
-  static func value(isExpanded: Bool) -> String { isExpanded ? "Open" : "Closed" }
+  /// WP442 P12: the handle only ever opens (pushes) its scene.
+  static let label = "Open scene"
 }
 
 /// What a collapsed card announces (IMGMGR-241 changed it): how big the scene is, whether it is
 /// open, and — now a COUNT rather than a flag — how many of its members are picked.
 enum SceneCardAccessibility {
-  static func label(memberCount: Int, pickedCount: Int, isExpanded: Bool) -> String {
+  static func label(memberCount: Int, pickedCount: Int) -> String {
     let photos = "\(memberCount) \(memberCount == 1 ? "photo" : "photos")"
-    let state = isExpanded ? "open" : "closed"
     let picks = pickedCount >= 1 ? ", \(pickedCount) picked" : ""
-    return "Scene of \(photos), \(state)\(picks)"
+    return "Scene of \(photos)\(picks)"
   }
 }
 
@@ -40,14 +36,13 @@ enum SceneCardAccessibility {
 /// card at all, only the members that replaced it.
 struct SceneExpandHandle: View {
   let stackID: Int
-  let isExpanded: Bool
   let store: GridStore
 
   var body: some View {
     Button {
-      Task { await store.toggleSceneExpanded(stackID) }
+      Task { await store.enterScene(stackID) }
     } label: {
-      Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+      Image(systemName: "chevron.right")
         .font(.caption2.weight(.semibold))
         .frame(width: 24, height: 24)
         .background(.black.opacity(0.65), in: Circle())
@@ -59,8 +54,7 @@ struct SceneExpandHandle: View {
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier("sceneHandle-\(stackID)")
-    .accessibilityLabel(SceneHandleAccessibility.label(isExpanded: isExpanded))
-    .accessibilityValue(SceneHandleAccessibility.value(isExpanded: isExpanded))
+    .accessibilityLabel(SceneHandleAccessibility.label)
     .padding(2)
   }
 }

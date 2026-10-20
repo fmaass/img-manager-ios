@@ -4,6 +4,31 @@ import Observation
 /// The one destination a Compact tab's stack can push: the shared workspace (`WorkspaceContent`).
 enum WorkspaceRoute: Hashable, Sendable {
   case workspace
+  /// WP442 P12: the entered scene, pushed over the workspace. Never STORED in `paths`: it is
+  /// projected from the grid store (`presentedPath(for:entered:)`).
+  case scene(Int)
+  /// P13's Group-by entry. A route case only: nothing projects it yet.
+  case group(key: String, value: String)
+
+  var isScene: Bool {
+    guard case .scene = self else { return false }
+    return true
+  }
+
+  var isEntry: Bool {
+    switch self {
+    case .workspace: return false
+    case .scene, .group: return true
+    }
+  }
+}
+
+/// What one user-initiated stack write means for the store and the host.
+struct StackWriteEffect: Equatable, Sendable {
+  var leavesScene: Bool
+  var popsHost: Bool
+
+  static let none = StackWriteEffect(leavesScene: false, popsHost: false)
 }
 
 /// WP28 P1 (IMGMGR-448): the Compact shell's navigation state, and the explicit ownership rule
@@ -74,6 +99,31 @@ final class WorkspaceNavigation {
       gridHost = nil
       for tab in CompactTab.allCases { paths[tab] = [] }
     }
+  }
+
+  /// WP442 P12 (§2.2): the path a tab's stack SHOWS — the stored base path, plus the entered
+  /// scene on the grid host's stack. A pure projection of the store; nothing writes it back.
+  func presentedPath(for tab: CompactTab, entered: Int?) -> [WorkspaceRoute] {
+    let base = path(for: tab)
+    guard tab == gridHost, base == [.workspace], let entered else { return base }
+    return base + [.scene(entered)]
+  }
+
+  /// A USER stack write (Back, edge swipe, pop to root) — SwiftUI calls the binding's setter only
+  /// for those. Stores the base path (scene/group stripped) and says what the store must do.
+  func applyStackWrite(
+    _ newPath: [WorkspaceRoute], for tab: CompactTab, entered: Int?
+  ) -> StackWriteEffect {
+    let presented = presentedPath(for: tab, entered: entered)
+    guard newPath != presented else { return .none }
+    let wasHost = gridHost == tab
+    let showedScene = presented.contains(where: \.isScene)
+    let keepsScene = newPath.contains(where: \.isScene)
+    setPath(newPath.filter { !$0.isEntry }, for: tab)
+    var effect = StackWriteEffect.none
+    effect.leavesScene = showedScene && !keepsScene
+    effect.popsHost = wasHost && newPath.isEmpty
+    return effect
   }
 
   /// The session boundary (sign-out, erased credentials), called beside

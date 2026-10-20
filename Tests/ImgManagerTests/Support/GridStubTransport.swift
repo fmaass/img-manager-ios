@@ -336,6 +336,19 @@ actor GridStubTransport: ClientTransport {
     stackRows[stackID] = row
   }
 
+  /// WP442 P12: stacks the server no longer has — `GET /api/stacks/{id}` and its members answer
+  /// the undocumented 404 (`GridServiceError.notFound`), checked before any configured page.
+  private var goneStacks: Set<Int> = []
+  /// WP442 P12: stacks whose membership read fails at the network level (unreachable), checked
+  /// before any configured page, cursor pages included.
+  private var failingStackMembers: Set<Int> = []
+  func markStackGone(_ stackID: Int, _ gone: Bool = true) {
+    if gone { goneStacks.insert(stackID) } else { goneStacks.remove(stackID) }
+  }
+  func failStackMembers(_ stackID: Int, _ fail: Bool = true) {
+    if fail { failingStackMembers.insert(stackID) } else { failingStackMembers.remove(stackID) }
+  }
+
   /// The same hold/release pattern as the other operations, for
   /// `GET /api/stacks/{id}/members` — what makes the single-flight guard testable
   /// deterministically: a second expand of the same scene lands while the first page is
@@ -881,6 +894,12 @@ actor GridStubTransport: ClientTransport {
           self.membersReleaseContinuation = continuation
         }
       }
+      if let stackID, goneStacks.contains(stackID) {
+        return (HTTPResponse(status: .notFound), nil)
+      }
+      if let stackID, failingStackMembers.contains(stackID) {
+        throw SentinelTransportError(raw: "GridStubTransport: forced members failure \(stackID)")
+      }
       if let cursorValue, !cursorValue.isEmpty, let page = stackMemberPagesByCursor[cursorValue] {
         return try jsonResponse(.ok, page)
       }
@@ -902,6 +921,9 @@ actor GridStubTransport: ClientTransport {
       }
       let stackID = request.path.flatMap(URLComponents.init(string:))?
         .path.split(separator: "/").last.flatMap { Int($0) }
+      if let stackID, goneStacks.contains(stackID) {
+        return (HTTPResponse(status: .notFound), nil)
+      }
       guard let stackID, let row = stackRows[stackID] else {
         let named = stackID.map { String($0) } ?? "?"
         throw SentinelTransportError(

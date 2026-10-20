@@ -53,7 +53,7 @@ struct SceneMarkScrollAnchorTests {
   /// tiles packed into only three rows (gate on ea18cf7), too few to anchor inside the band.
   private func rendered(_ store: GridStore) -> [GridRenderRow] {
     GridSectionLayout.renderRows(
-      rows: store.sceneDisplayRows,
+      rows: store.displayRows(for: store.activeScope),
       groupBy: store.activeGrouping.groupByKey,
       headers: store.groupHeaders, timezone: store.groupTimezone,
       paneWidth: 300, targetRowHeight: 120, displayScale: 2,
@@ -96,7 +96,7 @@ struct SceneMarkScrollAnchorTests {
     await store.setDisplayMode(.scene)
     await transport.setStackMemberPage(
       .init(items: members(), limit: 100, nextCursor: nil, stackId: 5), forStack: 5)
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
 
     let before = rendered(store)
     let keyBefore = GridPackingKey(store: store, paneWidth: 300, displayScale: 2)

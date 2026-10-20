@@ -160,7 +160,7 @@ struct ScenePicksInGroupsTests {
   func anOpenSceneReadsNoSummary() async {
     let (store, transport, preferences) = await loadedSceneStore()
     preferences.picksInGroups = true
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     let afterExpansion = await transport.callCount(
       Operations.ListStackMembersApiStacksStackIdMembersGet.id)
     // Positive control: expanding really did read the membership.
@@ -192,7 +192,7 @@ struct ScenePicksInGroupsTests {
 
     // Open it and pick the one member that was not picked — an ordinary write on an expanded
     // member, which is the only kind this scene can receive.
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     #expect(await transport.callCount(members) == 2)
     await transport.setMarkStateOutcome(
       .success(
@@ -208,7 +208,7 @@ struct ScenePicksInGroupsTests {
         ], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
 
-    await store.toggleSceneExpanded(5)  // collapse — the card is the summary again
+    store.leaveScene()  // Back — the card is the summary again
     await store.loadInlinePicksIfNeeded(stackID: 5)
 
     #expect(store.sceneInlinePicks[5]?.map(\.id) == [501, 502, 503])
@@ -216,7 +216,7 @@ struct ScenePicksInGroupsTests {
     #expect(await transport.callCount(members) == 3)
 
     // The other direction: a member that STOPS being a pick has to leave the strip.
-    await store.toggleSceneExpanded(5)  // members are still in hand, so this fetches nothing
+    await store.enterScene(5)  // members are still in hand, so this fetches nothing
     #expect(await transport.callCount(members) == 3)
     await transport.setMarkStateOutcome(
       .success(
@@ -229,7 +229,7 @@ struct ScenePicksInGroupsTests {
         ], limit: 100, nextCursor: nil, stackId: 5),
       forStack: 5)
 
-    await store.toggleSceneExpanded(5)  // collapse
+    store.leaveScene()  // Back
     await store.loadInlinePicksIfNeeded(stackID: 5)
 
     #expect(store.sceneInlinePicks[5]?.map(\.id) == [502, 503])

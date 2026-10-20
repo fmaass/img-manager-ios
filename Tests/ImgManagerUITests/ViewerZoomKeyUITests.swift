@@ -87,17 +87,11 @@ final class ViewerZoomKeyUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(member.waitForExistence(timeout: 20), "Opening the scene showed no members.")
     try requireCommandKeys(app, shrinking: member)
 
-    // CompareUITests' path into the band: the loupe on loose photograph 1, advanced until the
-    // strip appears (member 3), where Compare opens on 3 | 4.
-    openLoupe(app, on: "gridTile-1")
+    // CompareUITests' path into the scene (WP442 P12): the loupe on the pushed scene's first
+    // member (3), where Compare opens on 3 | 4.
+    openLoupe(app, on: "gridTile-\(leftID)")
     let strip = element(app, "loupeFilmstrip")
-    let next = app.buttons["loupeNext"]
-    var advances = 0
-    while !strip.exists, advances < 5, next.exists {
-      next.tap()
-      advances += 1
-      _ = strip.waitForExistence(timeout: 4)
-    }
+    _ = strip.waitForExistence(timeout: 10)
     // Compare is an iPad verb: at Compact the proof is the control's absence (CompareUITests).
     if rendersCompactShell(app) {
       XCTAssertFalse(
@@ -105,7 +99,7 @@ final class ViewerZoomKeyUITests: OrientationPinnedUITestCase {
       return
     }
     let compare = element(app, "loupeCompareButton")
-    XCTAssertTrue(strip.exists, "Advancing never reached the scene's band.")
+    XCTAssertTrue(strip.exists, "The member's loupe drew no strip.")
     XCTAssertTrue(compare.waitForExistence(timeout: 10), "The Regular loupe has no Compare.")
     compare.tap()
     XCTAssertTrue(app.buttons["compareBack"].waitForExistence(timeout: 10), "Compare did not open.")

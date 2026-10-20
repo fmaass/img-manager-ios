@@ -15,7 +15,11 @@ struct GridView: View {
   /// `RootView` from measured width plus `horizontalSizeClass` and passed down — never
   /// re-derived here, and never from the device-idiom API (plan invariant (i)).
   let layoutMode: LayoutMode
+  /// WP442 P12: what this instance renders — CONSTANT for its lifetime (§2.4).
+  let scope: GridScope
   @Environment(\.displayScale) private var displayScale
+  /// WP442 P12 (§2.6): the scene card holding real focus, if any.
+  @FocusState private var focusedCard: Int?
   @State private var paneWidth: CGFloat = 0
   @State private var tileFrames: [GridDisplayID: CGRect] = [:]
 
@@ -52,7 +56,7 @@ struct GridView: View {
     stack
       .onChange(of: store.images) { _, _ in publishRows() }
       .onChange(of: store.sceneRows) { _, _ in publishRows() }
-      .onChange(of: store.sceneExpanded) { _, _ in publishRows() }
+      .onChange(of: store.activeScope) { _, _ in publishRows() }
       .onChange(of: store.sceneMembers) { _, _ in publishRows() }
       .onChange(of: store.rowHeight) { _, _ in publishRows() }
       // IMGMGR-551 (R3-7): Justified ↔ Square moves every row break, so the navigation rows are
@@ -62,7 +66,11 @@ struct GridView: View {
       // turns one packing pass into per-section passes — so the row table has to be rebuilt
       // when it lands, or arrow navigation would keep describing the unsectioned layout.
       .onChange(of: store.groupHeaders) { _, _ in publishRows() }
+      .modifier(SceneCardFocusBridge(focusedCard: $focusedCard, store: store))
   }
+
+  /// The instance the reader is looking at; only it publishes rows, pages, presents and probes.
+  private var isActive: Bool { scope == store.activeScope }
 
   /// Compact's persistent options row and the transient mode rows, in their pinned order.
   ///
@@ -99,7 +107,7 @@ struct GridView: View {
 
   private var stack: some View {
     VStack(spacing: 0) {
-      debugProbeElement
+      if isActive { debugProbeElement }
       chromeRows
       scrollArea
         .onGeometryChange(for: CGFloat.self) {
@@ -109,7 +117,9 @@ struct GridView: View {
           publishRows()
         }
         .overlay {
-          if displayRows.isEmpty && !store.isLoadingPage {
+          if case .scene(let stackID) = scope {
+            sceneStateOverlay(stackID)
+          } else if displayRows.isEmpty && !store.isLoadingPage {
             ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
               // R3-12: drawn over the black canvas, so it takes the canvas's dark scheme.
               .environment(\.colorScheme, .dark)
@@ -120,7 +130,29 @@ struct GridView: View {
       MarksCopyBanner(store: store)
       ActionBarView(
         store: store, openShootWindow: openShootWindow,
-        carriesMore: WorkspaceChromePlacement.actionBarCarriesMore(for: layoutMode))
+        carriesMore: WorkspaceChromePlacement.actionBarCarriesMore(for: layoutMode),
+        presentsSheets: isActive)
+    }
+  }
+
+  /// §2.5: the scene screen's loading and failed states; loaded shows the members themselves.
+  @ViewBuilder
+  private func sceneStateOverlay(_ stackID: Int) -> some View {
+    switch store.sceneScreenState(for: stackID) {
+    case .loading:
+      ProgressView()
+        .controlSize(.large)
+        .accessibilityIdentifier("sceneLoading")
+    case .failed:
+      ContentUnavailableView {
+        Label("Couldn't load this scene", systemImage: "exclamationmark.triangle")
+      } actions: {
+        Button("Retry") { Task { await store.retryEnteredScene() } }
+          .accessibilityIdentifier("sceneRetry")
+      }
+      .environment(\.colorScheme, .dark)
+    case .loaded:
+      EmptyView()
     }
   }
 
@@ -195,7 +227,78 @@ struct GridView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.gridChrome")
           .accessibilityValue(gridChromeProbeValue)
+        // WP442 P12: focus, scope, scroll slots and the append-only mark request log.
+        Text("debugProbeFocus")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.focus")
+          .accessibilityValue(focusProbeValue)
+        Text("debugProbeScope")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.scope")
+          .accessibilityValue(scopeProbeValue)
+        Text("debugProbeScroll")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.scroll")
+          .accessibilityValue(
+            "streamAnchor=\(DebugProbe.shared.streamAnchor);"
+              + "sceneAnchor=\(DebugProbe.shared.sceneAnchor)")
+        Text("debugProbeMarkRequests")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.markRequests")
+          .accessibilityValue(
+            "markRequests=\(DebugProbe.shared.markRequests.joined(separator: "|"))")
+        if scope == .stream, let card = firstSceneCardID {
+          // T3: moves REAL focus onto the first card through the `@FocusState` itself.
+          // Never focusable itself, so on an iPad with a hardware keyboard the tap cannot leave
+          // focus on this button instead of the card; and the assignment is made AFTER the touch
+          // has ended, so the touch's own focus reset cannot undo it.
+          Button("focusSceneCard") {
+            Task { @MainActor in
+              try? await Task.sleep(for: .milliseconds(400))
+              focusedCard = card
+            }
+          }
+          .focusable(false)
+          .font(.system(size: 1))
+          .frame(width: 1, height: 1)
+          .accessibilityIdentifier("debugFocusSceneCard")
+        }
       }
+    }
+
+    private var focusProbeValue: String {
+      let card = focusedCard.map { "card-\($0)" } ?? "none"
+      let photo = store.focusedImageID.map { "\($0)" } ?? "none"
+      return "uiFocus=\(card);focusedImageID=\(photo)"
+    }
+
+    private var scopeProbeValue: String {
+      let instance: String
+      switch scope {
+      case .stream: instance = "stream"
+      case .scene(let id): instance = "scene-\(id)"
+      }
+      let entered = store.enteredSceneID.map { "\($0)" } ?? "none"
+      return "instance=\(instance);entered=\(entered)"
+    }
+
+    private var firstSceneCardID: Int? {
+      store.sceneRows.lazy.compactMap { row -> Int? in
+        guard case .stack(let stack) = row else { return nil }
+        return stack.stackId
+      }.first
     }
 
     private var gridChromeProbeValue: String {
@@ -247,7 +350,7 @@ struct GridView: View {
     let topmost = GridScrollAnchor.topmostPhotograph(visible: visible, frames: tileFrames)
     if !scrollAnchorRestored {
       let step = GridScrollAnchor.restoreStep(
-        saved: store.gridScrollAnchor, topmost: topmost, rows: renderRows,
+        saved: store.scrollAnchor(for: scope), topmost: topmost, rows: renderRows,
         isLoading: store.isLoadingPage)
       switch step {
       case .wait:
@@ -261,9 +364,23 @@ struct GridView: View {
       }
     }
     // A report with no tile row (headers only) keeps the last photograph, as the binding did.
-    guard let topmost else { return }
-    store.gridScrollAnchor = topmost
+    guard let topmost, isActive else { return }
+    store.recordScrollAnchor(topmost, for: scope)
+    #if DEBUG
+      DebugProbe.shared.streamAnchor = Self.probeText(store.scrollAnchor(for: .stream))
+      DebugProbe.shared.sceneAnchor = Self.probeText(store.sceneScrollAnchor)
+    #endif
   }
+
+  #if DEBUG
+    static func probeText(_ id: GridDisplayID?) -> String {
+      switch id {
+      case .image(let imageID): return "\(imageID)"
+      case .stack(let stackID): return "stack-\(stackID)"
+      case nil: return "none"
+      }
+    }
+  #endif
 
   /// The packing inputs, and nothing a mark can move (`GridPackingKey`).
   private var packingKey: GridPackingKey {
@@ -276,7 +393,7 @@ struct GridView: View {
   /// packing actually changed. Runs from `onChange`, inside the update that changed the key and
   /// before the new layout's visibility report could record the rows now at the old offset.
   private func restoreAfterRepack(proxy: ScrollViewProxy) {
-    let saved = store.gridScrollAnchor
+    let saved = store.scrollAnchor(for: scope)
     guard let target = GridScrollAnchor.row(containing: saved, in: renderRows) else { return }
     proxy.scrollTo(target, anchor: .top)
   }
@@ -396,7 +513,6 @@ struct GridView: View {
         overlays: TileOverlaySet(preferences: store.preferences),
         cropsToFill: cropsToFill
       )
-      .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
       .overlay(alignment: .topTrailing) {
         if let cornerTileSize {
           MarkCornerTarget(
@@ -409,43 +525,27 @@ struct GridView: View {
             store: store)
         }
       }
-    case .stack(let stackRow, let isExpanded):
-      SceneCardView(
-        row: stackRow, plan: plan, isExpanded: isExpanded, store: store, cropsToFill: cropsToFill
-      )
-      // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
-      // control and for the same reason: the inline picks ship on Regular only (a measured
-      // product decision — see `showsInlinePicks`), so the screenshot test has to STATE which
-      // layout this destination resolved to and assert the branch the app actually took,
-      // rather than infer a device — which the mac-gate's own idiom grep forbids outright.
-      .accessibilityValue(sceneCardProbeValue)
-      // IMGMGR-240: a SIBLING of the card, never a child — see `SceneExpandHandle`.
-      .overlay(alignment: .bottomTrailing) {
-        SceneExpandHandle(stackID: stackRow.stackId, isExpanded: isExpanded, store: store)
-      }
-      .overlay(alignment: .bottomLeading) { inlinePicks(for: stackRow) }
-      .task(id: inlinePicksTaskID(for: stackRow)) {
-        guard showsInlinePicks, stackRow.pickedCount >= 1 else { return }
-        await store.loadInlinePicksIfNeeded(stackID: stackRow.stackId)
-      }
+    case .stack(let stackRow):
+      SceneCardView(row: stackRow, plan: plan, store: store, cropsToFill: cropsToFill)
+        // §2.6: real focus for keyboard/FKA readers, only in browse; it adds no mark path.
+        .focusable(store.selection.mode == .browse, interactions: .activate)
+        .focused($focusedCard, equals: stackRow.stackId)
+        // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
+        // control and for the same reason: the inline picks ship on Regular only (a measured
+        // product decision — see `showsInlinePicks`), so the screenshot test has to STATE which
+        // layout this destination resolved to and assert the branch the app actually took,
+        // rather than infer a device — which the mac-gate's own idiom grep forbids outright.
+        .accessibilityValue(sceneCardProbeValue)
+        // IMGMGR-240: a SIBLING of the card, never a child — see `SceneExpandHandle`.
+        .overlay(alignment: .bottomTrailing) {
+          SceneExpandHandle(stackID: stackRow.stackId, store: store)
+        }
+        .overlay(alignment: .topTrailing) { inlinePicks(for: stackRow) }
+        .task(id: inlinePicksTaskID(for: stackRow)) {
+          guard showsInlinePicks, stackRow.pickedCount >= 1 else { return }
+          await store.loadInlinePicksIfNeeded(stackID: stackRow.stackId)
+        }
     }
-  }
-
-  /// The close control for an OPEN band (IMGMGR-240).
-  ///
-  /// A band has no card to hang a control on — that is what replacing the card costs — so the
-  /// handle is drawn over the band's LEADING member, the position the card's own handle occupied
-  /// a moment before. Rendered for that one member and nothing else, so an open scene has exactly
-  /// one handle however many rows its members reflow across.
-  @ViewBuilder
-  private func bandHandle(forMember imageID: Int) -> some View {
-    if let stackID = bandLeads[imageID] {
-      SceneExpandHandle(stackID: stackID, isExpanded: true, store: store)
-    }
-  }
-
-  private var bandLeads: [Int: Int] {
-    SceneRowBuilder.bandLeadMembers(expanded: store.sceneExpanded, members: store.sceneMembers)
   }
 
   /// IMGMGR-261, iPad-first (AC 3). The RULE lives in `SceneInlinePicksPolicy`, which is where
@@ -495,6 +595,7 @@ struct GridView: View {
   /// stream", "page THIS scene's membership" — are asked at the one place that knows a cell just
   /// appeared, rather than needing three separate trigger mechanisms in the view.
   private func page(from id: GridDisplayID) async {
+    guard isActive else { return }
     if let imageID = id.imageID {
       await store.loadMoreIfNeeded(currentItemID: imageID)
       await store.loadMoreSceneMembersIfNeeded(afterMemberID: imageID)
@@ -506,10 +607,7 @@ struct GridView: View {
   /// same shape — every row an `.image` — so there is ONE packing pass, ONE frame dictionary and
   /// ONE gesture routing table rather than a parallel set per mode.
   private var displayRows: [SceneDisplayRow] {
-    switch store.displayMode {
-    case .flat: return store.images.map(SceneDisplayRow.image)
-    case .scene: return store.sceneDisplayRows
-    }
+    store.displayRows(for: scope)
   }
 
   private var rowsByID: [GridDisplayID: SceneDisplayRow] {
@@ -537,7 +635,7 @@ struct GridView: View {
       switch row {
       case .image(let image): return store.availability(for: image, tier: tier)
       // A card draws its representative, so its pixel availability IS the representative's.
-      case .stack(let stackRow, _):
+      case .stack(let stackRow):
         return store.availability(for: stackRow.representative, tier: tier)
       }
     }
@@ -548,7 +646,7 @@ struct GridView: View {
   /// `GridRenderRow.packedRow` is the one way tiles come back out, which keeps that true by
   /// construction rather than by remembering to filter here.
   private func publishRows() {
-    store.rows = GridSectionLayout.navigationRows(renderRows)
+    store.publishRows(GridSectionLayout.navigationRows(renderRows), from: scope)
   }
 }
 
@@ -1187,6 +1285,9 @@ struct ActionBarView: View {
   /// WP29 P1 (IMGMGR-452): `WorkspaceChromePlacement.actionBarCarriesMore` — true at Compact,
   /// false at Regular, where More is the grid bar's own item.
   var carriesMore: Bool = true
+  /// WP442 P12 (W6): only the ACTIVE grid instance presents the store-bound sheets and alert,
+  /// and an inactive instance's dismissal write is dropped (`PresentationGate`).
+  var presentsSheets: Bool = true
 
   /// Widest tier first — straight out of `ActionBarMetrics.tiers` — and the LAYOUT SYSTEM
   /// picks, not a measurement this view took. Every per-tier difference (its gap, its padding,
@@ -1221,32 +1322,42 @@ struct ActionBarView: View {
     // WP30 P2 (IMGMGR-457): the grid hosts tag entry only while the loupe is closed; while it is
     // open the loupe hosts it (`TagEntryHost`), so the one flag never presents two sheets.
     .sheet(
-      isPresented: Binding(
-        get: { store.presentsTagEntry(on: .grid) },
-        set: { store.isTagEntryPresented = $0 })
+      isPresented: PresentationGate.binding(
+        Binding(
+          get: { store.presentsTagEntry(on: .grid) },
+          set: { store.isTagEntryPresented = $0 }),
+        active: presentsSheets)
     ) {
       TagEntrySheet(store: store)
     }
     // WP13 P5a: hosted on the OUTER body beside tag entry, never on a `ViewThatFits` child —
     // a sheet declared per tier would be declared three times over.
-    .sheet(isPresented: $store.isStatusPresented) {
+    .sheet(
+      isPresented: PresentationGate.binding($store.isStatusPresented, active: presentsSheets)
+    ) {
       StatusSheet(store: store)
     }
     // WP14 P4: hosted here for the same reason the two above are — on the OUTER body, never on a
     // `ViewThatFits` child, which would declare each of them once per tier.
     // WP29 P4 (IMGMGR-455): Scene ▸ is the only opener of both pickers, so both re-check the
     // selection's agreement right before their shipped submit (R4-B1).
-    .sheet(isPresented: $store.isSceneMergePickerPresented) {
+    .sheet(
+      isPresented: PresentationGate.binding(
+        $store.isSceneMergePickerPresented, active: presentsSheets)
+    ) {
       SceneMergePicker(
         store: store, submissionGuard: SceneSelectionAgreement.pickerGuard(for: .mergeFocusedScene))
     }
     // IMGMGR-347: the absorb's own target sheet, hosted beside its sibling for the same reason.
-    .sheet(isPresented: $store.isSceneAbsorbPickerPresented) {
+    .sheet(
+      isPresented: PresentationGate.binding(
+        $store.isSceneAbsorbPickerPresented, active: presentsSheets)
+    ) {
       SceneMergePicker(
         store: store, kind: .absorbLoosePhotograph,
         submissionGuard: SceneSelectionAgreement.pickerGuard(for: .absorbLoosePhotograph))
     }
-    .sceneEditAlert(store: store)
+    .sceneEditAlert(store: store, active: presentsSheets)
   }
 
   /// One tier's rendering. Deliberately NOT `.frame(maxWidth: .infinity)`: a child that claims

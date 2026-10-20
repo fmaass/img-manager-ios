@@ -277,8 +277,8 @@ final class CompareUITests: OrientationPinnedUITestCase {
       app.buttons["compareBack"].waitForExistence(timeout: 10), "Compare did not open.")
   }
 
-  /// The Scene fixture, its scene open, the loupe on loose photograph 1, advanced into the band
-  /// until the strip appears (member 3) — the path `LoupeFilmstripScopeUITests` established.
+  /// The Scene fixture, its scene PUSHED (WP442 P12), the loupe opened on the scene's first
+  /// member (3) by its own tile — no band handle overlays a member any more.
   private func launchIntoTheBand() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments = ["-UITestStubGrid", "-UITestEnterSceneMode", "-UITestStubNoAutoAdvance"]
@@ -295,22 +295,15 @@ final class CompareUITests: OrientationPinnedUITestCase {
 
     let back = app.buttons["loupeBack"]
     for _ in 0..<3 where !back.exists {
-      let tile = element(app, "gridTile-1")
+      let tile = element(app, "gridTile-\(leftID)")
       guard tile.exists else { break }
       tile.tap()
       _ = back.waitForExistence(timeout: 3)
     }
-    XCTAssertTrue(back.exists, "Tapping gridTile-1 never opened the loupe.")
+    XCTAssertTrue(back.exists, "Tapping gridTile-\(leftID) never opened the loupe.")
 
     let strip = element(app, "loupeFilmstrip")
-    let next = app.buttons["loupeNext"]
-    var advances = 0
-    while !strip.exists, advances < 5, next.exists {
-      next.tap()
-      advances += 1
-      _ = strip.waitForExistence(timeout: 4)
-    }
-    XCTAssertTrue(strip.exists, "Advancing never reached the scene's band.")
+    XCTAssertTrue(strip.waitForExistence(timeout: 10), "The member's loupe drew no strip.")
     XCTAssertTrue(
       app.buttons["filmstripThumbnail-\(leftID)"].isSelected,
       "The loupe is not on the band's first member.")

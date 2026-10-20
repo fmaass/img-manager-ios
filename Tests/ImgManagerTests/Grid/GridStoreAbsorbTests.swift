@@ -121,7 +121,7 @@ struct GridStoreAbsorbTests {
     #expect(store.sceneEditSubject == nil)
 
     // A member of an OPEN scene is not loose — and now the other subject exists instead.
-    await store.toggleSceneExpanded(5)
+    await store.enterScene(5)
     store.focusedImageID = 2
     #expect(store.sceneAbsorbSubject == nil)
     #expect(store.sceneEditSubject == SceneEditSubject(stackID: 5, focusedImageID: 2))
@@ -268,13 +268,13 @@ struct GridStoreAbsorbTests {
 
   // MARK: - After the edit (ADR-0008's reload/reopen/focus semantics)
 
-  /// The same four steps every other topology edit gets, proven on the absorb: the window is
-  /// re-read, the RESULT scene is reopened, its membership is completed past page one, and the
-  /// reader is put back on the photograph they were on — which is now inside the scene.
-  @Test("The absorbed photograph ends focused inside the reopened, completed scene")
-  func theAbsorbedPhotographEndsFocusedInsideTheReopenedScene() async {
+  /// WP442 P12 (C5, intentional change): an absorb is started from the STREAM, so it never
+  /// navigates. The window is re-read, the photograph is counted on the card it joined, and the
+  /// focus — on a photograph the stream no longer serves — is cleared instead of pushing.
+  @Test("An absorb from the stream counts the photograph on its card and pushes nothing")
+  func anAbsorbFromTheStreamCountsThePhotographAndPushesNothing() async {
     let (store, transport) = await loadedAbsorbStore()
-    #expect(store.sceneExpanded.isEmpty)
+    #expect(store.enteredSceneID == nil)
 
     // What the server serves AFTER the absorb: 20 is a member of scene 6 and is no longer a row
     // of the stream.
@@ -292,9 +292,13 @@ struct GridStoreAbsorbTests {
     await store.absorbFocusedPhoto(into: 6)
 
     #expect(store.sceneEditError == nil)
-    #expect(store.sceneExpanded == [6], "the scene the photograph joined was not reopened")
-    #expect(store.sceneMembers[6]?.map(\.id) == [7, 8, 20])
-    #expect(store.focusedImageID == 20, "the reader was not put back on their own photograph")
+    #expect(store.enteredSceneID == nil, "a stream-initiated edit pushed a scene")
+    let card6 = store.sceneRows.compactMap { row -> Int? in
+      if case .stack(let stack) = row, stack.stackId == 6 { return stack.memberCount }
+      return nil
+    }
+    #expect(card6 == [3], "the photograph is not counted on the card it joined")
+    #expect(store.focusedImageID == nil, "a focus on a photograph the stream lost survived")
     // …and the photograph is no longer offered as a loose subject, because the stream stopped
     // serving it as one.
     #expect(store.sceneAbsorbSubject == nil)
@@ -321,8 +325,7 @@ struct GridStoreAbsorbTests {
     await store.absorbFocusedPhoto(into: 6)
 
     #expect(store.sceneRows.contains { $0.displayID == .stack(6) })
-    #expect(store.sceneExpanded == [6])
-    #expect(store.focusedImageID == 20)
+    #expect(store.enteredSceneID == nil, "row 6 is ensured, never entered")
   }
 
   // MARK: - The refusals, typed

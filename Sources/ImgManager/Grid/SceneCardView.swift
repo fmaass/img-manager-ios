@@ -40,7 +40,6 @@ import SwiftUI
 struct SceneCardView: View {
   let row: Components.Schemas.StackBrowseStackRow
   let plan: TileRenderPlan
-  let isExpanded: Bool
   let store: GridStore
   @State private var coverImage: PlatformImage?
   /// WP13 P11 (IMGMGR-220): the same pointer-hover seam every other cell takes. A card is not a
@@ -54,8 +53,7 @@ struct SceneCardView: View {
 
   private var accessibilityName: String {
     SceneVerdictBadges.spokenLabel(
-      memberCount: row.memberCount, pickedCount: row.pickedCount, editedCount: row.editedCount,
-      isExpanded: isExpanded)
+      memberCount: row.memberCount, pickedCount: row.pickedCount, editedCount: row.editedCount)
   }
 
   var body: some View {
@@ -78,11 +76,12 @@ struct SceneCardView: View {
       }
       countBadge
     }
-    .overlay(alignment: .topTrailing) { verdictBadges }
-    .overlay(alignment: .bottomLeading) { openingIndicator }
+    // R3-8 (WP442 P12): ✓N / ✎N sit on the bottom edge; the open stroke and the opening
+    // indicator are gone — a tap pushes the scene.
+    .overlay(alignment: .bottomLeading) { verdictBadges }
     .overlay(
       RoundedRectangle(cornerRadius: 2)
-        .stroke(isExpanded ? Color.accentColor : Color.secondary.opacity(0.6), lineWidth: 2)
+        .stroke(Color.secondary.opacity(0.6), lineWidth: 2)
     )
     .contentShape(Rectangle())
     // ≥44×44pt hit region, the same floor every other cell gets.
@@ -92,9 +91,7 @@ struct SceneCardView: View {
     // The no-gesture-only rule, stated in the UI and not only in the code: a long press does
     // nothing on a card, so the card says out loud what its ONE gesture is — and since
     // IMGMGR-240 there is a named control beside it that does the same thing without a gesture.
-    .accessibilityHint(
-      isExpanded ? "Double tap to close this scene" : "Double tap to open this scene"
-    )
+    .accessibilityHint("Double tap to open this scene")
     .accessibilityIdentifier("sceneCard")
   }
 
@@ -141,13 +138,14 @@ struct SceneCardView: View {
 
   /// How big the scene is, and nothing else.
   private var countBadge: some View {
-    Label("\(row.memberCount)", systemImage: "square.stack")
+    // R3-8: the "⧉ N" pill — the count of what a tap opens. C1: `chromeFill`, never a custom
+    // glass effect (ADR-N1).
+    Label("\(row.memberCount)", systemImage: "square.on.square")
       .font(.caption2)
       .labelStyle(.titleAndIcon)
-      .padding(.horizontal, 5)
+      .padding(.horizontal, 6)
       .padding(.vertical, 3)
-      .background(.black.opacity(0.55), in: Capsule())
-      .foregroundStyle(.white)
+      .chromeFill(.thinMaterial, in: Capsule())
       .padding(3)
       .accessibilityIdentifier("sceneMemberCount")
   }
@@ -192,22 +190,6 @@ struct SceneCardView: View {
       .background(.black.opacity(0.55), in: Capsule())
       .foregroundStyle(.white)
       .padding(3)
-    }
-  }
-
-  /// The one thing the card alone can say once IMGMGR-240 swapped it out of an OPEN scene: the
-  /// reader's own "open" is in flight, and this is why the band has not replaced it yet. A card
-  /// rendered `isExpanded` can only BE that state — an open scene whose members have arrived is
-  /// drawn as its members.
-  @ViewBuilder
-  private var openingIndicator: some View {
-    if isExpanded {
-      ProgressView()
-        .controlSize(.mini)
-        .padding(4)
-        .background(.black.opacity(0.55), in: Capsule())
-        .padding(3)
-        .accessibilityHidden(true)
     }
   }
 }
@@ -261,10 +243,9 @@ enum SceneVerdictBadges {
   }
 
   static func spokenLabel(
-    memberCount: Int, pickedCount: Int, editedCount: Int, isExpanded: Bool
+    memberCount: Int, pickedCount: Int, editedCount: Int
   ) -> String {
-    SceneCardAccessibility.label(
-      memberCount: memberCount, pickedCount: pickedCount, isExpanded: isExpanded)
+    SceneCardAccessibility.label(memberCount: memberCount, pickedCount: pickedCount)
       + spokenEditsClause(count: editedCount)
   }
 }
