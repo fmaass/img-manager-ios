@@ -19,6 +19,15 @@ only — nothing here submits to the App Store, and no step starts a review.
 
 ## Running a release
 
+**The bump commit adds the build's release notes.** The same commit that sets
+`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in `project.yml` adds a `## <version> (<build>)`
+section at the top of `Sources/ImgManager/Resources/ReleaseNotes.md`: plain one-line bullets for
+the person testing — what changed on screen, no ticket keys, no host names. The gate's `notes` leg
+refuses a tree whose `project.yml` pair has no section (or two), and `beta` loads that section
+as TestFlight's "What to Test" text after the archive and refuses the cut, before the dSYM copy
+and the upload, when it is missing, empty or duplicated (`fastlane/lib/release_notes.rb`). The app
+shows the same notes under Settings › About › Version.
+
     ssh <merkur host>
     cd ~/projects/img-manager-ios
     set -a; source ~/.config/<the ci env file>; set +a

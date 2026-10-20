@@ -1204,6 +1204,72 @@ else
   lfail ot-refuse-noleg "rc=$lrc line='$sline'"
 fi
 
+# --- IMGMGR-587: the `notes` leg, on fixture trees and on this repo. Every case runs the REAL
+# rule (gate_release_notes_rule) or leg (gate_notes_leg) — the functions bin/mac-gate.sh calls.
+nfail() { echo "FAIL $1: $2"; fail=1; }
+nok() { echo "PASS $1: $2"; }
+notes_fixture() { # $1=MARKETING_VERSION $2=CURRENT_PROJECT_VERSION $3=notes content ('-' = no file)
+  rm -rf "$tmp/notes"; mkdir -p "$tmp/notes/.gate-artifacts" "$tmp/notes/Sources/ImgManager/Resources"
+  {
+    echo 'targets:'
+    echo '  App:'
+    echo '    settings:'
+    echo '      base:'
+    echo '        # MARKETING_VERSION: "9.9.9" — a comment naming the key is not a key line'
+    [ -z "$1" ] || echo "        MARKETING_VERSION: \"$1\""
+    [ -z "$2" ] || echo "        CURRENT_PROJECT_VERSION: \"$2\""
+    echo '  Widget:   # a later target: the FIRST key line is the one read'
+    echo '        MARKETING_VERSION: "0.0.1"'
+  } > "$tmp/notes/project.yml"
+  [ "$3" = "-" ] || printf '%b' "$3" > "$tmp/notes/Sources/ImgManager/Resources/ReleaseNotes.md"
+}
+notes_case() { # $1=case $2=expected rc $3=version $4=build $5=notes
+  notes_fixture "$3" "$4" "$5"
+  gate_release_notes_rule "$tmp/notes" > "$tmp/notes.out" 2>&1
+  _nc_rc=$?
+  if [ "$_nc_rc" -eq "$2" ]; then nok "$1" "rc=$_nc_rc"; else nfail "$1" "rc=$_nc_rc want $2: $(tr '\n' '|' < "$tmp/notes.out")"; fi
+}
+notes_case n-present 0 0.15.1 23 '# Notes\n\n## 0.15.1 (23)\n\n- a\n\n## 0.15.0 (22)\n\n- b\n'
+notes_case n-missing 1 0.15.2 24 '## 0.15.1 (23)\n- a\n'
+notes_case n-duplicated 1 0.15.1 23 '## 0.15.1 (23)\n- a\n## 0.15.1 (23)\n- b\n'
+notes_case n-neighbour-build 1 0.15.1 2 '## 0.15.1 (23)\n- a\n'
+notes_case n-only-in-fence 1 0.15.1 23 '## 0.15.0 (22)\n````\n## 0.15.1 (23)\n```\n~~~~\n````\n'
+notes_case n-fence-closed 0 0.15.1 23 '## 0.15.0 (22)\n```\n## 9 (9)\n```\n## 0.15.1 (23)\n- a\n'
+notes_case n-crlf-trailing-space 0 0.15.1 23 '## 0.15.1 (23)  \r\n- a\r\n'
+notes_case n-no-sections 1 0.15.1 23 '# Notes only, no section\n'
+notes_case n-no-file 2 0.15.1 23 '-'
+notes_case n-no-build-key 2 0.15.1 '' '## 0.15.1 (23)\n- a\n'
+gate_release_notes_rule "$tmp/no-such-tree" > "$tmp/notes.out" 2>&1; _nc_rc=$?
+[ "$_nc_rc" -eq 2 ] && nok n-no-tree "rc=2" || nfail n-no-tree "rc=$_nc_rc"
+# The leg records the rule's own rc — a refusal is never swallowed into a green.
+notes_fixture 0.15.2 24 '## 0.15.1 (23)\n- a\n'
+leg_out="$( (cd "$tmp/notes" && summary="" && gate_notes_leg && echo "SUMMARY:$summary") 2>&1)"
+case "$leg_out" in
+  *"notes exit=1"*"SUMMARY: notes=1"*) nok n-leg-red "a missing section records notes=1" ;;
+  *) nfail n-leg-red "$(printf '%s' "$leg_out" | tr '\n' '|')" ;;
+esac
+grep -q "^NOTES FAIL: '## 0.15.2 (24)' must head exactly one section (found 0)" "$tmp/notes/.gate-artifacts/notes.log" \
+  && nok n-leg-evidence "the evidence file names the heading looked for" \
+  || nfail n-leg-evidence "$(tr '\n' '|' < "$tmp/notes/.gate-artifacts/notes.log")"
+# This repo: project.yml's own pair has its one section in the tracked notes file.
+rm -rf "$tmp/notesreal"; mkdir -p "$tmp/notesreal/.gate-artifacts" "$tmp/notesreal/Sources/ImgManager/Resources"
+cp "$here/../project.yml" "$tmp/notesreal/"
+cp "$here/../$GATE_NOTES_FILE" "$tmp/notesreal/$GATE_NOTES_FILE" 2>/dev/null
+real_notes="$( (cd "$tmp/notesreal" && summary="" && gate_notes_leg && echo "SUMMARY:$summary") 2>&1)"
+case "$real_notes" in
+  *"notes exit=0"*"SUMMARY: notes=0"*) nok n-real-tree "$(grep -m1 '^NOTES:' "$tmp/notesreal/.gate-artifacts/notes.log")" ;;
+  *) nfail n-real-tree "$(printf '%s' "$real_notes" | tr '\n' '|')" ;;
+esac
+case " $GATE_LEGS_ALL " in *" notes "*) nreg=1 ;; *) nreg=0 ;; esac
+n_ncall="$(grep -c '^  gate_notes_leg$' "$mg")"
+n_nwant="$(grep -c '^if want notes; then$' "$mg")"
+case " $mg_legs " in *" notes "*) nff=1 ;; *) nff=0 ;; esac
+if [ "$nreg" = 1 ] && [ "$n_ncall" = 1 ] && [ "$n_nwant" = 1 ] && [ "$nff" = 1 ]; then
+  nok n-wiring "registered, one guarded call in the remote script, in the fail-fast skip list"
+else
+  nfail n-wiring "registry=$nreg call=$n_ncall guard=$n_nwant failfast=$nff"
+fi
+
 case "$summary" in *"t-clean=0"*"t-hit=1"*"t-noctl=1"*) echo "PASS summary: $summary" ;; *) echo "FAIL summary: $summary"; fail=1 ;; esac
 [ "$fail" -eq 0 ] && echo "gate-lib-test: ALL PASS" || echo "gate-lib-test: FAILURES"
 exit "$fail"

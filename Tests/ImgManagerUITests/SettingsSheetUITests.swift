@@ -87,6 +87,38 @@ final class SettingsSheetUITests: OrientationPinnedUITestCase {
     assertRow(app, "settingsAboutVersion")
   }
 
+  /// IMGMGR-587: About › Version reads "<version> (<build>)" and opens What's new, whose FIRST
+  /// section is headed with that very line — the running build's notes before every earlier one.
+  /// The line is read off the row rather than written into the test, so the test survives every
+  /// version bump and still fails when the screen opens on another build's notes.
+  func testVersionRowOpensWhatsNewWithTheRunningBuildFirst() {
+    let app = launch()
+    let account = element(app, "accountToolbarButton")
+    XCTAssertTrue(account.waitForExistence(timeout: 30), "The account item never appeared.")
+    assertOpensSettings(app, from: account, named: "the account item")
+
+    let row = element(app, "settingsAboutVersion")
+    XCTAssertTrue(reveal(row, in: app), "Settings has no Version row.")
+    let shown = "\(row.label) \(row.value as? String ?? "")"
+    let pattern = #"[0-9]+\.[0-9]+(\.[0-9]+)? \([0-9]+\)"#
+    guard let range = shown.range(of: pattern, options: .regularExpression) else {
+      XCTFail("The Version row reads '\(shown)', not '<version> (<build>)'.")
+      return
+    }
+    let running = String(shown[range])
+
+    row.tap()
+    XCTAssertTrue(
+      app.navigationBars["What's new"].waitForExistence(timeout: 10),
+      "Tapping Version did not open What's new.")
+    let heading = element(app, "whatsNewHeading.0")
+    XCTAssertTrue(heading.waitForExistence(timeout: 10), "What's new shows no section.")
+    XCTAssertEqual(heading.label, running, "What's new does not open on the running build's notes.")
+    let body = element(app, "whatsNewBody.0")
+    XCTAssertTrue(body.waitForExistence(timeout: 5), "The running build's section has no notes.")
+    XCTAssertFalse(body.label.isEmpty, "The running build's section renders empty.")
+  }
+
   // MARK: - Helpers
 
   private func launch() -> XCUIApplication {

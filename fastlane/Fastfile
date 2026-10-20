@@ -21,6 +21,7 @@ require File.expand_path("lib/asc_readback", __dir__)
 require File.expand_path("lib/dsym_store", __dir__)
 require File.expand_path("lib/timed_probe", __dir__)
 require File.expand_path("lib/archive_check", __dir__)
+require File.expand_path("lib/release_notes", __dir__)
 
 default_platform(:ios)
 
@@ -41,6 +42,9 @@ ROOT     = File.expand_path("..", __dir__)
 ARCHIVE  = "#{ROOT}/build/ImgManager.xcarchive"
 IPA      = "#{ROOT}/build/ImgManager.ipa"
 GROUP    = "household"
+# IMGMGR-587: the one notes file -- the app bundles it for Settings > About > Version, and the beta
+# lane sends the archived build's section of it as TestFlight's "What to Test" text.
+NOTES    = "#{ROOT}/Sources/ImgManager/Resources/ReleaseNotes.md"
 
 # Off-host first: merkur's build dirs are reaped for disk and its disk is the single point of
 # failure, so the primary store is the NAS. lexosaurus is the local fallback and says so loudly.
@@ -344,6 +348,16 @@ def archive_version(archive)
   build_number = sh("/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' '#{plist}'", log: false).strip
   UI.user_error!("could not read version/build from #{plist}") if version.empty? || build_number.empty?
   [version, build_number]
+end
+
+# IMGMGR-587: the build's "What to Test" text, keyed by the numbers the archive carries. Asked for
+# before the dSYM copy and the upload, so a missing, empty or duplicated section stops the lane
+# while nothing has left the host yet (fastlane/lib/release_notes.rb).
+def testflight_changelog(version, build_number)
+  status, text = ReleaseNotes.load(NOTES, version: version, build: build_number)
+  UI.user_error!("release notes REFUSED for #{version} (#{build_number}): #{text}") unless status == :ok
+  UI.message("release notes for #{version} (#{build_number}): #{text.length} characters from #{NOTES}")
+  text
 end
 
 # plutil's JSON extraction distinguishes a real Boolean from a String the way Apple's own
@@ -765,6 +779,7 @@ platform :ios do
     expected_sha = options[:expected_sha]
     archive_ipa(expected_sha: expected_sha)
     version, build_number = archive_version(ARCHIVE)
+    changelog = testflight_changelog(version, build_number)
     preserve_dsyms(archive: ARCHIVE, version: version, build: build_number, sha: expected_sha)
     # No skip_waiting here: leaving before ASC finishes processing means the group assignment
     # silently never runs, and with an internal group that cannot be hasAccessToAllBuilds (the
@@ -777,7 +792,7 @@ platform :ios do
     # Both flags below are explicit for that reason, not merely to match the defaults.
     upload_to_testflight(
       api_key: api_key, ipa: IPA, groups: [GROUP],
-      distribute_external: false, submit_beta_review: false,
+      distribute_external: false, submit_beta_review: false, changelog: changelog,
     )
     verify_attach(version: version, build: build_number)
   end

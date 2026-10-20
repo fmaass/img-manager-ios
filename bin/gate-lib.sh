@@ -277,7 +277,7 @@ gate_mirror_manifest() {
 # every gate summary in this estate's evidence already carries. One name for the selection, the
 # other for the record, and both are documented rather than reconciled — renaming the recorded
 # leg would invalidate the citations.
-GATE_LEGS_ALL='mirror manifest api-nullable-tests xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep no-custom-glass-grep lint pins'
+GATE_LEGS_ALL='mirror manifest api-nullable-tests xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep no-custom-glass-grep lint pins notes'
 
 # MANDATORY legs are in every selection whether they are named or not. Only `mirror` is: it is
 # not really a check, it is the transport — nothing can run on the Mac that was not copied there
@@ -701,6 +701,114 @@ gate_no_custom_glass_leg() {
     "SwiftUI imports in the compiled sources, and project.yml's deploymentTarget" \
     "$_ncg_ctl
 $scan_out" "$_ncg_ctl_all_rc"
+}
+
+# --- IMGMGR-587: the `notes` leg — the version and build project.yml declares have their section
+# in the one release-notes file (ported from memos-ng-ios's scripts/release-notes-rule.sh).
+#
+# Sources/ImgManager/Resources/ReleaseNotes.md is read twice: the TestFlight cut sends the section
+# headed with the archived numbers as the build's "What to Test" text (fastlane/lib/release_notes.rb
+# refuses the upload without it), and Settings › About › Version opens What's new on the running
+# build's section. A bump that forgot its notes would otherwise be caught only at the very end of
+# a cut, after the archive. The pair is the FIRST `MARKETING_VERSION:` and the first
+# `CURRENT_PROJECT_VERSION:` key line in project.yml (the app target's); a key line starts with
+# the key after indentation, so a comment naming a key is not one. A section is a `## ` line
+# outside a code fence — the loader's reading: a run of three or more ` or ~ opens a fence, only a
+# line that is nothing but the same character at least as many times closes it — and the pair's
+# section is a line exactly `## <version> (<build>)`, trailing whitespace aside. Exactly one is
+# wanted: the cut refuses a duplicated section, so the rule does not pass one. The positive
+# control is the count of sections read: a file that yields none was not the notes file.
+GATE_NOTES_FILE='Sources/ImgManager/Resources/ReleaseNotes.md'
+
+# gate_release_notes_rule [ROOT] — 0 = exactly one section for the pair and the control read at
+# least one section; 1 = the rule was broken (no section, two of them, or no sections at all);
+# 2 = the inputs were not usable (no tree, a missing file, a pair project.yml does not name),
+# which is never a pass. Prints its NOTES lines on stdout.
+gate_release_notes_rule() {
+  _grn_root="${1:-.}"
+  if [ ! -d "$_grn_root" ]; then
+    echo "NOTES FAIL: '$_grn_root' is not a directory, so nothing was checked"
+    return 2
+  fi
+  _grn_project="$_grn_root/project.yml"
+  _grn_notes="$_grn_root/$GATE_NOTES_FILE"
+  for _grn_input in "$_grn_project" "$_grn_notes"; do
+    if [ ! -f "$_grn_input" ]; then
+      echo "NOTES FAIL: $_grn_input is missing, so the notes were never checked against the version"
+      return 2
+    fi
+  done
+  _grn_version="$(sed -n -E 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"?([^"[:space:]#]+)"?[[:space:]]*(#.*)?$/\1/p' "$_grn_project" | head -n 1)"
+  _grn_build="$(sed -n -E 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"?([^"[:space:]#]+)"?[[:space:]]*(#.*)?$/\1/p' "$_grn_project" | head -n 1)"
+  if [ -z "$_grn_version" ] || [ -z "$_grn_build" ]; then
+    echo "NOTES FAIL: $_grn_project names no MARKETING_VERSION or no CURRENT_PROJECT_VERSION key line"
+    echo "            (read '$_grn_version' and '$_grn_build'), so there is no section to look for"
+    return 2
+  fi
+  _grn_heading="## $_grn_version ($_grn_build)"
+  _grn_counts="$(awk -v heading="$_grn_heading" '
+    BEGIN { mark = ""; run = 0; sections = 0; hits = 0 }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (mark == "" && line ~ /^## /) {
+        sections++
+        trimmed = line
+        sub(/[ \t]+$/, "", trimmed)
+        if (trimmed == heading) hits++
+        next
+      }
+      bare = line
+      sub(/^[ \t]+/, "", bare)
+      if (mark == "") {
+        if (bare ~ /^(```|~~~)/) {
+          mark = substr(bare, 1, 1)
+          run = 0
+          while (substr(bare, run + 1, 1) == mark) run++
+        }
+      } else {
+        sub(/[ \t]+$/, "", bare)
+        n = 0
+        while (substr(bare, n + 1, 1) == mark) n++
+        if (n >= run && n == length(bare)) mark = ""
+      }
+    }
+    END { print sections, hits }
+  ' "$_grn_notes")"
+  _grn_awk_rc=$?
+  _grn_sections="${_grn_counts% *}"
+  _grn_hits="${_grn_counts#* }"
+  case "$_grn_awk_rc:$_grn_sections:$_grn_hits" in
+    0:[0-9]*:[0-9]*) ;;
+    *)
+      echo "NOTES FAIL: reading $_grn_notes ended with exit $_grn_awk_rc and '$_grn_counts', so"
+      echo "            neither the rule nor its control was checked"
+      return 2
+      ;;
+  esac
+  echo "NOTES: project.yml names $_grn_version ($_grn_build); $GATE_NOTES_FILE has $_grn_hits line(s) '$_grn_heading', exactly 1 wanted"
+  echo "NOTES (control): read $_grn_sections '## ' section(s) outside code fences, at least 1 wanted"
+  if [ "$_grn_sections" -lt 1 ]; then
+    echo "NOTES FAIL: the control read no sections, so the file is not the notes it should be"
+    return 1
+  fi
+  if [ "$_grn_hits" -ne 1 ]; then
+    echo "NOTES FAIL: '$_grn_heading' must head exactly one section (found $_grn_hits) — the bump"
+    echo "            commit adds this build's notes, newest first, one section per build"
+    return 1
+  fi
+  return 0
+}
+
+# gate_notes_leg — the `notes` leg, run from the checkout root: the rule's output is the leg's
+# evidence file, its exit code the leg's recorded result (a 2 stays a 2, never a green).
+gate_notes_leg() {
+  gate_release_notes_rule . > .gate-artifacts/notes.log 2>&1
+  _gnl_rc=$?
+  echo "notes exit=$_gnl_rc"
+  summary="$summary notes=$_gnl_rc"
+  [ "$_gnl_rc" -eq 0 ] || tail -20 .gate-artifacts/notes.log
+  return 0
 }
 
 # --- WP28 P4 (IMGMGR-451): the materials screenshot matrix under REAL accessibility settings ---

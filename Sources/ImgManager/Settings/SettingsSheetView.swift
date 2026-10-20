@@ -142,10 +142,13 @@ struct SettingsSheetView: View {
       .disabled(true)
       .accessibilityIdentifier(SettingsStaticRow.lightroomMode.identifier)
     case .about:
-      LabeledContent(
-        SettingsStaticRow.version.title,
-        value: SettingsAbout.versionLine(info: Bundle.main.infoDictionary)
-      )
+      // IMGMGR-587: the version line opens What's new, which starts on this very line's notes.
+      let line = SettingsAbout.versionLine(info: Bundle.main.infoDictionary)
+      NavigationLink {
+        WhatsNewView(running: line)
+      } label: {
+        LabeledContent(SettingsStaticRow.version.title, value: line)
+      }
       .accessibilityIdentifier(SettingsStaticRow.version.identifier)
     case .sidebar, .culling, .gridDisplay, .storage:
       ForEach(

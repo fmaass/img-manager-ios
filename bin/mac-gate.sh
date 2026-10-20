@@ -114,7 +114,7 @@
 #                            mirror, manifest, api-nullable-tests, xcodegen, build,
 #                            widget-embed, test-iphone, test-ipad, idiom-grep,
 #                            no-c-shortcut-grep, ui-orientation-base-grep,
-#                            no-custom-glass-grep, lint, pins.
+#                            no-custom-glass-grep, lint, pins, notes.
 #                            `mirror` is the rsync mirror step and is always included; it
 #                            RECORDS itself under its existing leg name, `rsync`. Prerequisites
 #                            (refused, never auto-added): build needs xcodegen; widget-embed
@@ -548,7 +548,7 @@ if want api-nullable-tests; then
   api_nullable_rc="$(printf '%s\n' "$summary" | tr ' ' '\n' | sed -n 's/^api-nullable-tests=//p')"
   if [ "$api_nullable_rc" != "0" ]; then
     echo "api-nullable-tests failed (exit $api_nullable_rc) — skipping every other SELECTED leg (fail-fast)"
-    for leg in xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep no-custom-glass-grep lint pins; do
+    for leg in xcodegen build widget-embed test-iphone test-ipad idiom-grep no-c-shortcut-grep ui-orientation-base-grep no-custom-glass-grep lint pins notes; do
       want "$leg" && summary="$summary $leg=skipped"
     done
     echo "MAC_GATE_REMOTE_SUMMARY:$summary"
@@ -784,6 +784,14 @@ fi
 
 if want lint; then
   step lint swift format lint --strict --recursive Sources Tests Packages/ImgManagerAPI/Sources Packages/ImgManagerAPI/Tests
+fi
+
+# IMGMGR-587: the release-notes rule — project.yml's version and build head exactly one section of
+# Sources/ImgManager/Resources/ReleaseNotes.md, the file the app bundles and the cut sends as
+# "What to Test". Needs no Xcode project, like the absence legs; the implementation lives in
+# bin/gate-lib.sh so bin/gate-lib-test.sh runs the very function this calls.
+if want notes; then
+  gate_notes_leg
 fi
 
 echo "MAC_GATE_REMOTE_SUMMARY:$summary"

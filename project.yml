@@ -58,6 +58,14 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: Sources/ImgManager
+        excludes:
+          - Resources/ReleaseNotes.md
+      # IMGMGR-587: the release notes ship in the app (Settings › About › Version opens them) and
+      # are also the TestFlight "What to Test" text (fastlane/lib/release_notes.rb). Named with an
+      # explicit resources phase rather than left to XcodeGen's per-extension default, so the
+      # bundle carries them whatever that default does with `.md`.
+      - path: Sources/ImgManager/Resources/ReleaseNotes.md
+        buildPhase: resources
     dependencies:
       - package: ImgManagerAPI
       # WP12 (IMGMGR-199): XcodeGen puts an embedded app extension in the app's
