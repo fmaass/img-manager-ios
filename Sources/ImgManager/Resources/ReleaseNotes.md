@@ -6,6 +6,13 @@ refuses to upload when that section is missing, empty or duplicated; Settings �
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.15.2 (24)
+
+- A folder now opens grouped by Scene when it has scenes, and in Flat when it has none.
+- When a pick, dislike or clear fails to save, a banner says how many did not save, with Retry and Dismiss. It shows in the grid, the photo view, Compare and Triage.
+- Tapping another photo while a mark is still saving now applies after it instead of being dropped. A quick second tap on the same photo is still ignored, so a double tap cannot undo a pick.
+- Settings › About › Version opens What's new with these notes.
+
 ## 0.15.1 (23)
 
 - Arrange has a new Layout choice before Thumbnail size: Justified, as before, or Square, which shows every photo as an equal square tile. The choice is not saved yet.
