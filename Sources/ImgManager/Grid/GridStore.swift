@@ -120,6 +120,8 @@ final class GridStore {
 
   private(set) var query = GridImagesQuery()
   private(set) var rowHeight: GridRowHeight = .step200
+  /// IMGMGR-551 (R3-7): Arrange › Layout. Presentation only and NOT persisted, like `rowHeight`.
+  private(set) var layoutStyle: GridLayoutStyle = .justified
   /// Set by the view after every justified-packing pass (`JustifiedRowLayout.pack`) — the
   /// packed rows of display ids, in the SAME order the grid renders them. A justified grid's
   /// column count varies per row (unlike a uniform `LazyVGrid`), so Up/Down navigation below
@@ -2637,6 +2639,14 @@ final class GridStore {
     guard rowHeight != newValue else { return }
     rowHeight = newValue
     selection.reset(.queryGenerationChange)
+  }
+
+  /// IMGMGR-551 (R3-7): the grid's layout. Unlike a thumbnail-size step this resets nothing: the
+  /// same photographs in the same order are only drawn differently, so the selection, the focus and
+  /// the query stay as they are and nothing is fetched.
+  func setLayoutStyle(_ newValue: GridLayoutStyle) {
+    guard layoutStyle != newValue else { return }
+    layoutStyle = newValue
   }
 
   // MARK: - Mark mutation (revision-precondition path; optimistic; 409-rollback)

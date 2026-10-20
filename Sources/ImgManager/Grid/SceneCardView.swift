@@ -46,6 +46,9 @@ struct SceneCardView: View {
   /// WP13 P11 (IMGMGR-220): the same pointer-hover seam every other cell takes. A card is not a
   /// write target (ADR-0005) — hovering it says "this is a thing you can open", nothing more.
   var hoverEffectInstaller: HoverEffectInstaller = .live
+  /// IMGMGR-551 (R3-7): in the Square layout the card keeps its card form in one square cell and
+  /// its cover is centre-cropped (`TileView.cropsToFill`); its chrome is unchanged.
+  var cropsToFill: Bool = false
 
   private var cover: Components.Schemas.ImageSummary { row.representative }
 
@@ -100,12 +103,13 @@ struct SceneCardView: View {
     Group {
       if let coverImage {
         PlatformImageView(image: coverImage)
-          .aspectRatio(contentMode: .fit)
+          .aspectRatio(contentMode: cropsToFill ? .fill : .fit)
       } else {
         Rectangle().fill(.quaternary)
       }
     }
     .frame(width: size.width, height: size.height)
+    .modifier(CentreCrop(isActive: cropsToFill))
     // R3-15: the same local proxy identity as `TileView`, so an adopted cover reloads.
     .task(id: TileLoadKey.make(image: cover, tier: tier)) {
       let key = TileLoadKey.make(image: cover, tier: tier)

@@ -112,6 +112,8 @@ extension GridScrollAnchor {
 struct GridPackingKey: Equatable {
   var paneWidth: CGFloat
   var rowHeight: GridRowHeight
+  /// IMGMGR-551 (R3-7): Justified ↔ Square moves every row break, exactly as a size step does.
+  var layoutStyle: GridLayoutStyle
   var displayScale: CGFloat
   var groupBy: GroupByKey?
   var sectionKeys: Set<GroupKey>
@@ -120,6 +122,7 @@ struct GridPackingKey: Equatable {
   init(store: GridStore, paneWidth: CGFloat, displayScale: CGFloat) {
     self.paneWidth = paneWidth
     self.rowHeight = store.rowHeight
+    self.layoutStyle = store.layoutStyle
     self.displayScale = displayScale
     self.groupBy = store.activeGrouping.groupByKey
     self.sectionKeys = Set(store.groupHeaders.keys)

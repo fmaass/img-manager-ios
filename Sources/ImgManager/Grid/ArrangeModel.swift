@@ -8,6 +8,8 @@ enum ArrangeChoice: Hashable, Sendable {
   case direction(SortDirection)
   case grouping(GroupingChoice)
   case size(GridRowHeight)
+  /// IMGMGR-551 (R3-7): Justified or Square.
+  case layout(GridLayoutStyle)
 }
 
 /// One row of the Arrange popover. A row has no children: every choice is ONE tap inside the
@@ -45,7 +47,9 @@ struct ArrangeSection: Identifiable, Sendable {
 struct ArrangeModel {
   let store: GridStore
 
-  /// The four sections, in the order the popover renders them: 6 + 2 + 8 + 6 = 22 rows.
+  /// The five sections, in the order the popover renders them: 6 + 2 + 8 + 2 + 6 = 24 rows.
+  /// IMGMGR-551 (R3-7): Layout sits before Thumbnail size, whose steps then read as the cell edge
+  /// in Square.
   static let sections: [ArrangeSection] = [
     ArrangeSection(
       id: "arrange.section.sort", title: "Sort by",
@@ -66,6 +70,11 @@ struct ArrangeModel {
           choice: .grouping($0))
       }),
     ArrangeSection(
+      id: "arrange.section.layout", title: "Layout",
+      rows: GridLayoutStyle.allCases.map {
+        ArrangeRow(id: "arrange.layout.\($0.rawValue)", title: $0.title, choice: .layout($0))
+      }),
+    ArrangeSection(
       id: "arrange.section.size", title: "Thumbnail size",
       rows: GridRowHeight.allCases.map {
         ArrangeRow(
@@ -84,6 +93,7 @@ struct ArrangeModel {
     case .direction(let direction): store.activeDirection == direction
     case .grouping(let choice): store.activeGrouping == choice
     case .size(let step): store.rowHeight == step
+    case .layout(let style): store.layoutStyle == style
     }
   }
 
@@ -94,6 +104,7 @@ struct ArrangeModel {
     case .direction(let direction): await store.setSortDirection(direction)
     case .grouping(let choice): await store.selectGrouping(choice)
     case .size(let step): store.setRowHeight(step)
+    case .layout(let style): store.setLayoutStyle(style)
     }
   }
 
@@ -161,11 +172,11 @@ struct GridArrangeControl: View {
   }
 }
 
-/// The popover's body: the four sections of `ArrangeModel`, each row one tap.
+/// The popover's body: the five sections of `ArrangeModel`, each row one tap.
 ///
 /// A `ScrollView` over an EAGER `VStack`, never a `List`, for the reason `FilterPopoverView`
 /// records: a `List` is lazy, and on the Compact sheet it built only the rows that fit the
-/// viewport, so the rest had no accessibility element until scrolled into being. All 22 rows are
+/// viewport, so the rest had no accessibility element until scrolled into being. All 24 rows are
 /// built on open; the scroll view only moves them.
 ///
 /// No `NavigationLink`, `Menu` or `.menu` picker is inside: nothing here opens a further level. A

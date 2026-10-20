@@ -55,6 +55,9 @@ struct GridView: View {
       .onChange(of: store.sceneExpanded) { _, _ in publishRows() }
       .onChange(of: store.sceneMembers) { _, _ in publishRows() }
       .onChange(of: store.rowHeight) { _, _ in publishRows() }
+      // IMGMGR-551 (R3-7): Justified ↔ Square moves every row break, so the navigation rows are
+      // rebuilt from the new packing exactly as for a size step.
+      .onChange(of: store.layoutStyle) { _, _ in publishRows() }
       // WP13 P5b: the header set arrives from its own fetch AFTER the page, and it is what
       // turns one packing pass into per-section passes — so the row table has to be rebuilt
       // when it lands, or arrow navigation would keep describing the unsectioned layout.
@@ -172,6 +175,16 @@ struct GridView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("debugProbe.tagEdits")
           .accessibilityValue("tagEdits=\(DebugProbe.shared.tagEdits.joined(separator: "; "))")
+        // IMGMGR-551 (R3-7): the mark writes the fixture transport has served, readable on the
+        // grid (`debugProbe.marks` lives inside the Triage cover only), so a UI test counts the
+        // wire writes one grid gesture made. Same value shape as that probe.
+        Text("debugProbeGridMarks")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.gridMarks")
+          .accessibilityValue("markWrites=\(DebugProbe.shared.markWrites)")
         // IMGMGR-539: the gutter and the Tile overlays the grid hands its tiles, read from the
         // same calls `scrollArea` and `cell(for:plan:)` make — corroboration for the wiring
         // test, which measures the rendered gaps and reads each tile's drawn badges itself.
@@ -194,7 +207,10 @@ struct GridView: View {
         ("filename", overlays.filename),
       ]
       let on = flags.filter { $0.1 }.map { $0.0 }
-      return "gutter=\(gutter);overlays=\(on.joined(separator: ","))"
+      // IMGMGR-551 (R3-7): the layout in force, appended LAST so every reader of the existing
+      // prefix keeps its shape.
+      let layout = store.layoutStyle.rawValue
+      return "gutter=\(gutter);overlays=\(on.joined(separator: ","));layout=\(layout)"
     }
   #else
     private var debugProbeElement: some View { EmptyView() }
@@ -293,7 +309,11 @@ struct GridView: View {
                 HStack(spacing: gutter) {
                   ForEach(rowModel.cells, id: \.id) { packed in
                     if let row = rowsByID[packed.id] {
-                      cell(for: row, plan: packed.plan)
+                      cell(for: row, plan: packed.plan, cropsToFill: rowModel.squareEdge != nil)
+                        // IMGMGR-551 (R3-7): a square row frames EVERY cell — display,
+                        // placeholder, tombstone, scene card — at its edge, BEFORE the frame
+                        // publisher below, so hit-testing records the square bounds.
+                        .modifier(SquareCellFrame(edge: rowModel.squareEdge))
                         .background(
                           GeometryReader { proxy in
                             Color.clear.preference(
@@ -353,7 +373,9 @@ struct GridView: View {
   }
 
   @ViewBuilder
-  private func cell(for row: SceneDisplayRow, plan: TileRenderPlan) -> some View {
+  private func cell(
+    for row: SceneDisplayRow, plan: TileRenderPlan, cropsToFill: Bool
+  ) -> some View {
     switch row {
     case .image(let image):
       // IMGMGR-475: the quick-pick corner, only where it leaves the tile's centre to the tile.
@@ -371,7 +393,8 @@ struct GridView: View {
         store: store,
         hasMarkCorner: hasMarkCorner,
         // R3-5 (IMGMGR-539): the Tile overlays toggles, read here for the same reason.
-        overlays: TileOverlaySet(preferences: store.preferences)
+        overlays: TileOverlaySet(preferences: store.preferences),
+        cropsToFill: cropsToFill
       )
       .overlay(alignment: .bottomTrailing) { bandHandle(forMember: image.id) }
       .overlay(alignment: .topTrailing) {
@@ -387,22 +410,24 @@ struct GridView: View {
         }
       }
     case .stack(let stackRow, let isExpanded):
-      SceneCardView(row: stackRow, plan: plan, isExpanded: isExpanded, store: store)
-        // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
-        // control and for the same reason: the inline picks ship on Regular only (a measured
-        // product decision — see `showsInlinePicks`), so the screenshot test has to STATE which
-        // layout this destination resolved to and assert the branch the app actually took,
-        // rather than infer a device — which the mac-gate's own idiom grep forbids outright.
-        .accessibilityValue(sceneCardProbeValue)
-        // IMGMGR-240: a SIBLING of the card, never a child — see `SceneExpandHandle`.
-        .overlay(alignment: .bottomTrailing) {
-          SceneExpandHandle(stackID: stackRow.stackId, isExpanded: isExpanded, store: store)
-        }
-        .overlay(alignment: .bottomLeading) { inlinePicks(for: stackRow) }
-        .task(id: inlinePicksTaskID(for: stackRow)) {
-          guard showsInlinePicks, stackRow.pickedCount >= 1 else { return }
-          await store.loadInlinePicksIfNeeded(stackID: stackRow.stackId)
-        }
+      SceneCardView(
+        row: stackRow, plan: plan, isExpanded: isExpanded, store: store, cropsToFill: cropsToFill
+      )
+      // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
+      // control and for the same reason: the inline picks ship on Regular only (a measured
+      // product decision — see `showsInlinePicks`), so the screenshot test has to STATE which
+      // layout this destination resolved to and assert the branch the app actually took,
+      // rather than infer a device — which the mac-gate's own idiom grep forbids outright.
+      .accessibilityValue(sceneCardProbeValue)
+      // IMGMGR-240: a SIBLING of the card, never a child — see `SceneExpandHandle`.
+      .overlay(alignment: .bottomTrailing) {
+        SceneExpandHandle(stackID: stackRow.stackId, isExpanded: isExpanded, store: store)
+      }
+      .overlay(alignment: .bottomLeading) { inlinePicks(for: stackRow) }
+      .task(id: inlinePicksTaskID(for: stackRow)) {
+        guard showsInlinePicks, stackRow.pickedCount >= 1 else { return }
+        await store.loadInlinePicksIfNeeded(stackID: stackRow.stackId)
+      }
     }
   }
 
@@ -505,7 +530,8 @@ struct GridView: View {
       timezone: store.groupTimezone,
       paneWidth: GridGutter.packingWidth(forPane: paneWidth),
       targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale,
-      spacing: GridGutter.spacing(for: store.rowHeight)
+      spacing: GridGutter.spacing(for: store.rowHeight),
+      layout: store.layoutStyle
     ) { displayID, tier in
       guard let row = byID[displayID] else { return .missing }
       switch row {
@@ -1645,6 +1671,26 @@ struct TagEntrySheet: View {
           .disabled(tag.trimmingCharacters(in: .whitespaces).isEmpty)
         }
       }
+    }
+  }
+}
+
+/// IMGMGR-551 (R3-7): a Square-layout row's cell frame — `edge × edge` — or, for a justified row
+/// (`edge == nil`), the identity, so a justified cell is laid out exactly as before.
+///
+/// Deliberately NOT clipped: the cell's own overlays — the focus ring, the expanded card's stroke —
+/// straddle its edge and draw in full, as in justified. What could overflow clips itself instead:
+/// the centre-cropped photograph and scene-card cover (`CentreCrop`, after their own `size` frame);
+/// placeholders and tombstones are rectangles that fill the proposed frame and cannot overflow.
+private struct SquareCellFrame: ViewModifier {
+  let edge: CGFloat?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let edge {
+      content.frame(width: edge, height: edge)
+    } else {
+      content
     }
   }
 }

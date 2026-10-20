@@ -31,6 +31,9 @@ struct TileView: View {
   /// R3-5 (IMGMGR-539): the More › View › Tile overlays toggles, resolved ONCE by `GridView`
   /// (`TileOverlaySet(preferences:)`) and passed down like `showsFilenamePlate`.
   var overlays: TileOverlaySet = .defaults
+  /// IMGMGR-551 (R3-7): the Square layout centre-crops the photograph to fill its `edge × edge`
+  /// cell; the justified layout (false) keeps `.fit` inside the packed size, unchanged.
+  var cropsToFill: Bool = false
 
   var body: some View {
     hoverEffectInstaller.apply(cell)
@@ -93,12 +96,13 @@ struct TileView: View {
     Group {
       if let proxyImage {
         PlatformImageView(image: proxyImage)
-          .aspectRatio(contentMode: .fit)
+          .aspectRatio(contentMode: cropsToFill ? .fill : .fit)
       } else {
         Rectangle().fill(.quaternary)
       }
     }
     .frame(width: size.width, height: size.height)
+    .modifier(CentreCrop(isActive: cropsToFill))
     // R3-15: keyed on the proxy's local identity (token + reported dimensions), so a row adopted
     // from a 400-px to an 800-px grid file reloads even though its image id and tier are the same.
     // The request is built from the same key, so the key and the bytes cannot disagree.
@@ -381,6 +385,21 @@ enum TileBadgeItem: Hashable, CaseIterable, Sendable {
       }
     }
     return items
+  }
+}
+
+/// IMGMGR-551 (R3-7): clips a centre-cropped (`.fill`) photograph to its frame. Inactive — the
+/// justified layout — it is the identity, so a justified cell renders exactly as before.
+struct CentreCrop: ViewModifier {
+  let isActive: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if isActive {
+      content.clipped()
+    } else {
+      content
+    }
   }
 }
 

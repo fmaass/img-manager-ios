@@ -10,6 +10,11 @@ import ImgManagerAPI
 struct PackedRow: Identifiable, Equatable {
   let id: GridDisplayID
   let cells: [PackedTilePlan]
+  /// IMGMGR-551 (R3-7): the cell edge of a Square-layout row, nil for a justified one. Carried on
+  /// the ROW, independent of image availability, because a placeholder plan has no size: `GridView`
+  /// frames every cell of a square row at `edge × edge` from this, so the grid's geometry never
+  /// depends on a proxy having loaded. Nil keeps a justified row value-identical to before.
+  var squareEdge: CGFloat? = nil
 }
 
 /// One section header, built ENTIRELY from `GET /api/image-groups` — the route's own words:
@@ -107,6 +112,10 @@ enum GridSectionLayout {
   /// and packs EACH RUN on its own, so `JustifiedRowLayout.packWithTierPlan` never packs a row
   /// that straddles two groups.
   ///
+  /// IMGMGR-551 (R3-7): `layout` picks the packer — `.justified` (the default, unchanged) or
+  /// `.square` (`SquareGridLayout`, its rows carrying `squareEdge`). Both pack per run, so no
+  /// square row straddles a header either; `targetRowHeight` is the square cell's target edge.
+  ///
   /// `headers` empty means the header fetch has not landed (or failed): the stream renders
   /// UNSECTIONED rather than with invented labels, and rather than hiding photographs behind a
   /// missing header. Same for one absent key — its tiles render, its header does not. Nothing
@@ -120,16 +129,32 @@ enum GridSectionLayout {
     targetRowHeight: CGFloat,
     displayScale: CGFloat,
     spacing: CGFloat = 2,
+    layout: GridLayoutStyle = .justified,
     availability: (GridDisplayID, ProxyTier) -> ProxyAvailability
   ) -> [GridRenderRow] {
     func pack(_ slice: [SceneDisplayRow]) -> [GridRenderRow] {
-      JustifiedRowLayout.packWithTierPlan(
-        tiles: slice.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) },
-        paneWidth: paneWidth, targetRowHeight: targetRowHeight, displayScale: displayScale,
-        spacing: spacing, availability: availability
-      )
-      .compactMap { packed in
-        packed.first.map { .tiles(PackedRow(id: $0.id, cells: packed)) }
+      let tiles = slice.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) }
+      switch layout {
+      case .justified:
+        return JustifiedRowLayout.packWithTierPlan(
+          tiles: tiles,
+          paneWidth: paneWidth, targetRowHeight: targetRowHeight, displayScale: displayScale,
+          spacing: spacing, availability: availability
+        )
+        .compactMap { packed in
+          packed.first.map { .tiles(PackedRow(id: $0.id, cells: packed)) }
+        }
+      case .square:
+        let edge = SquareGridLayout.geometry(
+          paneWidth: paneWidth, targetCellEdge: targetRowHeight, spacing: spacing)?.edge
+        return SquareGridLayout.packWithTierPlan(
+          tiles: tiles,
+          paneWidth: paneWidth, targetCellEdge: targetRowHeight, displayScale: displayScale,
+          spacing: spacing, availability: availability
+        )
+        .compactMap { packed in
+          packed.first.map { .tiles(PackedRow(id: $0.id, cells: packed, squareEdge: edge)) }
+        }
       }
     }
 

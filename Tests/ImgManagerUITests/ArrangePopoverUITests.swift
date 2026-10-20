@@ -4,7 +4,7 @@ import XCTest
 /// control whose popover holds every sort, direction, grouping and thumbnail-size choice one tap
 /// deep, and whose state is the store's own state.
 ///
-/// - (a) one tap on `gridArrangeControl` reaches all 22 row identifiers, with no further tap
+/// - (a) one tap on `gridArrangeControl` reaches all 24 row identifiers, with no further tap
 ///   (scrolling inside the popover only).
 /// - (b) Group Camera and size 320 pt, then Done and reopen: both rows are checked, the grid shows
 ///   server section headers, and the control reads "Active".
@@ -21,6 +21,7 @@ final class ArrangePopoverUITests: OrientationPinnedUITestCase {
     "arrange.direction.asc", "arrange.direction.desc",
     "arrange.group.none", "arrange.group.scene", "arrange.group.day", "arrange.group.month",
     "arrange.group.camera", "arrange.group.lens", "arrange.group.iso", "arrange.group.location",
+    "arrange.layout.justified", "arrange.layout.square",
     "arrange.size.120", "arrange.size.160", "arrange.size.200", "arrange.size.260",
     "arrange.size.320", "arrange.size.400",
   ]
@@ -137,20 +138,13 @@ final class ArrangePopoverUITests: OrientationPinnedUITestCase {
       "'\(identifier)' did not read Checked after it was tapped.")
   }
 
-  /// Scrolls the popover's own scroll view until `element` is hittable, down then up. Scrolling
-  /// is not a tap: it opens nothing and chooses nothing.
+  /// Scrolls the popover's own scroll view until `element` is hittable. Scrolling is not a tap:
+  /// it opens nothing and chooses nothing.
+  ///
+  /// IMGMGR-551: the shared, directed reveal (`revealInArrange`) — see its note for why the blind
+  /// swipes that lived here dismissed the iPad popover once the list grew to 24 rows.
   private func reveal(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
-    if element.exists && element.isHittable { return true }
-    let scrollers = app.scrollViews.containing(.any, identifier: "arrange.sort.date_taken")
-    let scroller = scrollers.firstMatch
-    guard scroller.exists else { return false }
-    for _ in 0..<5 where !(element.exists && element.isHittable) {
-      scroller.swipeUp()
-    }
-    for _ in 0..<5 where !(element.exists && element.isHittable) {
-      scroller.swipeDown()
-    }
-    return element.exists && element.isHittable
+    revealInArrange(element, in: app)
   }
 
   private func attach(_ name: String) {

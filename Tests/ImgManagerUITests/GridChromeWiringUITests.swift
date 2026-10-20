@@ -113,9 +113,9 @@ final class GridChromeWiringUITests: OrientationPinnedUITestCase {
     XCTAssertEqual(pickTile.value as? String, "badges=pick,edited")
 
     let probe = element(app, "debugProbe.gridChrome")
-    XCTAssertTrue(
-      waitForValue(probe) { $0.hasSuffix("overlays=marks,edited,lightroomRating") }
-        .hasSuffix("overlays=marks,edited,lightroomRating"))
+    // IMGMGR-551 appended `;layout=<style>` after the overlays.
+    let overlaysOn = ";overlays=marks,edited,lightroomRating;layout="
+    XCTAssertTrue(waitForValue(probe) { $0.contains(overlaysOn) }.contains(overlaysOn))
 
     // Lightroom rating back off, as the Filename plates test restores its toggle: the choice is
     // stored in the simulator's defaults, and every later suite in the run would otherwise
@@ -123,22 +123,6 @@ final class GridChromeWiringUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(openTileOverlays(in: app, revealing: rating, timeout: 5))
     rating.tap()
     XCTAssertEqual(waitForValue(ratedTile) { $0 == "badges=edited" }, "badges=edited")
-  }
-
-  /// Scrolls the Arrange popover's own scroll view until `element` is hittable (the
-  /// `ArrangePopoverUITests` reveal). Scrolling is not a tap: it chooses nothing.
-  private func revealInArrange(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
-    if element.exists && element.isHittable { return true }
-    let scroller = app.scrollViews.containing(.any, identifier: "arrange.sort.date_taken")
-      .firstMatch
-    guard scroller.exists else { return false }
-    for _ in 0..<5 where !(element.exists && element.isHittable) {
-      scroller.swipeUp()
-    }
-    for _ in 0..<5 where !(element.exists && element.isHittable) {
-      scroller.swipeDown()
-    }
-    return element.exists && element.isHittable
   }
 }
 
@@ -151,5 +135,35 @@ extension XCTestCase {
     let submenu = app.descendants(matching: .any)["gridMoreMenu.more.tileOverlays"]
     guard openMoreMenu(in: app, revealing: submenu, timeout: timeout) else { return false }
     return openPresentation(submenu, revealing: expected, timeout: timeout)
+  }
+
+  /// Scrolls the Arrange popover's own scroll view until `element` is hittable. Scrolling is not a
+  /// tap: it chooses nothing. Shared by every suite that drives the Arrange popover.
+  ///
+  /// IMGMGR-551: the gesture is the slow swipe the blind helper always used — it never toggled a
+  /// row — but each swipe is DIRECTED by the target's frame against the scroll view's. Up only
+  /// while the target lies below the visible area (or has no frame yet: the eager stack builds the
+  /// rows in order, so an unbuilt one is further down), down only while it lies above. The blind
+  /// five-up-five-down overshot `arrange.group.month` in the 24-row list, reached the top, and a
+  /// further swipe down dismissed the iPad popover; a directed swipe down never runs at the top.
+  /// Press-and-drag gestures were tried and abandoned: on the iPhone sheet they re-chose the
+  /// grouping (gate runs 3 and 4).
+  func revealInArrange(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+    let scroller = app.scrollViews.containing(.any, identifier: "arrange.sort.date_taken")
+      .firstMatch
+    for _ in 0..<12 {
+      if element.exists && element.isHittable { return true }
+      guard scroller.exists else { return false }
+      let viewport = scroller.frame
+      let target = element.exists ? element.frame : .zero
+      if target.isEmpty || target.maxY > viewport.maxY {
+        scroller.swipeUp(velocity: .slow)
+      } else if target.minY < viewport.minY {
+        scroller.swipeDown(velocity: .slow)
+      } else {
+        break
+      }
+    }
+    return element.exists && element.isHittable
   }
 }

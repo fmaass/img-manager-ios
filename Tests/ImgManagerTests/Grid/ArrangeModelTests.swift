@@ -3,7 +3,7 @@ import Testing
 
 @testable import ImgManager
 
-/// WP29 P2 (IMGMGR-453) acceptance, unit half: the Arrange popover is 22 rows in four sections,
+/// WP29 P2 (IMGMGR-453) acceptance, unit half: the Arrange popover is 24 rows in five sections,
 /// none of which nests, and every row round-trips through the store's own setters and getters —
 /// there is no second state and no new persisted key (plan Decision 7).
 @MainActor
@@ -36,17 +36,18 @@ struct ArrangeModelTests {
     return store
   }
 
-  @Test("22 rows in four sections: six sort keys, two directions, eight groupings, six sizes")
-  func twentyTwoRowsInFourSections() {
+  /// IMGMGR-551 (R3-7) added the Layout section (two rows) before Thumbnail size.
+  @Test("24 rows in five sections: sort keys, directions, groupings, layouts, sizes")
+  func twentyFourRowsInFiveSections() {
     let sections = ArrangeModel.sections
     #expect(
       sections.map(\.id) == [
         "arrange.section.sort", "arrange.section.direction", "arrange.section.group",
-        "arrange.section.size",
+        "arrange.section.layout", "arrange.section.size",
       ])
-    #expect(sections.map(\.rows.count) == [6, 2, 8, 6])
-    #expect(ArrangeModel.rows.count == 22)
-    #expect(Set(ArrangeModel.rows.map(\.id)).count == 22, "two rows share an identifier")
+    #expect(sections.map(\.rows.count) == [6, 2, 8, 2, 6])
+    #expect(ArrangeModel.rows.count == 24)
+    #expect(Set(ArrangeModel.rows.map(\.id)).count == 24, "two rows share an identifier")
     #expect(sections.allSatisfy { !$0.title.isEmpty })
 
     #expect(
@@ -57,6 +58,7 @@ struct ArrangeModelTests {
         "arrange.group.none", "arrange.group.scene", "arrange.group.day", "arrange.group.month",
         "arrange.group.camera", "arrange.group.lens", "arrange.group.iso",
         "arrange.group.location",
+        "arrange.layout.justified", "arrange.layout.square",
         "arrange.size.120", "arrange.size.160", "arrange.size.200", "arrange.size.260",
         "arrange.size.320", "arrange.size.400",
       ])
@@ -65,7 +67,10 @@ struct ArrangeModelTests {
     #expect(sortTitles == ["Date", "Filename", "Rating", "ISO", "Camera", "Lens"])
     #expect(sections[1].rows.map(\.title) == ["Ascending", "Descending"])
     #expect(sections[2].rows.prefix(2).map(\.title) == ["None", "Scene"])
-    #expect(sections[3].rows.first?.title == "120 pt")
+    #expect(sections[3].title == "Layout")
+    #expect(sections[3].rows.map(\.title) == ["Justified", "Square"])
+    #expect(sections[3].rows.map(\.choice) == [.layout(.justified), .layout(.square)])
+    #expect(sections[4].rows.first?.title == "120 pt")
   }
 
   /// Depth: the popover is depth 1 and every choice one tap inside it. A row has no field that
@@ -103,6 +108,7 @@ struct ArrangeModelTests {
         case .direction(let direction): #expect(store.activeDirection == direction)
         case .grouping(let choice): #expect(store.activeGrouping == choice)
         case .size(let step): #expect(store.rowHeight == step)
+        case .layout(let style): #expect(store.layoutStyle == style)
         }
       }
     }
@@ -149,7 +155,9 @@ struct ArrangeModelTests {
         GridPreferences.overlayMarksKey, GridPreferences.overlayEditedKey,
         GridPreferences.overlayLightroomRatingKey, GridPreferences.overlaySourceKindKey,
       ])
-    let words = ["sort", "direction", "groupby", "grouping", "rowheight", "thumbnail", "zoom"]
+    let words = [
+      "sort", "direction", "groupby", "grouping", "rowheight", "thumbnail", "zoom", "layout",
+    ]
     let arrangementKeys = GridPreferences.persistedKeys.filter { key in
       words.contains { key.lowercased().contains($0) }
     }

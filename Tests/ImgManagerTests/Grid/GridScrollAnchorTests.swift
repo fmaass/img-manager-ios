@@ -174,6 +174,19 @@ struct GridScrollAnchorLifecycleTests {
     #expect(GridPackingKey(store: store, paneWidth: 402, displayScale: 3) != base)
   }
 
+  /// IMGMGR-551 (R3-7): Justified ↔ Square moves every row break, so it re-places the anchor too.
+  @Test("The packing key moves with the layout style")
+  func thePackingKeyTracksTheLayoutStyle() {
+    let store = makeStore()
+    let justified = GridPackingKey(store: store, paneWidth: 402, displayScale: 3)
+    store.setLayoutStyle(.square)
+    let square = GridPackingKey(store: store, paneWidth: 402, displayScale: 3)
+    #expect(square != justified)
+    #expect(square.layoutStyle == .square)
+    store.setLayoutStyle(.justified)
+    #expect(GridPackingKey(store: store, paneWidth: 402, displayScale: 3) == justified)
+  }
+
   @Test("An effective filter change retires the anchor")
   func anEffectiveFilterChangeRetiresTheAnchor() async {
     let store = makeStore()
