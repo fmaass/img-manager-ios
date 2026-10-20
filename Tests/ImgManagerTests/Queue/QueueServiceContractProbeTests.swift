@@ -21,7 +21,7 @@ struct QueueServiceContractProbeTests {
       cameraPreviewOnly: 1, decided: 0, disliked: 0, edited: 0, folderId: 7, kind: "dated",
       lastTouched: nil, nothingLeftUnmarked: false, path: "p/7", picked: 0, previewOutstanding: 0,
       readiness: .init(rawValue: "ready_to_review")!, sourceTier: "local", sync: nil, total: 1,
-      unmarked: 1, withMasters: 0)
+      unmarked: 1, untouched: false, withMasters: 0)
     await transport.setFolderSummariesResult([summary])
     let service = makeService(transport)
     let items = try await service.summaries()

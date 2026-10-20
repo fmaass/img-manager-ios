@@ -17,7 +17,7 @@ struct CompactTabTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId, kind: "dated",
       lastTouched: lastTouched, nothingLeftUnmarked: false, path: path, picked: 0,
       previewOutstanding: 0, readiness: .init(rawValue: readiness)!, sourceTier: sourceTier,
-      sync: nil, total: 10, unmarked: 10, withMasters: 0)
+      sync: nil, total: 10, unmarked: 10, untouched: false, withMasters: 0)
   }
 
   // MARK: - The tabs

@@ -20,7 +20,7 @@ struct ReadinessEntryBuilderTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId, kind: "dated",
       lastTouched: nil, nothingLeftUnmarked: false, path: "p/\(folderId)", picked: 0,
       previewOutstanding: 0, readiness: .init(rawValue: readiness)!, sourceTier: "local",
-      sync: nil, total: 1, unmarked: 1, withMasters: 0)
+      sync: nil, total: 1, unmarked: 1, untouched: false, withMasters: 0)
   }
 
   private let fetchedAt = Date(timeIntervalSince1970: 1_756_000_000)

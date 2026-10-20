@@ -1,5 +1,23 @@
 # OpenAPI normalization bridge — pinned debt (RESOLVED)
 
+**Addendum 2026-10-20 (round 3 P8, IMGMGR-538) — a second, separately counted rewrite, for two
+REQUIRED sites.** Re-vendored at img-manager `22726eec7a9f3877fd87378988329ec169849c6b`. Its sync
+routes declare `FolderSyncStatusOut.latest` (-> `SyncRequestOut`) and `SyncRequestOut.report`
+(-> `SyncReportOut`) as `anyOf: [$ref, null]` AND list both in `required`, which
+`scripts/sync-openapi.sh` refused outright until now. The rule that admits them: a
+`components.schemas` property matching the same narrow `{$ref} + {type: null}` predicate, required,
+on a schema that is NOT request-reachable, is rewritten to the bare `$ref` and removed from its
+schema's `required`. This is a decoding accommodation with relaxed key presence: an absent key
+decodes as nil where the server promises the key with a null; not schema-equivalent, and never
+applied to a request-reachable schema (synthesized encoding would omit the key). Request-reachable
+is a generic walk from every path-level and operation `parameters` and every `requestBody`,
+resolving `#/components/schemas|parameters|requestBodies` refs; any other or unresolvable `$ref`
+fails closed and every required site refuses as before. The count is its own,
+`canonicalized_required_nullable_refs=2`; the optional rewrite now reads
+`canonicalized_nullable_refs=9` (the seven below plus `ImageDetail.look` and `ImageSummary.look`)
+and `still_dropped_nullable_unions=0`. `Tests/ImgManagerTests/Contract/SyncContractDecodingTests.swift`
+pins the two sites as Optional model types and their present / null / absent decoding.
+
 **Addendum 2026-09-05 (WP21 P1, IMGMGR-371) — the PARAMETER half is retired, by the SERVER, and
 this document's last open count is now zero.** Re-vendored at img-manager
 `bac5dd16cb137ebcf4fe92b5b3361b52b93658ae` (tag v0.20.0, the WP17 P5 `--accept-breaking` recut).

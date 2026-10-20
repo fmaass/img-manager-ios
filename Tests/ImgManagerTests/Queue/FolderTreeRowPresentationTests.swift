@@ -36,7 +36,7 @@ struct FolderTreeRowPresentationTests {
       kind: "dated", lastTouched: nil, nothingLeftUnmarked: unmarked == 0, path: "p\(folderId)",
       picked: 0, previewOutstanding: previewOutstanding,
       readiness: .init(rawValue: readiness)!, sourceTier: "local", sync: nil,
-      total: decided + unmarked, unmarked: unmarked, withMasters: 0)
+      total: decided + unmarked, unmarked: unmarked, untouched: false, withMasters: 0)
   }
 
   /// IMGMGR-350 P3. The badge says what the server said, in the one string table the queue

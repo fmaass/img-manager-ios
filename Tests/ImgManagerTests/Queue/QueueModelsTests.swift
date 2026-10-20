@@ -15,7 +15,7 @@ struct QueueModelsTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId, kind: "dated",
       lastTouched: lastTouched, nothingLeftUnmarked: nothingLeftUnmarked, path: "p/\(folderId)",
       picked: 0, previewOutstanding: 0, readiness: .init(rawValue: readiness)!,
-      sourceTier: "local", sync: sync, total: 10, unmarked: 10, withMasters: 0)
+      sourceTier: "local", sync: sync, total: 10, unmarked: 10, untouched: false, withMasters: 0)
   }
 
   // MARK: - ReadinessSection
@@ -166,7 +166,7 @@ struct QueueModelsTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: 7, kind: "dated",
       lastTouched: nil, nothingLeftUnmarked: false, path: "p/7", picked: 0,
       previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!, sourceTier: "archive",
-      sync: nil, total: 10, unmarked: 10, withMasters: 0)
+      sync: nil, total: 10, unmarked: 10, untouched: false, withMasters: 0)
 
     #expect(QueueCardDestination.route(for: summary) == (folderID: 6, sourceTier: nil))
     #expect(QueueCardDestination.route(for: archiveSummary) == (folderID: 7, sourceTier: nil))

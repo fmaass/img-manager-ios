@@ -20,7 +20,7 @@ struct NeedsReviewTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId, kind: "dated",
       lastTouched: nil, nothingLeftUnmarked: false, path: path ?? "photo_incoming/\(folderId)",
       picked: 0, previewOutstanding: 0, readiness: .init(rawValue: readiness)!,
-      sourceTier: "local", sync: nil, total: 10, unmarked: 10, withMasters: 0)
+      sourceTier: "local", sync: nil, total: 10, unmarked: 10, untouched: false, withMasters: 0)
   }
 
   // MARK: - The rule, one case per readiness value

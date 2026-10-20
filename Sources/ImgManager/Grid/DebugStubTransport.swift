@@ -871,42 +871,42 @@
           picked: 10,
           previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
           sourceTier: "local", sync: .init(never: 3, refused: 1, stale: 2, synced: 5), total: 40,
-          unmarked: 28, withMasters: 15),
+          unmarked: 28, untouched: false, withMasters: 15),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 60, decided: 0, disliked: 0, edited: 0, folderId: 21,
           kind: "dated_split", lastTouched: Date(timeIntervalSince1970: 1_755_508_112),
           nothingLeftUnmarked: false, path: "2025/2025-12-24-archive-shoot", picked: 0,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 3, stale: 0, synced: 0),
-          total: 60, unmarked: 60, withMasters: 0),
+          total: 60, unmarked: 60, untouched: false, withMasters: 0),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 12, decided: 5, disliked: 1, edited: 3, folderId: 3, kind: "dated",
           lastTouched: nil, nothingLeftUnmarked: true,
           path: "photo_incoming/2026/2026-09-14-wandern",
           picked: 4, previewOutstanding: 8, readiness: .init(rawValue: "sync_problem")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 7, synced: 0), total: 12,
-          unmarked: 7, withMasters: 4),
+          unmarked: 7, untouched: false, withMasters: 4),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 0, decided: 32, disliked: 4, edited: 20, folderId: 11,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_594_512),
           nothingLeftUnmarked: true, path: "photo_edits/2026-08-02-edits-pass", picked: 28,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_for_editing")!,
           sourceTier: "local", sync: .init(never: 32, refused: 0, stale: 0, synced: 0), total: 32,
-          unmarked: 0, withMasters: 32),
+          unmarked: 0, untouched: false, withMasters: 32),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 255, decided: 0, disliked: 0, edited: 0, folderId: 22,
           kind: "dated_split", lastTouched: Date(timeIntervalSince1970: 1_755_680_912),
           nothingLeftUnmarked: false, path: "2025/2025-11-01-mirrored", picked: 0,
           previewOutstanding: 255, readiness: .init(rawValue: "needs_previews")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 0, stale: 0, synced: 12),
-          total: 255, unmarked: 255, withMasters: 0),
+          total: 255, unmarked: 255, untouched: false, withMasters: 0),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 18, decided: 18, disliked: 3, edited: 10, folderId: 5,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_767_312),
           nothingLeftUnmarked: true, path: "photo_incoming/2026/2026-09-27-ufer", picked: 15,
           previewOutstanding: 0, readiness: .init(rawValue: "historical_unreviewed")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 0, synced: 0), total: 18,
-          unmarked: 0, withMasters: 18),
+          unmarked: 0, untouched: false, withMasters: 18),
       ]
     }
 
@@ -938,7 +938,7 @@
           picked: summary.picked, previewOutstanding: summary.previewOutstanding,
           readiness: .init(rawValue: "ready_for_editing")!, sourceTier: summary.sourceTier,
           sync: summary.sync, total: summary.total, unmarked: summary.unmarked,
-          withMasters: summary.withMasters)
+          untouched: summary.untouched, withMasters: summary.withMasters)
       }
     }
 

@@ -13,7 +13,7 @@ struct SortGroupOptionsTests {
   func everyOfferedKeyIsInTheServerVocabulary() {
     // NEGATIVE control FIRST, in the same test: without it, a predicate that answered `true`
     // for everything would make every assertion below pass vacuously. These three strings are
-    // not in the server's fifteen sort keys / nine group keys (live-verified 2026-08-30).
+    // not in the server's fifteen sort keys / eleven group keys (live-verified 2026-08-30).
     #expect(!SortGroupOptions.serverAcceptsSortKey("exposure_kelvin"))
     #expect(!SortGroupOptions.serverAcceptsGroupByKey("photographer"))
     #expect(!SortGroupOptions.serverAcceptsDirection("sideways"))

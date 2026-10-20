@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
 # sync-openapi.sh — vendor img-manager's OpenAPI contract at ONE commit, verbatim except the
-# seven bridged nullable property sites this script rewrites (see the canonicalization below).
+# bridged nullable property sites this script rewrites (see the canonicalization below): nine
+# optional ones and, since 22726ee, two required ones on response-only schemas (IMGMGR-538).
 #
 # Ported from memos-ng-ios's scripts/sync-openapi.sh (same pattern, adapted source path). The iOS
 # client is generated from img-manager's `frontend/openapi.json`; vendoring it this way means the
-# committed file is `git show <sha>:frontend/openapi.json` in img-manager plus exactly the seven
-# rewrites the canonicalization prints and counts, so provenance is checkable with one `diff`
-# rather than trusted — and the diff has a known, enumerated length rather than being empty.
+# committed file is `git show <sha>:frontend/openapi.json` in img-manager plus exactly the
+# rewrites the canonicalization prints and counts (two counts in OPENAPI_SOURCE), so provenance
+# is checkable with one `diff` rather than trusted — and the diff has a known, enumerated length
+# rather than being empty.
 #
 # RETIRED BRIDGE (WP8 P1-ios, docs/OPENAPI_NORMALIZATION_DEBT.md): this script used to write a
 # second, rewritten copy (openapi.vendored.json -> tools/normalize-openapi.py -> openapi.json)
@@ -93,7 +95,9 @@ fetch frontend/openapi.json "$candidate"
 # already optional — a property absent from its schema's `required`, or a parameter with
 # `required: false` — because there the generator's own "not required -> Optional" rule produces
 # precisely the type the union described. A REQUIRED site would change meaning, so that refuses
-# outright rather than guessing.
+# outright rather than guessing — unless its schema is response-only, where it is rewritten AND
+# un-required under the separately counted rule below (IMGMGR-538); a request-reachable required
+# site, or any site when the reachability walk fails closed, still refuses.
 #
 # The rewrite is deliberately confined to a union with NO sibling keys, and stays that way even
 # though it now matches zero parameters. Until img-manager v0.20.0 the ten `?sidecar` query
@@ -103,8 +107,8 @@ fetch frontend/openapi.json "$candidate"
 # loop and the enumeration below match nothing at bac5dd16 (`still_dropped_nullable_unions=0`) and
 # are kept as a GUARD: a regression that re-introduces the shape is counted into OPENAPI_SOURCE on
 # the next sync rather than passed over in silence, and the loop keeps its REQUIRED-site refusal.
-# The seven optional MODEL properties still rewrite (IMGMGR-281 (b): keep the null union server-side
-# and bridge it here).
+# The optional MODEL properties (seven at 6865f8e, nine at 22726ee) still rewrite (IMGMGR-281
+# (b): keep the null union server-side and bridge it here).
 #
 # `json.dumps(indent=2)` plus a trailing newline round-trips img-manager's own writer byte for
 # byte (verified), so diffing the result against
@@ -156,20 +160,175 @@ for _probe, _expected in _PROBES:
             % (json.dumps(_probe), _expected, _actual))
         sys.exit(3)
 
-rewritten = []
-refusals = []
+# --- Required nullable model references on response-only schemas (IMGMGR-538) -----------------
+# img-manager 22726ee's sync routes declare two such sites — FolderSyncStatusOut.latest and
+# SyncRequestOut.report: a key the server always writes, with a model or a null. The generator
+# drops them exactly like the optional ones, and the bare `$ref` alone would make them
+# non-Optional. So a REQUIRED site is rewritten to the bare `$ref` AND taken out of its schema's
+# `required` — a decoding accommodation with relaxed key presence: an absent key decodes as nil
+# where the server promises the key with a null; not schema-equivalent, and never applied to a
+# request-reachable schema (synthesized encoding would omit the key). Those still REFUSE.
+#
+# Request-reachable is a generic walk — every dict value and list element, a visited set for
+# cycles — from every path item's path-level `parameters` and every operation's `parameters` and
+# `requestBody`, resolving `#/components/schemas|parameters|requestBodies/*` refs on the way. It
+# FAILS CLOSED: a `$ref` that does not resolve, or that points anywhere else (a `$ref`'d path
+# item included), returns None, which disables the exception for the whole run, so every required
+# site refuses as before. Over-inclusion only ever turns a rewrite into a refusal.
+_VERBS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
+_REF_ROOTS = ("schemas", "parameters", "requestBodies")
 
-for name, schema in (doc.get("components", {}).get("schemas") or {}).items():
-    required = set(schema.get("required") or [])
-    for prop, value in (schema.get("properties") or {}).items():
-        ref = nullable_ref(value)
-        if ref is None:
-            continue
-        if prop in required:
-            refusals.append("components.schemas.%s.%s is REQUIRED" % (name, prop))
-            continue
-        schema["properties"][prop] = {"$ref": ref}
-        rewritten.append("components.schemas.%s.%s -> %s" % (name, prop, ref))
+class _Unresolved(Exception):
+    pass
+
+def _resolve(doc, ref):
+    parts = ref.split("/")
+    if len(parts) != 4 or parts[0] != "#" or parts[1] != "components" or parts[2] not in _REF_ROOTS:
+        raise _Unresolved("$ref %s points outside components.%s" % (ref, "|".join(_REF_ROOTS)))
+    name = parts[3].replace("~1", "/").replace("~0", "~")
+    table = (doc.get("components") or {}).get(parts[2])
+    if not isinstance(table, dict) or name not in table:
+        raise _Unresolved("$ref %s does not resolve" % ref)
+    return parts[2], name, table[name]
+
+def request_reachable(doc):
+    """(set of request-reachable schema names, None) — or (None, reason) when it fails closed."""
+    reachable, visited = set(), set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                kind, name, target = _resolve(doc, ref)
+                if kind == "schemas":
+                    reachable.add(name)
+                if ref not in visited:
+                    visited.add(ref)
+                    walk(target)
+            for key, value in node.items():
+                if not (key == "$ref" and isinstance(value, str)):
+                    walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    try:
+        paths = doc.get("paths") or {}
+        if not isinstance(paths, dict):
+            raise _Unresolved("paths is not an object")
+        for route, item in paths.items():
+            if not isinstance(item, dict):
+                raise _Unresolved("path item %s is not an object" % route)
+            if "$ref" in item:
+                raise _Unresolved("path item %s is a $ref" % route)
+            walk(item.get("parameters") or [])
+            for verb in _VERBS:
+                if verb not in item:
+                    continue
+                operation = item[verb]
+                if not isinstance(operation, dict):
+                    raise _Unresolved("%s %s is not an object" % (verb.upper(), route))
+                walk(operation.get("parameters") or [])
+                walk(operation.get("requestBody") or {})
+    except _Unresolved as reason:
+        return None, str(reason)
+    return reachable, None
+
+def canonicalize_schemas(doc, rewritten, rewritten_required, refusals):
+    reachable, unknown = request_reachable(doc)
+    for name, schema in (doc.get("components", {}).get("schemas") or {}).items():
+        required = set(schema.get("required") or [])
+        for prop, value in (schema.get("properties") or {}).items():
+            ref = nullable_ref(value)
+            if ref is None:
+                continue
+            if prop in required:
+                if reachable is None:
+                    refusals.append("components.schemas.%s.%s is REQUIRED (request reachability "
+                                    "failed closed: %s)" % (name, prop, unknown))
+                    continue
+                if name in reachable:
+                    refusals.append("components.schemas.%s.%s is REQUIRED (request-reachable)"
+                                    % (name, prop))
+                    continue
+                schema["properties"][prop] = {"$ref": ref}
+                schema["required"] = [r for r in schema["required"] if r != prop]
+                if not schema["required"]:
+                    del schema["required"]
+                rewritten_required.append("components.schemas.%s.%s -> %s" % (name, prop, ref))
+                continue
+            schema["properties"][prop] = {"$ref": ref}
+            rewritten.append("components.schemas.%s.%s -> %s" % (name, prop, ref))
+
+# The walk's and the rewrite's own probes, on fixture documents, before the real one is touched —
+# the same reason as `_PROBES`: no other harness. Each fixture names the outcome it must produce:
+# (rewritten-required sites, refused count). a) and d) are the positive controls.
+def _fixture(schemas, paths):
+    return {"paths": paths, "components": {"schemas": schemas}}
+
+_S = {"type": "object", "properties": {"n": {"type": "integer"}}}
+_NULLABLE_P = {"type": "object", "required": ["p"],
+               "properties": {"p": {"anyOf": [{"$ref": "#/components/schemas/S"},
+                                              {"type": "null"}]}}}
+
+def _ok(ref):
+    return {"responses": {"200": {"content": {"application/json": {"schema": {"$ref": ref}}}}}}
+
+def _body(schema):
+    return {"content": {"application/json": {"schema": schema}}}
+
+_DOC_PROBES = [
+    ("a) response-only required site rewrites",
+     _fixture({"S": _S, "R": json.loads(json.dumps(_NULLABLE_P))},
+              {"/r": {"get": _ok("#/components/schemas/R")}}),
+     (["components.schemas.R.p -> #/components/schemas/S"], 0)),
+    ("b) Q nested in a requestBody through allOf -> Wrap.x.items refuses",
+     _fixture({"S": _S, "Q": json.loads(json.dumps(_NULLABLE_P)),
+               "Wrap": {"type": "object", "properties": {
+                   "x": {"type": "array", "items": {"$ref": "#/components/schemas/Q"}}}}},
+              {"/q": {"get": _ok("#/components/schemas/Q"),
+                      "post": dict(_ok("#/components/schemas/Q"), requestBody=_body(
+                          {"allOf": [{"$ref": "#/components/schemas/Wrap"}]}))}}),
+     ([], 1)),
+    ("c) Q reachable only through a path-level parameter refuses",
+     _fixture({"S": _S, "Q": json.loads(json.dumps(_NULLABLE_P))},
+              {"/c": {"parameters": [{"name": "f", "in": "query", "schema": {
+                  "type": "object", "additionalProperties": {"$ref": "#/components/schemas/Q"}}}],
+                      "get": _ok("#/components/schemas/Q")}}),
+     ([], 1)),
+    ("d) response-only chain R2 -> R3 rewrites R3",
+     _fixture({"S": _S, "R3": json.loads(json.dumps(_NULLABLE_P)),
+               "R2": {"type": "object", "properties": {"c": {"$ref": "#/components/schemas/R3"}}}},
+              {"/d": {"get": _ok("#/components/schemas/R2")}}),
+     (["components.schemas.R3.p -> #/components/schemas/S"], 0)),
+    ("e) an unresolvable $ref in a request root fails closed",
+     _fixture({"S": _S, "R": json.loads(json.dumps(_NULLABLE_P))},
+              {"/e": {"get": _ok("#/components/schemas/R"),
+                      "post": dict(_ok("#/components/schemas/R"), requestBody=_body(
+                          {"$ref": "#/components/schemas/Missing"}))}}),
+     ([], 1)),
+]
+for _label, _doc, (_expected_sites, _expected_refused) in _DOC_PROBES:
+    _rw, _rq, _rf = [], [], []
+    canonicalize_schemas(_doc, _rw, _rq, _rf)
+    # The document itself, not only the report: a rewritten site is a bare `$ref` and no longer
+    # required; a refused one is untouched.
+    _state = all(
+        (_s["properties"]["p"] == {"$ref": "#/components/schemas/S"}
+         and "p" not in (_s.get("required") or []))
+        if any(_e.startswith("components.schemas.%s.p " % _n) for _e in _expected_sites)
+        else (nullable_ref(_s["properties"]["p"]) is not None and "p" in _s["required"])
+        for _n, _s in _doc["components"]["schemas"].items() if "p" in (_s.get("properties") or {}))
+    if (_rq, len(_rf)) != (_expected_sites, _expected_refused) or not _state:
+        sys.stderr.write(
+            "REFUSED: reachability self-test %s failed — expected %r/%d refused, got %r/%r\n"
+            % (_label, _expected_sites, _expected_refused, _rq, _rf))
+        sys.exit(3)
+
+rewritten = []
+rewritten_required = []
+refusals = []
+canonicalize_schemas(doc, rewritten, rewritten_required, refusals)
 
 for route, operations in (doc.get("paths") or {}).items():
     for verb, operation in operations.items():
@@ -216,6 +375,8 @@ with open(path, "w") as handle:
 
 for line in rewritten:
     print("rewrote %s" % line)
+for line in rewritten_required:
+    print("rewrote-required %s (un-required; response-only)" % line)
 for pointer in remaining(doc):
     print("still-dropped %s" % pointer)
 PY
@@ -248,10 +409,13 @@ require_count() {
   || die "the count guard rejects a legitimate zero" 1
 
 canonicalized_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote ' || true)"
+required_count="$(printf '%s\n' "$canonicalized" | grep -c '^rewrote-required ' || true)"
 dropped_count="$(printf '%s\n' "$canonicalized" | grep -c '^still-dropped ' || true)"
 require_count canonicalized "$canonicalized_count"
+require_count canonicalized-required "$required_count"
 require_count still-dropped "$dropped_count"
-echo "canonicalized $canonicalized_count nullable model references; $dropped_count still dropped:"
+echo "canonicalized $canonicalized_count nullable model references and $required_count required" \
+  "response-only ones; $dropped_count still dropped:"
 printf '%s\n' "$canonicalized" | sed 's/^/  /'
 
 # Every check has passed. Install the candidate — the ONE point at which the live artifact moves.
@@ -277,6 +441,7 @@ candidate=""  # installed: the EXIT trap must not delete it
   echo "committed=$(git -C "$src" log -1 --pretty=%cI "$sha")"
   echo "files=Sources/ImgManagerAPI/openapi.json (source, with the nullable-\$ref canonicalization below)"
   echo "canonicalized_nullable_refs=$canonicalized_count"
+  echo "canonicalized_required_nullable_refs=$required_count"
   echo "still_dropped_nullable_unions=$dropped_count"
 } > "$provenance" || die "cannot write $provenance" 1
 

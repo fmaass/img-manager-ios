@@ -26,7 +26,7 @@ struct GridBreadcrumbTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId,
       kind: "dated", lastTouched: nil, nothingLeftUnmarked: false, path: path, picked: 0,
       previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
-      sourceTier: "local", sync: nil, total: 99, unmarked: 1, withMasters: 0)
+      sourceTier: "local", sync: nil, total: 99, unmarked: 1, untouched: false, withMasters: 0)
   }
 
   @Test("A tree folder reads its name and the server's own image count")
@@ -103,7 +103,7 @@ struct GridBreadcrumbTests {
       folderId: 1, kind: "dated", lastTouched: nil, nothingLeftUnmarked: false,
       path: "photo_incoming/stub", picked: picked, previewOutstanding: 0,
       readiness: .init(rawValue: "review_in_progress")!, sourceTier: "local", sync: sync,
-      total: 99, unmarked: unmarked, withMasters: 0)
+      total: 99, unmarked: unmarked, untouched: false, withMasters: 0)
   }
 
   @Test("R3-11 example 1: photos, picks and edited, verbatim")

@@ -18,7 +18,8 @@ struct ShootSummaryTests {
       folderId: folderId, kind: "dated", lastTouched: nil,
       nothingLeftUnmarked: nothingLeftUnmarked, path: "photo_incoming/\(folderId)",
       picked: picked, previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
-      sourceTier: "local", sync: sync, total: total, unmarked: unmarked, withMasters: 0)
+      sourceTier: "local", sync: sync, total: total, unmarked: unmarked, untouched: false,
+      withMasters: 0)
   }
 
   @Test("Complete: the server's counts and its banner")
@@ -117,7 +118,7 @@ struct WorkspaceTitleTests {
       cameraPreviewOnly: 0, decided: 0, disliked: 0, edited: 0, folderId: folderId,
       kind: "dated", lastTouched: nil, nothingLeftUnmarked: false, path: path, picked: 0,
       previewOutstanding: 0, readiness: .init(rawValue: "review_in_progress")!,
-      sourceTier: "local", sync: nil, total: 1, unmarked: 1, withMasters: 0)
+      sourceTier: "local", sync: nil, total: 1, unmarked: 1, untouched: false, withMasters: 0)
   }
 
   @Test("The tree row's name wins over the summary's path leaf")

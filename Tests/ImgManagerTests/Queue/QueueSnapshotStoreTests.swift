@@ -28,7 +28,7 @@ struct QueueSnapshotStoreTests {
       lastTouched: Date(timeIntervalSince1970: 1_699_000_000), nothingLeftUnmarked: false,
       path: "2026-08-01/shoot-\(folderId)", picked: 3, previewOutstanding: 0,
       readiness: .init(rawValue: "ready_to_review")!, sourceTier: "local", sync: nil, total: 9,
-      unmarked: 4, withMasters: 9)
+      unmarked: 4, untouched: false, withMasters: 9)
   }
 
   private func makeSnapshot() -> QueueSnapshot {

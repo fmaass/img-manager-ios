@@ -211,7 +211,7 @@ enum SortGroupOptions {
       rawValue: raw) != nil
   }
 
-  /// `/api/image-groups` — the only truthful header source — takes the same nine group keys.
+  /// `/api/image-groups` — the only truthful header source — takes the same eleven group keys.
   static func imageGroupsAcceptGroupByKey(_ raw: String) -> Bool {
     Operations.ImageGroupsApiImageGroupsGet.Input.Query.GroupByPayload(rawValue: raw) != nil
   }
