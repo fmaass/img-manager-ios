@@ -1055,6 +1055,8 @@ struct ScenePushTests {
       .init(items: [image(1), image(2)], limit: 100, nextCursor: nil))
     await transport.setBrowseStacksPage(page(streamItems))
     await store.selectShoot(folderID: 1)
+    // IMGMGR-557: this folder has scenes, so it opens in Scene; the test is about Flat first.
+    await store.setDisplayMode(.flat)
     let flat = shown(store, .stream)
     #expect(flat == [.image(1), .image(2)])
     await store.setDisplayMode(.scene)

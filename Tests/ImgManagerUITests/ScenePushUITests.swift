@@ -375,7 +375,9 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
 
   /// T12 · kills M54 (`.stream` renders `sceneDisplayRows` in Flat → an empty grid).
   func testFlatRendersPhotosAndSceneToFlatRestoresThem() throws {
-    let app = launched(sceneMode: false)
+    // IMGMGR-557: a folder with scenes opens in Scene, so the test opts into Flat first.
+    let app = launched(extra: ["-UITestFolderHasScenes"], sceneMode: false)
+    setGroup(app, "arrange.group.none")
     XCTAssertTrue(element(app, "gridTile-1").waitForExistence(timeout: 15), "Flat is empty.")
     XCTAssertEqual(handles(app), 0)
     setGroup(app, "arrange.group.scene")

@@ -233,6 +233,9 @@ struct LoupeFilmstripTests {
       .init(items: [makeImage(id: 3), makeImage(id: 4)], limit: 100, nextCursor: nil),
       forCursor: "c1")
     await store.selectShoot(folderID: 1)
+    // IMGMGR-557: opening the folder asks `/api/browse/stacks` once (its scene probe); the claim
+    // below is about the requests that follow the open.
+    let stackCallsAtOpen = await transport.callCount(Operations.BrowseStacksApiBrowseStacksGet.id)
 
     let strip = FilmstripView(store: store)
     #expect(strip.frames.map(\.id) == [1, 2])
@@ -278,7 +281,7 @@ struct LoupeFilmstripTests {
     let stackCalls = await transport.callCount(Operations.BrowseStacksApiBrowseStacksGet.id)
     let neighbourCalls = await transport.callCount(
       Operations.ImageNeighboursApiImagesImageIdNeighboursGet.id)
-    #expect(stackCalls == 0)
+    #expect(stackCalls == stackCallsAtOpen)
     #expect(neighbourCalls == 0)
   }
 
@@ -295,6 +298,9 @@ struct LoupeFilmstripTests {
     await transport.setListImagesPage(
       .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
+    // IMGMGR-557: opening the folder asks `/api/browse/stacks` once (its scene probe); the claim
+    // below is about the requests that follow the open.
+    let probesAtOpen = await transport.recordedBrowseStacksQueries.count
     func card(_ stackID: Int) -> Components.Schemas.StackBrowseStackRow {
       Components.Schemas.StackBrowseStackRow(
         anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0, hasPick: false,
@@ -334,7 +340,7 @@ struct LoupeFilmstripTests {
     #expect(
       store.sceneRows.map(\.displayID) == [.image(10), .stack(5), .stack(6), .image(11)])
     #expect(store.sceneNextCursor == nil)
-    let queries = await transport.recordedBrowseStacksQueries
+    let queries = Array(await transport.recordedBrowseStacksQueries.dropFirst(probesAtOpen))
     // Positive control: the recorder saw the FIRST page too, so a zero-cursor claim below is
     // about what the strip did, not about a recorder that never ran.
     #expect(queries.count == 2)
@@ -360,6 +366,9 @@ struct LoupeFilmstripTests {
     await transport.setListImagesPage(
       .init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
     await store.selectShoot(folderID: 1)
+    // IMGMGR-557: opening the folder asks `/api/browse/stacks` once (its scene probe); the claim
+    // below is about the requests that follow the open.
+    let probesAtOpen = await transport.recordedBrowseStacksQueries.count
     let card = Components.Schemas.StackBrowseStackRow(
       anchorTakenAt: Date(timeIntervalSince1970: 1_700_000_000), editedCount: 0, hasPick: false,
       kind: .stack, matchedCount: 2, memberCount: 2, pickedCount: 0,
@@ -383,7 +392,7 @@ struct LoupeFilmstripTests {
       store: store, layoutMode: .compact, share: LoupeZoomFixtures.makeShare(transport))
     await loupe.pageIfNeeded()
 
-    let queries = await transport.recordedBrowseStacksQueries
+    let queries = Array(await transport.recordedBrowseStacksQueries.dropFirst(probesAtOpen))
     // Positive control: the recorder saw the first page, so the cursor claim below is about what
     // the loupe asked for and not about a recorder that never ran.
     #expect(queries.count == 2)

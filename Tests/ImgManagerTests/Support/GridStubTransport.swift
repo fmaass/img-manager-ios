@@ -324,6 +324,28 @@ actor GridStubTransport: ClientTransport {
     browseStacksPagesByCursor[cursor] = page
   }
   func setBrowseStacksRejectNonNilCursor(_ reject: Bool) { browseStacksRejectNonNilCursor = reject }
+  /// IMGMGR-557: the folder-open scene probe failing at the network level. One-shot, the same
+  /// discipline as `listImagesShouldFail`.
+  private var browseStacksShouldFail = false
+  func setBrowseStacksShouldFail(_ fail: Bool) { browseStacksShouldFail = fail }
+  /// IMGMGR-557: hold the NEXT `GET /api/browse/stacks`, so a second folder open can land while
+  /// the first one's scene probe is still on the wire.
+  private var browseStacksHoldArmed = false
+  private var browseStacksHasStarted = false
+  private var browseStacksStartedContinuation: CheckedContinuation<Void, Never>?
+  private var browseStacksReleaseContinuation: CheckedContinuation<Void, Never>?
+  func holdNextBrowseStacksRequest() { browseStacksHoldArmed = true }
+  func waitUntilBrowseStacksStarted() async {
+    if browseStacksHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.browseStacksStartedContinuation = continuation
+    }
+  }
+  func releaseBrowseStacks() {
+    browseStacksReleaseContinuation?.resume()
+    browseStacksReleaseContinuation = nil
+    browseStacksHasStarted = false
+  }
   func setStackMemberPage(_ page: Components.Schemas.StackMemberPage, forStack stackID: Int) {
     stackMemberPages[stackID] = page
   }
@@ -876,10 +898,28 @@ actor GridStubTransport: ClientTransport {
         // 200 and 422 only), so the status code alone is what `.undocumented` exposes.
         return (HTTPResponse(status: .badRequest), nil)
       }
-      if let cursorValue, !cursorValue.isEmpty, let page = browseStacksPagesByCursor[cursorValue] {
-        return try jsonResponse(.ok, page)
+      if browseStacksShouldFail {
+        browseStacksShouldFail = false
+        throw SentinelTransportError(raw: "GridStubTransport: forced browseStacks failure")
       }
-      return try jsonResponse(.ok, browseStacksPage)
+      // Resolved before the hold, as `ListImagesApiImagesGet` does: a held call answers what was
+      // configured when it was asked.
+      let resolvedStacksPage: Components.Schemas.StackBrowsePage
+      if let cursorValue, !cursorValue.isEmpty, let page = browseStacksPagesByCursor[cursorValue] {
+        resolvedStacksPage = page
+      } else {
+        resolvedStacksPage = browseStacksPage
+      }
+      if browseStacksHoldArmed {
+        browseStacksHoldArmed = false
+        browseStacksHasStarted = true
+        browseStacksStartedContinuation?.resume()
+        browseStacksStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.browseStacksReleaseContinuation = continuation
+        }
+      }
+      return try jsonResponse(.ok, resolvedStacksPage)
 
     case Operations.ListStackMembersApiStacksStackIdMembersGet.id:
       let components = request.path.flatMap(URLComponents.init(string:))

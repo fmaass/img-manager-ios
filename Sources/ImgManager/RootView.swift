@@ -358,6 +358,11 @@ struct RootView: View {
           // banner / no-summary cases); without it this is folder 1, as it always was.
           let folderID = DebugStubLaunch.autoSelectFolderID
           selectedFolderID = folderID
+          // IMGMGR-557: the fixture's folder holds a scene under this flag, so it opens IN Scene
+          // inside `selectShoot` — the first card must already know to read its inline picks.
+          if DebugStubLaunch.enterSceneMode {
+            gridStore.preferences.picksInGroups = true
+          }
           await gridStore.selectShoot(folderID: folderID)
           // WP28 P1: the fixture's shoot is hosted by the Compact Library tab, so a Compact
           // launch lands on the populated grid exactly as it did in the collapsed split.
@@ -371,8 +376,9 @@ struct RootView: View {
           // for the CURRENT scope, so doing it first would only be undone. The preference is set
           // BEFORE the mode change so the first card that appears already knows whether to read
           // its inline picks, rather than reading them one body pass late.
+          // Kept although the folder now opens in Scene by itself: it is a no-op then, and it
+          // still enters Scene should the folder default ever fall back to Flat.
           if DebugStubLaunch.enterSceneMode {
-            gridStore.preferences.picksInGroups = true
             await gridStore.setDisplayMode(.scene)
           }
           // WP13 P2: likewise applied after the shoot loads — `selectShoot` calls

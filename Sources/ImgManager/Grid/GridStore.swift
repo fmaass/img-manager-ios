@@ -829,7 +829,10 @@ final class GridStore {
     // that rebuilds the sequence, `applyFilterChange` included; see its own note for why the
     // exception this line once carried was wrong.
     gridScrollAnchor = nil
-    await reloadFirstPage()
+    // IMGMGR-557: a new folder opens on its OWN default arrangement — Scene when it has scenes,
+    // Flat when not — never on the mode the last folder was left in. Only here: the re-select
+    // above is a refresh within the same visit and keeps whatever the reader switched to.
+    await reloadFirstPage(choosesFolderDefault: true)
   }
 
   /// Any effective filter/tier/tree change (Stats-tab facet taps route through this).
@@ -886,17 +889,7 @@ final class GridStore {
   func setDisplayMode(_ next: GridDisplayMode) async {
     guard next != displayMode else { return }
     leaveScene(.scopeChanged)
-    switch next {
-    case .scene:
-      suspendedPresentation = SortGroupPresentation(of: query)
-      query = SortGroupPresentation.cleared.applied(to: query)
-    case .flat:
-      if let suspended = suspendedPresentation {
-        query = suspended.applied(to: query)
-      }
-      suspendedPresentation = nil
-    }
-    displayMode = next
+    adoptDisplayMode(next)
     pickLock.exit()
     selection.reset(.shootChange)
     focusedImageID = nil
@@ -908,6 +901,24 @@ final class GridStore {
     // exception this line once carried was wrong.
     gridScrollAnchor = nil
     await reloadFirstPage()
+  }
+
+  /// The mode switch itself, with the presentation suspended on the way into Scene and restored
+  /// on the way out. Shared by `setDisplayMode` and a folder open's default (IMGMGR-557), so the
+  /// default Scene is left exactly as a chosen one is.
+  private func adoptDisplayMode(_ next: GridDisplayMode) {
+    guard next != displayMode else { return }
+    switch next {
+    case .scene:
+      suspendedPresentation = SortGroupPresentation(of: query)
+      query = SortGroupPresentation.cleared.applied(to: query)
+    case .flat:
+      if let suspended = suspendedPresentation {
+        query = suspended.applied(to: query)
+      }
+      suspendedPresentation = nil
+    }
+    displayMode = next
   }
 
   // MARK: - Sort and grouping (WP13 P5b, IMGMGR-221 part 2)
@@ -1234,7 +1245,17 @@ final class GridStore {
 
   /// `revalidatesEntry`: a KEEP reload revalidates the entered scene once the rows are in; the
   /// topology coordinator passes false because it resolves its own destination (§2.3a).
-  private func reloadFirstPage(revalidatesEntry: Bool = true) async {
+  ///
+  /// `choosesFolderDefault` (IMGMGR-557): a folder open decides the mode first. "Has scene data"
+  /// means the folder's first `/api/browse/stacks` page holds at least one scene row — and that
+  /// page IS Scene's first page (the endpoint takes no sort or `group_by`, so the presentation
+  /// in force does not change the request), so a folder with scenes costs no second request. A
+  /// folder without scenes, or a probe that fails, falls back to Flat and loads the flat page as
+  /// any flat reload does; the probe's own failure is not reported, because Flat is a complete
+  /// answer and the flat page carries today's error if the server is really down.
+  private func reloadFirstPage(
+    revalidatesEntry: Bool = true, choosesFolderDefault: Bool = false
+  ) async {
     loadGeneration += 1
     let generation = loadGeneration
     isLoadingPage = true
@@ -1265,6 +1286,19 @@ final class GridStore {
       nextCursor = nil
     }
     var rowsLoaded = false
+    var probedScenePage: StackBrowsePageResult?
+    if choosesFolderDefault {
+      let probe = try? await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
+      guard generation == loadGeneration else { return }
+      let hasScenes = probe.map(Self.holdsAScene) ?? false
+      adoptDisplayMode(hasScenes ? .scene : .flat)
+      if hasScenes {
+        // The flat window goes for the same reason it goes above when Scene is already on.
+        images = []
+        nextCursor = nil
+        probedScenePage = probe
+      }
+    }
     do {
       switch displayMode {
       case .flat:
@@ -1275,8 +1309,13 @@ final class GridStore {
         images = page.items
         nextCursor = page.nextCursor
       case .scene:
-        let page = try await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
-        guard generation == loadGeneration else { return }
+        let page: StackBrowsePageResult
+        if let probedScenePage {
+          page = probedScenePage
+        } else {
+          page = try await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
+          guard generation == loadGeneration else { return }
+        }
         sceneRows = page.rows
         sceneNextCursor = page.nextCursor
       }
@@ -1320,6 +1359,14 @@ final class GridStore {
   /// thousands of frames" — the schema's own words), so the flat grid's 100 is if anything
   /// generous here rather than tight. Its declared maximum is 200.
   private static let scenePageLimit = 100
+
+  /// IMGMGR-557: "has scene data" — the page holds at least one scene row, not only photographs.
+  private static func holdsAScene(_ page: StackBrowsePageResult) -> Bool {
+    page.rows.contains { row in
+      if case .stack = row { return true }
+      return false
+    }
+  }
 
   /// Drops everything that describes a Scene RESULT SET: the served rows, its cursor, which
   /// scenes are open and every membership page loaded for them. Never touches `displayMode` —

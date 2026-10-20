@@ -174,6 +174,12 @@
       // Debug composition could not enter Scene mode with data at all, so the band, the ✓N badge
       // and the inline picks had no rendered evidence — only unit assertions.
       case Operations.BrowseStacksApiBrowseStacksGet.id:
+        // IMGMGR-557: a folder opens in Scene exactly when this page holds a scene, so the scene
+        // is served only to a launch that asks for one; every other launch browses a folder of
+        // loose photographs and opens Flat, as every flat suite expects.
+        guard DebugStubLaunch.folderHasScenes else {
+          return try jsonResponse(.ok, Self.fixtureLooseStackPage(marks: markState))
+        }
         return try jsonResponse(
           .ok, Self.fixtureStackPage(marks: markState, splitPoint: splitPoint))
       case Operations.ListStackMembersApiStacksStackIdMembersGet.id:
@@ -623,6 +629,17 @@
       return Components.Schemas.StackBrowsePage(items: items, limit: 100, nextCursor: nil)
     }
 
+    /// IMGMGR-557: the same folder with no scene in it — every photograph its own row, which is
+    /// what `/api/browse/stacks` serves a folder without scene data.
+    private static func fixtureLooseStackPage(marks: [Int: String])
+      -> Components.Schemas.StackBrowsePage
+    {
+      let items: [Components.Schemas.StackBrowsePage.ItemsPayloadPayload] = fixtureImages().map {
+        .init(value1: .init(image: applying(marks, to: $0), kind: .image), value2: nil)
+      }
+      return Components.Schemas.StackBrowsePage(items: items, limit: 100, nextCursor: nil)
+    }
+
     /// Two membership pages (IMGMGR-406). Page one is the loaded band and names its successor;
     /// the second page is served only to a request that carries that cursor, which is what makes
     /// its one member evidence that somebody asked.
@@ -1063,6 +1080,14 @@
     /// fixture's screenshot changes.
     static var enterSceneMode: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestEnterSceneMode")
+    }
+
+    /// IMGMGR-557: whether the fixture's folders hold a scene (scene 5000). A folder opens in
+    /// Scene by default exactly when they do, so `-UITestFolderHasScenes` alone is how a suite
+    /// observes that default — it enters Scene through nothing but the folder open. Scene mode's
+    /// own suites (`-UITestEnterSceneMode`) need the scene too.
+    static var folderHasScenes: Bool {
+      enterSceneMode || ProcessInfo.processInfo.arguments.contains("-UITestFolderHasScenes")
     }
 
     /// A SEVENTH, independent launch argument — the INVERSE of the one WP16 P2 (IMGMGR-298)
