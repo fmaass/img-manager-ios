@@ -27,17 +27,20 @@ enum CompactTab: String, CaseIterable, Hashable, Sendable {
     }
   }
 
-  /// The Shoots tab's badge: the number of shoots awaiting review — the SAME membership the
-  /// pinned section lists (`NeedsReview.members(from:)`), so the badge and the rows under it can
-  /// never be two answers to one question. Zero means no badge (`.badge(0)` renders none).
-  static func badgeCount(summaries: [Components.Schemas.FolderSummary]) -> Int {
-    NeedsReview.members(from: summaries).count
+  /// The Shoots tab's badge (IMGMGR-549 ruling d): the number of Untouched shoots — the FULL
+  /// membership the Shoots tab's Untouched section draws its first eight rows from
+  /// (`Untouched.members(from:since:)`), overflow included, so the badge and the rows under it
+  /// can never be two answers to one question. The readiness count is no longer surfaced. Zero
+  /// means no badge (`.badge(0)` renders none).
+  static func badgeCount(summaries: [Components.Schemas.FolderSummary], since: Date) -> Int {
+    Untouched.members(from: summaries, since: since).count
   }
 }
 
-/// The Shoots home's second section (plan Decision 3): the queue summaries that are NOT awaiting
-/// review, narrowed to the tier the title menu names, newest first. Pure, so the composition is
-/// something a unit test reads rather than a `@ViewBuilder` it has to render.
+/// The Shoots home's Recent section (IMGMGR-549, R3-2): the shoots last opened on THIS device
+/// (`ShootShortcutsStore.recent`), narrowed to the tier the title menu's "Recent from" picker
+/// names (ruling e). Pure, so the composition is something a unit test reads rather than a
+/// `@ViewBuilder` it has to render.
 enum ShootsHome {
   typealias ShootSummary = Components.Schemas.FolderSummary
 
@@ -52,23 +55,15 @@ enum ShootsHome {
 
   static func recentRowIdentifier(for folderID: Int) -> String { "recentRow-\(folderID)" }
 
-  /// Every summary outside the Needs-review set whose tier is `tier`, most recently touched
-  /// first; a shoot the server reports no `last_touched` for sorts after every dated one, and
-  /// ties keep the server's order.
-  static func recent(from summaries: [ShootSummary], tier: FolderTreeTier) -> [ShootSummary] {
-    let members = Set(NeedsReview.members(from: summaries).map(\.folderId))
-    let kept = summaries.enumerated().filter { _, summary in
-      !members.contains(summary.folderId) && belongs(summary, to: tier)
-    }
-    let ordered = kept.sorted { lhs, rhs in
-      switch (lhs.element.lastTouched, rhs.element.lastTouched) {
-      case (let left?, let right?) where left != right: return left > right
-      case (.some, nil): return true
-      case (nil, .some): return false
-      default: return lhs.offset < rhs.offset
-      }
-    }
-    return ordered.map(\.element)
+  /// The title menu's picker label: it scopes Recent and nothing else.
+  static let recentPickerTitle = "Recent from"
+
+  /// The remembered opens as summaries, newest first, keeping only those in `tier`. An entry
+  /// whose summary is not served right now is kept by the store and not drawn here.
+  static func recent(
+    entries: [ShootShortcutsStore.Entry], summaries: [ShootSummary], tier: FolderTreeTier
+  ) -> [ShootSummary] {
+    ShootRowPresentation.summaries(for: entries, in: summaries).filter { belongs($0, to: tier) }
   }
 
   /// Which tree tier a summary sits in: Archive is the archive source tier; Incoming and Edits

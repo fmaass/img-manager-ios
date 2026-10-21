@@ -100,8 +100,8 @@ struct ShootSummaryTests {
 }
 
 /// WP28 P3: the grid's title reuses the names the sidebar already shows — the tree row's
-/// `node.name` (the mounted tree's, else the store's remembered one), else the Needs-review row's
-/// `NeedsReview.shootName(for:)` — and, for a shown folder nobody names yet, the neutral fallback.
+/// `node.name` (the mounted tree's, else the store's remembered one), else the section row's
+/// `ShootName.of(_:)` — and, for a shown folder nobody names yet, the neutral fallback.
 @Suite("Workspace title from existing display names (WP28 P3)")
 struct WorkspaceTitleTests {
 
@@ -129,12 +129,12 @@ struct WorkspaceTitleTests {
     #expect(name == "2026-08-27 — Stub Shoot")
   }
 
-  @Test("A folder the tree has not loaded takes the Needs-review row's name")
+  @Test("A folder the tree has not loaded takes the section row's name")
   func summaryFallback() {
     let row = summary(folderId: 3, path: "photo_incoming/2026/2026-09-14-wandern")
     let name = WorkspaceTitle.name(
       folderID: 3, treeFolders: tree, cachedTreeFolders: nil, summaries: [row])
-    #expect(name == NeedsReview.shootName(for: row))
+    #expect(name == ShootName.of(row))
     #expect(name == "2026-09-14-wandern")
   }
 

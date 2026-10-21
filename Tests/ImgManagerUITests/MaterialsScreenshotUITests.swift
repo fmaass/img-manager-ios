@@ -93,7 +93,7 @@ final class MaterialsScreenshotUITests: OrientationPinnedUITestCase {
     }
 
     XCTAssertTrue(
-      anyElement(roots, "needsReviewRow-1").waitForExistence(timeout: 30),
+      anyElement(roots, "untouchedRow-5").waitForExistence(timeout: 30),
       "The Shoots root never rendered.")
     try capture(roots, "iphone", "shoots-home")
 

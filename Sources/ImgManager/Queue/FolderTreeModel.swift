@@ -429,6 +429,26 @@ enum FolderTreeModel {
     return (String(head[0..<4]), month)
   }
 
+  /// The calendar DAY a folder name starts with (IMGMGR-549: "a folder is one day"), or `nil`.
+  /// The same `YYYY-MM-DD` prefix `monthStamp(of:)` reads, but a day the calendar does not have
+  /// (`2026-02-30`, `2026-13-01`, `2026-04-31`) is a name, not a day: the components are built
+  /// into a date in a UTC Gregorian calendar and must come back unchanged. A `dated_split`
+  /// continuation (`2026-09-14-wandern-2`) still starts with its date and parses to that day.
+  static func dayStamp(of name: String) -> (year: Int, month: Int, day: Int)? {
+    guard monthStamp(of: name) != nil else { return nil }
+    let head = Array(name.prefix(10))
+    guard let year = Int(String(head[0..<4])), let month = Int(String(head[5..<7])),
+      let day = Int(String(head[8..<10]))
+    else { return nil }
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = .gmt
+    let components = DateComponents(year: year, month: month, day: day)
+    guard let date = calendar.date(from: components) else { return nil }
+    let back = calendar.dateComponents([.year, .month, .day], from: date)
+    guard back.year == year, back.month == month, back.day == day else { return nil }
+    return (year, month, day)
+  }
+
   /// The fold's own text, ported verbatim (`monthLabel`, `folderTree.ts:212-215`): the lowercase
   /// English month name, with the year appended only where it differs from the parent folder's
   /// own name. Deliberately the WEB's wording — the owner's decision is "the same folder view on

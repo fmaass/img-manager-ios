@@ -114,7 +114,7 @@ struct DebugStubFolderFixtureTests {
         .union(renderedFolderIDs(.archive))
       let summaryIDs = Set(DebugStubTransport.fixtureSummaries().map(\.folderId))
 
-      #expect(summaryIDs == [1, 3, 5, 11, 21, 22])
+      #expect(summaryIDs == [1, 3, 5, 11, 21, 22, 23])
       #expect(summaryIDs.isSubset(of: rendered))
       // Every readiness value the string table knows is represented, so the badge suite walks a
       // real vocabulary rather than one value repeated six times.
@@ -126,6 +126,24 @@ struct DebugStubFolderFixtureTests {
     /// The control for IMGMGR-350's "no prune in this package" default (Context default 6): the
     /// archive's mirrored, zero-count folder is STILL a row. A follow-up ticket under IMGMGR-322
     /// adds the web's prune behind a persisted toggle, and this assertion is what it inverts.
+    /// IMGMGR-549: the untouched set is exactly 3, 5, 21 and 23 — 21 the archive control, 23 the
+    /// realistic one with nothing picked, disliked or edited.
+    @Test("the fixture's untouched shoots are exactly 3, 5, 21 and 23")
+    func theUntouchedSetIsPinned() {
+      let untouched = Set(
+        DebugStubTransport.fixtureSummaries().filter { $0.untouched }.map { $0.folderId })
+      #expect(untouched == [3, 5, 21, 23])
+      let realistic = DebugStubTransport.fixtureSummaries().first { $0.folderId == 23 }
+      #expect(realistic?.picked == 0)
+      #expect(realistic?.disliked == 0)
+      #expect(realistic?.edited == 0)
+      #expect(
+        DebugStubTransport.touchedFixtureSummaries().allSatisfy { !$0.untouched },
+        "-UITestNoUntouched still serves an untouched shoot")
+      #expect(
+        DebugStubTransport.manyUntouchedExtras().map { $0.folderId } == [31, 32, 33, 34, 35, 36])
+    }
+
     @Test("the archive keeps its zero-count mirrored folder beside a real shoot")
     func theArchiveKeepsItsMirroredZeroCountFolder() {
       let archive = fixture(.archive)

@@ -3,8 +3,9 @@ import XCTest
 
 /// WP28 P2 (IMGMGR-449) acceptance (AC3): the Regular shell's sidebar and grid bar.
 ///
-/// (a) the sidebar names two sections — "Shoots" above the pinned Needs-review rows, "Library"
-///     above the tree's tier rows;
+/// (a) IMGMGR-549 (R3-2): the sidebar is Untouched · Pinned · Recent · Library — the Untouched
+///     header above its rows, "Library" below them and above the tree's tier rows, and no
+///     standing "Shoots" header (ruling a);
 /// (b) nothing in the app is a navigation rail (no identifier or label contains "rail");
 /// (c) removed by R3-18 (IMGMGR-550) with the toolbar search itself; its absence is
 ///     `GridToolbarUITests.testTheRegularShellCarriesNoSearch`;
@@ -23,9 +24,8 @@ import XCTest
 /// here records that and returns rather than asserting a layout the device cannot resolve.
 ///
 /// Launch fixture: `-UITestStubGrid` (DEBUG-only `DebugStubTransport`); with
-/// `-UITestStubSkipAutoSelect` the app stops at the home. Its Needs-review members are folders 1
-/// and 21; the Incoming tier holds folder 1 beside the `2026` container (id 2) over
-/// `2026-09-14 — Wandern` (id 3).
+/// `-UITestStubSkipAutoSelect` the app stops at the home. Its Untouched members are folders 23, 5
+/// and 3, newest first; the Incoming tier holds folder 1 beside the `2026` container (id 2).
 final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
 
   /// LANDSCAPE: Regular-3, which most of this file is about. The Regular-2 test turns the device
@@ -36,47 +36,47 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
   /// `LayoutPresentationTests.theRegular3WidthPinMatchesTheUITestLiteral`).
   private static let regular3WidthThreshold: CGFloat = 1197
 
-  // MARK: - (a) Shoots and Library
+  // MARK: - (a) Untouched above Library
 
-  func testTheSidebarNamesShootsAboveNeedsReviewAndLibraryAboveTheTiers() throws {
+  func testTheSidebarListsUntouchedAboveLibraryAndLibraryAboveTheTiers() throws {
     let app = try launched(.regular3, home: true)
 
-    let shoots = app.descendants(matching: .any)["sidebarSectionShoots"].firstMatch
+    let untouched = app.descendants(matching: .any)["untouchedSection"].firstMatch
     let library = app.descendants(matching: .any)["sidebarSectionLibrary"].firstMatch
     XCTAssertTrue(
-      shoots.waitForExistence(timeout: 15),
-      "The sidebar has no \"Shoots\" section header (board iPad-Library-v2).")
-    XCTAssertEqual(shoots.label, "Shoots")
+      untouched.waitForExistence(timeout: 15), "The sidebar has no \"Untouched\" section header.")
+    XCTAssertEqual(untouched.label, "Untouched")
     XCTAssertTrue(
       library.waitForExistence(timeout: 15),
       "The sidebar has no \"Library\" section header (board iPad-Library-v2).")
     XCTAssertEqual(library.label, "Library")
 
-    let needsReview = app.descendants(matching: .any)["needsReviewSection"].firstMatch
-    XCTAssertTrue(needsReview.exists, "The pinned Needs-review section is gone from the sidebar.")
-    for folderID in [1, 21] {
-      XCTAssertTrue(
-        app.descendants(matching: .any)["needsReviewRow-\(folderID)"].firstMatch.exists,
-        "Needs-review member \(folderID) has no row under Shoots.")
+    let members = [23, 5, 3].map { folderID in
+      app.descendants(matching: .any)["untouchedRow-\(folderID)"].firstMatch
+    }
+    for (index, row) in members.enumerated() {
+      XCTAssertTrue(row.exists, "Untouched member #\(index + 1) has no row in the sidebar.")
     }
     for tier in ["Incoming", "Edits", "Archive"] {
       XCTAssertTrue(
         app.descendants(matching: .any)["folderTreeTier-\(tier)"].firstMatch.exists,
         "The \(tier) tier row is not in the sidebar under Library.")
     }
+    // Ruling a: no standing "Shoots" header — asserted after the headers above were found.
+    XCTAssertFalse(
+      app.descendants(matching: .any)["sidebarSectionShoots"].firstMatch.exists,
+      "The sidebar still carries the standing \"Shoots\" header.")
 
-    // Order, top to bottom: Shoots, the Needs-review header and rows, Library, the tiers.
-    let lastMember = app.descendants(matching: .any)["needsReviewRow-21"].firstMatch
+    // Order, top to bottom: the Untouched header and rows, Library, the tiers.
     let firstTier = app.descendants(matching: .any)["folderTreeTier-Incoming"].firstMatch
     XCTAssertLessThan(
-      shoots.frame.minY, needsReview.frame.minY,
-      "\"Shoots\" does not sit above the Needs-review header.")
+      untouched.frame.minY, members[0].frame.minY, "\"Untouched\" does not sit above its rows.")
     XCTAssertLessThan(
-      lastMember.frame.minY, library.frame.minY,
-      "\"Library\" does not sit below the Needs-review rows.")
+      members[2].frame.minY, library.frame.minY,
+      "\"Library\" does not sit below the Untouched rows.")
     XCTAssertLessThan(
       library.frame.minY, firstTier.frame.minY, "\"Library\" does not sit above the tier rows.")
-    attach(named: "IMGMGR-449-sidebar-shoots-library")
+    attach(named: "IMGMGR-549-sidebar-untouched-library")
   }
 
   // MARK: - (b) No rail
@@ -213,10 +213,10 @@ final class RegularSidebarShellUITests: OrientationPinnedUITestCase {
       "\(tag): the system toggle did not hide the sidebar.")
   }
 
-  /// The Shoots header, the sidebar's first row, stands for the column: shown means on screen and
-  /// hittable. Polled, because the column animates.
+  /// The Library header, the one sidebar header that renders whatever the sections hold, stands
+  /// for the column: shown means on screen and hittable. Polled, because the column animates.
   private func waitForSidebar(shown: Bool, in app: XCUIApplication) -> Bool {
-    let header = app.descendants(matching: .any)["sidebarSectionShoots"].firstMatch
+    let header = app.descendants(matching: .any)["sidebarSectionLibrary"].firstMatch
     let deadline = Date().addingTimeInterval(10)
     repeat {
       let onScreen = header.exists && header.isHittable && header.frame.minX >= 0

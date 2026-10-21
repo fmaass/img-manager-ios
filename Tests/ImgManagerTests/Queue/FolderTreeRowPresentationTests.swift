@@ -29,52 +29,50 @@ struct FolderTreeRowPresentationTests {
   /// the call site: which folder it is about, and what readiness the SERVER put on it.
   private func summary(
     folderId: Int, readiness: String, decided: Int = 0, unmarked: Int = 0,
-    previewOutstanding: Int = 0
+    previewOutstanding: Int = 0, untouched: Bool = false
   ) -> Components.Schemas.FolderSummary {
     Components.Schemas.FolderSummary(
       cameraPreviewOnly: 0, decided: decided, disliked: 0, edited: 0, folderId: folderId,
       kind: "dated", lastTouched: nil, nothingLeftUnmarked: unmarked == 0, path: "p\(folderId)",
       picked: 0, previewOutstanding: previewOutstanding,
       readiness: .init(rawValue: readiness)!, sourceTier: "local", sync: nil,
-      total: decided + unmarked, unmarked: unmarked, untouched: false, withMasters: 0)
+      total: decided + unmarked, unmarked: unmarked, untouched: untouched, withMasters: 0)
   }
 
-  /// IMGMGR-350 P3. The badge says what the server said, in the one string table the queue
-  /// sections and the widget already share — it derives NOTHING. The fixture below makes the
-  /// counts contradict the served value on purpose: everything decided, nothing left unmarked and
-  /// no previews outstanding, under a served `needs_previews`. A client that recomputed readiness
-  /// from counts would say "Ready for editing" here and fail.
-  @Test("the readiness badge renders the SERVED value, never one derived from the counts")
-  func theReadinessBadgeRendersTheServedValue() {
+  /// IMGMGR-549 (R3-1): the hollow ring replaces the readiness caption. It is the SERVER's
+  /// `untouched` flag joined by `folder_id` — the fixture's counts contradict it on purpose
+  /// (everything decided under a served `untouched: true`), so a client that derived the ring
+  /// from counts would fail here.
+  @Test("the ring shows the SERVED untouched flag on a shoot row, never one derived from counts")
+  func theRingShowsTheServedFlag() {
     let shoot = node(id: 60, kind: "dated", descendant: 12, own: 12)
+    let touched = node(id: 61, kind: "dated", descendant: 3, own: 3)
     let index = FolderTreeRowPresentation.index([
-      summary(folderId: 60, readiness: "needs_previews", decided: 12, unmarked: 0)
+      summary(folderId: 60, readiness: "ready_for_editing", decided: 12, untouched: true),
+      summary(folderId: 61, readiness: "ready_to_review", untouched: false),
     ])
 
-    #expect(
-      FolderTreeRowPresentation.readinessBadge(for: shoot, summaries: index) == "Needs previews")
+    #expect(FolderTreeRowPresentation.showsUntouchedRing(for: shoot, summaries: index))
+    #expect(!FolderTreeRowPresentation.showsUntouchedRing(for: touched, summaries: index))
   }
 
-  /// The two absences, both of which a badge that invented a default would break: a shoot the
-  /// summaries say nothing about, and a container — which is not a shoot, has no summary row of
-  /// its own, and must not borrow one.
-  @Test("no summary means no badge, and a container never carries one")
-  func aFolderWithoutASummaryCarriesNoBadge() {
-    let unlisted = node(id: 61, kind: "dated", descendant: 3, own: 3)
+  /// The two absences: a shoot the summaries say nothing about, and a container — which is not
+  /// a shoot and must not borrow a summary row keyed to its id.
+  @Test("no summary means no ring, and a container never carries one")
+  func aFolderWithoutASummaryCarriesNoRing() {
+    let unlisted = node(id: 62, kind: "dated", descendant: 3, own: 3)
     let container = node(id: 2, kind: "other", descendant: 12, own: 0)
     let index = FolderTreeRowPresentation.index([
-      summary(folderId: 60, readiness: "review_in_progress"),
-      // Even with a row keyed to the CONTAINER's id, a container states nothing: readiness is a
-      // shoot's state, and `ShootListFilter` stays the single definition of which rows are shoots.
-      summary(folderId: 2, readiness: "ready_to_review"),
+      summary(folderId: 60, readiness: "review_in_progress", untouched: true),
+      summary(folderId: 2, readiness: "ready_to_review", untouched: true),
     ])
 
-    #expect(FolderTreeRowPresentation.readinessBadge(for: unlisted, summaries: index) == nil)
-    #expect(FolderTreeRowPresentation.readinessBadge(for: container, summaries: index) == nil)
+    #expect(!FolderTreeRowPresentation.showsUntouchedRing(for: unlisted, summaries: index))
+    #expect(!FolderTreeRowPresentation.showsUntouchedRing(for: container, summaries: index))
   }
 
-  /// The join table itself, and the badge's own handle.
-  @Test("the summaries index is keyed by folder_id, and the badge handle by the same id")
+  /// The join table itself, and the ring's own handle.
+  @Test("the summaries index is keyed by folder_id, and the ring handle by the same id")
   func theIndexIsKeyedByFolderID() {
     let index = FolderTreeRowPresentation.index([
       summary(folderId: 7, readiness: "sync_problem"),
@@ -83,8 +81,8 @@ struct FolderTreeRowPresentationTests {
 
     #expect(Set(index.keys) == [7, 9])
     #expect(index[7]?.readiness.rawValue == "sync_problem")
-    #expect(FolderTreeRowPresentation.readinessIdentifier(for: 7) == "folderReadiness-7")
-    #expect(FolderTreeRowPresentation.readinessIdentifier(for: 42) == "folderReadiness-42")
+    #expect(FolderTreeRowPresentation.untouchedIdentifier(for: 7) == "folderUntouched-7")
+    #expect(FolderTreeRowPresentation.untouchedIdentifier(for: 42) == "folderUntouched-42")
   }
 
   @Test("only shoot rows get a cover and a subline — a container keeps its trailing count")

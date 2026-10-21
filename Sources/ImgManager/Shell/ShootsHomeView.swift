@@ -1,50 +1,80 @@
 import ImgManagerAPI
 import SwiftUI
 
-/// WP28 P1 (IMGMGR-448): the Compact Shoots tab (plan Decision 3) — the pinned "Needs review"
-/// section (IMGMGR-389, the same component and predicate the split's sidebar shows), then Recent:
-/// the remaining queue summaries of the tier the title menu names, newest first
-/// (`ShootsHome.recent(from:tier:)`).
+/// WP28 P1 (IMGMGR-448), IMGMGR-549 (R3-14): the Compact Shoots tab — Untouched (the newest eight,
+/// then "N more ›") above Recent (the shoots last opened on this device, narrowed to the tier
+/// the title menu's "Recent from" picker names). No Pinned section here (ruling c): Pinned is the
+/// Regular sidebar's. Each section follows its Settings toggle and renders only with members.
 ///
 /// Rows keep the home's row-navigation discipline — a selection-bound `List` whose rows carry
 /// `.simultaneousGesture`, never a bare `Button` and never `onChange` — because both sections
-/// render through `NeedsReviewSection`, and every tap goes through `onSelectShoot`, the ONE path
-/// into `GridStore.selectShoot(folderID:sourceTier:)`.
+/// render through `ShootRowsSection`, and every tap goes through `onSelectShoot`, the ONE path
+/// into the grid (and the one that records the open into Recent).
 struct ShootsHomeView: View {
   let queueStore: QueueStore
   @Binding var selectedFolderID: Int?
   let onSelectShoot: (Int, GridSourceTier?) -> Void
+  let settings: SettingsPreferences
+  let shortcuts: ShootShortcutsStore
+  let heroLoader: HeroThumbnailLoader
   /// The Recent section's tier, chosen from the navigation title's menu. Session-scoped, like
   /// the tree's own expansion.
   @State private var tier: FolderTreeTier = .incoming
+  /// The overflow sheet and the tile picked in it, opened once the sheet has gone.
+  @State private var overflow = UntouchedOverflow()
 
   var body: some View {
     let summaries = queueStore.summaries
-    let needsReview = NeedsReview.members(from: summaries)
-    let recent = ShootsHome.recent(from: summaries, tier: tier)
+    let untouched = Untouched.members(from: summaries, since: settings.untouchedSince)
+    let recent = ShootsHome.recent(entries: shortcuts.recent, summaries: summaries, tier: tier)
+    let visible = SidebarSections.visible(
+      toggles: SidebarToggles(settings),
+      membership: .init(untouched: untouched.count, recent: recent.count), in: .compactShoots)
     List(selection: $selectedFolderID) {
-      if !needsReview.isEmpty {
+      if visible.contains(.untouched) {
         Section {
-          NeedsReviewSection(
-            members: needsReview, selectedFolderID: $selectedFolderID, onSelect: onSelectShoot)
+          ShootRowsSection(
+            kind: .untouched, members: Untouched.visible(untouched),
+            selectedFolderID: $selectedFolderID, onSelect: onSelectShoot, shortcuts: shortcuts)
+          if let more = Untouched.overflowLabel(count: Untouched.overflowCount(untouched)) {
+            UntouchedMoreRow(label: more) { overflow.open() }
+          }
         } header: {
-          NeedsReviewHeader(count: needsReview.count)
+          SidebarSectionHeader.untouched.label
         }
       }
-      Section {
-        NeedsReviewSection(
-          members: recent, selectedFolderID: $selectedFolderID, onSelect: onSelectShoot,
-          rowIdentifier: ShootsHome.recentRowIdentifier(for:))
-      } header: {
-        Text("\(ShootsHome.recentTitle) · \(tier.label)")
-          .accessibilityIdentifier(ShootsHome.recentSectionIdentifier)
+      if visible.contains(.recent) {
+        Section {
+          ShootRowsSection(
+            kind: .recent, members: recent, selectedFolderID: $selectedFolderID,
+            onSelect: onSelectShoot, shortcuts: shortcuts)
+        } header: {
+          Text("\(ShootsHome.recentTitle) · \(tier.label)")
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier(ShootsHome.recentSectionIdentifier)
+        }
       }
+    }
+    .sheet(
+      isPresented: $overflow.isPresented,
+      onDismiss: {
+        overflow.handOff { folderID, tier in
+          selectedFolderID = folderID
+          onSelectShoot(folderID, tier)
+        }
+      }
+    ) {
+      UntouchedAllView(
+        members: Untouched.members(from: queueStore.summaries, since: settings.untouchedSince),
+        heroLoader: heroLoader,
+        onPick: { overflow.pick($0) },
+        onClose: { overflow.close() })
     }
     .refreshable { await queueStore.refresh() }
     .navigationTitle(CompactTab.shoots.title)
     .navigationBarTitleDisplayMode(.inline)
     .toolbarTitleMenu {
-      Picker("Tier", selection: $tier) {
+      Picker(ShootsHome.recentPickerTitle, selection: $tier) {
         ForEach(FolderTreeTier.allCases, id: \.self) { option in
           Text(option.label).tag(option)
         }

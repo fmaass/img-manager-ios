@@ -194,9 +194,10 @@ struct ShellToolbarLayoutTests {
 
   @Test("The Regular sidebar's section names and identifiers")
   func sidebarSectionHeaders() {
-    #expect(SidebarSectionHeader.allCases.map(\.title) == ["Shoots", "Library"])
+    #expect(
+      SidebarSectionHeader.allCases.map(\.title) == ["Untouched", "Pinned", "Recent", "Library"])
     #expect(
       SidebarSectionHeader.allCases.map(\.identifier)
-        == ["sidebarSectionShoots", "sidebarSectionLibrary"])
+        == ["untouchedSection", "pinnedSection", "recentSection", "sidebarSectionLibrary"])
   }
 }

@@ -35,6 +35,12 @@ struct RootView: View {
   // grid" bug this same phase fixes in `LayoutResolver`.
   @State private var columnVisibility: NavigationSplitViewVisibility =
     LayoutResolver.columnVisibility(for: .compact)
+  /// IMGMGR-549 (P10 fix round 2): whether the Regular split's workspace holds the keyboard
+  /// focus (see `regularShell` for what that does and does not guarantee).
+  @FocusState private var workspaceOwnsKeyboard: Bool
+  /// IMGMGR-549: set by the workspace's ONE explicit focus claim, so a later appearance of the
+  /// column (after a sheet, a width change, the inspector) never takes focus back.
+  @State private var workspaceClaimedKeyboard = false
   /// IMGMGR-478: whether the reader left the Regular sidebar hidden, across launches
   /// (`SidebarVisibilityMemory` says why a `UserDefaults` boolean). Read only when a width
   /// resolves to Regular (`applyWidth`) and written only from a Regular split, so the Compact
@@ -48,6 +54,10 @@ struct RootView: View {
   /// IMGMGR-548: the Settings sheet's own preferences; `GridStore` reads the Tap to Pick default
   /// through it (`RootView.makeGridStore`).
   @State private var settings: SettingsPreferences
+  /// IMGMGR-549: the sidebar's Pinned and Recent shoots, this device's, for the signed-in account
+  /// on this server (`ShootShortcutsStore`). Bound to the auth identity by `.onChange` below and
+  /// erased with the session in the credentials-erased handler.
+  @State private var shortcuts: ShootShortcutsStore
   /// WP8 P4: the grid store and its own API boundary (`GridService`, a sibling of `ImgManagerAPIService`
   /// — see that type's doc comment for why P4 does not extend P3's).
   @State private var gridStore: GridStore
@@ -127,7 +137,15 @@ struct RootView: View {
     _connectivity = State(initialValue: ConnectivityState(service: service))
     let gridService = GridService(client: client)
     self.gridService = gridService
-    let settings = SettingsPreferences()
+    #if DEBUG
+      // IMGMGR-549: the fixture's own clock, so the default "Untouched since" (1 January of the
+      // current year) keeps the 2026 fixture shoots inside the horizon whatever today is.
+      let settings =
+        DebugStubLaunch.isActive
+        ? SettingsPreferences(now: { DebugStubLaunch.fixtureNow }) : SettingsPreferences()
+    #else
+      let settings = SettingsPreferences()
+    #endif
     _settings = State(initialValue: settings)
     // WP442 P12: bound first so the erasure handler below can leave the entered scene.
     let gridStore = Self.makeGridStore(service: gridService, settings: settings)
@@ -152,6 +170,13 @@ struct RootView: View {
     let session = AuthSession(
       credentialStore: credentialStore, client: client,
       onCredentialsErased: { await erasedBox.handler?() })
+    // IMGMGR-549: the shortcuts read the SAME live identity, so a retained store never shows
+    // account A's pins to account B in the moment before `bind` runs.
+    let shortcuts = ShootShortcutsStore(currentIdentity: { [weak session] in
+      guard case .signedIn(let subject) = session?.status else { return nil }
+      return .init(subject: subject, baseURL: ImgManagerAPIClient.baseURL.absoluteString)
+    })
+    _shortcuts = State(initialValue: shortcuts)
     let queueStore = QueueStore(
       service: queueService, snapshotStore: queueSnapshotStore,
       subject: { [weak session] in
@@ -166,7 +191,8 @@ struct RootView: View {
     // at the same boundary, in the same synchronous run.
     let navigation = WorkspaceNavigation()
     _navigation = State(initialValue: navigation)
-    erasedBox.handler = { [weak queueStore, weak folderTree, weak navigation, weak gridStore] in
+    erasedBox.handler = {
+      [weak queueStore, weak folderTree, weak navigation, weak gridStore, weak shortcuts] in
       // FENCE FIRST, and synchronously — this closure is `@MainActor`, so nothing suspends
       // before this line. Clearing the file first (as this did) left a window between the two
       // awaits in which a fetch could resume against an un-advanced generation and write the
@@ -174,6 +200,7 @@ struct RootView: View {
       queueStore?.endSession()
       folderTree?.endSession()
       navigation?.endSession()
+      shortcuts?.endSession()
       gridStore?.leaveScene(.sessionEnded)
       await queueSnapshotStore.clear()
     }
@@ -201,6 +228,11 @@ struct RootView: View {
     }
     .overlay(alignment: .topLeading) { materialsSettingsProbe }
     .task { await auth.bootstrap() }
+    // IMGMGR-549: the shortcuts follow the auth identity — a change clears them and loads only
+    // the new account's persisted entries (`ShootShortcutsStore.bind`).
+    .onChange(of: shortcutIdentity, initial: true) { _, identity in
+      shortcuts.bind(identity)
+    }
     .onOpenURL { url in
       // IMGMGR-501: a Handoff simulated MID-SESSION, fixture launches only — the UI test opens
       // `imgmanager://uitest-continue-activity?json=…` while the Pass Summary is up
@@ -620,10 +652,9 @@ struct RootView: View {
   /// `Button`, never `onChange`) is preserved verbatim inside `FolderTreeSection` itself — see
   /// its own doc comment.
   ///
-  /// IMGMGR-389 closes IMGMGR-342 (sidebar composition, Option B): above the tree sits ONE pinned
-  /// "Needs review" section, composed by `QueueView` inside the SAME list so the two are one
-  /// scroll and one selection. It renders only when it has members, so the tree is still this
-  /// column's sole content whenever nothing is awaiting review.
+  /// IMGMGR-549 (design R3-2): above the tree sit Untouched · Pinned · Recent, composed by
+  /// `QueueView` inside the SAME list so all of them are one scroll and one selection. Each
+  /// renders only when its Settings toggle is on and it has members.
   @ViewBuilder
   private var sidebar: some View {
     // R3-18 (IMGMGR-550): no search surface narrows the tree any more.
@@ -632,14 +663,13 @@ struct RootView: View {
     // `LayoutResolver` never hides this column (`.doubleColumn`/`.all`). At Compact the tab shell
     // carries them instead: Account on the Shoots root, the View menu on the Library root.
     // WP28 P2: the sidebar names its two sections, "Shoots" and "Library".
-    queueHome(
-      showsNeedsReview: true, showsSectionHeaders: true, onSelectShoot: selectShoot, tree: tree
-    )
-    .toolbar {
-      folderTreeViewMenuItem
-      accountToolbarItem
-      settingsGearItem
-    }
+    // IMGMGR-549: Untouched · Pinned · Recent above the tree, under four section headers.
+    queueHome(showsSidebarSections: true, onSelectShoot: selectShoot, tree: tree)
+      .toolbar {
+        folderTreeViewMenuItem
+        accountToolbarItem
+        settingsGearItem
+      }
   }
 
   /// IMGMGR-548: the sidebar gear — Settings' second entry point, on the Regular sidebar column's
@@ -673,7 +703,30 @@ struct RootView: View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
       sidebar
     } detail: {
+      // IMGMGR-549 (P10 fix round 2): the workspace asks for the keyboard focus. With nothing
+      // focused, UIKit can hand a bare arrow to its focus engine before the grid's arrow
+      // command (`AppCommands`, ← ↑ → ↓). When it does, the engine focuses the sidebar's first
+      // cell and consumes the key, and the list's selection follows that focus. On the iPad gate
+      // with a Library-only selection, → reached the grid in 2 of 9 launches on main c78ba98.
+      // A focused workspace makes its hosting view the first responder, and the engine took the
+      // arrow far less often (1 of 19 launches, onto the workspace itself, so the sidebar
+      // selection stayed). This lowers the odds; it does NOT guarantee that the first arrow
+      // reaches the grid.
+      //
+      // The explicit claim happens ONCE per scene (`workspaceClaimedKeyboard`). After a text
+      // field, a sheet or the inspector takes focus, the column never claims it back; focus
+      // goes wherever SwiftUI restores it, and `.defaultFocus` only names the workspace as the
+      // default. `.focusEffectDisabled()` hides the system halo around the whole workspace.
       contentColumn
+        .focusable()
+        .focusEffectDisabled()
+        .focused($workspaceOwnsKeyboard)
+        .defaultFocus($workspaceOwnsKeyboard, true)
+        .onAppear {
+          guard !workspaceClaimedKeyboard else { return }
+          workspaceClaimedKeyboard = true
+          workspaceOwnsKeyboard = true
+        }
     }
   }
 
@@ -684,12 +737,33 @@ struct RootView: View {
   /// wire string and an unrecognised one must clear the grid's filter rather than resolve to an
   /// invented tier. WP28 P1: the Compact tabs reach it through `WorkspaceNavigation.open`, which
   /// calls exactly this closure and then decides which tab shows the grid.
+  ///
+  /// IMGMGR-549 (ruling g): this is also the ONE place a user's open is recorded into Recent —
+  /// `ShootOpenRecorder.userOpened`, which every row tap reaches and no restore, Handoff or DEBUG
+  /// auto-select does (those call `GridStore.selectShoot` directly). Only a SHOOT is recorded: a
+  /// container or year tap routes the same way but is refused by `isShoot`.
   private var selectShoot: (Int, GridSourceTier?) -> Void {
     let store = gridStore
+    let queue = queueStore
+    let recorder = ShootOpenRecorder(
+      shortcuts: shortcuts,
+      isShoot: { folderID, tier in
+        ShootOpenRecorder.isSelectableShoot(
+          id: folderID, tier: tier, summaries: queue.summaries, tree: queue.cachedTree)
+      },
+      route: { folderID, sourceTier in
+        // WP442 P12: a row tap always lands on the folder's stream (it leaves an entered scene).
+        Task { await store.openShoot(folderID: folderID, sourceTier: sourceTier) }
+      })
     return { folderID, sourceTier in
-      // WP442 P12: a row tap always lands on the folder's stream (it leaves an entered scene).
-      Task { await store.openShoot(folderID: folderID, sourceTier: sourceTier) }
+      recorder.userOpened(id: folderID, tier: sourceTier)
     }
+  }
+
+  /// IMGMGR-549: who the shortcuts belong to right now — the signed-in subject on this server.
+  private var shortcutIdentity: ShootShortcutsStore.Identity? {
+    guard case .signedIn(let subject) = auth.status else { return nil }
+    return .init(subject: subject, baseURL: ImgManagerAPIClient.baseURL.absoluteString)
   }
 
   /// A Compact tab's row tap: the one routing path, then the tab that hosts the grid.
@@ -710,7 +784,7 @@ struct RootView: View {
   /// the old direct switch was a defect, not a deliberate second gate.
   @ViewBuilder
   private func queueHome(
-    showsNeedsReview: Bool, showsSectionHeaders: Bool = false,
+    showsSidebarSections: Bool,
     onSelectShoot: @escaping (Int, GridSourceTier?) -> Void, tree: FolderTreeSection
   ) -> some View {
     switch SidebarRouting.destination(for: connectivity.status) {
@@ -720,9 +794,9 @@ struct RootView: View {
       QueueView(
         queueStore: queueStore, selectedFolderID: $selectedFolderID,
         onRefresh: { await refreshQueueHome() },
-        // IMGMGR-389: the pinned section's rows route through the SAME closure the tree's do.
-        onSelectShoot: onSelectShoot, showsNeedsReview: showsNeedsReview,
-        showsSectionHeaders: showsSectionHeaders, treeSection: tree)
+        // The section rows route through the SAME closure the tree's do.
+        onSelectShoot: onSelectShoot, showsSidebarSections: showsSidebarSections,
+        settings: settings, shortcuts: shortcuts, heroLoader: heroLoader, treeSection: tree)
     }
   }
 
@@ -790,6 +864,7 @@ struct RootView: View {
       // folder" that outlives both a Compact pop-back (which clears the List's selection)
       // and the column-count swap this very view performs (which destroys the tree's state).
       openedFolderID: gridStore.query.folderID, treeState: folderTree, searchQuery: "",
+      shortcuts: shortcuts,
       onSelect: { folderID, sourceTier in onSelect(folderID, sourceTier) })
   }
 
@@ -800,7 +875,9 @@ struct RootView: View {
   /// split's pop-back did — the open folder's highlight survives through `openedFolderID`.
   private var compactShell: some View {
     CompactShell(
-      navigation: navigation, badgeCount: CompactTab.badgeCount(summaries: queueStore.summaries),
+      navigation: navigation,
+      badgeCount: CompactTab.badgeCount(
+        summaries: queueStore.summaries, since: settings.untouchedSince),
       onHostPopped: { selectedFolderID = nil },
       enteredSceneID: gridStore.enteredSceneID,
       onScenePopped: { [gridStore] in gridStore.leaveScene(.userBack) },
@@ -808,12 +885,13 @@ struct RootView: View {
       destination: { route in workspaceColumn(scope: Self.compactScope(for: route)) })
   }
 
-  /// The Shoots tab: Needs review, then Recent. Account's ONE Compact home (p4128 R2-Inventory)
+  /// The Shoots tab: Untouched, then Recent (IMGMGR-549). Account's ONE Compact home (p4128 R2-Inventory)
   /// — the grid's bar no longer carries it, so it is declared here and on the split's sidebar.
   private var shootsRoot: some View {
     ShootsHomeView(
       queueStore: queueStore, selectedFolderID: $selectedFolderID,
-      onSelectShoot: openShoot(from: .shoots)
+      onSelectShoot: openShoot(from: .shoots), settings: settings, shortcuts: shortcuts,
+      heroLoader: heroLoader
     )
     .toolbar {
       accountToolbarItem
@@ -825,7 +903,7 @@ struct RootView: View {
   private var libraryRoot: some View {
     let open = openShoot(from: .library)
     let tree = folderTreeSection(onSelect: open)
-    queueHome(showsNeedsReview: false, onSelectShoot: open, tree: tree)
+    queueHome(showsSidebarSections: false, onSelectShoot: open, tree: tree)
       .toolbar {
         folderTreeViewMenuItem
       }

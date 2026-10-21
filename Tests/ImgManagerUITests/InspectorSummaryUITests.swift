@@ -36,7 +36,7 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
   ]
 
   private static let folderOneName = "2026-08-27 — Stub Shoot"
-  /// `WorkspaceTitle.name`'s summary source for folder 1 — `NeedsReview.shootName(for:)`, the
+  /// `WorkspaceTitle.name`'s summary source for folder 1 — `ShootName.of(_:)`, the
   /// leaf of the fixture summary's path, which is also what the Shoots tab's row shows. Compact
   /// resolves to it because the tree loads only when the Library tab mounts, and the DEBUG
   /// auto-select pushes the grid on Shoots (gate on 0d2d057: the iPhone bar's identifier is

@@ -9,6 +9,8 @@ struct ImgManagerApp: App {
       DebugStubLaunch.resetSidebarMemoryUnlessKept()
       // IMGMGR-548: and on the Settings sheet's own defaults (`DebugStubLaunch.keepsSettings`).
       DebugStubLaunch.resetSettingsUnlessKept()
+      // IMGMGR-549: and with no Pinned or Recent shoots.
+      DebugStubLaunch.resetShortcuts()
     #endif
   }
 

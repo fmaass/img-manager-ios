@@ -142,4 +142,28 @@ struct FolderTreeModelTests {
 
     #expect(flat == [1, 2, 3])
   }
+
+  // MARK: - IMGMGR-549: the folder's day
+
+  private func day(_ name: String) -> [Int]? {
+    FolderTreeModel.dayStamp(of: name).map { [$0.year, $0.month, $0.day] }
+  }
+
+  @Test("dayStamp reads the YYYY-MM-DD a name starts with, title or continuation after it")
+  func dayStampReadsTheLeadingDay() {
+    #expect(day("2026-09-14 — Wandern") == [2026, 9, 14])
+    #expect(day("2026-09-14-wandern-2") == [2026, 9, 14])
+    #expect(day("2024-02-29") == [2024, 2, 29])
+  }
+
+  @Test("dayStamp rejects names that are not a calendar day")
+  func dayStampRejectsImpossibleDays() {
+    let names = [
+      "2026-02-30", "2026-13-01", "2026-04-31", "2025-02-29", "2026-00-10", "stub", "2026-9-14",
+      "2026",
+    ]
+    for name in names {
+      #expect(day(name) == nil, "\(name) parsed as a day")
+    }
+  }
 }

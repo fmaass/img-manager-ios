@@ -134,7 +134,7 @@ final class ChromeTouchTargetUITests: OrientationPinnedUITestCase {
           + "Compact.")
     }
     XCTAssertTrue(
-      anyElement(roots, "needsReviewRow-1").waitForExistence(timeout: 30),
+      anyElement(roots, "untouchedRow-5").waitForExistence(timeout: 30),
       "The Shoots root never rendered.")
     let shoots = chromeCensus(
       roots, state: "shoots", titleMenu: true, stateTitles: [CompactTabTitle.shoots],

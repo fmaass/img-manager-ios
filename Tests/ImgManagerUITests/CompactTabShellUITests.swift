@@ -1,17 +1,18 @@
 import XCTest
 
 /// WP28 P1 (IMGMGR-448) acceptance: the Compact shell — two tabs, Shoots · Library (R3-18,
-/// IMGMGR-550, removed the Search tab), with the Needs-review badge on Shoots, one grid host
-/// across the tabs and Account's one Compact home on the Shoots root.
+/// IMGMGR-550, removed the Search tab), with the Untouched badge on Shoots (IMGMGR-549), one grid
+/// host across the tabs and Account's one Compact home on the Shoots root.
 ///
 /// Compact is a WIDTH, read off the screen (`rendersCompactShell`), never the device idiom. On the
 /// iPad destination the Regular split renders instead: (a) asserts that no tab bar exists there,
 /// and (b)-(f), whose subject only exists at Compact, skip with that reason.
 ///
 /// Launch fixture: `-UITestStubGrid` plus `-UITestStubSkipAutoSelect`, so the app stops at the
-/// Shoots root. Of the fixture's six summaries exactly two are Needs-review members (folders 1
-/// and 21); `-UITestNoNeedsReview` serves all six as reviewed. `-UITestPerFolderGrid` makes every
-/// grid tile's identifier name its folder (`gridTile-<folderID * 1000 + n>`).
+/// Shoots root. Of the fixture's summaries exactly three are Untouched members (folders 23, 5 and
+/// 3; 21 is untouched but archive); `-UITestNoUntouched` serves every shoot as touched.
+/// `-UITestPerFolderGrid` makes every grid tile's identifier name its folder
+/// (`gridTile-<folderID * 1000 + n>`).
 final class CompactTabShellUITests: OrientationPinnedUITestCase {
 
   private static let tabTitles = ["Shoots", "Library"]
@@ -41,26 +42,26 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
       "The Compact tab bar is not exactly Shoots and Library, in that order.")
   }
 
-  /// (b) DIAGNOSTIC, not the badge: the Shoots tab's content root reports the Needs-review count,
-  /// and it equals the rows listed under it.
+  /// (b) DIAGNOSTIC, not the badge: the Shoots tab's content root reports the Untouched count,
+  /// and it equals the rows listed under it (IMGMGR-549 ruling d).
   ///
   /// SwiftUI does not expose the tab-button badge to XCUITest: on iOS 26.5 (gate run on 08367cc)
   /// the Shoots tab button reads "Shoots" with no value, and the tab bar holds no badge text. The
-  /// only number in the hierarchy is `value: 2` on the Shoots tab's content root, the element
+  /// only number in the hierarchy is the value on the Shoots tab's content root, the element
   /// holding its navigation bar. This test checks THAT value — the count the badge is fed from —
   /// and not the rendered badge. The rendered badge is the named screenshot pair
   /// (IMGMGR-448-tab-bar-badge / -no-badge, kept always) and is left to the owner's visual check.
-  func testTheShootsContentRootReportsTheNeedsReviewCount_diagnostic() throws {
+  func testTheShootsContentRootReportsTheUntouchedCount_diagnostic() throws {
     let app = launch()
     try skipUnlessCompact(app)
 
     XCTAssertTrue(
-      element(app, "needsReviewRow-1").waitForExistence(timeout: 30),
-      "The Shoots tab never listed the fixture's Needs-review shoots.")
+      element(app, "untouchedRow-23").waitForExistence(timeout: 30),
+      "The Shoots tab never listed the fixture's Untouched shoots.")
     let rows = app.descendants(matching: .any).matching(
-      NSPredicate(format: "identifier BEGINSWITH %@", "needsReviewRow-"))
+      NSPredicate(format: "identifier BEGINSWITH %@", "untouchedRow-"))
     let rowCount = rows.count
-    XCTAssertEqual(rowCount, 2, "The fixture has two Needs-review members (folders 1 and 21).")
+    XCTAssertEqual(rowCount, 3, "The fixture has three Untouched members (folders 23, 5 and 3).")
 
     let shoots = compactTabButton(app, title: "Shoots")
     XCTAssertTrue(shoots.waitForExistence(timeout: 15), "There is no Shoots tab button.")
@@ -70,25 +71,39 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
     attachScreenshot(named: "IMGMGR-448-tab-bar-badge")
     XCTAssertTrue(
       carried.contains(rowCount),
-      "The Shoots tab's content root does not report the Needs-review count \(rowCount) — the "
-        + "number of Needs-review rows on the tab. Numbers found: \(carried).")
+      "The Shoots tab's content root does not report the Untouched count \(rowCount) — the "
+        + "number of Untouched rows on the tab. Numbers found: \(carried).")
   }
 
-  /// (c) DIAGNOSTIC, not the badge: nothing awaiting review, so the Shoots tab's content root
-  /// reports no count. Like (b), this reads the count the badge is fed from; the rendered badge's
-  /// absence is the IMGMGR-448-tab-bar-no-badge screenshot, left to the owner's visual check.
-  func testNoNeedsReviewMeansNoCountOnTheShootsContentRoot_diagnostic() throws {
-    let app = launch(extraArguments: ["-UITestNoNeedsReview"])
+  /// (c) DIAGNOSTIC, not the badge: nothing untouched, so the Shoots tab's content root reports
+  /// no count. Like (b), this reads the count the badge is fed from; the rendered badge's absence
+  /// is the IMGMGR-448-tab-bar-no-badge screenshot, left to the owner's visual check.
+  func testNoUntouchedMeansNoCountOnTheShootsContentRoot_diagnostic() throws {
+    let app = launch(extraArguments: ["-UITestNoUntouched"])
     try skipUnlessCompact(app)
 
-    // The positive control: the summaries DID load (Recent lists the reviewed root shoot), so the
-    // missing count below is an empty membership and not a home that never loaded.
+    // The positive control is RENDERED summary data: folder 1, opened from the Library tree,
+    // must come back as a Recent row on the Shoots root — a row drawn only by joining the
+    // recorded open with a loaded summary. Only then are the missing section and count an empty
+    // membership rather than a home whose summaries never arrived. (The section's absence on
+    // both shells is `UntouchedSectionUITests.testNothingUntouchedRendersNoSectionOnEitherShell`.)
+    selectCompactTab(app, title: "Library")
+    let shoot = element(app, "folderRow-1")
+    if !shoot.waitForExistence(timeout: 30) {
+      element(app, "folderTreeTier-Incoming").tap()
+    }
+    XCTAssertTrue(shoot.waitForExistence(timeout: 15), "Tree row 1 never appeared.")
+    shoot.tap()
     XCTAssertTrue(
-      element(app, "recentRow-1").waitForExistence(timeout: 30),
-      "-UITestNoNeedsReview did not reach the summaries: Recent never listed folder 1.")
+      app.buttons["Dislike"].waitForExistence(timeout: 30), "Tree row 1 did not open its shoot.")
+    selectCompactTab(app, title: "Shoots")
+    XCTAssertTrue(
+      element(app, "recentRow-1").waitForExistence(timeout: 15),
+      "No summary-backed Recent row for folder 1: the summaries were never applied, so the "
+        + "absence below would prove nothing.")
     XCTAssertFalse(
-      element(app, "needsReviewSection").exists,
-      "The pinned section rendered with no shoot awaiting review.")
+      element(app, "untouchedSection").exists,
+      "The Untouched section rendered with no untouched shoot.")
 
     let shoots = compactTabButton(app, title: "Shoots")
     XCTAssertTrue(shoots.waitForExistence(timeout: 15), "There is no Shoots tab button.")
@@ -98,7 +113,7 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
     let carried = contentRootNumbers(app)
     XCTAssertTrue(
       carried.isEmpty,
-      "The Shoots tab's content root reports a count (\(carried)) with nothing to review.")
+      "The Shoots tab's content root reports a count (\(carried)) with nothing untouched.")
   }
 
   /// (d) A→B→return: a shoot opened in one tab is never left showing under another.
@@ -106,13 +121,13 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
     let app = launch(extraArguments: ["-UITestPerFolderGrid"])
     try skipUnlessCompact(app)
 
-    // A: folder 1, from the Shoots tab's Needs-review section.
-    let rowA = element(app, "needsReviewRow-1")
-    XCTAssertTrue(rowA.waitForExistence(timeout: 30), "Folder 1's Needs-review row never appeared.")
+    // A: folder 5, from the Shoots tab's Untouched section.
+    let rowA = element(app, "untouchedRow-5")
+    XCTAssertTrue(rowA.waitForExistence(timeout: 30), "Folder 5's Untouched row never appeared.")
     rowA.tap()
     XCTAssertTrue(
-      element(app, "gridTile-1001").waitForExistence(timeout: 30),
-      "Opening folder 1 from Needs review did not show folder 1's grid.")
+      element(app, "gridTile-5001").waitForExistence(timeout: 30),
+      "Opening folder 5 from Untouched did not show folder 5's grid.")
 
     // B: folder 2 (the Incoming year container), from the Library tab's tree. Opening A already
     // revealed Incoming (IMGMGR-405 rule 6); it is opened here only if it is still closed.
@@ -129,9 +144,23 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
 
     // Back to Shoots: its stack was cleared when B opened, so it is at its root with no grid.
     selectCompactTab(app, title: "Shoots")
+    let untouchedHeader = element(app, "untouchedSection")
     XCTAssertTrue(
-      element(app, "needsReviewSection").waitForExistence(timeout: 15),
+      untouchedHeader.waitForExistence(timeout: 15),
       "Returning to Shoots did not land on its root.")
+    // IMGMGR-549 (R3-14): Untouched above Recent, and Recent is this device's shoot opens —
+    // folder 5, which A opened. B's folder 2 is a year container: it opened a grid but is not a
+    // shoot, so the recorder refused it and Recent holds folder 5 alone.
+    let recentHeader = element(app, "recentSection")
+    XCTAssertTrue(
+      element(app, "recentRow-5").waitForExistence(timeout: 15),
+      "Recent does not list folder 5 after it was opened from the Shoots tab.")
+    XCTAssertTrue(recentHeader.exists, "Recent rows render without their header.")
+    let recentRows = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "recentRow-"))
+    XCTAssertEqual(recentRows.count, 1, "Recent lists more than the one shoot opened.")
+    XCTAssertLessThan(
+      untouchedHeader.frame.minY, recentHeader.frame.minY, "Untouched is not above Recent.")
     XCTAssertFalse(app.buttons["Dislike"].exists, "The Shoots tab still shows a grid.")
     XCTAssertTrue(
       gridTileIdentifiers(in: app).isEmpty,
@@ -158,7 +187,7 @@ final class CompactTabShellUITests: OrientationPinnedUITestCase {
     try skipUnlessCompact(app)
 
     XCTAssertTrue(
-      element(app, "needsReviewRow-1").waitForExistence(timeout: 30),
+      element(app, "untouchedRow-5").waitForExistence(timeout: 30),
       "The Shoots root never rendered, so the absence below would prove nothing.")
     XCTAssertEqual(app.searchFields.count, 0, "The Shoots tab draws a search field.")
     XCTAssertFalse(

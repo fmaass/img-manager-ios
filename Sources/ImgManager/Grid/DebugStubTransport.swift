@@ -848,6 +848,10 @@
       .init(
         descendantImageCount: 6, id: 5, imageCount: 6, kind: "dated", name: "2026-09-27 — Ufer",
         parentId: 2, path: "photo_incoming/2026/2026-09-27-ufer"),
+      // IMGMGR-549: the untouched shoot, in its own month fold (October) after September's.
+      .init(
+        descendantImageCount: 6, id: 23, imageCount: 6, kind: "dated", name: "2026-10-03 — Herbst",
+        parentId: 2, path: "photo_incoming/2026/2026-10-03-herbst"),
     ]
 
     /// The edits tier: its own root row and its own shoot, no id shared with any other tier —
@@ -885,6 +889,13 @@
     /// and the deliberate contradictions between them are unchanged; `sourceTier` follows the
     /// folder's own store. Internal, not private, so `DebugStubFolderFixtureTests` can prove the
     /// join lands.
+    ///
+    /// IMGMGR-549: `untouched` is true on exactly 3, 5, 21 and 23. 3 and 5 carry picks and edits
+    /// all the same — a deliberate, synthetic "trust the server flag" contradiction, like the
+    /// readiness ones above, kept so the tree tests that read their counts do not move; no
+    /// contract-validity assertion reads them. 23 is the realistic one (zero picks, dislikes and
+    /// edits). 21 is the archive control: it carries the tree's ring and never enters the
+    /// Untouched section. 1 (undated), 11 (Edits) and 22 stay false.
     static func fixtureSummaries() -> [Components.Schemas.FolderSummary] {
       [
         Components.Schemas.FolderSummary(
@@ -905,14 +916,14 @@
           nothingLeftUnmarked: false, path: "2025/2025-12-24-archive-shoot", picked: 0,
           previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!,
           sourceTier: "archive", sync: .init(never: 0, refused: 3, stale: 0, synced: 0),
-          total: 60, unmarked: 60, untouched: false, withMasters: 0),
+          total: 60, unmarked: 60, untouched: true, withMasters: 0),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 12, decided: 5, disliked: 1, edited: 3, folderId: 3, kind: "dated",
           lastTouched: nil, nothingLeftUnmarked: true,
           path: "photo_incoming/2026/2026-09-14-wandern",
           picked: 4, previewOutstanding: 8, readiness: .init(rawValue: "sync_problem")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 7, synced: 0), total: 12,
-          unmarked: 7, untouched: false, withMasters: 4),
+          unmarked: 7, untouched: true, withMasters: 4),
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: 0, decided: 32, disliked: 4, edited: 20, folderId: 11,
           kind: "dated", lastTouched: Date(timeIntervalSince1970: 1_755_594_512),
@@ -933,29 +944,34 @@
           nothingLeftUnmarked: true, path: "photo_incoming/2026/2026-09-27-ufer", picked: 15,
           previewOutstanding: 0, readiness: .init(rawValue: "historical_unreviewed")!,
           sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 0, synced: 0), total: 18,
-          unmarked: 0, untouched: false, withMasters: 18),
+          unmarked: 0, untouched: true, withMasters: 18),
+        // IMGMGR-549: the representative untouched shoot — incoming, dated, nothing picked,
+        // disliked or edited, and the server says `untouched`.
+        Components.Schemas.FolderSummary(
+          cameraPreviewOnly: 6, decided: 0, disliked: 0, edited: 0, folderId: 23, kind: "dated",
+          lastTouched: nil, nothingLeftUnmarked: false,
+          path: "photo_incoming/2026/2026-10-03-herbst", picked: 0, previewOutstanding: 0,
+          readiness: .init(rawValue: "ready_to_review")!, sourceTier: "local",
+          sync: .init(never: 0, refused: 0, stale: 0, synced: 0), total: 6, unmarked: 6,
+          untouched: true, withMasters: 0),
       ]
     }
 
-    /// What `/api/folder-summaries` actually answers for THIS launch — the shipped fixture, or
-    /// the all-reviewed variant `-UITestSummariesReviewed` asks for. `fixtureSummaries()` itself
-    /// is left exactly as it was, so `DebugStubFolderFixtureTests`' pins (the id set, and one
-    /// summary per readiness value) keep reading the same six rows.
+    /// What `/api/folder-summaries` actually answers for THIS launch — the shipped fixture, or one
+    /// of the IMGMGR-549 variants: `-UITestNoUntouched` (every shoot touched, so the Untouched
+    /// section and the Shoots badge have no members) or `-UITestManyUntouched` (six more untouched
+    /// incoming shoots, nine in all, so the section overflows into "1 more ›").
+    /// `fixtureSummaries()` itself is left as it is, so `DebugStubFolderFixtureTests`' pins keep
+    /// reading the same rows.
     static func servedFixtureSummaries() -> [Components.Schemas.FolderSummary] {
-      DebugStubLaunch.summariesReviewed ? reviewedFixtureSummaries() : fixtureSummaries()
+      if DebugStubLaunch.noUntouched { return touchedFixtureSummaries() }
+      if DebugStubLaunch.manyUntouched { return fixtureSummaries() + manyUntouchedExtras() }
+      return fixtureSummaries()
     }
 
-    /// IMGMGR-389: the same six shoots with every readiness rewritten to `ready_for_editing`, so
-    /// NO shoot is a member of the pinned "Needs review" set and the section's empty state can be
-    /// driven through the real UI. No shipped entry point can produce it — the fixture always has
-    /// members — and the emptiness has to come from the DATA rather than from a broken load, or
-    /// an absent section would prove only that nothing rendered.
-    ///
-    /// Rebuilt through the generated memberwise initialiser rather than mutated in place, in the
-    /// same field order the literals above use: `readiness` is the one field that differs, and it
-    /// is spelled as the schema's OWN wire string, exactly as every literal in this file does.
-    /// Internal, not private, so a unit test can read the same rows the app is served.
-    static func reviewedFixtureSummaries() -> [Components.Schemas.FolderSummary] {
+    /// The same shoots with `untouched` false on every one, rebuilt through the generated
+    /// memberwise initialiser in the literals' field order. Internal so a unit test reads them.
+    static func touchedFixtureSummaries() -> [Components.Schemas.FolderSummary] {
       fixtureSummaries().map { summary in
         Components.Schemas.FolderSummary(
           cameraPreviewOnly: summary.cameraPreviewOnly, decided: summary.decided,
@@ -963,9 +979,25 @@
           kind: summary.kind, lastTouched: summary.lastTouched,
           nothingLeftUnmarked: summary.nothingLeftUnmarked, path: summary.path,
           picked: summary.picked, previewOutstanding: summary.previewOutstanding,
-          readiness: .init(rawValue: "ready_for_editing")!, sourceTier: summary.sourceTier,
-          sync: summary.sync, total: summary.total, unmarked: summary.unmarked,
-          untouched: summary.untouched, withMasters: summary.withMasters)
+          readiness: summary.readiness, sourceTier: summary.sourceTier, sync: summary.sync,
+          total: summary.total, unmarked: summary.unmarked, untouched: false,
+          withMasters: summary.withMasters)
+      }
+    }
+
+    /// `-UITestManyUntouched`'s six extra shoots, 31…36, dated February to July 2026 — older than
+    /// 3, 5 and 23, so the ninth and oldest (31) is the one "1 more ›" holds. Summaries only: the
+    /// overflow grid opens them by folder id like any shoot.
+    static func manyUntouchedExtras() -> [Components.Schemas.FolderSummary] {
+      (1...6).map { index in
+        let month = String(format: "%02d", index + 1)
+        return Components.Schemas.FolderSummary(
+          cameraPreviewOnly: 4, decided: 0, disliked: 0, edited: 0, folderId: 30 + index,
+          kind: "dated", lastTouched: nil, nothingLeftUnmarked: false,
+          path: "photo_incoming/2026/2026-\(month)-10-extra-\(index)", picked: 0,
+          previewOutstanding: 0, readiness: .init(rawValue: "ready_to_review")!,
+          sourceTier: "local", sync: .init(never: 0, refused: 0, stale: 0, synced: 0), total: 4,
+          unmarked: 4, untouched: true, withMasters: 0)
       }
     }
 
@@ -1243,24 +1275,30 @@
       ProcessInfo.processInfo.arguments.contains("-UITestHangSummaries")
     }
 
-    /// IMGMGR-389: another INDEPENDENT launch argument (the ordinals above stopped being a
-    /// reliable count some flags ago; what matters is that this one composes with all of them).
-    /// Every fixture summary is served as `ready_for_editing`, so the pinned "Needs review"
-    /// section has no members and must not render at all. The endpoint still ANSWERS — a healthy
-    /// home with nothing awaiting review, a different state from the failing and hanging
-    /// summaries above and the only one that proves the empty case. Debug-only like every flag
-    /// here.
-    ///
-    /// WP28 P1 (IMGMGR-448): `-UITestNoNeedsReview` is a second spelling of the same switch, named
-    /// for what the Compact shell's badge tests need (no Needs-review member, so no Shoots badge).
-    /// One fixture, two names — never a second fixture that could drift from this one.
-    static var summariesReviewed: Bool {
-      let arguments = ProcessInfo.processInfo.arguments
-      return arguments.contains("-UITestSummariesReviewed")
-        || arguments.contains(noNeedsReviewArgument)
+    /// IMGMGR-549: every fixture shoot served as touched, so the Untouched section has no members
+    /// and the Shoots tab no badge — the endpoint still ANSWERS, so an absent section is an empty
+    /// membership rather than a home that never loaded. Debug-only like every flag here.
+    static var noUntouched: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestNoUntouched")
     }
 
-    static let noNeedsReviewArgument = "-UITestNoNeedsReview"
+    /// IMGMGR-549: nine untouched incoming shoots (`manyUntouchedExtras`), so the section shows
+    /// eight rows and "1 more ›".
+    static var manyUntouched: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestManyUntouched")
+    }
+
+    /// IMGMGR-549: the fixture's clock — 2026-10-18 12:00 UTC — for `SettingsPreferences(now:)`,
+    /// so the default horizon (1 January of the current year) never expires the 2026 fixture.
+    static let fixtureNow = Date(timeIntervalSince1970: 1_792_324_800)
+
+    /// IMGMGR-549: a fixture launch starts with no Pinned or Recent shoots. The fixture is never
+    /// signed in, so the store keeps them in memory only; this removes anything a signed-in run
+    /// of the same simulator left, so no suite can inherit another's shortcuts.
+    static func resetShortcuts(defaults: UserDefaults = .standard) {
+      guard isActive else { return }
+      defaults.removeObject(forKey: ShootShortcutsStore.key)
+    }
 
     /// IMGMGR-350 checkpoint-2 (B3): a NINTH, on the same terms. One tier of `/api/folders`
     /// unreachable while the other two answer — "an unknown tier is not an empty tier" has no

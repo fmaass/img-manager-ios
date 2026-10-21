@@ -97,34 +97,22 @@ enum FolderTreeRowPresentation {
   /// this tree (`folderRow-` / `folderContainer-` / `folderDisclose-`).
   static func thumbnailIdentifier(for id: Int) -> String { "folderRowThumbnail-\(id)" }
 
-  /// The shoot row's READINESS, as the server said it (IMGMGR-350 P3). The badge states the
-  /// served identifier's title and derives nothing: `ReadinessSection` is the one string table in
-  /// this app (`QueueModels.swift:36-45`, shared with the widget), keyed by the wire value the
-  /// server sent, exactly as `QueueSort.sections(from:)` keys its sections. A readiness this
-  /// client does not know is rendered as NO badge rather than as a guess — the same
-  /// unknown-vocabulary posture `ShootListFilter` takes for `kind` (IMGMGR-173).
-  ///
-  /// Whatever the ADR-0004 amendment round (IMGMGR-330, /link/3376) lands as the readiness VALUE
-  /// is what this says: the badge consumes that contract and does not define it.
-  ///
-  /// Shoot rows only, for the same reason the cover and the subline are shoot-only: a container
-  /// is a folder of folders and `/api/folder-summaries` has no row for it. A folder with no
-  /// summary shows no badge — nothing here invents one from counts.
-  static func readinessBadge(
+  /// IMGMGR-549 (R3-1): whether this row carries the hollow "untouched" ring — the server's own
+  /// `untouched` flag for the shoot, joined by `folder_id`, and nothing derived. It replaces the
+  /// readiness caption these rows used to carry ("the client stops surfacing" the six-state
+  /// readiness, which stays decoded and stays the widget's). Shown in EVERY tier, the archive
+  /// included ("everywhere", ruling b); only the Untouched SECTION leaves the archive out.
+  /// Shoot rows only: a container has no summary row of its own and must not borrow one.
+  static func showsUntouchedRing(
     for node: FolderTreeNode, summaries: [Int: Components.Schemas.FolderSummary]
-  ) -> String? {
-    guard node.isSelectableShoot, let summary = summaries[node.id] else { return nil }
-    return readinessBadge(for: summary)
+  ) -> Bool {
+    guard node.isSelectableShoot, let summary = summaries[node.id] else { return false }
+    return summary.untouched
   }
 
-  /// The same badge for a surface that already HAS the summary and no tree node to join through —
-  /// the pinned "Needs review" section (IMGMGR-389), which is a filter over the summaries
-  /// themselves. Split out of the join above rather than written a second time: the wording of a
-  /// readiness value must come from one place, or the pinned row and the tree row underneath it
-  /// can say different things about the same shoot.
-  static func readinessBadge(for summary: Components.Schemas.FolderSummary) -> String? {
-    ReadinessSection(rawValue: summary.readiness.rawValue)?.title
-  }
+  /// The ring's handle on a TREE row, keyed by the server's folder id. Section rows scope theirs
+  /// by section (`ShootRowsKind.ringIdentifier`), so the two never collide.
+  static func untouchedIdentifier(for id: Int) -> String { "folderUntouched-\(id)" }
 
   /// The summaries as a `folder_id` join table — the ONE place the tree's rows meet the queue's
   /// answers. Last row wins on a duplicate id, which the server does not emit (one summary per
@@ -135,9 +123,6 @@ enum FolderTreeRowPresentation {
   ) -> [Int: Components.Schemas.FolderSummary] {
     Dictionary(summaries.map { ($0.folderId, $0) }, uniquingKeysWith: { _, latest in latest })
   }
-
-  /// The badge's test handle, keyed by the server's folder id like every other identifier here.
-  static func readinessIdentifier(for id: Int) -> String { "folderReadiness-\(id)" }
 
   /// The subline's test handle, on the same terms.
   static func sublineIdentifier(for id: Int) -> String { "folderRowSubline-\(id)" }

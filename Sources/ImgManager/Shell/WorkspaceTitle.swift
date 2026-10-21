@@ -8,8 +8,8 @@ import ImgManagerAPI
 /// No new naming rule: the name is whatever the reader already sees for that folder in the
 /// sidebar — the tree row's own `node.name` (`FolderTreeSection`'s folder row), from the mounted
 /// tree or, before it mounts, the tree the queue store last remembered (`QueueStore.cachedTree`),
-/// and, for a folder neither tree holds, the pinned Needs-review row's
-/// `NeedsReview.shootName(for:)` (the queue card's derivation, `NeedsReviewSection.swift`).
+/// and, for a folder neither tree holds, the summary-backed section row's
+/// `ShootName.of(_:)` (the queue card's derivation, `ShootName.swift`).
 ///
 /// A shown folder ALWAYS has a title, because the title hosts the Summary entry: a cold restore
 /// or launch pushes the grid before the Library tab's tree ever mounts, and a folder nobody names
@@ -30,7 +30,7 @@ enum WorkspaceTitle {
       if let node = folders.first(where: { $0.id == folderID }) { return node.name }
     }
     if let summary = summaries.first(where: { $0.folderId == folderID }) {
-      return NeedsReview.shootName(for: summary)
+      return ShootName.of(summary)
     }
     return fallback
   }

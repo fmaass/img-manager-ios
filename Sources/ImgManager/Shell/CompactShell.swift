@@ -14,7 +14,7 @@ import SwiftUI
 /// need; this type owns only the arrangement.
 struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
   @Bindable var navigation: WorkspaceNavigation
-  /// `CompactTab.badgeCount(summaries:)` — 0 renders no badge.
+  /// `CompactTab.badgeCount(summaries:since:)` — 0 renders no badge.
   let badgeCount: Int
   /// A Back out of the grid in the hosting tab.
   let onHostPopped: () -> Void

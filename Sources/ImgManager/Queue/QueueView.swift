@@ -7,15 +7,16 @@ import SwiftUI
 ///
 /// What it stopped being (owner decision, 2026-09-02: "i think i would prefer the same folder
 /// view on the ios app as on web - incoming, edits and archive"): six server-derived readiness
-/// sections with the tree as a collapsed "Folders" disclosure below them. Readiness does not
-/// disappear — it becomes per-folder metadata on the tree's own rows (P3) and stays exactly as it
-/// was in the widget — but it is no longer the home's spine, and this view no longer classifies,
-/// sorts or counts anything (it never did; now it does not even arrange).
+/// sections with the tree as a collapsed "Folders" disclosure below them. Since IMGMGR-549 the
+/// client stops surfacing readiness on the home altogether (it stays decoded and stays the
+/// widget's): the tree's rows carry the hollow "untouched" ring instead, and the sidebar's
+/// sections are Untouched · Pinned · Recent above the tree (design R3-1/R3-2).
 ///
 /// `QueueStore` stays mounted and stays the phase machine: the first-load spinner, the
 /// refresh-in-progress indicator, the degraded banner with its cached-answer timestamp and the
 /// "Try Again" recovery are all IMGMGR-198's, unchanged, and the summaries they carry are what
-/// P3's row badge reads. The tree's own load is `FolderTreeSection`'s (`FolderTreeLoad`).
+/// the rows' rings and the sidebar's sections read. The tree's own load is
+/// `FolderTreeSection`'s (`FolderTreeLoad`).
 struct QueueView: View {
   @Bindable var queueStore: QueueStore
   @Binding var selectedFolderID: Int?
@@ -25,24 +26,30 @@ struct QueueView: View {
   /// tree's load is view state inside `FolderTreeSection`, so the refresh reaches it by advancing
   /// the token that section's `.task(id:)` keys on rather than by calling into it.
   let onRefresh: @MainActor () async -> Void
-  /// IMGMGR-389: how a PINNED row enters the grid — the very closure `RootView` hands the tree,
-  /// hoisted there into one value, so the two surfaces of this home share one routing path. The
-  /// tier is optional because a summary carries `source_tier` as a wire string and an unrecognised
-  /// one must clear the grid's tier filter rather than resolve to an invented tier;
-  /// `GridStore.selectShoot(folderID:sourceTier:)` takes it optional for exactly that reason.
+  /// How a SECTION row (Untouched, Pinned, Recent, an overflow tile) enters the grid — the very
+  /// closure `RootView` hands the tree, so every row of this home shares one routing path, and
+  /// that path is the one that records the open into Recent (`ShootOpenRecorder`). The tier is
+  /// optional because a summary carries `source_tier` as a wire string and an unrecognised one
+  /// must clear the grid's tier filter rather than resolve to an invented tier.
   let onSelectShoot: (Int, GridSourceTier?) -> Void
-  /// WP28 P1 (IMGMGR-448): whether the pinned "Needs review" section renders above the tree.
-  /// The split's sidebar passes true (IMGMGR-389, unchanged); the Compact Library tab passes
-  /// false, because at Compact the section's one home is the Shoots tab.
-  let showsNeedsReview: Bool
-  /// WP28 P2 (IMGMGR-449): the Regular sidebar's two named sections — "Shoots" over the pinned
-  /// Needs-review rows, "Library" over the tree (board iPad-Library-v2). The split's sidebar
-  /// passes true; the Compact Library tab passes false, because its tab already names it.
-  var showsSectionHeaders = false
+  /// IMGMGR-549: whether the sidebar's sections and their headers render — Untouched · Pinned ·
+  /// Recent above the tree, and "Library" over it (design R3-2). The split's sidebar passes true;
+  /// the Compact Library tab passes false, because there the tree is the whole tab and the
+  /// Shoots tab is Untouched's and Recent's home.
+  var showsSidebarSections = false
+  /// The three section toggles and the Untouched horizon (IMGMGR-548's Settings).
+  let settings: SettingsPreferences
+  /// The Pinned and Recent entries, and the rows' Pin/Unpin menus.
+  let shortcuts: ShootShortcutsStore
+  /// The overflow grid's covers come through the app's one loader.
+  let heroLoader: HeroThumbnailLoader
   /// On BOTH idioms since P6 (IMGMGR-216), and non-optional on purpose: the `nil`-on-Compact
   /// branch that left the phone without a browse surface cannot return without a type change.
   /// Since IMGMGR-350 it is not a section of this view but its whole content.
   let treeSection: FolderTreeSection
+
+  /// The overflow sheet and the tile picked in it, opened once the sheet has gone.
+  @State private var overflow = UntouchedOverflow()
 
   var body: some View {
     Group {
@@ -61,37 +68,57 @@ struct QueueView: View {
           unreachableBanner
         }
       }
-      // IMGMGR-389 (IMGMGR-342 Option B): ONE pinned section, above the tree and inside the SAME
-      // list — one container, one scroll, one selection binding — and rendered only when it has
-      // members. No members means no Section at all: no header, no count, no placeholder, which
-      // is also what an unreachable summaries endpoint produces (there is nothing to filter), so
-      // the tree's own degraded banner above stays the only message on that screen.
+      // IMGMGR-549 (design R3-2): Untouched · Pinned · Recent above the tree, inside the SAME
+      // list — one container, one scroll, one selection binding. Each renders only when its
+      // Settings toggle is on and it has members (`SidebarSections.visible`); no members means no
+      // Section at all, which is also what an unreachable summaries endpoint produces, so the
+      // tree's own degraded banner stays the only message on that screen.
       //
-      // Derived ONCE and handed to both halves: the header states the count and the section lists
-      // the rows, and computing the membership twice would be two answers to one question.
-      let needsReview = NeedsReview.members(from: queueStore.summaries)
-      if showsNeedsReview, !needsReview.isEmpty {
+      // Derived ONCE per body and handed to both halves of each section.
+      let summaries = queueStore.summaries
+      let untouched = Untouched.members(from: summaries, since: settings.untouchedSince)
+      let pinned = ShootRowPresentation.summaries(for: shortcuts.pinned, in: summaries)
+      let recent = ShootRowPresentation.summaries(for: shortcuts.recent, in: summaries)
+      let visible =
+        showsSidebarSections
+        ? SidebarSections.visible(
+          toggles: SidebarToggles(settings),
+          membership: .init(
+            untouched: untouched.count, pinned: pinned.count, recent: recent.count))
+        : []
+      if visible.contains(.untouched) {
         Section {
-          NeedsReviewSection(
-            members: needsReview, selectedFolderID: $selectedFolderID, onSelect: onSelectShoot)
-        } header: {
-          // WP28 P2: "Shoots" names the section and "Needs review · N" stays its first line —
-          // the same identifiers on the same `Text`s, so nothing that reads the count moves.
-          // It renders with the section or not at all: no members, no header (IMGMGR-389).
-          // A declared P2 deviation, accepted at review: "Shoots" is not a standing header.
-          if showsSectionHeaders {
-            VStack(alignment: .leading, spacing: 4) {
-              SidebarSectionHeader.shoots.label
-              NeedsReviewHeader(count: needsReview.count)
-            }
-          } else {
-            NeedsReviewHeader(count: needsReview.count)
+          ShootRowsSection(
+            kind: .untouched, members: Untouched.visible(untouched),
+            selectedFolderID: $selectedFolderID, onSelect: onSelectShoot, shortcuts: shortcuts)
+          if let more = Untouched.overflowLabel(count: Untouched.overflowCount(untouched)) {
+            UntouchedMoreRow(label: more) { overflow.open() }
           }
+        } header: {
+          SidebarSectionHeader.untouched.label
         }
       }
-      // The tree IS the home (IMGMGR-350). The tier rows are their own labels; at Regular the
-      // section is named "Library" (WP28 P2), at Compact the Library tab already names it.
-      if showsSectionHeaders {
+      if visible.contains(.pinned) {
+        Section {
+          ShootRowsSection(
+            kind: .pinned, members: pinned, selectedFolderID: $selectedFolderID,
+            onSelect: onSelectShoot, shortcuts: shortcuts)
+        } header: {
+          SidebarSectionHeader.pinned.label
+        }
+      }
+      if visible.contains(.recent) {
+        Section {
+          ShootRowsSection(
+            kind: .recent, members: recent, selectedFolderID: $selectedFolderID,
+            onSelect: onSelectShoot, shortcuts: shortcuts)
+        } header: {
+          SidebarSectionHeader.recent.label
+        }
+      }
+      // The tree IS the home (IMGMGR-350). At Regular the section is named "Library"; at Compact
+      // the Library tab already names it.
+      if showsSidebarSections {
         Section {
           treeSection
         } header: {
@@ -100,6 +127,21 @@ struct QueueView: View {
       } else {
         Section { treeSection }
       }
+    }
+    .sheet(
+      isPresented: $overflow.isPresented,
+      onDismiss: {
+        overflow.handOff { folderID, tier in
+          selectedFolderID = folderID
+          onSelectShoot(folderID, tier)
+        }
+      }
+    ) {
+      UntouchedAllView(
+        members: Untouched.members(from: queueStore.summaries, since: settings.untouchedSince),
+        heroLoader: heroLoader,
+        onPick: { overflow.pick($0) },
+        onClose: { overflow.close() })
     }
     .refreshable { await onRefresh() }
     .overlay(alignment: .top) {
@@ -168,23 +210,30 @@ struct QueueView: View {
   }
 }
 
-/// WP28 P2 (IMGMGR-449): the Regular sidebar's section names. The identifier sits on the `Text`
-/// itself, never on a container around it — a container's identifier overrides its descendants'
-/// (`NeedsReviewHeader`'s own note).
+/// The home's section names — IMGMGR-549 (R3-2): Untouched · Pinned · Recent · Library, the
+/// four headings the sidebar has (the standing "Shoots" header of WP28 P2 is gone, ruling a). The
+/// identifier sits on the `Text` itself, never on a container around it — a container's
+/// identifier overrides its descendants' (`GridView.swift:743-747`).
 enum SidebarSectionHeader: CaseIterable, Sendable {
-  case shoots
+  case untouched
+  case pinned
+  case recent
   case library
 
   var title: String {
     switch self {
-    case .shoots: "Shoots"
+    case .untouched: Untouched.title
+    case .pinned: "Pinned"
+    case .recent: ShootsHome.recentTitle
     case .library: "Library"
     }
   }
 
   var identifier: String {
     switch self {
-    case .shoots: "sidebarSectionShoots"
+    case .untouched: Untouched.sectionIdentifier
+    case .pinned: "pinnedSection"
+    case .recent: ShootsHome.recentSectionIdentifier
     case .library: "sidebarSectionLibrary"
     }
   }
@@ -336,11 +385,11 @@ struct QueueCardRow: View {
   /// has both) — the shoot leaf's own path segment is the closest available "shoot name". See
   /// this phase's Open questions: flagged as a premise gap, not silently settled.
   ///
-  /// IMGMGR-389 moved the derivation itself into `NeedsReview.shootName(for:)`, which the pinned
-  /// section needs for the same reason and on the same data. Same expression, one owner — two
-  /// surfaces naming one shoot differently is exactly what a duplicated one-liner drifts into.
+  /// The derivation itself lives in `ShootName.of(_:)`, which the sidebar's section rows need for
+  /// the same reason and on the same data. Same expression, one owner — two surfaces naming one
+  /// shoot differently is exactly what a duplicated one-liner drifts into.
   private var displayName: String {
-    NeedsReview.shootName(for: summary)
+    ShootName.of(summary)
   }
 
   /// Q's fidelity badge, derived from `camera_preview_only`/`with_masters` (Ready does NOT wait

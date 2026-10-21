@@ -82,7 +82,7 @@ struct ShootSummarySheet: View {
   }
 
   /// The identifier sits on the VALUE text, never on the row: an identifier on a container
-  /// overrides its descendants' (`NeedsReviewHeader`), and the value is what a test reads. Two
+  /// overrides its descendants' (`SidebarSectionHeader`), and the value is what a test reads. Two
   /// plain `Text`s rather than `LabeledContent`, which may merge them into one element.
   private func countRow(_ label: String, _ value: Int, id: String) -> some View {
     HStack {

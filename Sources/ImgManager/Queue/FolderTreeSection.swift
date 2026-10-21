@@ -26,7 +26,7 @@ import SwiftUI
 ///   `FolderTreeNode.isSelectableShoot`; IMGMGR-405 widened it past the row's NAME and made a
 ///   second tap on the folder you are standing in collapse it). `isSelectableShoot` — still
 ///   `ShootListFilter`'s single definition — answers only what a row IS: its cover, its subline,
-///   its readiness badge and its `folderRow-`/`folderContainer-` identifier;
+///   its untouched ring, its Pin/Unpin menu and its `folderRow-`/`folderContainer-` identifier;
 /// - the count on every row is `descendant_image_count` straight off the wire, which is exactly
 ///   the population a tap opens (`/api/images` resolves `folder_id` to the whole subtree), so the
 ///   badge and the grid can never disagree;
@@ -97,6 +97,8 @@ struct FolderTreeSection: View {
   /// already-loaded folder NAMES, in memory: never `GridImagesQuery.q` (an image-level browse
   /// filter, a different question) and never a second server call.
   let searchQuery: String
+  /// IMGMGR-549: the Pinned/Recent store, read by each shoot row's Pin/Unpin context menu.
+  let shortcuts: ShootShortcutsStore
   let onSelect: (Int, GridSourceTier) -> Void
 
   var body: some View {
@@ -287,7 +289,7 @@ struct FolderTreeSection: View {
             row: row, tier: tier, isSearching: isSearching, heroLoader: heroLoader,
             summariesByFolderID: summariesByFolderID,
             expandedBranches: $treeState.expandedBranches, selectedFolderID: $selectedFolderID,
-            highlightedFolderID: highlightedFolderID, onSelect: onSelect)
+            highlightedFolderID: highlightedFolderID, shortcuts: shortcuts, onSelect: onSelect)
         }
       } label: {
         Text(tier.label).accessibilityIdentifier("folderTreeTier-\(tier.label)")
@@ -508,6 +510,7 @@ private struct FolderTreeRowView: View {
   /// the grid's own open folder when the List has no selection. What a tap MEANS is a different
   /// question, asked of the List (`isListSelected`); see `tapTarget`.
   let highlightedFolderID: Int?
+  let shortcuts: ShootShortcutsStore
   let onSelect: (Int, GridSourceTier) -> Void
 
   @State private var coverImage: PlatformImage?
@@ -606,6 +609,11 @@ private struct FolderTreeRowView: View {
         // elsewhere, unchanged, because that split still names what a row IS; `rowContent`
         // applies it.
         .simultaneousGesture(TapGesture().onEnded { perform(action) })
+        // IMGMGR-549: Pin/Unpin on a SHOOT row's long press (never on a month fold or a
+        // container, which no summary backs). The menu's own action calls only `togglePin` and
+        // neither selects nor opens; the List and the tap gesture above still see the press, so
+        // "a long press does not navigate" is tested (`SidebarPinUITests`), not implied here.
+        .modifier(TreeRowPinMenu(entry: pinEntry, shortcuts: shortcuts))
     } else if case .month(let month, _) = row.item, row.isExpandable {
       // A month fold: no folder id exists to hand `GridStore`, and no `.tag` either — which is
       // precisely why this one is a real `Button` (IMGMGR-405). Its `folderTreeMonth-…` handle
@@ -657,6 +665,12 @@ private struct FolderTreeRowView: View {
     } else {
       expandedBranches.insert(row.id)
     }
+  }
+
+  /// The entry this row's Pin/Unpin menu acts on — a selectable SHOOT only; `nil` hides the menu.
+  private var pinEntry: ShootShortcutsStore.Entry? {
+    guard case .folder(let node, _) = row.item, node.isSelectableShoot else { return nil }
+    return .init(folderID: node.id, sourceTier: tier.sourceTier.rawValue)
   }
 
   /// Whether this row is PAINTED as the selected folder (rule 5): the highlight, which survives a
@@ -721,21 +735,13 @@ private struct FolderTreeRowView: View {
             .foregroundStyle(.secondary)
             .accessibilityIdentifier(FolderTreeRowPresentation.sublineIdentifier(for: node.id))
         }
-        // P3: the shoot's readiness, in the server's own words. Its own line rather than a
-        // trailing chip for the reason the queue card's badges were stacked (WP16 P5): a sidebar
-        // column is narrow enough that side-by-side captions wrap character by character.
-        if let readiness = FolderTreeRowPresentation.readinessBadge(
-          for: node, summaries: summariesByFolderID)
-        {
-          Text(readiness)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .accessibilityIdentifier(
-              FolderTreeRowPresentation.readinessIdentifier(for: node.id))
-        }
       }
       Spacer(minLength: 8)
+      // IMGMGR-549 (R3-1): the hollow ring replaces the readiness caption this row carried since
+      // P3. Its handle and label sit on the image itself, a leaf inside the row's cell.
+      if FolderTreeRowPresentation.showsUntouchedRing(for: node, summaries: summariesByFolderID) {
+        UntouchedRing(identifier: FolderTreeRowPresentation.untouchedIdentifier(for: node.id))
+      }
       // The container row's trailing caption: same text, same modifiers, same number as at
       // 4753450 — a folder of folders is not a shoot, so decision 2 leaves it alone. Its
       // enclosing structure is not identical (the name now sits in a one-child VStack that a
@@ -868,5 +874,20 @@ enum FolderTreePresentation {
     for tier: FolderTreeTier, in readerExpanded: Set<FolderTreeTier>, isSearching: Bool
   ) -> Bool {
     isSearching || readerExpanded.contains(tier)
+  }
+}
+
+/// The tree row's Pin/Unpin context menu, attached only where `entry` names a shoot.
+private struct TreeRowPinMenu: ViewModifier {
+  let entry: ShootShortcutsStore.Entry?
+  let shortcuts: ShootShortcutsStore
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let entry {
+      content.shootPinMenu(entry, isPinned: shortcuts.isPinned(entry), shortcuts: shortcuts)
+    } else {
+      content
+    }
   }
 }
