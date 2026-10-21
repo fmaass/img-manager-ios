@@ -6,6 +6,14 @@ refuses to upload when that section is missing, empty or duplicated; Settings â€
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.15.3 (25)
+
+- The sidebar now shows Untouched, Pinned, Recent and Library, in that order. Needs review is gone.
+- Untouched lists the newest incoming shoots you have not looked at yet, dated on or after the Untouched Since date in Settings. It shows 8, then "N more â€º" opens all of them.
+- Long-press a shoot to Pin or Unpin it. Pins and Recent (the last 6 shoots you opened) are kept on this device.
+- A hollow ring marks untouched shoots in the sidebar and the folder tree. The tree no longer shows the readiness caption.
+- On iPhone, the Shoots tab shows Untouched above Recent, and its badge counts untouched shoots.
+
 ## 0.15.2 (24)
 
 - A folder now opens grouped by Scene when it has scenes, and in Flat when it has none.
