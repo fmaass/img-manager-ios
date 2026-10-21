@@ -480,7 +480,7 @@ run_pins() { # $1=step-rc $2=drift(0|1); prints the summary the block leaves beh
     printf 'pinned\n' > Package.resolved
     want() { [ "$1" = pins ]; }
     step() { summary="$summary $1=$STEP_RC"; if [ "$DRIFT" = 1 ]; then printf 'moved\n' > Package.resolved; fi; return 0; }
-    summary=" build=0"; STEP_RC="$1"; DRIFT="$2"
+    summary=" build=0"; STEP_RC="$1"; DRIFT="$2"; derived="$PWD/DerivedData"
     eval "$pins_block" > pins.out
     printf '%s' "$summary"
   )
@@ -494,6 +494,27 @@ else
   case "$s1" in *" pins=1"*) pok p-drift "drift with rc 0 records pins=1:$s1" ;; *) pfail p-drift "summary '$s1' (PINS FAIL printed but the leg stayed green)" ;; esac
   s2="$(run_pins 65 1)"
   case "$s2" in *" pins=65"*) pok p-drift-rc "a real non-zero rc is kept, not masked:$s2" ;; *) pfail p-drift-rc "summary '$s2'" ;; esac
+  # IMGMGR-594: the resolution runs in the SAME DerivedData as the build leg. The shipped block runs
+  # with `step` recording its argv, so a dropped `-derivedDataPath "$derived"` fails here, not on
+  # the Mac's ~/Library disk weeks later.
+  argv_out="$(
+    cd "$tmp" && rm -rf pinsargv && mkdir -p pinsargv/.gate-artifacts && cd pinsargv || exit 9
+    want() { [ "$1" = pins ]; }
+    step() { shift; printf '%s\n' "$@" > argv.txt; summary="$summary pins=0"; return 0; }
+    summary=""; derived="/gate/probe-IMGMGR-594/DerivedData"
+    eval "$pins_block" > /dev/null
+    cat argv.txt
+  )"
+  case "$argv_out" in
+    *"-derivedDataPath"*) ;;
+    *) pfail p-derived "pins xcodebuild argv has no -derivedDataPath: $(printf '%s' "$argv_out" | tr '\n' ' ')" ;;
+  esac
+  dd_arg="$(printf '%s\n' "$argv_out" | grep -A1 -x -- '-derivedDataPath' | tail -1)"
+  if [ "$dd_arg" = "/gate/probe-IMGMGR-594/DerivedData" ]; then
+    pok p-derived "pins resolves into the build leg's DerivedData: $dd_arg"
+  else
+    pfail p-derived "-derivedDataPath value is '$dd_arg', expected the build leg's \$derived"
+  fi
 fi
 
 # --- WP28 P1 (IMGMGR-448): the UI legs' screenshot export. The function runs against a stub in

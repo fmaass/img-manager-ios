@@ -865,8 +865,12 @@ if [ "$project_legs" = 1 ]; then
   # Package.resolved and diff package-by-package.
   if want pins; then
     cp Package.resolved .gate-artifacts/Package.resolved.before 2>/dev/null || true
+    # The same DerivedData as the build leg (IMGMGR-594): without it Xcode resolves into its DEFAULT
+    # location, hashed from the project path, and every gate branch dir is a new path — one
+    # SourcePackages checkout per branch under ~/Library that no reaper covers.
     step pins xcodebuild -resolvePackageDependencies \
       -project ImgManager.xcodeproj -scheme ImgManager \
+      -derivedDataPath "$derived" \
       -onlyUsePackageVersionsFromResolvedFile
     if [ -f Package.resolved ] && [ -f .gate-artifacts/Package.resolved.before ]; then
       if diff -q Package.resolved .gate-artifacts/Package.resolved.before >/dev/null; then
