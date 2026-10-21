@@ -198,9 +198,11 @@ if [ "$(field running-demo state)" = done ] && [ "$(field running-demo rc)" = 0 
 else
   bad 2-done "state=$(field running-demo state) rc=$(field running-demo rc) queue exit=$enq1rc"
 fi
-if grep -q 'running-demo ref=.* rc=0 mac-gate SUMMARY: legs=full | stub=0' "$GATE_QUEUE_SUMMARY" \
+# IMGMGR-595: lane waiters grep `<label> ref=<sha> rc=` and `rc=<n> mac-gate SUMMARY: legs=` on
+# this row, so the host field must sit after the SUMMARY block, before `log=`.
+if grep -qE 'running-demo ref=[0-9a-f]+ rc=0 mac-gate SUMMARY: legs=full \| stub=0.* host=merkur log=/' "$GATE_QUEUE_SUMMARY" \
    && grep -q 'QUEUE-DONE' "$GATE_QUEUE_SUMMARY"; then
-  ok 2-summary "the v4 summary line and QUEUE-DONE were appended"
+  ok 2-summary "the v4 summary line (host after the SUMMARY block) and QUEUE-DONE were appended"
 else
   bad 2-summary "summary file: $(cat "$GATE_QUEUE_SUMMARY")"
 fi
@@ -1495,7 +1497,7 @@ qlog="$(field route-a log)"
 if [ "$rc" -eq 0 ] && [ "$(field route-a host)" = mars ] && [ "$(field route-a host_spec)" = auto ] \
    && [ "$(field route-a route)" = "free:mars (merkur held)" ] && [ "$(field route-a lock)" = "$mars_lock" ] \
    && grep -q 'host=mars$' "$qlog" && grep -qx "stub-lock fd=[0-9]* target=$mars_lock" "$qlog" \
-   && grep -q ' route-a ref=[0-9a-f]* host=mars rc=0 ' "$GATE_QUEUE_SUMMARY"; then
+   && grep -qE ' route-a ref=[0-9a-f]+ rc=0 .* host=mars log=/' "$GATE_QUEUE_SUMMARY"; then
   ok 30-auto-merkur-busy "routed to mars while merkur's lock was held; mac-gate got mars and the held descriptor"
 else
   bad 30-auto-merkur-busy "rc=$rc host=$(field route-a host) route='$(field route-a route)' lock=$(field route-a lock) log=$(tr '\n' '|' < "$qlog" 2>/dev/null): $out"

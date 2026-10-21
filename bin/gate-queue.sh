@@ -972,7 +972,10 @@ cmd_enqueue() {
       esac
     fi
     rec_lock_close
-    echo "$(date +%H:%M) $key ref=$ref host=$host rc=$rc$(outcome_note "$key") $(grep -o 'mac-gate SUMMARY:.*' "$log" 2>/dev/null | tail -1) log=$log" >> "$SUMMARY"
+    # Lane waiters grep `<label> ref=<sha> rc=` and, on a normal row (no outcome note, a log with
+    # a SUMMARY line), `rc=<n> mac-gate SUMMARY: legs=` (IMGMGR-595): the host sits after the
+    # SUMMARY block so neither prefix gains a field.
+    echo "$(date +%H:%M) $key ref=$ref rc=$rc$(outcome_note "$key") $(grep -o 'mac-gate SUMMARY:.*' "$log" 2>/dev/null | tail -1) host=$host log=$log" >> "$SUMMARY"
     [ "$rc" -eq 0 ] || worst=1
   done
   echo "$(date +%H:%M) QUEUE-DONE($*)" >> "$SUMMARY"
