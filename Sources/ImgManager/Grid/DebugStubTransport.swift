@@ -1171,7 +1171,7 @@
       let arguments = ProcessInfo.processInfo.arguments
       guard let index = arguments.firstIndex(of: "-UITestSelectFolder"),
         arguments.indices.contains(index + 1), let id = Int(arguments[index + 1])
-      else { return 1 }
+      else { return 11 }  // DIAG (P10 r2 baseline): a Library-only folder
       return id
     }
 
