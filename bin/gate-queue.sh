@@ -115,10 +115,16 @@
 # record alone, so a value exported into the enqueue's environment never narrows a spec that did
 # not ask for it.
 #
+# BUILD HOST (IMGMGR-576): `host=<merkur|mars|auto>` (default auto). auto picks the host at
+# enqueue (bin/gate-route.sh: first free one answering above the disk floor, else the first busy
+# one answering) and the spec waits on THAT host's lock; a named host waits on its own. One run
+# per label per host: an auto spec's record is <label>, a named host's <label>@<host> — the key
+# `drop` and `list` use. The run hands the held lock to bin/mac-gate.sh as MAC_GATE_HOST_LOCK_FD.
+#
 # Usage:
-#   bin/gate-queue.sh enqueue <worktree>:<ref>:<label>[:legs=<list>][:only-testing=<ids>] [<spec> …]
+#   bin/gate-queue.sh enqueue <worktree>:<ref>:<label>[:legs=<list>][:only-testing=<ids>][:host=<h|auto>] [<spec> …]
 #   bin/gate-queue.sh list
-#   bin/gate-queue.sh drop <label> [--dry-run] [--force] [--lock-wait <seconds>]
+#   bin/gate-queue.sh drop <label>[@<host>] [--dry-run] [--force] [--lock-wait <seconds>]
 #   bin/gate-queue.sh drop <label> --finished [--dry-run]
 #   bin/gate-queue.sh --help
 #
@@ -163,9 +169,11 @@
 # the worktree of every record, and a `held` line per worktree still under a record.
 #
 # Environment:
-#   GATE_QUEUE_LOCK     lock file that serializes the runs; resolved to an absolute path and
-#                       bound into every record and every argv proof
+#   GATE_QUEUE_LOCK     merkur's host lock (when MAC_GATE_HOST_LOCKS is unset); every host lock is
+#                       resolved to an absolute path and bound into its records and argv proofs
 #                       (default: /home/fabian/projects/worktrees/.wp13-gate.lock)
+#   MAC_GATE_HOSTS / MAC_GATE_HOST_LOCKS  the hosts and their locks (bin/gate-route.sh); exported
+#                       resolved, with every other MAC_GATE_* passing through to bin/mac-gate.sh
 #   GATE_QUEUE_STATE    directory holding the <label>.spec records and their <label>.lock files
 #                       (default: /home/fabian/projects/worktrees/.gate-queue/)
 #   GATE_QUEUE_SUMMARY  file the one-line per-run summaries are appended to
@@ -244,6 +252,26 @@ STATE="${STATE%/}"
 SUMMARY="${GATE_QUEUE_SUMMARY:-/home/fabian/projects/worktrees/wp13-gate-queue.summary}"
 LOCK_WAIT=21600
 DROP_GRACE=10
+
+# ONE LOCK PER BUILD HOST (IMGMGR-576). The queue lock used to be one file for every run; it is now
+# the estate lock of the Mac the run takes (bin/gate-route.sh: merkur's is .wp13-gate.lock, the
+# file that lock always was, mars's .mars-gate.lock), so runs on two Macs overlap and runs on one
+# never do. GATE_QUEUE_LOCK, when set, still names merkur's lock (the test seam). Both bin/mac-gate.sh
+# and every record see the same resolved map, exported, so a lock handed over is the lock it checks.
+# shellcheck source=bin/gate-route.sh
+. "$(dirname "$self_path")/gate-route.sh" || die 2 "cannot source $(dirname "$self_path")/gate-route.sh"
+if [ -n "${GATE_QUEUE_LOCK:-}" ] && [ -z "${MAC_GATE_HOST_LOCKS:-}" ]; then
+  MAC_GATE_HOST_LOCKS="merkur=$LOCK,${GATE_ROUTE_DEFAULT_LOCKS#*,}"
+fi
+gate_route_config || die 2 "unusable host configuration: $GATE_ROUTE_WHY"
+_map=""
+for _i in "${!GATE_ROUTE_NAMES[@]}"; do
+  GATE_ROUTE_LOCKS[$_i]="$(resolve_path "${GATE_ROUTE_LOCKS[$_i]}")"
+  _map="$_map${_map:+,}${GATE_ROUTE_NAMES[$_i]}=${GATE_ROUTE_LOCKS[$_i]}"
+done
+export MAC_GATE_HOSTS="${GATE_ROUTE_NAMES[*]}" MAC_GATE_HOST_LOCKS="$_map"
+# queue_lock_known LOCK — 0 when LOCK is the lock of a host this invocation routes to.
+queue_lock_known() { local l; for l in "${GATE_ROUTE_LOCKS[@]}"; do [ "$l" = "$1" ] && return 0; done; return 1; }
 
 rec_file() { printf '%s/%s.spec' "$STATE" "$1"; }
 rec_lock_file() { printf '%s/%s.lock' "$STATE" "$1"; }
@@ -465,6 +493,14 @@ rec_age_seconds() {
 
 # legs_note LABEL — the record's leg selection for `list`, or `(full)` when it has none. An
 # EMPTY `legs=` and a record written before IMGMGR-410 both mean the same thing: a full gate.
+# host_note KEY — the host a record runs on, `auto>mars` when routing chose it, `-` before IMGMGR-576.
+host_note() {
+  local hs h
+  hs="$(rec_get "$1" host_spec)" || hs=""
+  h="$(rec_get "$1" host)" || h=""
+  [ -n "$h" ] || { echo -; return; }
+  if [ "$hs" = auto ]; then echo "auto>$h"; else echo "$h"; fi
+}
 legs_note() {
   local l l2
   l="$(rec_get "$1" legs)" || l=""
@@ -544,7 +580,7 @@ verify_waiting_pid() {
   [ "$pid" != "$$" ] || { vmsg="refusing to signal pid $pid: that is this process"; return 1; }
   [ "$pid" != "$PPID" ] || { vmsg="refusing to signal pid $pid: that is this process's parent — the shell that ran the drop. This is exactly the self-kill a 'pgrep -f <label>' produces."; return 1; }
   rlock="$(rec_get "$label" lock)" || rlock=""
-  [ "$rlock" = "$LOCK" ] || { vmsg="the record for '$label' belongs to queue lock '${rlock:-<none>}', not to this invocation's '$LOCK'; refusing to signal another queue's process"; return 1; }
+  queue_lock_known "$rlock" || { vmsg="the record for '$label' belongs to queue lock '${rlock:-<none>}', not to any of this invocation's host locks (${GATE_ROUTE_LOCKS[*]}); refusing to signal another queue's process"; return 1; }
   kill -0 "$pid" 2>/dev/null || { vmsg="pid $pid from the record for '$label' is not alive (or not ours); nothing to signal"; return 1; }
   read_argv "$pid" || { vmsg="cannot read /proc/$pid/cmdline; refusing to signal a pid whose argv cannot be verified"; return 1; }
   [ "$(basename "${QARGV[0]}")" = "flock" ] || {
@@ -565,8 +601,8 @@ verify_waiting_pid() {
       *) break ;;
     esac
   done
-  if [ "$i" -ge "$n" ] || [ "${QARGV[$i]}" != "$LOCK" ]; then
-    vmsg="pid $pid's flock operand is '${QARGV[$i]:-<none>}', not this queue's lock '$LOCK'; refusing"
+  if [ "$i" -ge "$n" ] || [ "${QARGV[$i]}" != "$rlock" ]; then
+    vmsg="pid $pid's flock operand is '${QARGV[$i]:-<none>}', not the record's host lock '$rlock'; refusing"
     return 1
   fi
   i=$((i + 1))
@@ -649,7 +685,7 @@ restore_worktree() {
 # with the queue lock held. Semantics unchanged from wp13-gate-queue-v4.sh except the branch
 # restore, which now refuses rather than rewinds (IMGMGR-398).
 cmd_run() {
-  local wt=$1 ref=$2 label=$3 log=$4 branch rc branch_at ref_sha hold legs only stale
+  local wt=$1 ref=$2 label=$3 log=$4 branch rc branch_at ref_sha hold legs only stale host hlock hfd f
   rec_lock_open "$label"
   # FIRST OF ALL, before this run writes a single field: is this record still the one that queued
   # us? A drop can retire a spec while its child is still queued behind the queue lock, and the
@@ -710,7 +746,19 @@ cmd_run() {
   # Only now is the tree provably this run's: the lock has covered the hold re-check, the
   # clean-tree refusal, the detach and the record of it as one unit.
   rec_lock_close
-  ( cd "$wt" && MAC_GATE_HOST=merkur MAC_GATE_BRANCH="$branch" MAC_GATE_LEGS="$legs" MAC_GATE_ONLY_TESTING="$only" bin/mac-gate.sh ) > "$log" 2>&1
+  # The host this record was routed to, and the descriptor our flock(1) parent took its lock on:
+  # this process inherited it, and bin/mac-gate.sh is told which one it is so it does not open the
+  # lock a second time and wait on itself. A record from before IMGMGR-576 has no host: merkur,
+  # which is what every run then gated on.
+  host="$(rec_get "$label" host)" || host=""
+  host="${host:-merkur}"
+  hlock="$(rec_get "$label" lock)" || hlock=""
+  hfd=""
+  for f in /proc/$$/fd/*; do
+    case "${f##*/}" in [3-9]|[1-9][0-9]) ;; *) continue ;; esac
+    [ "$(readlink -f "$f" 2>/dev/null)" = "$(readlink -f "$hlock")" ] && { hfd="${f##*/}"; break; }
+  done
+  ( cd "$wt" && MAC_GATE_HOST="$host" MAC_GATE_HOST_LOCK_FD="$hfd" MAC_GATE_BRANCH="$branch" MAC_GATE_LEGS="$legs" MAC_GATE_ONLY_TESTING="$only" bin/mac-gate.sh ) > "$log" 2>&1
   rc=$?
   cp "$wt/.gate-artifacts/test-iphone.log" "${log%.log}-test-iphone.log" 2>/dev/null
   cp "$wt/.gate-artifacts/test-ipad.log" "${log%.log}-test-ipad.log" 2>/dev/null
@@ -737,8 +785,11 @@ cmd_run() {
 cmd_enqueue() {
   [ $# -ge 1 ] || die 2 "enqueue needs at least one <worktree>:<ref>:<label> spec"
   local spec wt rest ref label log fpid rc worst=0 refused=0 prev prev_pid rec hold own_hold resfile gen tail legs only extra field
+  local hostspec host hlock route key
   mkdir -p "$STATE"
-  [ -d "$(dirname "$LOCK")" ] || die 2 "the lock directory $(dirname "$LOCK") does not exist"
+  for _l in "${GATE_ROUTE_LOCKS[@]}"; do
+    [ -d "$(dirname "$_l")" ] || die 2 "the lock directory $(dirname "$_l") does not exist"
+  done
   for spec in "$@"; do
     case "$spec" in
       *:*:*) ;;
@@ -748,7 +799,7 @@ cmd_enqueue() {
     # The optional fields after the label (IMGMGR-410, IMGMGR-571). A label may not contain a
     # colon, so splitting on the third one is unambiguous and a three-field spec parses exactly as
     # it always did. Each field at most once: a second one would silently win.
-    legs=""; only=""; extra=""
+    legs=""; only=""; extra=""; hostspec=""
     case "$tail" in
       *:*) label=${tail%%:*}; extra=${tail#*:} ;;
       *)   label=$tail ;;
@@ -770,7 +821,11 @@ cmd_enqueue() {
           [ -z "$only" ] || die 2 "bad spec '$spec': only-testing= given twice"
           only=${field#only-testing=}
           [ -n "$only" ] || die 2 "bad spec '$spec': only-testing= is empty; leave the field off for the full suites" ;;
-        *) die 2 "bad spec '$spec': an optional field must be legs=<comma-separated legs> or only-testing=<comma-separated test ids>, got '$field'" ;;
+        host=*)
+          [ -z "$hostspec" ] || die 2 "bad spec '$spec': host= given twice"
+          hostspec=${field#host=}
+          [ -n "$hostspec" ] || die 2 "bad spec '$spec': host= is empty; leave the field off (auto) or name a host" ;;
+        *) die 2 "bad spec '$spec': an optional field must be legs=<comma-separated legs>, only-testing=<comma-separated test ids> or host=<$(printf '%s|' "${GATE_ROUTE_NAMES[@]}")auto>, got '$field'" ;;
       esac
     done
     if [ -n "$only" ]; then
@@ -797,6 +852,17 @@ cmd_enqueue() {
           || die 2 "bad leg list '$legs' in spec '$spec' (see: $wt/bin/mac-gate.sh --help)"
       fi
     fi
+    # The record key is label+host (IMGMGR-576): one run per label per host. An auto spec keeps the
+    # bare label as its key (and its <label>.spec file), a named host's spec is <label>@<host> —
+    # `@` is not a label character, so the two never collide. Whatever the key, two runs on one
+    # host never overlap: they hold the same host lock.
+    hostspec="${hostspec:-auto}"
+    if [ "$hostspec" = auto ]; then key="$label"
+    else
+      gate_route_lock_of "$hostspec" >/dev/null \
+        || die 2 "bad spec '$spec': host=$hostspec is not one of MAC_GATE_HOSTS ($(printf '%s ' "${GATE_ROUTE_NAMES[@]}"))"
+      key="$label@$hostspec"
+    fi
     [ -d "$wt" ] || die 2 "no such worktree: $wt"
     [ -x "$wt/bin/mac-gate.sh" ] || die 2 "$wt/bin/mac-gate.sh is missing or not executable"
     # LOCK ORDER (round-3 review, B5): scan the other records BEFORE taking this label's lock.
@@ -806,20 +872,32 @@ cmd_enqueue() {
     # are serialized by the queue lock, so no cycle can form.
     hold="$(worktree_holder "$wt")"
     if [ -n "$hold" ]; then
-      die 7 "refusing to enqueue '$label' on $wt: spec '${hold%%	*}' holds that worktree — ${hold#*	} (see: $self_name list)"
+      die 7 "refusing to enqueue '$key' on $wt: spec '${hold%%	*}' holds that worktree — ${hold#*	} (see: $self_name list)"
     fi
-    rec="$(rec_file "$label")"
+    # auto: the host is chosen HERE, just before the spawn (bin/gate-route.sh, pick-only): the first
+    # free host that answers above the disk floor, else the first busy one that answers — and the
+    # spawned flock(1) below then waits on THAT host's lock, the process drop's argv proof knows.
+    # The lock is let go between the choice and the flock, so another repo's run can take that
+    # host first; the spec then waits for it rather than moving (as memos-ng's own wait does).
+    if [ "$hostspec" = auto ]; then
+      gate_route_auto pick-only || die 15 "refusing to enqueue '$key': $GATE_ROUTE_WHY"
+      host="$GATE_ROUTE_HOST"; route="$GATE_ROUTE_REASON"
+    else
+      host="$hostspec"; route="explicit:$host"
+    fi
+    hlock="$(gate_route_lock_of "$host")"
+    rec="$(rec_file "$key")"
     mkdir -p "$wt/.gate-artifacts"
-    log="$wt/.gate-artifacts/queue-$label-$(date +%H%M%S).log"
+    log="$wt/.gate-artifacts/queue-${key//@/-}-$(date +%H%M%S).log"
     # Admission holds the per-record lock, so re-admitting a finished label cannot interleave
     # with another enqueue doing the same (one reading `done` while the other re-creates).
-    rec_lock_open "$label"
-    prev="$(rec_get "$label" state)" || prev=""
+    rec_lock_open "$key"
+    prev="$(rec_get "$key" state)" || prev=""
     case "$prev" in
       waiting|running)
-        prev_pid="$(rec_get "$label" flock_pid)" || prev_pid=""
+        prev_pid="$(rec_get "$key" flock_pid)" || prev_pid=""
         rec_lock_close
-        die 2 "a spec named '$label' is already $prev (pid ${prev_pid:-not launched yet}); pick another label, or drop it first" ;;
+        die 2 "a spec named '$key' is already $prev (pid ${prev_pid:-not launched yet}); pick another label, or drop it first" ;;
       done|refused-held) ;;
     esac
     # A finished record may still HOLD ITS OWN worktree — which is not necessarily the worktree
@@ -827,30 +905,31 @@ cmd_enqueue() {
     # that tree is detached over commits a skipped restore preserved, and the next enqueue there
     # would check out over them. Read under this label's own lock (rec_snapshot reads directly
     # when this process holds it), so no second lock is requested while this one is held.
-    own_hold="$(record_hold "$label")"
+    own_hold="$(record_hold "$key")"
     if [ -n "$own_hold" ]; then
       rec_lock_close
-      die 7 "refusing to re-enqueue '$label': its previous run still holds $(rec_get "$label" worktree) — $own_hold. Retire it by checking that worktree out on its branch, or use another label."
+      die 7 "refusing to re-enqueue '$key': its previous run still holds $(rec_get "$key" worktree) — $own_hold. Retire it by checking that worktree out on its branch, or use another label."
     fi
     case "$prev" in done|refused-held) rm -f "$rec" ;; esac
     # O_EXCL admission: two concurrent enqueues of one label cannot both create the record.
     ( set -o noclobber; : > "$rec" ) 2>/dev/null \
-      || { rec_lock_close; die 2 "a record for '$label' already exists ($rec) — another enqueue admitted that label first; pick another label, or drop it"; }
+      || { rec_lock_close; die 2 "a record for '$key' already exists ($rec) — another enqueue admitted that label first; pick another label, or drop it"; }
     # A generation token for this admission: a child queued for an earlier occupant of this label
     # compares it before it touches anything (round-5 review, 2c).
     gen="$(date +%s)-$$-$RANDOM"
-    rec_set "$label" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" "legs=$legs" "only_testing=$only" \
-      "lock=$LOCK" "enqueue_pid=$$" "flock_pid=" "flock_start=" "run_pid=" "state=waiting" \
+    rec_set "$key" "spec=$spec" "worktree=$wt" "ref=$ref" "label=$label" "log=$log" "legs=$legs" "only_testing=$only" \
+      "host_spec=$hostspec" "host=$host" "route=$route" \
+      "lock=$hlock" "enqueue_pid=$$" "flock_pid=" "flock_start=" "run_pid=" "state=waiting" \
       "rc=" "enqueued=$(now)" "gen=$gen" "pidns=$(self_pidns)"
     # Released before the spawn so the child cannot inherit this descriptor's lock. A drop in
     # the gap sees an empty flock_pid and refuses; no other enqueue can pass the O_EXCL create.
     rec_lock_close
     # Named by THIS enqueue's pid, so a replacement enqueue of the same label cannot be confused
     # with our own child's outcome (round-4 review, R1).
-    resfile="$STATE/.refusal-$$-$label"
+    resfile="$STATE/.refusal-$$-$key"
     rm -f "$resfile"
     GATE_QUEUE_REFUSAL_FILE="$resfile" GATE_QUEUE_GEN="$gen" \
-      flock -w "$LOCK_WAIT" "$LOCK" "$self_path" __run "$wt" "$ref" "$label" "$log" &
+      flock -w "$LOCK_WAIT" "$hlock" "$self_path" __run "$wt" "$ref" "$key" "$log" &
     fpid=$!
     # TEST SEAM, inert unless GATE_QUEUE_PAUSE_PID_WRITE names a path: touch "<path>.at" here and
     # wait for "<path>.go" before the write, then touch "<path>.done" after it. The window this
@@ -868,9 +947,9 @@ cmd_enqueue() {
     # child's own generation check already stops a stale CHECKOUT; this stops the bookkeeping
     # from being confused as well. Read and written under one hold of the record lock, so the
     # comparison cannot go stale between the two.
-    rec_lock_open "$label"
-    if rec_owns_generation "$label" "$gen"; then
-      rec_set "$label" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")" "pidns=$(self_pidns)"
+    rec_lock_open "$key"
+    if rec_owns_generation "$key" "$gen"; then
+      rec_set "$key" "flock_pid=$fpid" "flock_start=$(proc_starttime "$fpid")" "pidns=$(self_pidns)"
     fi
     rec_lock_close
     [ -z "${GATE_QUEUE_PAUSE_PID_WRITE:-}" ] || : > "${GATE_QUEUE_PAUSE_PID_WRITE}.done"
@@ -885,15 +964,15 @@ cmd_enqueue() {
     # already belong to a replacement enqueue (round-4 review, R1).
     if [ -s "$resfile" ]; then refused=7; fi
     rm -f "$resfile"
-    rec_lock_open "$label"
-    if [ "$(rec_get "$label" enqueue_pid)" = "$$" ]; then
-      case "$(rec_get "$label" state)" in
+    rec_lock_open "$key"
+    if [ "$(rec_get "$key" enqueue_pid)" = "$$" ]; then
+      case "$(rec_get "$key" state)" in
         refused-held) : ;;
-        *) rec_set "$label" "state=done" "rc=$rc" "finished=$(now)" ;;
+        *) rec_set "$key" "state=done" "rc=$rc" "finished=$(now)" ;;
       esac
     fi
     rec_lock_close
-    echo "$(date +%H:%M) $label ref=$ref rc=$rc$(outcome_note "$label") $(grep -o 'mac-gate SUMMARY:.*' "$log" 2>/dev/null | tail -1) log=$log" >> "$SUMMARY"
+    echo "$(date +%H:%M) $key ref=$ref host=$host rc=$rc$(outcome_note "$key") $(grep -o 'mac-gate SUMMARY:.*' "$log" 2>/dev/null | tail -1) log=$log" >> "$SUMMARY"
     [ "$rc" -eq 0 ] || worst=1
   done
   echo "$(date +%H:%M) QUEUE-DONE($*)" >> "$SUMMARY"
@@ -904,17 +983,24 @@ cmd_enqueue() {
 }
 
 cmd_list() {
-  local rec label st ns holder="unknown (no record is in state=running)" n=0 hold held=0
-  echo "lock    : $LOCK"
+  local rec label st ns holder n=0 hold held=0 i h rh
+  for i in "${!GATE_ROUTE_NAMES[@]}"; do echo "lock    : ${GATE_ROUTE_NAMES[$i]} ${GATE_ROUTE_LOCKS[$i]}"; done
   echo "state   : $STATE"
   echo "summary : $SUMMARY"
-  for rec in "$STATE"/*.spec; do
-    [ -e "$rec" ] || continue
-    label="$(basename "$rec" .spec)"
-    [ "$(rec_get "$label" state)" = "running" ] || continue
-    holder="$label (run pid $(pid_note "$(rec_get "$label" run_pid)" "$(rec_get "$label" pidns)"), worktree $(rec_get "$label" worktree))"
+  # One holder line per host (IMGMGR-576). A record from before the host field ran on merkur.
+  for i in "${!GATE_ROUTE_NAMES[@]}"; do
+    h="${GATE_ROUTE_NAMES[$i]}"
+    holder="unknown (no record of this queue is running on $h)"
+    for rec in "$STATE"/*.spec; do
+      [ -e "$rec" ] || continue
+      label="$(basename "$rec" .spec)"
+      [ "$(rec_get "$label" state)" = "running" ] || continue
+      rh="$(rec_get "$label" host)" || rh=""
+      [ "${rh:-merkur}" = "$h" ] || continue
+      holder="$label (run pid $(pid_note "$(rec_get "$label" run_pid)" "$(rec_get "$label" pidns)"), worktree $(rec_get "$label" worktree))"
+    done
+    echo "holder  : $h: $holder   # flock has no holder API; this is derived from the records"
   done
-  echo "holder  : $holder   # flock has no holder API; this is derived from the records"
   # Which trees are held, and therefore must not be committed into (IMGMGR-398). A `held` line
   # is checked against the live worktree, not read out of the record.
   for rec in "$STATE"/*.spec; do
@@ -926,15 +1012,15 @@ cmd_list() {
   done
   [ "$held" -gt 0 ] || echo "held    : no worktree is held; none is checked out by this queue"
   echo
-  printf '%-22s %-8s %-4s %-14s %-24s %-42s %-30s %s\n' LABEL STATE RC "ENQUEUE PID" "FLOCK/RUN PID" REF LEGS WORKTREE
+  printf '%-22s %-8s %-4s %-8s %-14s %-24s %-42s %-30s %s\n' LABEL STATE RC HOST "ENQUEUE PID" "FLOCK/RUN PID" REF LEGS WORKTREE
   for rec in "$STATE"/*.spec; do
     [ -e "$rec" ] || continue
     label="$(basename "$rec" .spec)"
     n=$((n + 1))
     st="$(rec_get "$label" state)"
     ns="$(rec_get "$label" pidns)" || ns=""
-    printf '%-22s %-8s %-4s %-14s %-24s %-42s %-30s %s\n' \
-      "$label" "${st:-?}" "$(rec_get "$label" rc)" \
+    printf '%-22s %-8s %-4s %-8s %-14s %-24s %-42s %-30s %s\n' \
+      "$label" "${st:-?}" "$(rec_get "$label" rc)" "$(host_note "$label")" \
       "$(pid_note "$(rec_get "$label" enqueue_pid)" "$ns")" \
       "$(pid_note "$(rec_get "$label" flock_pid)" "$ns")/$(pid_note "$(rec_get "$label" run_pid)" "$ns")" \
       "$(rec_get "$label" ref)" "$(legs_note "$label")" \

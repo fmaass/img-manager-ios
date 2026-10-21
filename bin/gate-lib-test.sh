@@ -1115,7 +1115,7 @@ STUB
 chmod +x "$tmp/stub-argv-xcodebuild"
 ot_run() { rm -f "$tmp/ot.argv"; GATE_XCODEBUILD="$tmp/stub-argv-xcodebuild" STUB_LOG="$tmp/ot.argv" gate_xcodebuild_test UDID-X /dd /dd/Results/leg.xcresult "$1"; }
 ot_base='test -project ImgManager.xcodeproj -scheme ImgManager -destination id=UDID-X -derivedDataPath /dd -resultBundlePath /dd/Results/leg.xcresult'
-ot_tail='-skipMacroValidation -onlyUsePackageVersionsFromResolvedFile'
+ot_tail='-skipMacroValidation -skipPackagePluginValidation -onlyUsePackageVersionsFromResolvedFile'
 ot_run ""; rc=$?
 got="$(tr '\n' ' ' < "$tmp/ot.argv" 2>/dev/null)"
 if [ "$rc" -eq 0 ] && [ "$got" = "$ot_base $ot_tail " ] && ! grep -q -- '-only-testing' "$tmp/ot.argv"; then
@@ -1204,6 +1204,28 @@ else
   lfail ot-refuse-noleg "rc=$lrc line='$sline'"
 fi
 
+# Package-plugin trust (IMGMGR-576 smoke on mars): a host without a plugins.json trusting
+# swift-openapi-generator fails "Validate plug-in", so trust is never per-host — every xcodebuild that
+# builds or tests skips plugin validation beside macro validation. Through the seams where there is
+# one (test, materials test-without-building), and on the remote build step's own argument list.
+ot_run "" >/dev/null 2>&1
+if grep -qx -- '-skipPackagePluginValidation' "$tmp/ot.argv"; then lok pv-test "gate_xcodebuild_test passes -skipPackagePluginValidation"
+else lfail pv-test "argv: $(tr '\n' ' ' < "$tmp/ot.argv")"; fi
+rm -rf "$tmp/mr"; mkdir -p "$tmp/mr/.gate-artifacts"; : > "$tmp/mr.calls"
+mr_run test-iphone UDID-A reduce-transparency >/dev/null 2>&1
+if grep -q '^xcodebuild mode=reduce-transparency test-without-building .* -skipPackagePluginValidation' "$tmp/mr.calls"; then
+  lok pv-materials "the materials test-without-building passes -skipPackagePluginValidation"
+else lfail pv-materials "calls: $(grep '^xcodebuild' "$tmp/mr.calls" | head -1)"; fi
+pv_build="$(awk '/step build xcodebuild build/ { on = 1 } on { printf "%s ", $0 } on && /onlyUsePackageVersionsFromResolvedFile/ { exit }' "$here/mac-gate.sh")"
+case "$pv_build" in
+  *"step build xcodebuild build"*"-skipPackagePluginValidation"*"-onlyUsePackageVersionsFromResolvedFile"*) lok pv-build "the remote build step passes -skipPackagePluginValidation" ;;
+  *) lfail pv-build "build step: $pv_build" ;;
+esac
+
+# Host routing and the simulator slot (IMGMGR-576), in a file of their own: they need stub hosts.
+bash "$here/gate-route-test.sh" > "$tmp/route.out" 2>&1; rrc=$?
+grep -E '^(PASS|FAIL) ' "$tmp/route.out"
+[ "$rrc" -eq 0 ] || { echo "FAIL route-suite: bin/gate-route-test.sh exit $rrc"; fail=1; }
 # --- IMGMGR-587: the `notes` leg, on fixture trees and on this repo. Every case runs the REAL
 # rule (gate_release_notes_rule) or leg (gate_notes_leg) — the functions bin/mac-gate.sh calls.
 nfail() { echo "FAIL $1: $2"; fail=1; }

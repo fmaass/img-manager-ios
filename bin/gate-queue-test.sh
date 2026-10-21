@@ -28,6 +28,20 @@ tmp="$(cd "$tmp" && pwd -P)"
 export GATE_QUEUE_LOCK="$tmp/gate.lock"
 export GATE_QUEUE_STATE="$tmp/state"
 export GATE_QUEUE_SUMMARY="$tmp/summary"
+# Hosts (IMGMGR-576): one host, merkur, whose lock is GATE_QUEUE_LOCK — so an auto spec routes to it
+# and waits on it exactly as every spec did before — and an ssh stub that answers the probe with
+# room. The cases near the end add mars on a lock of its own.
+export MAC_GATE_HOSTS=merkur
+unset MAC_GATE_HOST_LOCKS
+mkdir -p "$tmp/stubbin"
+cat > "$tmp/stubbin/ssh" <<'SSH'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do case "$1" in -n) shift ;; -o) shift 2 ;; *) break ;; esac; done
+[ ! -e "${GATE_QUEUE_TEST_DOWN:-/nonexistent}/$1" ] || exit 255
+echo "FLOOR build=100 home=100"
+SSH
+chmod +x "$tmp/stubbin/ssh"
+export PATH="$tmp/stubbin:$PATH"
 fail=0
 strays=""
 kids() { cat "/proc/$1/task/$1/children" 2>/dev/null; }
@@ -68,6 +82,7 @@ cat > "$repo/bin/mac-gate.sh" <<'STUB'
 #!/usr/bin/env bash
 mkdir -p .gate-artifacts
 printf 'stub iphone log\n' > .gate-artifacts/test-iphone.log
+echo "stub-lock fd=${MAC_GATE_HOST_LOCK_FD:-} target=$([ -z "${MAC_GATE_HOST_LOCK_FD:-}" ] || readlink -f "/proc/$$/fd/$MAC_GATE_HOST_LOCK_FD")"
 echo "mac-gate SUMMARY: legs=${MAC_GATE_LEGS:-full} | stub=0 branch=${MAC_GATE_BRANCH:-?} host=${MAC_GATE_HOST:-?}"
 # IMGMGR-398 cases only: reproduce, from inside the gated worktree while the queue holds it
 # detached, the two ways the tree can move under a run. Unset by default, so every other case
@@ -1460,6 +1475,127 @@ if unshare -Urpf --mount-proc true 2>/dev/null; then
 else
   echo "SKIP 26-unshare: unshare -Urpf --mount-proc is refused for this user; 26-other-ns stands in with a synthetic foreign pidns="
 fi
+
+# ---------------------------------------------- 30: one lock per host, auto routing (IMGMGR-576)
+# Two hosts now: merkur on GATE_QUEUE_LOCK, mars on a lock of its own. "Busy" is a live holder of a
+# host's lock, as another repo's run would be; "down" is the ssh stub refusing that host.
+mars_lock="$tmp/mars.lock"; : > "$mars_lock"
+export MAC_GATE_HOSTS="merkur mars" MAC_GATE_HOST_LOCKS="merkur=$GATE_QUEUE_LOCK,mars=$mars_lock"
+mkdir -p "$tmp/down"; export GATE_QUEUE_TEST_DOWN="$tmp/down"
+# Never inside $(…): the background holder would keep the substitution's pipe open.
+hold_lock() { flock -o "$1" sleep 120 >/dev/null 2>&1 & held_pid=$!; strays="$strays $held_pid"; waitfor 5 lock_held "$1"; }
+lock_held() { ! flock -n "$1" true 2>/dev/null; }
+for n in 3 4 5 6; do git -C "$repo" worktree add -q -b "lane$n" "$tmp/lane$n"; done
+sha3="$(git -C "$tmp/lane3" rev-parse HEAD)"
+
+# merkur busy, mars free: an auto spec runs on mars, at once, on mars's lock, handed over by fd.
+hold_lock "$GATE_QUEUE_LOCK"; hm=$held_pid
+out="$(timeout 30 "$qs" enqueue "$tmp/lane3:$sha3:route-a" 2>&1)"; rc=$?
+qlog="$(field route-a log)"
+if [ "$rc" -eq 0 ] && [ "$(field route-a host)" = mars ] && [ "$(field route-a host_spec)" = auto ] \
+   && [ "$(field route-a route)" = "free:mars (merkur held)" ] && [ "$(field route-a lock)" = "$mars_lock" ] \
+   && grep -q 'host=mars$' "$qlog" && grep -qx "stub-lock fd=[0-9]* target=$mars_lock" "$qlog" \
+   && grep -q ' route-a ref=[0-9a-f]* host=mars rc=0 ' "$GATE_QUEUE_SUMMARY"; then
+  ok 30-auto-merkur-busy "routed to mars while merkur's lock was held; mac-gate got mars and the held descriptor"
+else
+  bad 30-auto-merkur-busy "rc=$rc host=$(field route-a host) route='$(field route-a route)' lock=$(field route-a lock) log=$(tr '\n' '|' < "$qlog" 2>/dev/null): $out"
+fi
+release "$hm"
+
+# Both free: merkur, first in order.
+out="$(timeout 30 "$qs" enqueue "$tmp/lane3:$sha3:route-b" 2>&1)"; rc=$?
+case "$rc:$(field route-b host):$(field route-b route)" in "0:merkur:free:merkur") ok 30-auto-both-idle "merkur" ;;
+  *) bad 30-auto-both-idle "rc=$rc host=$(field route-b host) route=$(field route-b route): $out" ;; esac
+
+# mars busy: merkur.
+hold_lock "$mars_lock"; hs=$held_pid
+out="$(timeout 30 "$qs" enqueue "$tmp/lane3:$sha3:route-c" 2>&1)"; rc=$?
+case "$rc:$(field route-c host)" in "0:merkur") ok 30-auto-mars-busy "$(field route-c route)" ;; *) bad 30-auto-mars-busy "rc=$rc host=$(field route-c host): $out" ;; esac
+
+# Both busy: the spec WAITS (state=waiting, a flock(1) on merkur's lock — the process drop proves),
+# and runs on merkur once merkur's holder goes; mars freeing meanwhile does not move it.
+hold_lock "$GATE_QUEUE_LOCK"; hm=$held_pid
+"$qs" enqueue "$tmp/lane3:$sha3:route-d" > "$tmp/q27d.out" 2>&1 & e27=$!; strays="$strays $e27"
+if waitfor 15 has_pid route-d && state_is route-d waiting && [ "$(field route-d lock)" = "$GATE_QUEUE_LOCK" ] \
+   && [ "$(field route-d route)" = "busy:both -> waiting on merkur (first in order)" ] \
+   && tr '\0' ' ' < "/proc/$(field route-d flock_pid)/cmdline" | grep -q "^flock -w [0-9]* $GATE_QUEUE_LOCK "; then
+  ok 30-auto-both-busy-waits "waiting on merkur's lock in a flock(1) the drop proof can name"
+else
+  bad 30-auto-both-busy-waits "state=$(field route-d state) lock=$(field route-d lock) route='$(field route-d route)'"
+fi
+release "$hs"
+sleep 0.5
+state_is route-d waiting && ok 30-no-move "mars freeing does not move a spec already waiting on merkur" || bad 30-no-move "state=$(field route-d state)"
+release "$hm"
+wait "$e27"; rc=$?
+case "$rc:$(field route-d state):$(field route-d host)" in "0:done:merkur") ok 30-both-busy-runs "ran on merkur after its holder let go" ;;
+  *) bad 30-both-busy-runs "rc=$rc state=$(field route-d state) host=$(field route-d host)" ;; esac
+
+# merkur busy, mars unreachable: waits on merkur; the reason says why mars was not taken.
+hold_lock "$GATE_QUEUE_LOCK"; hm=$held_pid; touch "$tmp/down/mars"
+"$qs" enqueue "$tmp/lane3:$sha3:route-e" > "$tmp/q27e.out" 2>&1 & e27=$!; strays="$strays $e27"
+if waitfor 15 has_pid route-e && [ "$(field route-e route)" = "busy:merkur (mars unreachable) -> waiting on merkur (first in order)" ]; then
+  ok 30-auto-mars-down "$(field route-e route)"
+else
+  bad 30-auto-mars-down "route='$(field route-e route)' state=$(field route-e state)"
+fi
+# Both unusable: refused at enqueue (15), no record.
+touch "$tmp/down/merkur"
+out="$(timeout 30 "$qs" enqueue "$tmp/lane4:$(git -C "$tmp/lane4" rev-parse HEAD):route-f" 2>&1)"; rc=$?
+if [ "$rc" -eq 15 ] && [ ! -e "$GATE_QUEUE_STATE/route-f.spec" ] && printf '%s' "$out" | grep -q 'no build host can take this run'; then
+  ok 30-auto-none "refused 15 with no record: $out"
+else
+  bad 30-auto-none "rc=$rc record=$([ -e "$GATE_QUEUE_STATE/route-f.spec" ] && echo written || echo none): $out"
+fi
+rm -f "$tmp/down/merkur" "$tmp/down/mars"
+release "$hm"; wait "$e27"
+
+# ---------------------------------------------- 31: one run per label PER HOST
+# merkur busy: `same:host=merkur` waits; a second `same:host=merkur` (another tree) is refused (2);
+# `same:host=mars` (a third tree) is admitted and runs while the first still waits.
+hold_lock "$GATE_QUEUE_LOCK"; hm=$held_pid
+"$qs" enqueue "$tmp/lane4:$(git -C "$tmp/lane4" rev-parse HEAD):same:host=merkur" > "$tmp/q28a.out" 2>&1 & e28=$!; strays="$strays $e28"
+waitfor 15 has_pid same@merkur
+out="$("$qs" enqueue "$tmp/lane5:$(git -C "$tmp/lane5" rev-parse HEAD):same:host=merkur" 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "a spec named 'same@merkur' is already waiting"; then
+  ok 31-same-host-refused "$out"
+else
+  bad 31-same-host-refused "rc=$rc: $out"
+fi
+out="$(timeout 30 "$qs" enqueue "$tmp/lane6:$(git -C "$tmp/lane6" rev-parse HEAD):same:host=mars" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(field same@mars state)" = done ] && [ "$(field same@mars host)" = mars ] \
+   && [ "$(field same@mars route)" = "explicit:mars" ] && state_is same@merkur waiting \
+   && grep -q 'host=mars$' "$(field same@mars log)"; then
+  ok 31-other-host-admitted "same label on mars ran while same@merkur waited"
+else
+  bad 31-other-host-admitted "rc=$rc state=$(field same@mars state) merkur=$(field same@merkur state): $out"
+fi
+# list: one holder line per host, and the HOST column.
+out="$("$qs" list 2>&1)"
+if printf '%s\n' "$out" | grep -q '^holder  : merkur: ' && printf '%s\n' "$out" | grep -q '^holder  : mars: ' \
+   && printf '%s\n' "$out" | grep -qE '^same@merkur +waiting +[^ ]* *merkur ' && printf '%s\n' "$out" | grep -qE '^route-a +done +0 +auto>mars '; then
+  ok 31-list "holder per host and the host per record"
+else
+  bad 31-list "$(printf '%s\n' "$out" | grep -E '^holder|^same|^route-a|^LABEL')"
+fi
+# The waiting same@merkur is dropped like any waiting spec: its flock is on merkur's lock.
+out="$("$qs" drop same@merkur 2>&1)"; rc=$?
+wait "$e28"
+if [ "$rc" -eq 0 ] && dead "$(field same@merkur flock_pid)"; then ok 31-drop "$out"; else bad 31-drop "rc=$rc: $out"; fi
+release "$hm"
+out="$("$qs" enqueue "$tmp/lane5:x:bad:host=venus" 2>&1)"; rc=$?
+case "$rc:$out" in "2:"*"host=venus is not one of MAC_GATE_HOSTS"*) ok 31-unknown-host "$out" ;; *) bad 31-unknown-host "rc=$rc: $out" ;; esac
+# A record key carries `@`; a label never may, so an auto spec cannot spell another host's key.
+sha5="$(git -C "$tmp/lane5" rev-parse HEAD)"
+for bad in "x@merkur" "x:host=" "x:host=mars:host=mars"; do
+  out="$("$qs" enqueue "$tmp/lane5:$sha5:$bad" 2>&1)"; rc=$?
+  if [ "$rc" -eq 2 ] && [ ! -e "$GATE_QUEUE_STATE/x@merkur.spec" ] && [ ! -e "$GATE_QUEUE_STATE/x.spec" ] && [ ! -e "$GATE_QUEUE_STATE/x@mars.spec" ]; then
+    ok 31-refuse "'$bad' refused (2), no record: $out"
+  else
+    bad 31-refuse "'$bad' rc=$rc: $out"
+  fi
+done
+export MAC_GATE_HOSTS=merkur; unset MAC_GATE_HOST_LOCKS
 
 [ "$fail" -eq 0 ] && echo "gate-queue-test: ALL PASS" || echo "gate-queue-test: FAILURES"
 exit "$fail"

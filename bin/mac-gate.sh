@@ -107,8 +107,14 @@
 #   bin/mac-gate.sh --help
 #
 # Environment:
-#   MAC_GATE_HOST          (required, except for --list-legs, --dry-run and --help) ssh
-#                            alias/host of the Mac build host
+#   MAC_GATE_HOST          (required, except for --list-legs, --dry-run and --help) merkur,
+#                            mars (bin/gate-route.sh: MAC_GATE_HOSTS, MAC_GATE_HOST_LOCKS), or
+#                            auto = the first idle host above the disk floor
+#   MAC_GATE_HOST_LOCK_FD   descriptor on which the caller already holds the named host's lock.
+#                            CALLER CONTRACT: a caller that holds a host lock (an outer
+#                            `flock <host lock> …`, the queue's run) MUST name that host in
+#                            MAC_GATE_HOST and SHOULD hand the descriptor in here; auto is only for
+#                            callers that hold no host lock (auto with this set is refused, 15).
 #   MAC_GATE_LEGS           comma-separated legs to run (default: every leg = a full gate).
 #                            `--legs <list>` overrides it. Known legs, in the order they run:
 #                            mirror, manifest, api-nullable-tests, xcodegen, build,
@@ -188,6 +194,18 @@ die_refuse() {
   exit 2
 }
 say() { printf '%s\n' "$1"; }
+# Which Mac this run takes and the jupiter-side lock that says so (IMGMGR-576, bin/gate-route.sh).
+# shellcheck source=bin/gate-route.sh
+. "$self_dir/gate-route.sh" || {
+  printf 'mac-gate: REFUSED: cannot source %s\n' "$self_dir/gate-route.sh" >&2
+  exit 2
+}
+# The host lock is fd 9 for the whole run. No child may inherit it: an ssh ControlMaster or any
+# other process that outlives this script would keep the host "taken" after the run is over.
+ssh() { command ssh "$@" 9>&-; }
+rsync() { command rsync "$@" 9>&-; }
+timeout() { command timeout "$@" 9>&-; }
+summary_info=""
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 legs_sel="${MAC_GATE_LEGS:-}"
@@ -308,7 +326,7 @@ trap release_lock EXIT
 
 summary_and_exit() {
   release_lock
-  gate_summary_line "$legs_field" "$step_summary" "$first_fail" | tee -a "$log"
+  gate_summary_line "$legs_field" "$step_summary$summary_info" "$first_fail" | tee -a "$log"
   exit "$first_fail"
 }
 
@@ -323,7 +341,19 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 
 host="${MAC_GATE_HOST:-}"
-[ -n "$host" ] || die_refuse "MAC_GATE_HOST is not set (ssh alias of the Mac build host)"
+[ -n "$host" ] || die_refuse "MAC_GATE_HOST is not set (ssh alias of the Mac build host, or auto)"
+# Refused here, before any lock or ssh: a host list or lock map this gate cannot use, or a host
+# it has no lock for (route=15).
+die_route() { # $1=rc $2=why
+  say "route       : REFUSED $2"
+  record route "$1"
+  summary_and_exit
+}
+gate_route_config || die_route 15 "$GATE_ROUTE_WHY"
+if [ "$host" != auto ]; then
+  host_lock="$(gate_route_lock_of "$host")" \
+    || die_route 15 "MAC_GATE_HOST=$host is not one of MAC_GATE_HOSTS ($(printf '%s ' "${GATE_ROUTE_NAMES[@]}")) with a lock in MAC_GATE_HOST_LOCKS"
+fi
 
 head_sha="$(git rev-parse HEAD 2>/dev/null)" \
   || die_refuse "no HEAD — nothing has been committed yet (the orchestrator's snapshot commit, plan Execution Protocol step 2b, runs before this gate)"
@@ -344,15 +374,114 @@ local_manifest="$(gate_local_manifest)"
 manifest_count="$(printf '%s\n' "$local_manifest" | grep -c .)"
 say "controller manifest: $manifest_count tracked files at HEAD $head_sha, working tree clean (git status --porcelain: 0 bytes)"
 
+# --- Route: the host and its jupiter-side lock, held on fd 9 until this process exits. ------
+# The lock file is the estate's (bin/gate-route.sh): memos-ng's gates take the same one, so a held
+# lock means another repo's run is on that Mac. MAC_GATE_HOST=auto picks the host; a named host
+# waits for its lock up to MAC_GATE_LOCK_WAIT, or takes it as handed over by bin/gate-queue.sh
+# (MAC_GATE_HOST_LOCK_FD: its flock(1) already holds it, and a second open would wait on itself).
+# Either way the host must then answer and have room (route=15 unreachable, 17 under the floor).
+lock_wait_cap="${MAC_GATE_LOCK_WAIT:-21600}"
+case "$lock_wait_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_LOCK_WAIT must be a whole number of seconds (got '$lock_wait_cap')" ;; esac
+[ "${#lock_wait_cap}" -le 7 ] || die_refuse "MAC_GATE_LOCK_WAIT must be at most 7 digits (got '$lock_wait_cap')"
+say "--- step: route ---"
+route_started=$SECONDS
+if [ "$host" = auto ]; then
+  # A lock handed in names ONE host, and routing may pick another: both would then be held for the
+  # whole run. Refused before any lock or probe (the caller contract in the header).
+  [ -z "${MAC_GATE_HOST_LOCK_FD:-}" ] \
+    || die_route 15 "MAC_GATE_HOST=auto cannot be combined with an inherited host lock (MAC_GATE_HOST_LOCK_FD=$MAC_GATE_HOST_LOCK_FD); name the host that lock belongs to"
+  gate_route_auto || die_route 15 "$GATE_ROUTE_WHY"
+  host="$GATE_ROUTE_HOST"
+  route_reason="$GATE_ROUTE_REASON"
+else
+  hfd="${MAC_GATE_HOST_LOCK_FD:-}"
+  # A caller that wrapped this script in `flock <that lock> …` (an estate habit) holds the lock on
+  # a descriptor this process inherited: adopted like a hand-over, or the run would wait on itself.
+  if [ -z "$hfd" ] && [ -d "/proc/$$/fd" ]; then
+    for _fd in /proc/$$/fd/*; do
+      _n="${_fd##*/}"
+      case "$_n" in [3-9]|[1-9][0-9]) ;; *) continue ;; esac
+      [ "$(readlink -f "$_fd" 2>/dev/null)" = "$(readlink -f "$host_lock")" ] && flock -n "$_n" 2>/dev/null && { hfd="$_n"; break; }
+    done
+  fi
+  if [ -n "$hfd" ]; then
+    case "$hfd" in [3-9]|[1-9][0-9]) ;; *) die_route 15 "MAC_GATE_HOST_LOCK_FD '$hfd' is not a descriptor number" ;; esac
+    if [ -d "/proc/$$/fd" ] && [ "$(readlink -f "/proc/$$/fd/$hfd" 2>/dev/null)" != "$(readlink -f "$host_lock")" ]; then
+      die_route 15 "MAC_GATE_HOST_LOCK_FD $hfd is not open on $host_lock"
+    fi
+    # Succeeds at once when that descriptor's open file already holds the lock; anything else is
+    # somebody else's hold, refused rather than waited for.
+    flock -n "$hfd" || die_route 15 "MAC_GATE_HOST_LOCK_FD $hfd does not hold $host_lock"
+    [ "$hfd" = 9 ] || eval "exec 9>&$hfd $hfd>&-"
+    route_reason="explicit:$host (lock held by the caller)"
+  else
+    { exec 9>>"$host_lock"; } 2>/dev/null || die_route 15 "cannot open the lock $host_lock of $host"
+    if ! flock -n 9; then
+      say "route       : $host is busy ($host_lock held) — waiting up to ${lock_wait_cap}s (MAC_GATE_LOCK_WAIT)"
+      if ! flock -w "$lock_wait_cap" 9; then
+        say "route       : $host_lock still held after ${lock_wait_cap}s — giving up"
+        record lock-wait 3
+        summary_and_exit
+      fi
+    fi
+    route_reason="explicit:$host"
+  fi
+  gate_route_probe "$host"; probe_rc=$?
+  if [ "$probe_rc" -eq 2 ]; then die_route 17 "$GATE_ROUTE_PROBE_WHY"
+  elif [ "$probe_rc" -ne 0 ]; then die_route 15 "$GATE_ROUTE_PROBE_WHY"; fi
+fi
+say "route       : host=$host reason=$route_reason waited=$((SECONDS - route_started))s"
+record route 0
+summary_info=" host=$host"
+
+# --- Mount guard: the build root is this host's designated image (MEMNG-662). ----------------
+# Ported from memos-ng-ios bin/mac-gate.sh step (1b): scripts/gate-mount-guard.sh (vendored
+# byte-identical, scripts/GATE_MOUNT_GUARD_SOURCE) reads the host's ~/build volume and this repo's
+# gate subtree on it, read-only, BEFORE the first ssh that writes. Unmounted, macOS leaves the plain
+# directory and every byte lands on the internal disk. Only exactly two lines — a verdict and a
+# state that agree — are an answer; anything else proved nothing and refuses (mount=16).
+say "--- step: mount ---"
+mount_rc=16
+mount_state=enforced
+mount_guard="$repo_root/scripts/gate-mount-guard.sh"
+if [ ! -r "$mount_guard" ]; then
+  say "mount       : REFUSE the guard $mount_guard is missing — nothing was sent"
+else
+  # Into a file, never $(…): command substitution strips trailing newlines, so a blank third line
+  # would pass as a two-line answer.
+  mount_answer="$artifacts/mount-answer.txt"
+  { cat "$mount_guard"; printf '%s\n' 'gate_mount_guard report img-manager-ios/gate'; } \
+    | timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' > "$mount_answer" 2>&1
+  mount_ssh_rc=${PIPESTATUS[1]}
+  while IFS= read -r mount_line || [ -n "$mount_line" ]; do say "mount       : [$mount_line]"; done < "$mount_answer"
+  mount_lines="$(awk 'END { print NR }' "$mount_answer")"
+  mount_marker_re='(valid|not-read|missing|unreadable|expired|other-host|unmeasured:(clock|ioreg)|malformed:[A-Za-z0-9._-]+)'
+  mount_first="$(sed -n 1p "$mount_answer")"
+  mount_second="$(sed -n 2p "$mount_answer")"
+  if [ "$mount_ssh_rc" -eq 0 ] && [ "$mount_lines" = 2 ] \
+     && printf '%s\n' "$mount_first" | grep -qE '^MOUNT (OK|REFUSE) ' \
+     && printf '%s\n' "$mount_second" | grep -qE "^mountguard=(enforced|pending:OK|pending:REFUSE) marker=$mount_marker_re\$"; then
+    mount_verdict="${mount_first#MOUNT }"; mount_verdict="${mount_verdict%% *}"
+    mount_state="${mount_second%% marker=*}"; mount_state="${mount_state#mountguard=}"
+    case "$mount_verdict:$mount_state:${mount_second##* marker=}" in
+      OK:enforced:valid) ;;
+      OK:enforced:*|OK:pending:OK:valid|REFUSE:pending:REFUSE:valid) mount_rc=0 ;;
+    esac
+    [ "$mount_rc" -eq 0 ] || mount_state=enforced
+  fi
+  [ "$mount_rc" -eq 0 ] \
+    || say "mount       : REFUSE (guard exit $mount_ssh_rc) — $host's build root is not proven to be its designated image; nothing was written on the host"
+fi
+record mount "$mount_rc"
+summary_info="$summary_info mountguard=$mount_state"
+[ "$mount_rc" -eq 0 ] || summary_and_exit
+
 # --- Gate lock + rsync mirror (never a checkout — see header). ---------------------------
 say "--- step: rsync ---"
 lock_owner="ctrl-$$-$(date -u +%s)-$RANDOM"
 esc_owner="$(esc "$lock_owner")"
 
 # --- Host-wide gate lock: ONE gate per Mac (IMGMGR-203, see header). --------------------
-lock_wait_cap="${MAC_GATE_LOCK_WAIT:-21600}"
-case "$lock_wait_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_LOCK_WAIT must be a whole number of seconds (got '$lock_wait_cap')" ;; esac
-[ "${#lock_wait_cap}" -le 7 ] || die_refuse "MAC_GATE_LOCK_WAIT must be at most 7 digits (got '$lock_wait_cap')"
 lock_wait_started=$SECONDS
 while :; do
   hl_out="$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "
@@ -390,7 +519,7 @@ while :; do
     record lock-wait 3
     summary_and_exit
   fi
-  say "host lock   : ${hl_out:-merkur unreachable} — waited ${waited}s, retry in 30s"
+  say "host lock   : ${hl_out:-$host unreachable} — waited ${waited}s, retry in 30s"
   sleep 30
 done
 record lock-wait 0
@@ -510,6 +639,8 @@ cd "__WORK__"
 # to be sourced only just before the absence legs) because every step below asks it what to run.
 LEGS="__LEGS__"
 . ./bin/gate-lib.sh || { echo "cannot source bin/gate-lib.sh"; exit 1; }
+# The host-wide simulator slot every repo's gate on this Mac shares (IMGMGR-561).
+. ./scripts/gate-admission.sh || { echo "cannot source scripts/gate-admission.sh"; exit 1; }
 want() { gate_leg_wanted "$1" "$LEGS"; }
 # MAC_GATE_ONLY_TESTING (IMGMGR-571), validated by the controller before anything ran; empty for
 # the full suites.
@@ -598,7 +729,7 @@ if [ "$project_legs" = 1 ]; then
       -project ImgManager.xcodeproj -scheme ImgManager \
       -destination "generic/platform=iOS Simulator" \
       -derivedDataPath "$derived" \
-      -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+      -skipMacroValidation -skipPackagePluginValidation -onlyUsePackageVersionsFromResolvedFile
   fi
 
   # WP12 (IMGMGR-199): the readiness widget is only really shipped if the BUILT app bundle
@@ -640,20 +771,42 @@ if [ "$project_legs" = 1 ]; then
   # A simulator is created only for a destination this run actually tests: creating and booting
   # one is minutes, and a subset that tests neither must not pay them.
   if want test-iphone || want test-ipad; then
-    iphone_udid=""
-    ipad_udid=""
-    want test-iphone && iphone_udid="$(xcrun simctl create "mac-gate-iphone-$$" "__IPHONE_TYPE__" com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
-    want test-ipad && ipad_udid="$(xcrun simctl create "mac-gate-ipad-$$" "__IPAD_TYPE__" com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
+    # The devices exist only inside the host-wide slot (bin/gate-lib.sh gate_slot_sims_open): a
+    # live holder of any repo is waited for, a dead one recovered. The release — leftover
+    # processes stopped, both devices deleted and confirmed, the claim renamed aside — runs after
+    # the last test leg and again from every trap; it is idempotent. The token is left beside the
+    # run so the controller's stop at MAC_GATE_REMOTE_CAP can recover the slot if even the TERM
+    # trap was cut short.
+    slot_token="img-manager-ios-$$-$(date -u +%s)"
+    printf '%s\n' "$slot_token" > ../.gate-run.slot-token
     # WP28 P4 (IMGMGR-451): the materials modes change accessibility settings on these two
-    # simulators; the reset runs here too, so a run that dies mid-mode leaves nothing behind.
-    # Each call names ONE device, this run's own — never `all` (lane rule).
+    # simulators; the traps reset them first, so a run that dies mid-mode leaves nothing behind
+    # even when the release cannot delete the device. Each call names ONE device, this run's own.
+    iphone_udid=""; ipad_udid=""
     cleanup_sims() {
-      [ -z "$iphone_udid" ] || { gate_materials_reset "$iphone_udid" >/dev/null 2>&1; xcrun simctl shutdown "$iphone_udid" >/dev/null 2>&1; xcrun simctl delete "$iphone_udid" >/dev/null 2>&1; }
-      [ -z "$ipad_udid" ] || { gate_materials_reset "$ipad_udid" >/dev/null 2>&1; xcrun simctl shutdown "$ipad_udid" >/dev/null 2>&1; xcrun simctl delete "$ipad_udid" >/dev/null 2>&1; }
+      gate_materials_reset "$iphone_udid" >/dev/null 2>&1
+      gate_materials_reset "$ipad_udid" >/dev/null 2>&1
+      gate_slot_sims_close
     }
-    trap cleanup_sims EXIT
+    trap 'cleanup_sims >/dev/null 2>&1' EXIT
+    trap 'cleanup_sims; exit 130' INT
+    trap 'cleanup_sims; exit 143' TERM
+    trap 'cleanup_sims; exit 129' HUP
+    iphone_name=""; ipad_name=""
+    want test-iphone && iphone_name="mac-gate-iphone-$$"
+    want test-ipad && ipad_name="mac-gate-ipad-$$"
+    gate_slot_sims_open "__BRANCH__" "$slot_token" "$iphone_name" "__IPHONE_TYPE__" "$ipad_name" "__IPAD_TYPE__" \
+      com.apple.CoreSimulator.SimRuntime.iOS-26-5
+    slot_rc=$?
+    summary="$summary slot=$slot_rc"
+    iphone_udid="$GATE_SIM_IPHONE_UDID"
+    ipad_udid="$GATE_SIM_IPAD_UDID"
+    if [ "$slot_rc" -ne 0 ]; then
+      echo "--- slot exit=$slot_rc --- the simulator legs of this run are skipped"
+      for leg in test-iphone test-ipad; do want "$leg" && summary="$summary $leg=skipped"; done
+    fi
 
-    if want test-iphone; then
+    if [ "$slot_rc" -eq 0 ] && want test-iphone; then
       # WP28 P1 (IMGMGR-448): a result bundle per UI leg, exported into
       # .gate-artifacts/screenshots/test-iphone/ and recorded as its own result (gate-lib.sh,
       # gate_export_screenshots). xcodebuild refuses an existing bundle path, so a previous
@@ -678,7 +831,7 @@ if [ "$project_legs" = 1 ]; then
       fi
     fi
 
-    if want test-ipad; then
+    if [ "$slot_rc" -eq 0 ] && want test-ipad; then
       # WP28 P1 (IMGMGR-448): a result bundle per UI leg, exported into
       # .gate-artifacts/screenshots/test-ipad/ and recorded as its own result (gate-lib.sh,
       # gate_export_screenshots). xcodebuild refuses an existing bundle path, so a previous
@@ -702,6 +855,10 @@ if [ "$project_legs" = 1 ]; then
         echo "--- materials-test-ipad skipped (ONLY_TESTING run) ---"
       fi
     fi
+    # The checked release, before the summary: simrelease=1 means a device or a process of this
+    # run could not be confirmed gone, and the slot stays fenced (state=cleanup-failed).
+    gate_slot_sims_close
+    summary="$summary simrelease=$GATE_SIMRELEASE"
   fi
 
   # Dependency-pin check (mirrors memos-ng-ios's `pins` step): resolve against the restored
@@ -801,6 +958,8 @@ build_script="${build_script//__WORK__/$target_dir/work}"
 build_script="${build_script//__LEGS__/$legs}"
 build_script="${build_script//__IPHONE_TYPE__/$IPHONE_TYPE}"
 build_script="${build_script//__IPAD_TYPE__/$IPAD_TYPE}"
+# Informational in the slot's owner record only. No `_` survives, so it cannot spell a placeholder.
+build_script="${build_script//__BRANCH__/${branch//[^A-Za-z0-9.\/-]/-}}"
 # Last: an identifier may legally spell another placeholder, and nothing must rewrite it after.
 build_script="${build_script//__ONLY_TESTING__/$only_testing}"
 
@@ -825,7 +984,15 @@ i=0; while [ "$i" -lt 20 ] && [ -n "$(members)" ]; do sleep 1; i=$((i + 1)); don
 i=0; while [ "$i" -lt 10 ] && [ -n "$(members)" ]; do sleep 1; i=$((i + 1)); done
 left="$(members)"
 [ -z "$left" ] || { echo "STILL-RUNNING pids=$left"; exit 0; }
-if [ -f .gate-run.done ]; then echo "STOPPED code=$(cat .gate-run.done)"; else echo "STOPPED code=none"; fi
+# The group is empty, so a slot this run still holds has a dead holder: recovered here with the
+# protocol's own judge and recovery (devices deleted and confirmed, then the claim moved aside)
+# rather than left for the next waiter, in case the run's TERM trap was cut short by the KILL.
+slot="slot=none reap=none"
+tok="$(cat .gate-run.slot-token 2>/dev/null)"
+if [ -n "$tok" ] && . work/bin/gate-lib.sh 2>/dev/null && . work/scripts/gate-admission.sh 2>/dev/null; then
+  slot="$(gate_slot_after_stop "$tok" 2>> .gate-run.slot-stop.log)"
+fi
+if [ -f .gate-run.done ]; then echo "STOPPED code=$(cat .gate-run.done) $slot"; else echo "STOPPED code=none $slot"; fi
 REMOTESTOP
 )
 stop_remote_run() {
@@ -852,12 +1019,17 @@ else
   launch_script=$(cat <<'REMOTELAUNCH'
 set -e
 cd "__TARGET__"
-rm -f .gate-run.done .gate-run.log .gate-run.pid
+rm -f .gate-run.done .gate-run.log .gate-run.pid .gate-run.slot-token
+# Keep-awake for the length of the run where the host has it (macOS caffeinate: idle, disk and
+# system sleep); its absence never stops a run. It sits inside the process group, so the stop
+# below takes it down with the run.
+keep=""
+command -v caffeinate >/dev/null 2>&1 && keep="caffeinate -ims"
 set -m
-( nohup bash .gate-run.sh </dev/null >.gate-run.log 2>&1; echo $? >.gate-run.done ) >/dev/null 2>&1 </dev/null &
+( nohup $keep bash .gate-run.sh </dev/null >.gate-run.log 2>&1; echo $? >.gate-run.done ) >/dev/null 2>&1 </dev/null &
 echo $! > .gate-run.pid
 set +m
-echo "LAUNCHED pid=$(cat .gate-run.pid)"
+echo "LAUNCHED pid=$(cat .gate-run.pid) keepawake=${keep:-none}"
 REMOTELAUNCH
 )
   launch_script="${launch_script//__TARGET__/$target_dir}"
@@ -913,6 +1085,10 @@ else
   done
   remote_out="$(timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "cd \"$target_dir\" && { cp -f .gate-run.log work/.gate-artifacts/remote-run.log 2>/dev/null || true; }; cat \"$target_dir/.gate-run.log\" 2>/dev/null" 2>&1 | tee -a "$log")"
   remote_line="$(printf '%s\n' "$remote_out" | grep '^MAC_GATE_REMOTE_SUMMARY:' | tail -1)"
+  # How long the run waited for the host-wide simulator slot: a measurement, not a leg.
+  slot_line="$(printf '%s\n' "$remote_out" | grep '^MAC_GATE_SLOT ' | tail -1)"
+  slot_wait="$(printf '%s\n' "$slot_line" | sed -n 's/.* slot_wait=\([0-9][0-9]*\).*/\1/p')"
+  summary_info="$summary_info slot_wait=${slot_wait:--}${slot_wait:+s}"
   if [ -z "$done_code" ]; then
     record remote-run 124
   elif [ -z "$remote_line" ]; then

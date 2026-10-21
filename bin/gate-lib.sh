@@ -413,7 +413,7 @@ gate_xcodebuild_test() {
     -derivedDataPath "$2" \
     -resultBundlePath "$3" \
     $only \
-    -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile
+    -skipMacroValidation -skipPackagePluginValidation -onlyUsePackageVersionsFromResolvedFile
 }
 
 # gate_summary_line LEGS_FIELD STEP_SUMMARY EXIT_CODE — the ONE definition of the gate's summary
@@ -847,8 +847,8 @@ gate_materials_set() {
 }
 
 # gate_materials_reset UDID — both settings off on that one simulator; returns the first failure.
-# Called after every mode AND from the UI legs' EXIT trap (bin/mac-gate.sh cleanup_sims), so a
-# run that dies mid-mode does not leave the setting behind.
+# Called after every mode AND from the UI legs' traps (bin/mac-gate.sh cleanup_sims, before the
+# slot release), so a run that dies mid-mode does not leave the setting behind.
 gate_materials_reset() {
   [ -n "$1" ] || return 0
   gate_materials_set "$1" reduce-transparency off; _gmr_a=$?
@@ -896,7 +896,7 @@ gate_materials_mode_run() {
       -derivedDataPath "$4" \
       -resultBundlePath "$_gm_bundle" \
       -only-testing:"$GATE_MATERIALS_SUITE" \
-      -skipMacroValidation -onlyUsePackageVersionsFromResolvedFile >> "$_gm_log" 2>&1
+      -skipMacroValidation -skipPackagePluginValidation -onlyUsePackageVersionsFromResolvedFile >> "$_gm_log" 2>&1
     _gm_run=$?
     if [ "$_gm_run" -eq 0 ] && [ "$_gm_try" -eq 1 ] && [ "$3" = reduce-transparency ] \
       && grep -q "^MATERIALS-UNRESOLVED .* run=$_gm_nonce " "$_gm_log"; then
@@ -1137,4 +1137,107 @@ PY
     grep '^UNRESOLVED \|^MARKER ' "$_cm_log" | head -24
   fi
   return "$_cm_rc"
+}
+
+# --- the host-wide simulator slot (IMGMGR-561) -----------------------------------------------------
+# Every repo's gate on a shared Mac takes ONE slot, $HOME/build/.gate-slots/sim, for its simulator
+# phase: two booted simulators and two test runs at once fill the host's disk and swap (memos-ng
+# measured it 2026-09-28..30). The protocol is scripts/gate-admission.sh, vendored byte-identical
+# from memos-ng-ios (scripts/GATE_ADMISSION_SOURCE) and sourced by the remote run beside this file,
+# so memos-ng's judge reads this repo's owner record and the other way round. These two wrap it for
+# THIS repo's two private devices; they need gate-admission.sh sourced first.
+#
+# gate_slot_sims_open BRANCH TOKEN IPHONE_NAME IPHONE_TYPE IPAD_NAME IPAD_TYPE RUNTIME — waits for
+# the slot (gate_slot_wait_claim), names each wanted device in the owner record BEFORE it exists
+# (a recoverer deletes by name), creates it, writes its udid. An empty name = that device is not
+# wanted. Sets GATE_SIM_IPHONE_UDID / GATE_SIM_IPAD_UDID and GATE_SLOT_RC; returns the slot's rc
+# (11-14 from the wait) or 2 when a device could not be named or created — whatever was made goes
+# at the close, which deletes by name.
+GATE_SLOT_RC="-"
+GATE_SLOT_TOKEN=""
+GATE_SIM_IPHONE_UDID=""
+GATE_SIM_IPAD_UDID=""
+gate_slot_sims_open() {
+  local branch="$1" token="$2" name type udid which
+  GATE_SIM_IPHONE_UDID=""; GATE_SIM_IPAD_UDID=""; GATE_SLOT_TOKEN="$token"
+  gate_slot_wait_claim img-manager-ios "$branch" "$token" 0 ""
+  GATE_SLOT_RC=$?
+  [ "$GATE_SLOT_RC" -eq 0 ] || return "$GATE_SLOT_RC"
+  for which in iphone ipad; do
+    if [ "$which" = iphone ]; then name="$3"; type="$4"; else name="$5"; type="$6"; fi
+    [ -n "$name" ] || continue
+    gate_slot_note_device "$name" || { echo "remote: cannot name $name in the slot record"; return 2; }
+    udid="$(${GATE_SIMCTL:-xcrun simctl} create "$name" "$type" "$7" 2>/dev/null | tr -d '[:space:]')"
+    case "$udid" in
+      [0-9A-Fa-f]*-*-*-*-*) ;;
+      *) echo "remote: could not create the simulator $name ($type)"; return 2 ;;
+    esac
+    gate_slot_note_udid "$udid" "$name" || { echo "remote: cannot record $udid in the slot record"; return 2; }
+    if [ "$which" = iphone ]; then GATE_SIM_IPHONE_UDID="$udid"; else GATE_SIM_IPAD_UDID="$udid"; fi
+  done
+  return 0
+}
+# gate_slot_sims_close — the checked release (gate_sim_release: the run's leftover processes
+# stopped, both devices deleted and confirmed, the claim renamed aside); idempotent, so the EXIT,
+# INT, TERM and HUP traps repeat it. Prints the one line the controller reads slot_wait= from.
+gate_slot_sims_close() {
+  local rc reap=none
+  # A TERM inside the wait can land while this run recovers a stale holder under the reap mutex;
+  # the recovery never resumes, so the mutex is let go here (we are its owner, and exiting).
+  if gate_slot_reap_undo self "$GATE_SLOT_TOKEN"; then reap=undone; fi
+  gate_sim_release; rc=$?
+  echo "MAC_GATE_SLOT slot=$GATE_SLOT_RC slot_wait=$GATE_SLOT_WAITED simrelease=$GATE_SIMRELEASE reap=$reap"
+  return "$rc"
+}
+# gate_slot_owner_verdict OWNERFILE — gate_judge on a private copy, so the file cannot change
+# under the judge (the protocol judges snapshots the same way).
+gate_slot_owner_verdict() {
+  local snap v
+  snap="$(mktemp "${TMPDIR:-/tmp}/gate-owner.XXXXXX")" || { echo unmeasured; return 0; }
+  if cp "$1" "$snap" 2>/dev/null; then v="$(gate_judge "$snap")"; else v=unmeasured; fi
+  rm -f "${snap:?}"
+  echo "$v"
+}
+# gate_slot_reap_undo self|dead TOKEN… — lets go of the reap mutex when its owner record names one
+# of TOKEN… AND (self) its pid is this shell or (dead) gate_judge finds that owner stale: pid and
+# process group gone. The vendored protocol never expires a reap mutex (a dead one fences the slot
+# for every later waiter, REAP-DEAD), so a run that is stopped mid-recovery must not leave one
+# behind. UNDO, not finish: the recovery it interrupted only ever deletes the stale holder's
+# devices and renames sim aside; with the mutex gone the next waiter judges that holder afresh
+# and does the whole recovery itself under its own mutex, which is the protocol's own path.
+# 0 when it let go, 1 otherwise (no mutex, not ours, owner alive, or the release failed).
+gate_slot_reap_undo() {
+  local mode="$1" owner="$GATE_SLOT_ROOT/reap/owner" tok t
+  shift
+  [ -f "$owner" ] || return 1
+  tok="$(gate_owner_get "$owner" token)"
+  [ -n "$tok" ] || return 1
+  for t in "$@"; do
+    [ -n "$t" ] && [ "$t" = "$tok" ] || continue
+    if [ "$mode" = self ]; then
+      [ "$(gate_owner_get "$owner" pid)" = "$$" ] || return 1
+    else
+      [ "$(gate_slot_owner_verdict "$owner")" = stale ] || return 1
+    fi
+    gate_reap_release "$tok"
+    return $?
+  done
+  return 1
+}
+# gate_slot_after_stop TOKEN — the cap stop's slot cleanup, run on the Mac once the stopped run's
+# process group is confirmed empty: a reap mutex that run (or an earlier stop of it) left is let
+# go, then a slot it still holds is recovered with the protocol's own judge and recovery. Prints
+# `slot=<none|released|recovered|kept(verdict)> reap=<none|undone>`.
+gate_slot_after_stop() {
+  local tok="$1" slot=none reap=none verdict
+  [ -n "$tok" ] || { echo "slot=none reap=none"; return 0; }
+  if gate_slot_reap_undo dead "$tok" "$tok-stop"; then reap=undone; fi
+  if [ "$(gate_owner_get "$GATE_SLOT_ROOT/sim/owner" token)" = "$tok" ]; then
+    verdict="$(gate_slot_owner_verdict "$GATE_SLOT_ROOT/sim/owner")"
+    if [ "$verdict" = stale ] && gate_slot_recover "$tok" "$tok-stop" >&2; then slot=recovered
+    else slot="kept($verdict)"; fi
+  else
+    slot=released
+  fi
+  echo "slot=$slot reap=$reap"
 }

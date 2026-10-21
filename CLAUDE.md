@@ -1,6 +1,6 @@
 # img-manager-ios
 
-The native iOS/iPadOS companion of img-manager (Swift 6 / SwiftUI, XcodeGen `project.yml`, swift-testing + XCUITest). Swift builds only on the Mac host `merkur` through `bin/mac-gate.sh` — the ONLY sanctioned build/test path from this Linux checkout. TestFlight cuts follow `docs/TESTFLIGHT.md` and run in their own release session.
+The native iOS/iPadOS companion of img-manager (Swift 6 / SwiftUI, XcodeGen `project.yml`, swift-testing + XCUITest). Swift builds only on a Mac build host (`merkur` or `mars`; `MAC_GATE_HOST=auto` takes whichever is idle, a name pins one) through `bin/mac-gate.sh` — the ONLY sanctioned build/test path from this Linux checkout. TestFlight cuts follow `docs/TESTFLIGHT.md` and run in their own release session.
 
 Fix loops on one failing test: set `MAC_GATE_ONLY_TESTING=<Target/Class/test>[,…]` (queued: the spec field `:only-testing=<ids>`) so the gate runs only those tests instead of a whole destination suite. Such a run reports `ONLY_TESTING(…) — NOT a full gate`; the full gate still runs before merge.
 

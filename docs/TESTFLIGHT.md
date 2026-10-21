@@ -133,8 +133,9 @@ the reference pipeline lost two builds' worth of crash symbols permanently.
 
 Run the gate:
 
-    MAC_GATE_HOST=<the Mac build host> bin/mac-gate.sh
+    MAC_GATE_HOST=<merkur|mars|auto> bin/mac-gate.sh
 
-A summary line ending in `| exit=0` is the only green. Helper-logic tests
+`auto` takes the first idle Mac above the disk floor and prints `route : host=<h> reason=…`; the
+summary carries `host=<h>`. A summary line ending in `| exit=0` is the only green. Helper-logic tests
 (`asc_readback_test.rb`, `dsym_store_test.rb`, `timed_probe_test.rb`, `archive_check_test.rb`)
 run standalone with plain `ruby -Ifastlane/lib fastlane/test/<name>.rb` and need no Mac.
