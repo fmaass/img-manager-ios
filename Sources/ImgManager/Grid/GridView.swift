@@ -119,7 +119,7 @@ struct GridView: View {
         .overlay {
           if case .scene(let stackID) = scope {
             sceneStateOverlay(stackID)
-          } else if displayRows.isEmpty && !store.isLoadingPage {
+          } else if displayRows.isEmpty && !store.isLoadingPage && !showsRemainderRow {
             ContentUnavailableView("No photographs", systemImage: "photo.on.rectangle")
               // R3-12: drawn over the black canvas, so it takes the canvas's dark scheme.
               .environment(\.colorScheme, .dark)
@@ -290,8 +290,10 @@ struct GridView: View {
       switch scope {
       case .stream: instance = "stream"
       case .scene(let id): instance = "scene-\(id)"
+      case .remainder(let key): instance = "remainder-\(key.rawValue)"
       }
-      let entered = store.enteredSceneID.map { "\($0)" } ?? "none"
+      var entered = store.enteredSceneID.map { "\($0)" } ?? "none"
+      if let key = store.enteredRemainder { entered = "remainder-\(key.rawValue)" }
       return "instance=\(instance);entered=\(entered)"
     }
 
@@ -423,6 +425,8 @@ struct GridView: View {
               switch renderRow {
               case .header(let header):
                 GroupSectionHeaderView(header: header)
+              case .remainder(let remainder):
+                GroupRemainderRowView(row: remainder) { store.enterRemainder() }
               case .tiles(let rowModel):
                 HStack(spacing: gutter) {
                   ForEach(rowModel.cells, id: \.id) { packed in
@@ -611,6 +615,12 @@ struct GridView: View {
     store.displayRows(for: scope)
   }
 
+  /// IMGMGR-541: the stream ends in the remainder row (an all-unmarked folder shows ONLY it), so
+  /// an empty stream is not "No photographs" while that row stands.
+  private var showsRemainderRow: Bool {
+    scope == .stream && store.remainderReached && (store.remainderCount ?? 0) > 0
+  }
+
   private var rowsByID: [GridDisplayID: SceneDisplayRow] {
     Dictionary(displayRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
@@ -630,7 +640,8 @@ struct GridView: View {
       paneWidth: GridGutter.packingWidth(forPane: paneWidth),
       targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale,
       spacing: GridGutter.spacing(for: store.rowHeight),
-      layout: store.layoutStyle
+      layout: store.layoutStyle,
+      remainderCount: scope == .stream && store.remainderReached ? store.remainderCount : nil
     ) { displayID, tier in
       guard let row = byID[displayID] else { return .missing }
       switch row {
@@ -663,6 +674,32 @@ struct GroupSectionHeaderView: View {
   let header: GroupHeaderRow
 
   var body: some View {
+    if header.usesDot {
+      dotHeader
+    } else {
+      labelAndCountHeader
+    }
+  }
+
+  /// IMGMGR-541 (R3-6): Mark and Rating read "Picks · 5", one line.
+  private var dotHeader: some View {
+    HStack(spacing: 0) {
+      Text(header.dotTitle)
+        .font(.subheadline.weight(.semibold))
+        .monospacedDigit()
+        .lineLimit(1)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 4)
+    .padding(.top, 10)
+    .padding(.bottom, 2)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(header.dotTitle)
+    .accessibilityIdentifier("gridSectionHeader")
+    .allowsHitTesting(false)
+  }
+
+  private var labelAndCountHeader: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(header.label)
         .font(.subheadline.weight(.semibold))
@@ -700,6 +737,35 @@ struct GroupSectionHeaderView: View {
 /// control's highlighted state is what says "you are in an arrangement", and the behaviour the
 /// removed caption described (a collapsed scene is not selectable, ADR-0005) is unchanged and
 /// still proved by `GridStoreSceneTests`' boundary suite.
+/// IMGMGR-541 (R3-21): "493 photos without a mark ›" — the ONE row for the photographs without a
+/// mark (or rating). A tap enters them like a scene; it is never a mark target.
+struct GroupRemainderRowView: View {
+  let row: GroupRemainderRow
+  let open: () -> Void
+
+  var body: some View {
+    Button(action: open) {
+      HStack(spacing: 6) {
+        Text(row.title)
+          .font(.subheadline.weight(.semibold))
+          .monospacedDigit()
+          .lineLimit(1)
+        Image(systemName: "chevron.right")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 4)
+      .padding(.vertical, 12)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(row.title)
+    .accessibilityHint("Opens these photographs")
+    .accessibilityIdentifier("groupRemainderRow")
+  }
+}
+
 enum GridChromeRow: Hashable, Sendable {
   case options
   case pickLock(LatchVerb)

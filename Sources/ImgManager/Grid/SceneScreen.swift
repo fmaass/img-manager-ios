@@ -10,6 +10,15 @@ import SwiftUI
 enum GridScope: Hashable, Sendable {
   case stream
   case scene(Int)
+  /// IMGMGR-541 (R3-21): the photographs without a mark (or rating), entered like a scene.
+  case remainder(GroupByKey)
+}
+
+/// What the reader has entered over the stream: a scene, or the Mark/Rating remainder. ONE stored
+/// value in `GridStore` (`entry`), so the two can never both be entered (P12 §2.1 reserved this).
+enum GridEntry: Equatable, Sendable {
+  case scene(SceneEntry)
+  case remainder(GroupByKey)
 }
 
 /// The scene the reader has entered. A struct (one field now) so P13 can add a group entry

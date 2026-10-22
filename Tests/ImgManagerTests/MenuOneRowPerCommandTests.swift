@@ -225,4 +225,18 @@ struct MenuOneRowPerCommandTests {
     #expect(keys[ShortcutID.autoAdvance.rawValue] == "A or ⌘⇧A")
     #expect(keys[ShortcutID.help.rawValue] == "? or ⌘/")
   }
+
+  /// IMGMGR-541: the menu bar's group commands list no Day and no Month. They never did (the
+  /// View menu's group rows are None, Scene and the Scene toggle), so this is a guard: it goes red
+  /// only if a retired key comes back as a row.
+  @Test("The menu-bar group commands list no Day and no Month")
+  func menuBarGroupCommandsListNoDayOrMonth() {
+    let rows = (AppCommands.gridMenuGroups + AppCommands.viewMenuGroups).flatMap(\.menuRows)
+    for row in rows {
+      #expect(!row.id.hasSuffix(".day") && !row.id.hasSuffix(".month"), "\(row.id)")
+      #expect(!row.title.contains("Group: Day") && !row.title.contains("Group: Month"))
+    }
+    let groupRows = rows.filter { $0.id.hasPrefix("view.group.") }.map(\.id)
+    #expect(groupRows == ["view.group.none", "view.group.scene", "view.group.toggleScene"])
+  }
 }

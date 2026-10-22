@@ -20,7 +20,7 @@ struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
   let onHostPopped: () -> Void
   /// WP442 P12: the grid store's entered scene (projected onto the host's stack) and the store's
   /// leave, called when a USER write removed the scene from the stack.
-  var enteredSceneID: Int?
+  var enteredRoute: WorkspaceRoute?
   var onScenePopped: () -> Void = {}
   let shoots: Shoots
   let library: Library
@@ -64,11 +64,11 @@ struct CompactShell<Shoots: View, Library: View, Destination: View>: View {
     let navigation = self.navigation
     let onHostPopped = self.onHostPopped
     let onScenePopped = self.onScenePopped
-    let entered = self.enteredSceneID
+    let entered = self.enteredRoute
     return Binding(
-      get: { navigation.presentedPath(for: tab, entered: entered) },
+      get: { navigation.presentedPath(for: tab, enteredRoute: entered) },
       set: { newPath in
-        let effect = navigation.applyStackWrite(newPath, for: tab, entered: entered)
+        let effect = navigation.applyStackWrite(newPath, for: tab, enteredRoute: entered)
         if effect.leavesScene { onScenePopped() }
         if effect.popsHost { onHostPopped() }
       })

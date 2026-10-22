@@ -72,11 +72,13 @@ struct SortGroupOptionsTests {
     let offeredSort = SortGroupOptions.sortKeys.map(\.rawValue)
     let offeredGroup = SortGroupOptions.groupKeys.map(\.rawValue)
     #expect(offeredSort == ["date_taken", "filename", "rating", "iso", "camera", "lens"])
-    #expect(offeredGroup == ["day", "month", "camera", "lens", "iso", "location"])
-    // `hour`, `week` and `year` are the server's other three group keys: too fine and too
-    // coarse for a shoot-scoped grid. They must be in the SERVER's vocabulary (proving the
-    // subset is proper, not the whole set) and NOT in the offered one.
-    for omitted in ["hour", "week", "year"] {
+    // IMGMGR-541 (R3-16), a deliberate change of this pin: Mark and Rating join, Day and Month
+    // leave. The list reads None · Scene · Mark · Rating · Camera · Lens · ISO · Location.
+    #expect(offeredGroup == ["mark", "rating", "camera", "lens", "iso", "location"])
+    // The five time keys are the server's other group keys and are not offered. They must be in
+    // the SERVER's vocabulary (proving the subset is proper, not the whole set) and NOT in the
+    // offered one.
+    for omitted in ["hour", "day", "week", "month", "year"] {
       #expect(SortGroupOptions.serverAcceptsGroupByKey(omitted))
       #expect(!offeredGroup.contains(omitted))
     }
@@ -103,15 +105,36 @@ struct SortGroupOptionsTests {
     #expect(Set(choices).count == choices.count)
   }
 
-  @Test("Only the TIME keys claim a timezone — the others' responses carry none")
-  func onlyTimeKeysClaimATimezone() {
-    // Live-probed 2026-08-30: `group_by=day` answered `timezone: "Europe/Zurich"`, `camera` and
-    // `location` answered null. Estate ADR-0007: a rendered local time names its zone.
-    #expect(GroupByKey.day.isTimeKey)
-    #expect(GroupByKey.month.isTimeKey)
-    #expect(!GroupByKey.camera.isTimeKey)
-    #expect(!GroupByKey.lens.isTimeKey)
-    #expect(!GroupByKey.iso.isTimeKey)
-    #expect(!GroupByKey.location.isTimeKey)
+  /// IMGMGR-541, a deliberate rewrite: this asserted that Day and Month were time keys. Neither
+  /// is offered any more, so no offered key claims a timezone.
+  @Test("No offered key is a time key once Day and Month are gone")
+  func noOfferedKeyIsATimeKey() {
+    for key in GroupByKey.allCases {
+      #expect(!key.isTimeKey, "\(key.rawValue)")
+    }
+  }
+
+  @Test("Day and Month no longer parse as group keys, so a stray one reads as no grouping")
+  func dayAndMonthAreNoLongerGroupKeys() {
+    #expect(GroupByKey(rawValue: "day") == nil)
+    #expect(GroupByKey(rawValue: "month") == nil)
+    var stray = GridImagesQuery(folderID: 1)
+    stray.groupBy = "day"
+    #expect(stray.asListImagesQuery(cursor: nil, limit: 1).groupBy == nil)
+    #expect(stray.asNeighboursQuery(limit: 1).groupBy == nil)
+  }
+
+  @Test("Only Mark and Rating have a remainder row; Unknown stays a headed section elsewhere")
+  func onlyMarkAndRatingHaveARemainder() {
+    #expect(GroupByKey.allCases.filter(\.hasRemainder) == [.mark, .rating])
+  }
+
+  @Test("The Group list reads None, Scene, Mark, Rating, Camera, Lens, ISO, Location")
+  func groupingChoicesReadNoneSceneMarkRatingCameraLensIsoLocation() {
+    #expect(
+      SortGroupOptions.groupingChoices == [
+        .none, .scene, .key(.mark), .key(.rating), .key(.camera), .key(.lens), .key(.iso),
+        .key(.location),
+      ])
   }
 }

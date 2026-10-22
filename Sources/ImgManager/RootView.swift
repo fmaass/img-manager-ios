@@ -879,8 +879,8 @@ struct RootView: View {
       badgeCount: CompactTab.badgeCount(
         summaries: queueStore.summaries, since: settings.untouchedSince),
       onHostPopped: { selectedFolderID = nil },
-      enteredSceneID: gridStore.enteredSceneID,
-      onScenePopped: { [gridStore] in gridStore.leaveScene(.userBack) },
+      enteredRoute: gridStore.enteredRoute,
+      onScenePopped: { [gridStore] in gridStore.leaveEntry(.userBack) },
       shoots: shootsRoot, library: libraryRoot,
       destination: { route in workspaceColumn(scope: Self.compactScope(for: route)) })
   }
@@ -1122,8 +1122,16 @@ struct RootView: View {
   /// the pushed destination of whichever Compact tab hosts the grid (`WorkspaceNavigation`).
   /// WP442 P12: a Compact route's constant grid scope; `.group` renders the stream for now (P13).
   static func compactScope(for route: WorkspaceRoute) -> GridScope {
-    guard case .scene(let id) = route else { return .stream }
-    return .scene(id)
+    switch route {
+    case .scene(let id): return .scene(id)
+    // IMGMGR-541: the Mark/Rating remainder; any other group route shows the stream.
+    case .group(let key, let value):
+      guard value == GroupRemainder.routeValue, let groupBy = GroupByKey(rawValue: key),
+        groupBy.hasRemainder
+      else { return .stream }
+      return .remainder(groupBy)
+    case .workspace: return .stream
+    }
   }
 
   private var contentColumn: some View {

@@ -7,7 +7,8 @@ enum WorkspaceRoute: Hashable, Sendable {
   /// WP442 P12: the entered scene, pushed over the workspace. Never STORED in `paths`: it is
   /// projected from the grid store (`presentedPath(for:entered:)`).
   case scene(Int)
-  /// P13's Group-by entry. A route case only: nothing projects it yet.
+  /// IMGMGR-541 (P13): the Mark/Rating remainder, pushed over the workspace like a scene. Never
+  /// STORED in `paths`: projected from the grid store's entry (`presentedPath(for:enteredRoute:)`).
   case group(key: String, value: String)
 
   var isScene: Bool {
@@ -104,9 +105,16 @@ final class WorkspaceNavigation {
   /// WP442 P12 (§2.2): the path a tab's stack SHOWS — the stored base path, plus the entered
   /// scene on the grid host's stack. A pure projection of the store; nothing writes it back.
   func presentedPath(for tab: CompactTab, entered: Int?) -> [WorkspaceRoute] {
+    presentedPath(for: tab, enteredRoute: entered.map(WorkspaceRoute.scene))
+  }
+
+  /// IMGMGR-541: the same projection for any entry — the entered scene or the remainder route.
+  func presentedPath(for tab: CompactTab, enteredRoute: WorkspaceRoute?) -> [WorkspaceRoute] {
     let base = path(for: tab)
-    guard tab == gridHost, base == [.workspace], let entered else { return base }
-    return base + [.scene(entered)]
+    guard tab == gridHost, base == [.workspace], let enteredRoute, enteredRoute.isEntry else {
+      return base
+    }
+    return base + [enteredRoute]
   }
 
   /// A USER stack write (Back, edge swipe, pop to root) — SwiftUI calls the binding's setter only
@@ -114,11 +122,18 @@ final class WorkspaceNavigation {
   func applyStackWrite(
     _ newPath: [WorkspaceRoute], for tab: CompactTab, entered: Int?
   ) -> StackWriteEffect {
-    let presented = presentedPath(for: tab, entered: entered)
+    applyStackWrite(newPath, for: tab, enteredRoute: entered.map(WorkspaceRoute.scene))
+  }
+
+  /// `leavesScene` means "leaves the ENTRY" — a scene or the remainder (IMGMGR-541).
+  func applyStackWrite(
+    _ newPath: [WorkspaceRoute], for tab: CompactTab, enteredRoute: WorkspaceRoute?
+  ) -> StackWriteEffect {
+    let presented = presentedPath(for: tab, enteredRoute: enteredRoute)
     guard newPath != presented else { return .none }
     let wasHost = gridHost == tab
-    let showedScene = presented.contains(where: \.isScene)
-    let keepsScene = newPath.contains(where: \.isScene)
+    let showedScene = presented.contains(where: \.isEntry)
+    let keepsScene = newPath.contains(where: \.isEntry)
     setPath(newPath.filter { !$0.isEntry }, for: tab)
     var effect = StackWriteEffect.none
     effect.leavesScene = showedScene && !keepsScene

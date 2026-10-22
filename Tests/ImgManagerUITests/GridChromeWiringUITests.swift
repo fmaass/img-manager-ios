@@ -144,7 +144,7 @@ extension XCTestCase {
   /// row — but each swipe is DIRECTED by the target's frame against the scroll view's. Up only
   /// while the target lies below the visible area (or has no frame yet: the eager stack builds the
   /// rows in order, so an unbuilt one is further down), down only while it lies above. The blind
-  /// five-up-five-down overshot `arrange.group.month` in the 24-row list, reached the top, and a
+  /// five-up-five-down overshot a mid-list Group row (then `arrange.group.month`) in the 24-row list, reached the top, and a
   /// further swipe down dismissed the iPad popover; a directed swipe down never runs at the top.
   /// Press-and-drag gestures were tried and abandoned: on the iPhone sheet they re-chose the
   /// grouping (gate runs 3 and 4).

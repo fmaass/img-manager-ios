@@ -32,6 +32,11 @@ struct GroupHeaderRow: Identifiable, Equatable, Sendable {
   let label: String
   let count: Int
   let timezone: String?
+  /// IMGMGR-541 (R3-6): Mark and Rating headers read as one line, "Picks · 5".
+  var usesDot: Bool = false
+
+  /// The one-line form, "Picks · 5".
+  var dotTitle: String { "\(label) · \(count)" }
 
   var id: GroupKey { key }
 }
@@ -45,6 +50,16 @@ struct GroupHeaderRow: Identifiable, Equatable, Sendable {
 enum GridRenderRowID: Hashable, Sendable {
   case header(GroupKey)
   case tiles(GridDisplayID)
+  case remainder
+}
+
+/// IMGMGR-541 (R3-21): the ONE row that stands for the photographs without a mark (or rating),
+/// "493 photos without a mark ›". Its count is the server's header for the null bucket.
+struct GroupRemainderRow: Equatable, Sendable {
+  let groupBy: GroupByKey
+  let count: Int
+
+  var title: String { GroupRemainder.rowTitle(count: count, groupBy: groupBy) }
 }
 
 /// The grid's rendered sequence: section headers interleaved with packed tile rows.
@@ -55,11 +70,13 @@ enum GridRenderRowID: Hashable, Sendable {
 enum GridRenderRow: Identifiable, Equatable {
   case header(GroupHeaderRow)
   case tiles(PackedRow)
+  case remainder(GroupRemainderRow)
 
   var id: GridRenderRowID {
     switch self {
     case .header(let header): return .header(header.key)
     case .tiles(let row): return .tiles(row.id)
+    case .remainder: return .remainder
     }
   }
 
@@ -130,8 +147,17 @@ enum GridSectionLayout {
     displayScale: CGFloat,
     spacing: CGFloat = 2,
     layout: GridLayoutStyle = .justified,
+    remainderCount: Int? = nil,
     availability: (GridDisplayID, ProxyTier) -> ProxyAvailability
   ) -> [GridRenderRow] {
+    // IMGMGR-541: the remainder row closes the stream, after the last section, when the caller
+    // vouches for a non-zero null bucket (`GridStore.remainderCount` once the stream reached it).
+    let remainderRow: GridRenderRow? = {
+      guard let groupBy, groupBy.hasRemainder, let remainderCount, remainderCount > 0 else {
+        return nil
+      }
+      return .remainder(GroupRemainderRow(groupBy: groupBy, count: remainderCount))
+    }()
     func pack(_ slice: [SceneDisplayRow]) -> [GridRenderRow] {
       let tiles = slice.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) }
       switch layout {
@@ -158,6 +184,7 @@ enum GridSectionLayout {
       }
     }
 
+    // Unvouched headers: no sections and no remainder row (its count would be unvouched too).
     guard let groupBy, !headers.isEmpty else { return pack(rows) }
 
     var out: [GridRenderRow] = []
@@ -166,14 +193,20 @@ enum GridSectionLayout {
 
     func flushRun() {
       guard let runKey, !run.isEmpty else { return }
-      if let header = headers[runKey] {
+      // The null bucket is NEVER headed under Mark or Rating (R3-21): it is the one row below.
+      let isRemainderKey = groupBy.hasRemainder && runKey == .unknown
+      if !isRemainderKey, let header = headers[runKey] {
         out.append(
           .header(
             GroupHeaderRow(
-              key: runKey, label: header.label, count: header.count,
+              key: runKey,
+              label: GroupRemainder.headerTitle(
+                groupBy: groupBy, key: header.key, label: header.label),
+              count: header.count,
               // The zone is stated for the time keys only — it is what the server sends a
               // non-nil `timezone` for, and the only case where a label is a rendered local time.
-              timezone: groupBy.isTimeKey ? timezone : nil)))
+              timezone: groupBy.isTimeKey ? timezone : nil,
+              usesDot: GroupRemainder.usesDotHeader(groupBy))))
       }
       out.append(contentsOf: pack(run))
       run = []
@@ -188,6 +221,7 @@ enum GridSectionLayout {
       run.append(row)
     }
     flushRun()
+    if let remainderRow { out.append(remainderRow) }
     return out
   }
 }

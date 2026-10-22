@@ -59,11 +59,13 @@ enum SortDirection: String, CaseIterable, Sendable, Equatable {
   var reversed: SortDirection { self == .asc ? .desc : .asc }
 }
 
-/// The six group-by dimensions offered on touch. `hour`, `week` and `year` are the server's other
-/// three and are deliberately NOT offered: too fine and too coarse for a shoot-scoped grid.
+/// The six group-by dimensions offered on touch, in menu order (R3-16: None · Scene · Mark ·
+/// Rating · Camera · Lens · ISO · Location). `hour`, `day`, `week`, `month` and `year` are the
+/// server's other keys and are deliberately NOT offered (IMGMGR-541 removed Day and Month): a
+/// raw `"day"` no longer parses, so a stray one reads as no grouping at all.
 enum GroupByKey: String, CaseIterable, Sendable, Equatable {
-  case day
-  case month
+  case mark
+  case rating
   case camera
   case lens
   case iso
@@ -71,8 +73,8 @@ enum GroupByKey: String, CaseIterable, Sendable, Equatable {
 
   var title: String {
     switch self {
-    case .day: return "Day"
-    case .month: return "Month"
+    case .mark: return "Mark"
+    case .rating: return "Rating"
     case .camera: return "Camera"
     case .lens: return "Lens"
     case .iso: return "ISO"
@@ -80,14 +82,22 @@ enum GroupByKey: String, CaseIterable, Sendable, Equatable {
     }
   }
 
-  /// The five TIME keys (`hour`, `day`, `week`, `month`, `year`) are the ones whose labels the
-  /// server renders in a named timezone, and the only ones whose `/api/image-groups` response
-  /// carries a non-nil `timezone` (live-probed 2026-08-30: `day` → `Europe/Zurich`, `camera` and
-  /// `location` → null). A section header states that zone for exactly these — estate ADR-0007
-  /// (/link/2553), "a rendered local time names its zone".
+  /// The server's TIME keys (`hour`, `day`, `week`, `month`, `year`) are the ones whose labels it
+  /// renders in a named timezone (estate ADR-0007, /link/2553). None of them is offered any more,
+  /// so no offered key states a zone; the switch stays exhaustive so a time key added back has to
+  /// answer this question.
   var isTimeKey: Bool {
     switch self {
-    case .day, .month: return true
+    case .mark, .rating, .camera, .lens, .iso, .location: return false
+    }
+  }
+
+  /// IMGMGR-541 (R3-21): grouped by Mark or Rating, the server's null bucket (no mark / no
+  /// rating) is never headed in the stream. It is ONE remainder row, entered like a scene.
+  /// The other keys keep their Unknown bucket as an ordinary headed section.
+  var hasRemainder: Bool {
+    switch self {
+    case .mark, .rating: return true
     case .camera, .lens, .iso, .location: return false
     }
   }
@@ -173,7 +183,8 @@ enum SortGroupOptions {
   static let directions: [SortDirection] = SortDirection.allCases
   static let groupKeys: [GroupByKey] = GroupByKey.allCases
 
-  /// The single-select Group menu's full list, in order: None, Scene, then the six dimensions.
+  /// The single-select Group menu's full list, in order: None, Scene, then the six dimensions
+  /// (Mark, Rating, Camera, Lens, ISO, Location).
   static let groupingChoices: [GroupingChoice] =
     [.none, .scene] + GroupByKey.allCases.map(GroupingChoice.key)
 
@@ -249,8 +260,8 @@ extension SortKey {
 extension GroupByKey {
   var listImagesPayload: Operations.ListImagesApiImagesGet.Input.Query.GroupByPayload {
     switch self {
-    case .day: return .day
-    case .month: return .month
+    case .mark: return .mark
+    case .rating: return .rating
     case .camera: return .camera
     case .lens: return .lens
     case .iso: return .iso
@@ -262,8 +273,8 @@ extension GroupByKey {
     Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.GroupByPayload
   {
     switch self {
-    case .day: return .day
-    case .month: return .month
+    case .mark: return .mark
+    case .rating: return .rating
     case .camera: return .camera
     case .lens: return .lens
     case .iso: return .iso
@@ -273,8 +284,8 @@ extension GroupByKey {
 
   var imageGroupsPayload: Operations.ImageGroupsApiImageGroupsGet.Input.Query.GroupByPayload {
     switch self {
-    case .day: return .day
-    case .month: return .month
+    case .mark: return .mark
+    case .rating: return .rating
     case .camera: return .camera
     case .lens: return .lens
     case .iso: return .iso

@@ -291,16 +291,70 @@ struct WorkspaceNavigationTests {
     }
   }
 
-  /// R11 · the `.group` route exists (P13's entry) with no UI and no projection.
-  @Test("R11 — the group route is hashable and never projected or stored")
-  func groupRouteIsHashableAndNeverProjected() {
+  /// R11 · the `.group` route is a value: hashable, an entry, never a scene. IMGMGR-541 made it
+  /// projected (the Mark/Rating remainder), so the old "never projected" half moved to R12–R15.
+  @Test("R11 — the group route is hashable")
+  func groupRouteIsHashable() {
     let a = WorkspaceRoute.group(key: "camera", value: "X-T5")
     #expect(Set([a, .group(key: "camera", value: "X-T5")]).count == 1)
     #expect(a != .group(key: "camera", value: "X-H2"))
     #expect(a.isEntry && !a.isScene)
+  }
+
+  private let remainder = WorkspaceRoute.group(key: "mark", value: GroupRemainder.routeValue)
+
+  /// R12 · IMGMGR-541: the entered remainder is projected onto the host's stack like a scene.
+  @Test("R12 — the presented path projects the entered group")
+  func presentedPathProjectsTheEnteredGroup() {
     let nav = hosted()
-    #expect(!nav.presentedPath(for: .shoots, entered: 5).contains(a))
-    _ = nav.applyStackWrite([.workspace, a], for: .shoots, entered: nil)
+    #expect(nav.presentedPath(for: .shoots, enteredRoute: remainder) == [.workspace, remainder])
+    #expect(nav.presentedPath(for: .library, enteredRoute: remainder).isEmpty)
+    #expect(nav.presentedPath(for: .shoots, enteredRoute: nil) == base)
+  }
+
+  /// R13 · the interactive Back out of the remainder leaves the entry and stores the base.
+  @Test("R13 — Back from the group leaves the entry and stores the base")
+  func backFromTheGroupLeavesTheEntryAndStoresTheBase() {
+    let nav = hosted()
+    let effect = nav.applyStackWrite(base, for: .shoots, enteredRoute: remainder)
+    #expect(effect == StackWriteEffect(leavesScene: true, popsHost: false))
     #expect(nav.path(for: .shoots) == base)
+    #expect(nav.gridHost == .shoots)
+  }
+
+  /// R14 · the stored path never holds the group; its echo is a no-op.
+  @Test("R14 — the group is never stored in the paths")
+  func groupIsNeverStoredInPaths() {
+    let nav = hosted()
+    let echo = [WorkspaceRoute.workspace, remainder]
+    #expect(nav.applyStackWrite(echo, for: .shoots, enteredRoute: remainder) == .none)
+    #expect(nav.path(for: .shoots) == base)
+    _ = nav.applyStackWrite(echo, for: .shoots, enteredRoute: nil)
+    #expect(nav.path(for: .shoots) == base)
+    #expect(!nav.path(for: .shoots).contains(remainder))
+  }
+
+  /// R15 · Regular→Compact presents the entered remainder on the new host.
+  @Test("R15 — a layout change keeps the projected group")
+  func layoutChangeKeepsTheProjectedGroup() {
+    let nav = WorkspaceNavigation()
+    nav.applyLayoutChange(from: .regular2, to: .compact, hasSelectedShoot: true)
+    #expect(nav.presentedPath(for: .library, enteredRoute: remainder) == [.workspace, remainder])
+    #expect(nav.presentedPath(for: .shoots, enteredRoute: remainder).isEmpty)
+  }
+
+  /// IMGMGR-541: the Compact route maps to the remainder scope only for its own token.
+  @Test("The Compact scope maps the remainder route")
+  func compactScopeMapsTheRemainderRoute() {
+    #expect(RootView.compactScope(for: remainder) == .remainder(.mark))
+    let rating = WorkspaceRoute.group(key: "rating", value: GroupRemainder.routeValue)
+    #expect(RootView.compactScope(for: rating) == .remainder(.rating))
+  }
+
+  @Test("The Compact scope refuses an unknown group route")
+  func compactScopeRefusesAnUnknownGroupRoute() {
+    #expect(RootView.compactScope(for: .group(key: "camera", value: "remainder")) == .stream)
+    #expect(RootView.compactScope(for: .group(key: "mark", value: "pick")) == .stream)
+    #expect(RootView.compactScope(for: .group(key: "day", value: "remainder")) == .stream)
   }
 }

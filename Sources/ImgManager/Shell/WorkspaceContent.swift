@@ -43,24 +43,30 @@ struct WorkspaceContent: View {
 
   private var title: String? { breadcrumb?.title }
 
-  /// The scene this content shows, if any.
-  private var sceneID: Int? {
-    guard case .scene(let id) = scope else { return nil }
-    return id
-  }
-
   private var isActive: Bool { scope == store.activeScope }
 
-  /// The navigation title: the folder's, or "Scene · N photos" inside a scene.
-  private var shownTitle: String {
-    if let sceneID { return store.sceneTitle(for: sceneID) }
-    return title ?? ""
+  /// The entered destination's own title: "Scene · N photos" inside a scene, "493 photos
+  /// without a mark" inside the Mark/Rating remainder (IMGMGR-541, frozen at entry), nil on the
+  /// stream.
+  private var entryTitle: String? {
+    switch scope {
+    case .stream: return nil
+    case .scene(let id): return store.sceneTitle(for: id)
+    case .remainder(let key):
+      return GroupRemainder.rowTitle(count: store.remainderEntryCount, groupBy: key)
+    }
   }
 
-  /// D1: inside a scene the principal breadcrumb is the scene title with NO folder counts.
+  /// The navigation title: the folder's, or the entered destination's.
+  private var shownTitle: String {
+    entryTitle ?? title ?? ""
+  }
+
+  /// D1: inside a scene (or the remainder) the principal breadcrumb is its title with NO folder
+  /// counts.
   private var shownBreadcrumb: GridBreadcrumb? {
-    guard let sceneID else { return breadcrumb }
-    return GridBreadcrumb(title: store.sceneTitle(for: sceneID), subtitle: nil)
+    guard let entryTitle else { return breadcrumb }
+    return GridBreadcrumb(title: entryTitle, subtitle: nil)
   }
 
   private var shootWindowOpener: ShootWindowOpener {
@@ -109,7 +115,7 @@ struct WorkspaceContent: View {
           .navigationTitle(shownTitle)
           .modifier(
             SceneFolderSubtitle(
-              subtitle: sceneID != nil && layoutMode == .compact ? (title ?? "") : nil)
+              subtitle: entryTitle != nil && layoutMode == .compact ? (title ?? "") : nil)
           )
           .navigationBarTitleDisplayMode(.inline)
           .modifier(
@@ -118,7 +124,7 @@ struct WorkspaceContent: View {
               openSummary: { showSummary = true })
           )
           .toolbar {
-            if sceneID != nil, layoutMode != .compact {
+            if entryTitle != nil, layoutMode != .compact {
               ToolbarItem(placement: .topBarLeading) {
                 SceneBackButton(folderTitle: title ?? "", store: store)
               }

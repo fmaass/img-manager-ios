@@ -55,7 +55,8 @@ struct ArrangeModelTests {
         "arrange.sort.date_taken", "arrange.sort.filename", "arrange.sort.rating",
         "arrange.sort.iso", "arrange.sort.camera", "arrange.sort.lens",
         "arrange.direction.asc", "arrange.direction.desc",
-        "arrange.group.none", "arrange.group.scene", "arrange.group.day", "arrange.group.month",
+        // IMGMGR-541 (R3-16), deliberate: Mark and Rating replace Day and Month.
+        "arrange.group.none", "arrange.group.scene", "arrange.group.mark", "arrange.group.rating",
         "arrange.group.camera", "arrange.group.lens", "arrange.group.iso",
         "arrange.group.location",
         "arrange.layout.justified", "arrange.layout.square",

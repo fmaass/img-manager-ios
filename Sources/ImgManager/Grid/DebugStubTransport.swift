@@ -99,12 +99,27 @@
         // Handoff continuation can target a photograph the first page does not carry.
         return try jsonResponse(
           .ok, Self.pagedFolderPage(cursor: Self.queryParameters(of: request)["cursor"]))
+      case Operations.ListImagesApiImagesGet.id where DebugMarkGroupsFixture.isOn:
+        // IMGMGR-541: the 500-photograph Mark/Rating shoot, grouped from the live mark state.
+        let marks = markState
+        return try jsonResponse(
+          .ok,
+          DebugMarkGroupsFixture.page(
+            query: Self.queryParameters(of: request),
+            marks: { Self.seededState($0, marks: marks) }))
       case Operations.ListImagesApiImagesGet.id:
         return try jsonResponse(
           .ok,
           Components.Schemas.ImagePage(
             items: Self.fixtureImages(scopedTo: Self.perFolderScope(of: request)), limit: 100,
             nextCursor: nil))
+      case Operations.ImageGroupsApiImageGroupsGet.id where DebugMarkGroupsFixture.isOn:
+        let marks = markState
+        return try jsonResponse(
+          .ok,
+          DebugMarkGroupsFixture.groups(
+            query: Self.queryParameters(of: request),
+            marks: { Self.seededState($0, marks: marks) }))
       case Operations.ImageGroupsApiImageGroupsGet.id:
         // WP13 P5b: the fixture's `group_key` values are CAMERA names, so this is the dimension
         // it models; the counts are the live probe's own (2026-08-30), deliberately far larger
@@ -551,6 +566,7 @@
     /// The fixture's own seed for one photograph (members 3 and 5 are picked).
     private static func seededState(_ id: Int, marks: [Int: String]) -> String {
       if let moved = marks[id] { return moved }
+      if let seeded = DebugMarkGroupsFixture.seededMark(id) { return seeded }
       return id == 3 || id == 5 ? "pick" : "none"
     }
 

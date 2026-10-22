@@ -61,12 +61,13 @@ struct GridSectionLayoutTests {
     headers: [GroupKey: Components.Schemas.GroupHeader],
     timezone: String? = nil,
     paneWidth: CGFloat = 800,
-    targetRowHeight: CGFloat = 200
+    targetRowHeight: CGFloat = 200,
+    remainderCount: Int? = nil
   ) -> [GridRenderRow] {
     GridSectionLayout.renderRows(
       rows: rows, groupBy: groupBy, headers: headers, timezone: timezone,
       paneWidth: paneWidth, targetRowHeight: targetRowHeight, displayScale: 2,
-      availability: alwaysAvailable)
+      remainderCount: remainderCount, availability: alwaysAvailable)
   }
 
   @Test("A header row is emitted at every group-key boundary, with the SERVER's label and count")
@@ -94,6 +95,7 @@ struct GridSectionLayoutTests {
       switch $0 {
       case .header(let header): return "H:\(header.label)"
       case .tiles(let row): return "T:\(row.cells.map { String(describing: $0.id) }.joined())"
+      case .remainder(let remainder): return "R:\(remainder.title)"
       }
     }
     #expect(sequence.first == "H:SONY ILCE-7RM5")
@@ -188,6 +190,7 @@ struct GridSectionLayoutTests {
       switch row {
       case .header(let header): #expect(row.id == .header(header.key))
       case .tiles(let packed): #expect(row.id == .tiles(packed.cells[0].id))
+      case .remainder: #expect(row.id == .remainder)
       }
     }
 
@@ -204,23 +207,11 @@ struct GridSectionLayoutTests {
     #expect(Array(after.map(\.id).dropFirst(2)) == ids)
   }
 
-  @Test("The timezone on a header is the SERVER's, and only for a time key")
-  func theTimezoneOnAHeaderIsTheServersAndOnlyForATimeKey() {
-    let dayRows = [
-      image(id: 1, groupKey: "2026-07-26"), image(id: 2, groupKey: "2026-07-27"),
-    ].map(SceneDisplayRow.image)
-    let dayHeaders: [GroupKey: Components.Schemas.GroupHeader] = [
-      .known("2026-07-26"): header(key: "2026-07-26", label: "2026-07-26", count: 255),
-      .known("2026-07-27"): header(key: "2026-07-27", label: "2026-07-27", count: 12),
-    ]
-    let timeKey = render(
-      rows: dayRows, groupBy: .day, headers: dayHeaders, timezone: "Europe/Zurich")
-    let zones: [String?] = timeKey.compactMap {
-      if case .header(let header) = $0 { return header.timezone }
-      return nil
-    }
-    #expect(zones == ["Europe/Zurich", "Europe/Zurich"])
-
+  /// IMGMGR-541, a deliberate rewrite: this asserted that a Day header carried the server's
+  /// zone. Day and Month are no longer offered, so no offered key is a time key, and a header
+  /// never states a zone even when a response hands one over.
+  @Test("No offered key renders a timezone, even when the response names one")
+  func aTimezoneRendersForNoOfferedKey() {
     // A non-time key's response carries `timezone: null`; even handed one, the header states
     // none — a camera name is not a rendered local time.
     let cameraKey = render(
@@ -228,6 +219,78 @@ struct GridSectionLayoutTests {
       timezone: "Europe/Zurich")
     for row in cameraKey {
       if case .header(let header) = row { #expect(header.timezone == nil) }
+    }
+  }
+
+  // MARK: - IMGMGR-541: Mark/Rating sections and the remainder row
+
+  /// Picks then Dislikes, as the stream holds them once the remainder is cut off.
+  private var markStream: [SceneDisplayRow] {
+    [
+      image(id: 1, groupKey: "pick"), image(id: 2, groupKey: "pick"),
+      image(id: 3, groupKey: "dislike"),
+    ].map(SceneDisplayRow.image)
+  }
+
+  private var markHeaders: [GroupKey: Components.Schemas.GroupHeader] {
+    [
+      .known("pick"): header(key: "pick", label: "Pick", count: 5),
+      .known("dislike"): header(key: "dislike", label: "Dislike", count: 2),
+      .unknown: header(key: nil, label: "Unknown", count: 493),
+    ]
+  }
+
+  private func headerTitles(_ rows: [GridRenderRow]) -> [String] {
+    rows.compactMap {
+      switch $0 {
+      case .header(let header): return header.usesDot ? header.dotTitle : header.label
+      case .remainder(let row): return row.title
+      case .tiles: return nil
+      }
+    }
+  }
+
+  @Test("The remainder row follows the last marked section")
+  func remainderRowFollowsTheLastMarkedSection() {
+    let rows = render(
+      rows: markStream, groupBy: .mark, headers: markHeaders, remainderCount: 493)
+    #expect(headerTitles(rows) == ["Picks · 5", "Dislikes · 2", "493 photos without a mark"])
+    #expect(rows.last == .remainder(GroupRemainderRow(groupBy: .mark, count: 493)))
+    #expect(rows.last?.id == .remainder)
+  }
+
+  @Test("The null key never gets a header under Mark or Rating")
+  func nullKeyNeverGetsAHeaderUnderMarkOrRating() {
+    var stream = markStream
+    stream.append(.image(image(id: 9, groupKey: nil)))
+    for groupBy in [GroupByKey.mark, .rating] {
+      let rows = render(rows: stream, groupBy: groupBy, headers: markHeaders)
+      #expect(!rows.contains { $0.id == .header(.unknown) })
+    }
+    let camera = render(rows: threeSectionStream, groupBy: .camera, headers: threeSectionHeaders)
+    #expect(camera.contains { $0.id == .header(.unknown) }, "camera keeps its Unknown header")
+  }
+
+  @Test("No remainder row until the headers vouch for the query")
+  func noRemainderRowUntilHeadersVouch() {
+    let rows = render(rows: markStream, groupBy: .mark, headers: [:], remainderCount: 493)
+    #expect(!rows.contains { $0.id == .remainder })
+    #expect(!rows.contains { $0.id == .header(.known("pick")) })
+  }
+
+  @Test("An all-unmarked folder renders the remainder row alone")
+  func anEmptyStreamRendersOnlyTheRemainderRow() {
+    let rows = render(rows: [], groupBy: .mark, headers: markHeaders, remainderCount: 500)
+    #expect(rows == [.remainder(GroupRemainderRow(groupBy: .mark, count: 500))])
+  }
+
+  @Test("No remainder row when its count is zero or unknown")
+  func noRemainderRowWhenItsCountIsZero() {
+    for count in [0, nil] as [Int?] {
+      let rows = render(
+        rows: markStream, groupBy: .mark, headers: markHeaders, remainderCount: count)
+      #expect(!rows.contains { $0.id == .remainder })
+      #expect(headerTitles(rows) == ["Picks · 5", "Dislikes · 2"])
     }
   }
 }

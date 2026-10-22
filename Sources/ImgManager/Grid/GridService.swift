@@ -891,7 +891,8 @@ struct GridImagesQuery: Sendable, Equatable {
     .ListImagesApiImagesGet.Input.Query
   {
     .init(
-      groupBy: groupBy.flatMap(Operations.ListImagesApiImagesGet.Input.Query.GroupByPayload.init),
+      // IMGMGR-541: only an OFFERED key reaches the wire, so a stray retired `"day"` cannot.
+      groupBy: groupBy.flatMap(GroupByKey.init(rawValue:))?.listImagesPayload,
       cursor: cursor, limit: limit, folderId: folderID, ratingMin: ratingMin, good: good,
       label: label, keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.listImagesPayload,
       tree: tree, ext: ext, camera: camera, hasMaster: hasMaster, mark: mark,
@@ -943,8 +944,7 @@ struct GridImagesQuery: Sendable, Equatable {
     -> Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query
   {
     .init(
-      groupBy: groupBy.flatMap(
-        Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.GroupByPayload.init),
+      groupBy: groupBy.flatMap(GroupByKey.init(rawValue:))?.neighboursPayload,
       limit: limit, folderId: folderID, ratingMin: ratingMin, good: good, label: label,
       keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.neighboursPayload, tree: tree,
       ext: ext, camera: camera, hasMaster: hasMaster, mark: mark,

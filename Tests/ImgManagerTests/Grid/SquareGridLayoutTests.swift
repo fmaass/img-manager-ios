@@ -220,6 +220,8 @@ struct SquareGridLayoutTests {
           GridSectionLayout.groupKey(of: stream[id - 1])
         }
         #expect(keys.allSatisfy { $0 == currentKey }, "a square row straddles a header: \(keys)")
+      case .remainder:
+        Issue.record("camera grouping has no remainder row")
       }
     }
     #expect(tileRows == 3)

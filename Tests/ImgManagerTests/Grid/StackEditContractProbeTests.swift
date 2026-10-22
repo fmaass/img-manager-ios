@@ -402,7 +402,7 @@ struct CountCancelledContractProbeTests {
     let transport = GridStubTransport()
     await transport.setImageGroupsCountCancelled(.init(retryAfterSeconds: nil))
     do {
-      _ = try await makeService(transport).imageGroups(GridImagesQuery(folderID: 1), groupBy: .day)
+      _ = try await makeService(transport).imageGroups(GridImagesQuery(folderID: 1), groupBy: .mark)
       Issue.record("expected a cancelled count")
     } catch GridServiceError.countCancelled(let seconds) {
       #expect(seconds == nil)

@@ -86,6 +86,17 @@ final class GridStore {
 
   private(set) var images: [Components.Schemas.ImageSummary] = []
   private(set) var nextCursor: String?
+  /// IMGMGR-541 (R3-21): grouped by Mark or Rating, the photographs in the server's null bucket
+  /// (no mark / no rating). They NEVER enter `images`: every stream page is cut at the boundary
+  /// by `ingestStreamPage`, so no stream gesture, count or heading can reach one. The slice is the
+  /// drilled remainder's own, in the server's order, paged only by `remainderCursor`.
+  private(set) var remainderImages: [Components.Schemas.ImageSummary] = []
+  /// The remainder's OWN continuation, exactly as the server issued it with the page that crossed
+  /// into the null bucket (and with every remainder page since). Never derived from a tile.
+  private(set) var remainderCursor: String?
+  /// The stream has reached the null bucket: it is exhausted (the server orders that bucket LAST
+  /// for both keys and both directions), and the remainder row may be drawn.
+  private(set) var remainderReached = false
   private(set) var isLoadingPage = false
   private(set) var lastMutationError: GridMutationError?
   private(set) var lastPageLoadError: GridMutationError?
@@ -146,13 +157,39 @@ final class GridStore {
   private(set) var sceneNextCursor: String?
   /// WP442 P12 (IMGMGR-540): the ONE scene the reader has entered (pushed). The only writer is
   /// `transitionScene(to:reason:)`; everything that used to read an "expanded" set derives from it.
-  private(set) var sceneEntry: SceneEntry?
+  /// IMGMGR-541: the ONE entered destination — a scene or the Mark/Rating remainder. The only
+  /// writer is `transitionScene(to:reason:)`.
+  private(set) var entry: GridEntry?
+  var sceneEntry: SceneEntry? {
+    guard case .scene(let scene) = entry else { return nil }
+    return scene
+  }
   var enteredSceneID: Int? { sceneEntry?.stackID }
+  /// The remainder key while the reader is inside the drilled remainder.
+  var enteredRemainder: GroupByKey? {
+    guard case .remainder(let key) = entry else { return nil }
+    return key
+  }
+  var isInRemainder: Bool { enteredRemainder != nil }
+  /// The entered destination as the Compact stack's route — a pure projection, never stored.
+  var enteredRoute: WorkspaceRoute? {
+    switch entry {
+    case .scene(let scene): return .scene(scene.stackID)
+    case .remainder(let key): return .group(key: key.rawValue, value: GroupRemainder.routeValue)
+    case nil: return nil
+    }
+  }
   /// Computed, never stored: the edit subject, the paging fences and the filmstrip read it, so
   /// none of them can name a scene the display has left.
   var sceneExpanded: Set<Int> { enteredSceneID.map { [$0] } ?? [] }
   /// The scope the reader is looking at: the stream, or the entered scene.
-  var activeScope: GridScope { enteredSceneID.map(GridScope.scene) ?? .stream }
+  var activeScope: GridScope {
+    switch entry {
+    case .scene(let scene): return .scene(scene.stackID)
+    case .remainder(let key): return .remainder(key)
+    case nil: return .stream
+    }
+  }
   /// Bumped by every real transition; a topology completion navigates only while it still
   /// matches the revision its edit started at.
   @ObservationIgnored private(set) var sceneRevision = 0
@@ -202,6 +239,8 @@ final class GridStore {
       }
     case .scene(let id):
       return SceneRowBuilder.enteredSceneRows(members: sceneMembers[id] ?? [])
+    case .remainder:
+      return remainderImages.map(SceneDisplayRow.image)
     }
   }
 
@@ -248,7 +287,8 @@ final class GridStore {
   /// above), while every mark, focus and navigation path here keeps reading this projection.
   var actionableImages: [Components.Schemas.ImageSummary] {
     switch displayMode {
-    case .flat: return images
+    // IMGMGR-541: inside the drilled remainder the photographs on screen are the remainder's.
+    case .flat: return isInRemainder ? remainderImages : images
     case .scene: return SceneRowBuilder.actionableImages(displayRows(for: activeScope))
     }
   }
@@ -698,6 +738,13 @@ final class GridStore {
   /// `@discardableResult` keeps the answer optional for any other caller.
   @discardableResult
   private func fetchAndMergeNeighbours(after imageID: Int) async -> NeighbourFetchOutcome {
+    // IMGMGR-541 (§2.3a): grouped by Mark or Rating, `/neighbours` answers from a photograph's
+    // CURRENT grouped position — after a pick inside the remainder that is the Picks group, and
+    // "what follows" would be a stream photograph. Each scope pages its own retained order with
+    // its own issued cursor instead.
+    if remainderGroupBy != nil {
+      return await pageActiveGroupedScope(advancingLoupeFrom: imageID)
+    }
     // Diff-gate round (2026-08-28): the same generation guard every other paging await here
     // carries — a neighbours response that lands after the shoot/filter changed must be
     // discarded whole, or it appends old-scope rows into the new scope and can focus the
@@ -1238,6 +1285,18 @@ final class GridStore {
 
   /// Foreground/retry: same scope, fresh data.
   func fullReload() async {
+    // IMGMGR-541 (§2.5): under Mark/Rating grouping the notice's Retry is a PRESERVING refresh,
+    // never a replace: the stream keeps its tiles where they are and an entered remainder stays
+    // entered. Then the page that failed is asked for again from the scope's kept cursor.
+    if remainderGroupBy != nil, !images.isEmpty || remainderReached {
+      guard await authoritativeRefresh() else { return }
+      if isInRemainder {
+        await loadMoreRemainder()
+      } else if nextCursor != nil, let last = images.last {
+        await loadMoreIfNeeded(currentItemID: last.id)
+      }
+      return
+    }
     selection.reset(.fullReload)
     focusedImageID = nil
     await reloadFirstPage()
@@ -1284,6 +1343,7 @@ final class GridStore {
       // by `/api/images` is refused outright by the stacks endpoint.
       images = []
       nextCursor = nil
+      clearRemainder()
     }
     var rowsLoaded = false
     var probedScenePage: StackBrowsePageResult?
@@ -1296,6 +1356,7 @@ final class GridStore {
         // The flat window goes for the same reason it goes above when Scene is already on.
         images = []
         nextCursor = nil
+        clearRemainder()
         probedScenePage = probe
       }
     }
@@ -1306,8 +1367,7 @@ final class GridStore {
         guard generation == loadGeneration else { return }
         // Assigned only on success, deliberately: a failed flat reload keeps the rows the reader
         // was looking at rather than blanking the grid (pre-existing behaviour, unchanged).
-        images = page.items
-        nextCursor = page.nextCursor
+        ingestStreamPage(page.items, nextCursor: page.nextCursor, replacing: true)
       case .scene:
         let page: StackBrowsePageResult
         if let probedScenePage {
@@ -1540,6 +1600,9 @@ final class GridStore {
   }
 
   private func refreshFlatPages(generation: Int) async -> Bool {
+    if remainderGroupBy != nil {
+      return await refreshGroupedPreserving(generation: generation)
+    }
     var snapshot: [Components.Schemas.ImageSummary] = []
     var cursor: String?
     var restarts = 0
@@ -1615,6 +1678,11 @@ final class GridStore {
     // (`loadMoreScenesIfNeeded`); routing an image id through here would consume the flat cursor,
     // which the stacks endpoint refuses outright as a scope mismatch.
     guard displayMode == .flat else { return }
+    // IMGMGR-541: inside the remainder, the grid and the loupe page the remainder's own cursor.
+    if isInRemainder {
+      await loadMoreRemainderIfNeeded(currentItemID: currentItemID)
+      return
+    }
     guard images.last?.id == currentItemID, let cursor = nextCursor, !isLoadingPage else {
       return
     }
@@ -1627,10 +1695,16 @@ final class GridStore {
       // `mergeImages` (P5): dedups against anything the loupe's own forward-neighbour prefetch
       // already appended, so a grid page whose range overlaps a prior neighbours-merge never
       // produces a duplicate tile.
-      images.append(contentsOf: mergeImages(page.items))
-      nextCursor = page.nextCursor
+      ingestStreamPage(page.items, nextCursor: page.nextCursor, replacing: false)
       selection.pageAppended()
       lastPageLoadError = nil
+    } catch GridServiceError.cursorInvalid where remainderGroupBy != nil {
+      // IMGMGR-541 (§2.5): under Mark/Rating grouping the retained stream is never replaced —
+      // a tile marked in place stays where it is — so the dead cursor is recovered by re-paging
+      // and appending only what is new.
+      guard generation == loadGeneration else { return }
+      isLoadingPage = false
+      await recoverGroupedCursor(for: .stream)
     } catch GridServiceError.cursorInvalid {
       // Pinned disposition (plan §Phase 4, "v0.9.1-era cursor behavior"): discard the cursor
       // and restart the SAME scope from page one, rather than surfacing a dead-end paging
@@ -1718,14 +1792,263 @@ final class GridStore {
     return false
   }
 
+  // MARK: - Mark/Rating remainder (IMGMGR-541, R3-6/R3-21)
+
+  /// The key whose null bucket is the remainder, while the flat grid is grouped by one.
+  var remainderGroupBy: GroupByKey? {
+    guard displayMode == .flat, let key = activeGrouping.groupByKey, key.hasRemainder else {
+      return nil
+    }
+    return key
+  }
+
+  /// The server-vouched size of the remainder, or nil while the headers do not vouch for this
+  /// query. Never a tally of `remainderImages` (a page holds PART of the bucket).
+  var remainderCount: Int? {
+    guard remainderGroupBy != nil else { return nil }
+    return groupHeaders[.unknown]?.count
+  }
+
+  private func clearRemainder() {
+    remainderImages = []
+    remainderCursor = nil
+    remainderReached = false
+  }
+
+  /// THE only writer of stream pages into `images` (§2.2). Cuts the page at the remainder
+  /// boundary; the first remainder rows seed the remainder with the cursor the server issued for
+  /// that page, and the stream stops paging — every later row is remainder. A page that ends
+  /// exactly on the last marked photograph seeds nothing: the stream pages on and the next page,
+  /// all remainder, finds the boundary.
+  private func ingestStreamPage(
+    _ items: [Components.Schemas.ImageSummary], nextCursor next: String?, replacing: Bool
+  ) {
+    let cut = GroupRemainder.split(items, groupBy: remainderGroupBy)
+    if replacing {
+      clearRemainder()
+      images = cut.stream
+    } else {
+      images.append(contentsOf: mergeImages(cut.stream))
+    }
+    guard !cut.remainder.isEmpty, !remainderReached else {
+      nextCursor = next
+      return
+    }
+    let known = Set(images.map(\.id))
+    remainderImages = cut.remainder.filter { !known.contains($0.id) }
+    remainderCursor = next
+    remainderReached = true
+    nextCursor = nil
+  }
+
+  /// Appends a remainder page: null-bucket rows only, never an id the stream or the remainder
+  /// already holds (§2.3a: no marked-stream id, no duplicate).
+  private func appendRemainder(_ items: [Components.Schemas.ImageSummary]) -> Int {
+    let known = Set(images.map(\.id)).union(remainderImages.map(\.id))
+    let fresh = items.filter {
+      GroupRemainder.isRemainder(groupKey: $0.groupKey, groupBy: remainderGroupBy)
+        && !known.contains($0.id)
+    }
+    remainderImages.append(contentsOf: fresh)
+    return fresh.count
+  }
+
+  /// The grid's tail paging inside the drilled remainder (the stream's is `loadMoreIfNeeded`).
+  func loadMoreRemainderIfNeeded(currentItemID: Int) async {
+    guard isInRemainder, remainderImages.last?.id == currentItemID else { return }
+    _ = await loadMoreRemainder()
+  }
+
+  /// One remainder page from `remainderCursor`, the same grouped query. The cursor advances only
+  /// from a page that landed; a failure leaves it, so the continuation is never lost.
+  @discardableResult
+  private func loadMoreRemainder() async -> NeighbourFetchOutcome {
+    guard let cursor = remainderCursor else { return .exhausted }
+    guard !isLoadingPage else { return .failed }
+    let generation = loadGeneration
+    let scope = activeScope
+    isLoadingPage = true
+    defer { if generation == loadGeneration { isLoadingPage = false } }
+    do {
+      let page = try await service.images(query, cursor: cursor, limit: 100)
+      guard generation == loadGeneration, activeScope == scope else { return .stale }
+      _ = appendRemainder(page.items)
+      remainderCursor = page.nextCursor
+      selection.pageAppended()
+      lastPageLoadError = nil
+      return .merged
+    } catch GridServiceError.cursorInvalid {
+      guard generation == loadGeneration, activeScope == scope else { return .stale }
+      isLoadingPage = false
+      await recoverGroupedCursor(for: .remainder)
+      return .merged
+    } catch {
+      guard generation == loadGeneration else { return .stale }
+      lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+      return .failed
+    }
+  }
+
+  /// The successor fetch under Mark/Rating grouping: the ACTIVE scope's own cursor, never
+  /// `/neighbours`. Advances an open loupe exactly as the neighbours merge does.
+  private func pageActiveGroupedScope(advancingLoupeFrom imageID: Int) async
+    -> NeighbourFetchOutcome
+  {
+    let session = loupeSession
+    let outcome: NeighbourFetchOutcome
+    if isInRemainder {
+      outcome = await loadMoreRemainder()
+    } else {
+      guard let cursor = nextCursor else {
+        loupeExhausted = true
+        return .exhausted
+      }
+      guard !isLoadingPage else { return .failed }
+      let generation = loadGeneration
+      isLoadingPage = true
+      defer { if generation == loadGeneration { isLoadingPage = false } }
+      do {
+        let page = try await service.images(query, cursor: cursor, limit: 100)
+        guard generation == loadGeneration else { return .stale }
+        ingestStreamPage(page.items, nextCursor: page.nextCursor, replacing: false)
+        selection.pageAppended()
+        lastPageLoadError = nil
+        outcome = .merged
+      } catch GridServiceError.cursorInvalid {
+        guard generation == loadGeneration else { return .stale }
+        isLoadingPage = false
+        await recoverGroupedCursor(for: .stream)
+        outcome = .merged
+      } catch {
+        guard generation == loadGeneration else { return .stale }
+        lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+        return .failed
+      }
+    }
+    guard outcome == .merged || outcome == .exhausted else { return outcome }
+    let pool = actionableImages
+    if let idx = pool.firstIndex(where: { $0.id == imageID }), pool.indices.contains(idx + 1) {
+      loupeExhausted = false
+      if isLoupeOpen, session == loupeSession, focusedImageID == imageID {
+        focusedImageID = pool[idx + 1].id
+      }
+      return .merged
+    }
+    if (isInRemainder ? remainderCursor : nextCursor) == nil {
+      loupeExhausted = true
+      return .exhausted
+    }
+    return .merged
+  }
+
+  enum GroupedScope: Equatable, Sendable {
+    case stream
+    case remainder
+  }
+
+  /// Cursor-invalid recovery under Mark/Rating grouping (§2.5): re-page the grouped query from
+  /// page one and APPEND only ids neither slice holds, after the retained tail, in server order.
+  /// Nothing retained moves — a tile marked in place stays at its index — and the fresh cursor
+  /// replaces the dead one at the first page that brought something new (or at the end).
+  private func recoverGroupedCursor(for scope: GroupedScope) async {
+    guard let groupBy = remainderGroupBy else { return }
+    let generation = loadGeneration
+    var cursor: String?
+    for _ in 0..<Self.groupedRecoveryPageCap {
+      let page: GridImagesPage
+      do {
+        page = try await service.images(query, cursor: cursor, limit: 100)
+      } catch {
+        guard generation == loadGeneration else { return }
+        lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+        return
+      }
+      guard generation == loadGeneration else { return }
+      let known = Set(images.map(\.id)).union(remainderImages.map(\.id))
+      let cut = GroupRemainder.split(page.items, groupBy: groupBy)
+      let freshStream = cut.stream.filter { !known.contains($0.id) }
+      let freshRemainder = cut.remainder.filter { !known.contains($0.id) }
+      switch scope {
+      case .stream:
+        images.append(contentsOf: freshStream)
+        if !cut.remainder.isEmpty {
+          if !remainderReached {
+            remainderImages = freshRemainder
+            remainderCursor = page.nextCursor
+            remainderReached = true
+          }
+          nextCursor = nil
+          lastPageLoadError = nil
+          return
+        }
+        if !freshStream.isEmpty || page.nextCursor == nil {
+          nextCursor = page.nextCursor
+          lastPageLoadError = nil
+          return
+        }
+      case .remainder:
+        if !freshRemainder.isEmpty || page.nextCursor == nil {
+          remainderImages.append(contentsOf: freshRemainder)
+          remainderCursor = page.nextCursor
+          lastPageLoadError = nil
+          return
+        }
+      }
+      guard let next = page.nextCursor else { return }
+      cursor = next
+    }
+    lastPageLoadError = .cursorInvalid
+  }
+
+  /// Bounds a recovery re-page: 50 pages of 100 is far past any shoot the grid pages by hand.
+  private static let groupedRecoveryPageCap = 50
+
+  /// The foreground / notice-Retry / 409 refresh under Mark/Rating grouping (§2.5): membership
+  /// and order are PRESERVED. It re-reads the stream up to the boundary (never past it) and
+  /// patches each retained photograph's fields in place — marks, revisions, ratings — keeping the
+  /// `group_key` it was placed under. No id is added, none dropped, nothing reordered; the headers
+  /// stay the ones vouched for this query, so counts and tiles keep agreeing until a reconcile.
+  private func refreshGroupedPreserving(generation: Int) async -> Bool {
+    guard let groupBy = remainderGroupBy else { return false }
+    var fresh: [Int: Components.Schemas.ImageSummary] = [:]
+    var cursor: String?
+    for _ in 0..<Self.groupedRecoveryPageCap {
+      guard generation == loadGeneration else { return false }
+      let page: GridImagesPage
+      do {
+        page = try await service.images(query, cursor: cursor, limit: Self.refreshPageLimit)
+      } catch {
+        guard generation == loadGeneration else { return false }
+        lastPageLoadError = (error as? GridServiceError) ?? .unreachable
+        return false
+      }
+      guard generation == loadGeneration else { return false }
+      for item in page.items { fresh[item.id] = item }
+      let reachedBoundary = page.items.contains {
+        GroupRemainder.isRemainder(groupKey: $0.groupKey, groupBy: groupBy)
+      }
+      guard !reachedBoundary, let next = page.nextCursor else { break }
+      cursor = next
+    }
+    func patched(_ old: Components.Schemas.ImageSummary) -> Components.Schemas.ImageSummary {
+      guard var item = fresh[old.id] else { return old }
+      item.groupKey = old.groupKey
+      return item
+    }
+    images = images.map(patched)
+    remainderImages = remainderImages.map(patched)
+    publishRefreshedFocusAndUndo(actionable: actionableImages)
+    return true
+  }
+
   // MARK: - Scene entry (WP442 P12, IMGMGR-540): one truth, one transition
 
   /// THE only writer of `sceneEntry`. Runs synchronously, before any await, in this order; a
   /// `.retarget` (topology result) skips the selection/focus/loupe reset because the coordinator
   /// restores focus by rule right afterwards. It KEEPS the latch, undo, the query, the STREAM
   /// scroll anchor and the members cache.
-  private func transitionScene(to next: SceneEntry?, reason: SceneTransitionReason) {
-    guard next != sceneEntry else { return }
+  private func transitionScene(to next: GridEntry?, reason: SceneTransitionReason) {
+    guard next != entry else { return }
     if reason != .retarget {
       selection.reset(.sceneTransition)
       focusedImageID = nil
@@ -1737,7 +2060,7 @@ final class GridStore {
     rows = []
     sceneScrollAnchor = nil
     sceneDestinationRetry = nil
-    sceneEntry = next
+    entry = next
     sceneRevision &+= 1
   }
 
@@ -1756,20 +2079,69 @@ final class GridStore {
   func enterScene(_ stackID: Int) async {
     guard displayMode == .scene else { return }
     guard sceneRows.contains(where: { $0.displayID == .stack(stackID) }) else { return }
-    transitionScene(to: SceneEntry(stackID: stackID), reason: .userOpen)
+    transitionScene(to: .scene(SceneEntry(stackID: stackID)), reason: .userOpen)
     guard sceneMembers[stackID] == nil else { return }
     await fetchSceneMembers(stackID: stackID, cursor: nil)
   }
 
-  /// Back (or any rule that leaves): the stream again.
+  /// Back (or any rule that leaves): the stream again. Leaves a scene or the remainder alike.
+  ///
+  /// IMGMGR-541 (§2.4 T1): Back out of the Mark remainder after a mark landed inside it is the
+  /// R3-21 "return": the groups are reconciled from the server, so the row's count shrinks and
+  /// the newly marked photograph lands in its section. Without a mark inside, Back costs nothing.
   func leaveScene(_ reason: SceneTransitionReason = .userBack) {
+    let left = enteredRemainder
+    let marked = remainderMarkedDuringVisit
     transitionScene(to: nil, reason: reason)
+    remainderMarkedDuringVisit = false
+    if reason == .userBack, left == .mark, marked {
+      pendingReconcile = Task { await self.reconcileGrouping() }
+    }
+  }
+
+  /// The general name for `leaveScene`: the entry may be a scene or the remainder.
+  func leaveEntry(_ reason: SceneTransitionReason = .userBack) {
+    leaveScene(reason)
+  }
+
+  /// The remainder row's tap (R3-21): entered like a scene. Refused before the stream reached the
+  /// null bucket and while the headers do not vouch for a non-zero remainder.
+  func enterRemainder() {
+    guard let key = remainderGroupBy, remainderReached, let count = remainderCount, count > 0
+    else { return }
+    remainderEntryCount = count
+    remainderMarkedDuringVisit = false
+    transitionScene(to: .remainder(key), reason: .userOpen)
+  }
+
+  /// The count the remainder screen's title states, frozen at entry (ruling Q5).
+  private(set) var remainderEntryCount = 0
+  /// A mark landed inside the remainder during this visit (§2.4 T1).
+  @ObservationIgnored private var remainderMarkedDuringVisit = false
+  /// The reconcile a Back started, exposed so a test (and nothing else) can await it.
+  @ObservationIgnored private(set) var pendingReconcile: Task<Void, Never>?
+
+  /// The Mark/Rating reconcile (§2.4): headers dropped (the row hides rather than states a stale
+  /// count), in-flight mark writes allowed to land (the lane), then the stream re-read to the
+  /// boundary and the headers refetched. Membership and counts become the server's again.
+  func reconcileGrouping() async {
+    await acquireLaneQueueing()
+    defer { releaseLane() }
+    vouchedGroups = nil
+    await reloadFirstPage(revalidatesEntry: false)
+    await refreshGroupHeaders()
   }
 
   /// A folder row tap from any shell: always lands on the folder's stream, even for the same
   /// folder.
   func openShoot(folderID: Int, sourceTier: GridSourceTier? = nil) async {
     leaveScene(.shootOpened)
+    // IMGMGR-541 (§2.4 T2): re-opening the SAME folder under Mark/Rating grouping is a "return":
+    // it reconciles, where an ordinary same-folder refresh preserves membership (§2.5).
+    if remainderGroupBy != nil, query.folderID == folderID, query.sourceTier == sourceTier {
+      await reconcileGrouping()
+      return
+    }
     await selectShoot(folderID: folderID, sourceTier: sourceTier)
   }
 
@@ -1789,7 +2161,7 @@ final class GridStore {
   func scrollAnchor(for scope: GridScope) -> GridDisplayID? {
     switch scope {
     case .stream: return gridScrollAnchor
-    case .scene: return sceneScrollAnchor
+    case .scene, .remainder: return sceneScrollAnchor
     }
   }
 
@@ -1799,6 +2171,9 @@ final class GridStore {
       gridScrollAnchor = id
     case .scene(let stackID):
       guard enteredSceneID == stackID else { return }
+      sceneScrollAnchor = id
+    case .remainder(let key):
+      guard enteredRemainder == key else { return }
       sceneScrollAnchor = id
     }
   }
@@ -2374,7 +2749,7 @@ final class GridStore {
       pruneSelectionOutside(actionableImages)
       return
     }
-    transitionScene(to: SceneEntry(stackID: target), reason: .retarget)
+    transitionScene(to: .scene(SceneEntry(stackID: target)), reason: .retarget)
     if let read = loaded[target] {
       sceneMembers[target] = read.items
       sceneMemberCursors[target] = read.cursor
@@ -3771,6 +4146,12 @@ final class GridStore {
     case .flat:
       for i in images.indices where ids.contains(images[i].id) {
         transform(&images[i])
+      }
+      // IMGMGR-541: the remainder's photographs are patched IN PLACE too — a mark never moves a
+      // tile out of the slice it was made on (R3-21).
+      for i in remainderImages.indices where ids.contains(remainderImages[i].id) {
+        transform(&remainderImages[i])
+        if isInRemainder { remainderMarkedDuringVisit = true }
       }
     case .scene:
       for i in sceneRows.indices {
