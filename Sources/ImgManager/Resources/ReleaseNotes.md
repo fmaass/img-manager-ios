@@ -6,6 +6,12 @@ refuses to upload when that section is missing, empty or duplicated; Settings â€
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.15.4 (26)
+
+- Arrange can now group by Mark or by Rating. Picks, Dislikes and each star rating get their own header with a count, and one row at the end opens the photos without a mark or without a rating.
+- Grouping by Day or Month is gone from Arrange and from the keyboard menu.
+- Folder covers now refresh after the server changes how it renders previews. Before, a cover could keep the old rendering until the app was relaunched.
+
 ## 0.15.3 (25)
 
 - The sidebar now shows Untouched, Pinned, Recent and Library, in that order. Needs review is gone.
