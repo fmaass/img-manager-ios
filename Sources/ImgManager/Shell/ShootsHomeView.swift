@@ -66,7 +66,7 @@ struct ShootsHomeView: View {
     ) {
       UntouchedAllView(
         members: Untouched.members(from: queueStore.summaries, since: settings.untouchedSince),
-        heroLoader: heroLoader,
+        heroLoader: heroLoader, listFetchedAt: queueStore.lastFetchedAt,
         onPick: { overflow.pick($0) },
         onClose: { overflow.close() })
     }

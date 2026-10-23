@@ -16,6 +16,8 @@ import SwiftUI
 struct UntouchedAllView: View {
   let members: [Components.Schemas.FolderSummary]
   let heroLoader: HeroThumbnailLoader
+  /// `QueueStore.lastFetchedAt`, so a list refresh re-checks each cover's token (IMGMGR-622).
+  let listFetchedAt: Date?
   let onPick: (Components.Schemas.FolderSummary) -> Void
   let onClose: () -> Void
 
@@ -27,7 +29,7 @@ struct UntouchedAllView: View {
             Button {
               onPick(summary)
             } label: {
-              UntouchedTile(summary: summary, heroLoader: heroLoader)
+              UntouchedTile(summary: summary, heroLoader: heroLoader, fetchedAt: listFetchedAt)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier(Untouched.tileIdentifier(for: summary.folderId))
@@ -91,8 +93,17 @@ struct UntouchedOverflow {
 private struct UntouchedTile: View {
   let summary: Components.Schemas.FolderSummary
   let heroLoader: HeroThumbnailLoader
+  /// The list fetch this tile's cover is checked against (`UntouchedAllView.listFetchedAt`).
+  let fetchedAt: Date?
 
   @State private var cover: PlatformImage?
+
+  /// The cover fetch re-runs when the folder, its tier or the list fetch it was checked against
+  /// changes.
+  private var taskID: String {
+    let stamp = fetchedAt?.timeIntervalSince1970 ?? 0
+    return "\(summary.folderId)|\(summary.sourceTier)|\(stamp)"
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -119,9 +130,10 @@ private struct UntouchedTile: View {
       }
     }
     .contentShape(Rectangle())
-    .task(id: "\(summary.folderId)|\(summary.sourceTier)") {
+    .task(id: taskID) {
       switch await heroLoader.hero(
-        folderID: summary.folderId, sourceTier: GridSourceTier(rawValue: summary.sourceTier))
+        folderID: summary.folderId, sourceTier: GridSourceTier(rawValue: summary.sourceTier),
+        listFetchedAt: fetchedAt)
       {
       case .image(let data):
         if let decoded = PlatformImage(data: data), !Task.isCancelled {

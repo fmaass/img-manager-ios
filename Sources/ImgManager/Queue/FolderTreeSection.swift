@@ -69,6 +69,9 @@ struct FolderTreeSection: View {
   /// a VALUE the composition root hands over, not a store this view observes: the tree renders
   /// without it (checkpoint-2 finding B1), and an empty join is simply a tree with no badges.
   let summariesByFolderID: [Int: Components.Schemas.FolderSummary]
+  /// When that list was last fetched (`QueueStore.lastFetchedAt`): a change re-runs each visible
+  /// cover's fetch so the loader can re-check its token (IMGMGR-622).
+  let listFetchedAt: Date?
   /// P4: whatever tree `QueueStore` has remembered for this account and server, replayed when a
   /// live load reaches nothing at all. The view keeps no persistence of its own.
   let cachedTree: QueueStore.CachedTree?
@@ -287,7 +290,7 @@ struct FolderTreeSection: View {
         ForEach(rows) { row in
           FolderTreeRowView(
             row: row, tier: tier, isSearching: isSearching, heroLoader: heroLoader,
-            summariesByFolderID: summariesByFolderID,
+            summariesByFolderID: summariesByFolderID, listFetchedAt: listFetchedAt,
             expandedBranches: $treeState.expandedBranches, selectedFolderID: $selectedFolderID,
             highlightedFolderID: highlightedFolderID, shortcuts: shortcuts, onSelect: onSelect)
         }
@@ -504,6 +507,7 @@ private struct FolderTreeRowView: View {
   let isSearching: Bool
   let heroLoader: HeroThumbnailLoader
   let summariesByFolderID: [Int: Components.Schemas.FolderSummary]
+  let listFetchedAt: Date?
   @Binding var expandedBranches: Set<FolderTreeItemID>
   @Binding var selectedFolderID: Int?
   /// IMGMGR-405 rule 5, PAINT ONLY — `FolderTreeSection.highlightedFolderID`, which falls back to
@@ -802,7 +806,9 @@ private struct FolderTreeRowView: View {
     .accessibilityLabel("Cover thumbnail")
     .accessibilityIdentifier(FolderTreeRowPresentation.thumbnailIdentifier(for: coverFolderID))
     .task(id: coverTaskID) {
-      switch await heroLoader.hero(folderID: coverFolderID, sourceTier: tier.sourceTier) {
+      switch await heroLoader.hero(
+        folderID: coverFolderID, sourceTier: tier.sourceTier, listFetchedAt: listFetchedAt)
+      {
       case .image(let data):
         if let decoded = PlatformImage(data: data), !Task.isCancelled {
           coverImage = decoded
@@ -820,7 +826,9 @@ private struct FolderTreeRowView: View {
   /// fold; `-1` is a value the server never issues and would fetch nothing if it ever were.
   private var coverFolderID: Int { row.item.node?.id ?? -1 }
 
-  private var coverTaskID: String { "\(coverFolderID)|\(tier.rawValue)" }
+  private var coverTaskID: String {
+    "\(coverFolderID)|\(tier.rawValue)|\(listFetchedAt?.timeIntervalSince1970 ?? 0)"
+  }
 
   private var isOpen: Bool {
     FolderTreePresentation.isExpanded(

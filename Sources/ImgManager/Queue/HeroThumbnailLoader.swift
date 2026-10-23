@@ -21,7 +21,21 @@ actor HeroThumbnailLoader {
 
   private let service: GridService
   private let maxConcurrent: Int
-  private var cache: [String: Data] = [:]
+  /// One cached cover and the identity its bytes belong to (IMGMGR-622). The folder summary
+  /// carries no hero image and no proxy token, so the only place the loader can learn that the
+  /// server re-identified a cover (the v0.23.2 PROXY_RAW_ICC_GENERATION flip re-tokened every
+  /// local RAW preview) is the limit-1 page it already reads — keyed by folder and tier alone, the
+  /// old bytes outlived that change until a relaunch while the grid behind them reloaded.
+  private struct Entry {
+    let data: Data
+    let imageID: Int
+    let token: String?
+    /// The folder-list fetch this entry was last checked against. A reader stamped with any
+    /// OTHER fetch re-checks once; readers of the same fetch are served from memory, so the
+    /// request volume between two list refreshes is what it always was.
+    var checkedAgainst: Date?
+  }
+  private var cache: [String: Entry] = [:]
   /// One in-flight fetch per cache key (IMGMGR-332), carrying its OWN live readers.
   ///
   /// Two readers of one key are the shipped case, not a corner one: the Queue card and the
@@ -41,6 +55,9 @@ actor HeroThumbnailLoader {
     /// A `Set` is what makes "this reader has left" idempotent: the cancellation handler and the
     /// normal return can both fire for one call, and only the first of them may count.
     var readers: Set<Int>
+    /// The list fetch this fetch was started for. A reader of a DIFFERENT one still waits on it
+    /// (one fetch per key at a time) but does not take its answer as its own — see `read`.
+    let listFetchedAt: Date?
   }
   private var inFlight: [String: Fetch] = [:]
   private var nextFetchID = 0
@@ -57,6 +74,12 @@ actor HeroThumbnailLoader {
   /// SINGLE-FLIGHT per that same key: a second reader of a key already being fetched awaits the
   /// running fetch instead of starting its own (IMGMGR-332).
   ///
+  /// `listFetchedAt` is when the caller's folder list was last fetched (`QueueStore.
+  /// lastFetchedAt`). A cached cover checked against a different list fetch is re-checked once:
+  /// the limit-1 page is read again and the proxy is fetched only when the hero image or its
+  /// identity token changed (IMGMGR-622). nil is a stamp like any other: a caller that only ever
+  /// passes nil never re-checks, and nil after a non-nil stamp re-checks once and stores nil.
+  ///
   /// A SwiftUI `.task(id:)` per visible card is what gives this "cancellation on scroll-away",
   /// and cancellation still means what it always did — `runFetch` re-checks it after the
   /// concurrency gate and again before the proxy step, so a fetch nobody is waiting for occupies
@@ -72,9 +95,25 @@ actor HeroThumbnailLoader {
   /// before the hop lands is still written to the cache. Harmless, and deliberately not raced
   /// after — those bytes are this key's own image, so the worst case is a cache entry nobody
   /// asked for rather than a wrong answer.
-  func hero(folderID: Int, sourceTier: GridSourceTier?) async -> FetchResult {
-    let key = cacheKey(folderID: folderID, sourceTier: sourceTier)
-    if let cached = cache[key] { return .image(cached) }
+  func hero(folderID: Int, sourceTier: GridSourceTier?, listFetchedAt: Date? = nil) async
+    -> FetchResult
+  {
+    await read(
+      key: cacheKey(folderID: folderID, sourceTier: sourceTier), folderID: folderID,
+      sourceTier: sourceTier, listFetchedAt: listFetchedAt, alreadyAwaited: nil)
+  }
+
+  /// `hero`'s body. `alreadyAwaited` is the generation this reader already waited on for a
+  /// DIFFERENT list fetch: that fetch has completed, so it is never joined again — the reader
+  /// starts its own re-check instead, even while the finished fetch's initiator has yet to clear
+  /// its entry.
+  private func read(
+    key: String, folderID: Int, sourceTier: GridSourceTier?, listFetchedAt: Date?,
+    alreadyAwaited: Int?
+  ) async -> FetchResult {
+    if let cached = cache[key], cached.checkedAgainst == listFetchedAt {
+      return .image(cached.data)
+    }
     guard !Task.isCancelled else { return .failure }
 
     nextReaderToken &+= 1
@@ -82,21 +121,28 @@ actor HeroThumbnailLoader {
     let generation: Int
     let task: Task<FetchResult, Never>
     let isInitiator: Bool
-    if var existing = inFlight[key] {
+    let fetchStamp: Date?
+    if var existing = inFlight[key], existing.id != alreadyAwaited {
       existing.readers.insert(token)
       inFlight[key] = existing
       generation = existing.id
       task = existing.task
       isInitiator = false
+      fetchStamp = existing.listFetchedAt
     } else {
       nextFetchID &+= 1
       generation = nextFetchID
       // `Task {}` inherits this actor's isolation, but NOT the caller's cancellation — a reader
       // that goes away must not cancel a fetch its neighbour is still waiting on. Who DOES
       // cancel it is `readerLeft`, once this generation has nobody left.
-      task = Task { await self.runFetch(key: key, folderID: folderID, sourceTier: sourceTier) }
-      inFlight[key] = Fetch(id: generation, task: task, readers: [token])
+      task = Task {
+        await self.runFetch(
+          key: key, folderID: folderID, sourceTier: sourceTier, listFetchedAt: listFetchedAt)
+      }
+      inFlight[key] = Fetch(
+        id: generation, task: task, readers: [token], listFetchedAt: listFetchedAt)
       isInitiator = true
+      fetchStamp = listFetchedAt
     }
 
     // `await task.value` does NOT return when the CALLER is cancelled — the shared task is not
@@ -113,7 +159,16 @@ actor HeroThumbnailLoader {
     // the entry is still THIS generation: a cancelled key can already have been cleared and
     // re-started by a later reader, and clearing that one would hand it a duplicate fetch.
     if isInitiator, inFlight[key]?.id == generation { inFlight[key] = nil }
-    return Task.isCancelled ? .failure : result
+    if Task.isCancelled { return .failure }
+    // A fetch started for a DIFFERENT list fetch (in practice an older one) may have read the
+    // identity before the server changed it: its answer is not this reader's, so it looks again
+    // and finds a cache entry checked against THIS stamp, or makes its own re-check.
+    guard fetchStamp == listFetchedAt else {
+      return await read(
+        key: key, folderID: folderID, sourceTier: sourceTier, listFetchedAt: listFetchedAt,
+        alreadyAwaited: generation)
+    }
+    return result
   }
 
   /// One reader stops waiting on the generation it joined. A departure that names a generation
@@ -140,9 +195,9 @@ actor HeroThumbnailLoader {
   /// The two-step fetch itself, run by exactly one task per key. It holds the concurrency slot
   /// for its whole duration, as the inline version did, and re-checks cancellation at the same
   /// two boundaries the inline version did — here that means "every reader has gone".
-  private func runFetch(key: String, folderID: Int, sourceTier: GridSourceTier?) async
-    -> FetchResult
-  {
+  private func runFetch(
+    key: String, folderID: Int, sourceTier: GridSourceTier?, listFetchedAt: Date?
+  ) async -> FetchResult {
     await acquire()
     defer { release() }
     guard !Task.isCancelled else { return .failure }
@@ -150,10 +205,23 @@ actor HeroThumbnailLoader {
       var query = GridImagesQuery(folderID: folderID)
       query.sourceTier = sourceTier
       let page = try await service.images(query, cursor: nil, limit: 1)
-      guard let first = page.items.first else { return .empty }
+      guard let first = page.items.first else {
+        // The same fence as the `.ok` write: an abandoned fetch must not clear what a newer one
+        // stored.
+        guard !Task.isCancelled else { return .failure }
+        cache[key] = nil
+        return .empty
+      }
       guard !Task.isCancelled else { return .failure }
       let token = ProxyIdentity.token(
         from: first.proxies.additionalProperties[ProxyTier.grid.rawValue]?.url)
+      // The same image under the same token is the same bytes: the re-check costs the limit-1
+      // page and nothing more (IMGMGR-622 AC3).
+      if var cached = cache[key], cached.imageID == first.id, cached.token == token {
+        cached.checkedAgainst = listFetchedAt
+        cache[key] = cached
+        return .image(cached.data)
+      }
       switch try await service.proxy(imageID: first.id, tier: .grid, v: token) {
       case .ok(let data):
         // The third boundary. It NARROWS the window rather than closing it: the last reader can
@@ -161,15 +229,20 @@ actor HeroThumbnailLoader {
         // cancellation arrives through an actor hop, so a response that resumes before the hop
         // lands is cached anyway. Harmless (see `hero`), and not worth racing.
         guard !Task.isCancelled else { return .failure }
-        cache[key] = data
+        cache[key] = Entry(
+          data: data, imageID: first.id, token: token, checkedAgainst: listFetchedAt)
         return .image(data)
       case .notModified:
-        return cache[key].map { .image($0) } ?? .empty
+        return cache[key].map { .image($0.data) } ?? .empty
       case .notFound:
+        guard !Task.isCancelled else { return .failure }
+        cache[key] = nil
         return .empty
       }
     } catch {
-      return .failure
+      // A re-check that cannot reach the server keeps the cover it has rather than blanking a
+      // row that was showing one, and leaves the entry unchecked so the next reader tries again.
+      return cache[key].map { .image($0.data) } ?? .failure
     }
   }
 

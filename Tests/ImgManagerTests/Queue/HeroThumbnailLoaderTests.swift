@@ -290,4 +290,212 @@ struct HeroThumbnailLoaderTests {
     _ = await taskB.value
     #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
   }
+
+  // MARK: - IMGMGR-622: the proxy identity token
+
+  /// A hero image whose grid proxy carries identity token `token`, as the server reports it: in
+  /// the `ProxyState.url` query (`ProxyIdentity.token(from:)` is what reads it back).
+  private func makeImage(id: Int, gridToken token: String?) -> Components.Schemas.ImageSummary {
+    var image = makeImage(id: id)
+    let url = "/api/images/\(id)/proxy/grid" + (token.map { "?v=\($0)" } ?? "")
+    image.proxies = .init(additionalProperties: [
+      ProxyTier.grid.rawValue: Components.Schemas.ProxyState(
+        height: 400, url: url, verdict: .ok, width: 400)
+    ])
+    return image
+  }
+
+  private func page(_ image: Components.Schemas.ImageSummary) -> Components.Schemas.ImagePage {
+    .init(items: [image], limit: 1, nextCursor: nil)
+  }
+
+  /// One hero read of folder 1 (local tier) as of the folder-list fetch stamped `stamp`.
+  private func hero(_ loader: HeroThumbnailLoader, at stamp: Date) async
+    -> HeroThumbnailLoader.FetchResult
+  {
+    await loader.hero(folderID: 1, sourceTier: .local, listFetchedAt: stamp)
+  }
+
+  private let listFetch1 = Date(timeIntervalSince1970: 1_000)
+  private let listFetch2 = Date(timeIntervalSince1970: 2_000)
+
+  @Test("A token change seen on the next folder-list refresh fetches again and replaces the bytes")
+  func tokenChangeAcrossARefreshRefetches() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let old = Data([0xFF, 0xD8, 0x01])
+    let new = Data([0xFF, 0xD8, 0x02])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(old))
+    #expect(await hero(loader, at: listFetch1) == .image(old))
+
+    // The backend flips ONLY the token (the v0.23.2 PROXY_RAW_ICC_GENERATION case): same image,
+    // new identity, new bytes behind it.
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen2")))
+    await transport.setProxyOutcome(.ok(new))
+    #expect(await hero(loader, at: listFetch2) == .image(new))
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+
+    // And the replacement is what the cache now holds: a second reader of the same refresh gets
+    // the new bytes with no further request.
+    #expect(await hero(loader, at: listFetch2) == .image(new))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
+
+  @Test("An unchanged token across a refresh re-checks the hero item but never re-fetches pixels")
+  func unchangedTokenAcrossARefreshFetchesPixelsOnce() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let bytes = Data([0xFF, 0xD8, 0x03])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(bytes))
+    #expect(await hero(loader, at: listFetch1) == .image(bytes))
+    // A different body would show up if the loader went to the proxy again.
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8, 0x04])))
+
+    #expect(await hero(loader, at: listFetch2) == .image(bytes))
+    #expect(await hero(loader, at: listFetch2) == .image(bytes))
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+    // One limit-1 re-check for the refresh, none for the second reader of that refresh.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+  }
+
+  @Test("Within one folder-list fetch a token change is NOT looked for: zero extra requests")
+  func sameListFetchServesTheCacheWithoutRequests() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let bytes = Data([0xFF, 0xD8, 0x05])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(bytes))
+    #expect(await hero(loader, at: listFetch1) == .image(bytes))
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen2")))
+
+    #expect(await hero(loader, at: listFetch1) == .image(bytes))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 1)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+  }
+
+  @Test("A different hero IMAGE under the same token string is a different identity: refetch")
+  func heroImageChangeAcrossARefreshRefetches() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let first = Data([0xFF, 0xD8, 0x06])
+    let second = Data([0xFF, 0xD8, 0x07])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "same")))
+    await transport.setProxyOutcome(.ok(first))
+    _ = await hero(loader, at: listFetch1)
+
+    await transport.setListImagesPage(page(makeImage(id: 2, gridToken: "same")))
+    await transport.setProxyOutcome(.ok(second))
+    #expect(await hero(loader, at: listFetch2) == .image(second))
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
+
+  @Test("No token on either side (nil == nil) across a refresh counts as unchanged")
+  func nilTokenOnBothSidesIsUnchanged() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let bytes = Data([0xFF, 0xD8, 0x08])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: nil)))
+    await transport.setProxyOutcome(.ok(bytes))
+    _ = await hero(loader, at: listFetch1)
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8, 0x09])))
+
+    #expect(await hero(loader, at: listFetch2) == .image(bytes))
+    // The re-check DID run (a second limit-1 page); only the pixels were not fetched again.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1)
+  }
+
+  @Test("A reader of a NEWER list fetch that finds an older fetch in flight re-checks after it")
+  func newerStampReaderDoesNotSettleForAnOlderInFlightFetch() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let old = Data([0xFF, 0xD8, 0x0E])
+    let new = Data([0xFF, 0xD8, 0x0F])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(old))
+    // The hold stays armed for the whole test, so each proxy request parks until released and
+    // the test decides which body each one answers with.
+    await transport.holdProxyRequests(true)
+
+    // Reader A (list fetch 1) has read the OLD identity and is parked on its proxy request.
+    let readerA = Task { await hero(loader, at: listFetch1) }
+    let aParked = await waitUntil {
+      await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1
+    }
+    #expect(aParked)
+
+    // Reader B carries list fetch 2, which happened after the server re-tokened the cover.
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen2")))
+    let readerB = Task { await hero(loader, at: listFetch2) }
+    let bWaiting = await waitUntil {
+      await loader.debugReaderCount(folderID: 1, sourceTier: .local) == 2
+    }
+    #expect(bWaiting)
+
+    // A's request answers with the old bytes; B must then make its OWN re-check, which reaches
+    // the proxy a second time and is answered with the new bytes.
+    await transport.releaseProxy()
+    #expect(await readerA.value == .image(old))
+    let bRechecked = await waitUntil {
+      await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2
+    }
+    #expect(bRechecked)
+    await transport.setProxyOutcome(.ok(new))
+    await transport.holdProxyRequests(false)
+    await transport.releaseProxy()
+
+    #expect(await readerB.value == .image(new))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    // What B stored is checked against list fetch 2: the next reader of it costs nothing.
+    #expect(await hero(loader, at: listFetch2) == .image(new))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
+
+  @Test("A re-check that fails keeps serving the cached cover instead of failing the reader")
+  func failedRecheckServesTheCachedCover() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let bytes = Data([0xFF, 0xD8, 0x0A])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(bytes))
+    _ = await hero(loader, at: listFetch1)
+
+    await transport.setListImagesShouldFail(true)
+    #expect(await hero(loader, at: listFetch2) == .image(bytes))
+    // The failed re-check did not mark the entry checked: the next reader of that refresh tries
+    // again, and this time the token change it finds is honoured.
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen2")))
+    let new = Data([0xFF, 0xD8, 0x0B])
+    await transport.setProxyOutcome(.ok(new))
+    #expect(await hero(loader, at: listFetch2) == .image(new))
+  }
+
+  @Test("Two readers of one refresh share ONE re-check and get the new bytes from ONE proxy fetch")
+  func twoReadersOfOneRefreshShareOneRecheck() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(Data([0xFF, 0xD8, 0x0C])))
+    _ = await hero(loader, at: listFetch1)
+
+    let new = Data([0xFF, 0xD8, 0x0D])
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen2")))
+    await transport.setProxyOutcome(.ok(new))
+    await transport.holdProxyRequests(true)
+    let first = Task { await hero(loader, at: listFetch2) }
+    // A bounded wait, never `waitUntilProxyStarted()`: a loader that serves the stale cache never
+    // reaches the proxy, and the unbounded wait would hang the run instead of failing it.
+    let refetching = await waitUntil {
+      await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2
+    }
+    #expect(refetching)
+    let second = Task { await hero(loader, at: listFetch2) }
+    let joined = await waitUntil {
+      await loader.debugReaderCount(folderID: 1, sourceTier: .local) == 2
+    }
+    #expect(joined)
+    await transport.holdProxyRequests(false)
+    await transport.releaseProxy()
+
+    #expect(await first.value == .image(new))
+    #expect(await second.value == .image(new))
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
 }
