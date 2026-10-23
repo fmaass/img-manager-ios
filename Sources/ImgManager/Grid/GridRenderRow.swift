@@ -15,6 +15,9 @@ struct PackedRow: Identifiable, Equatable {
   /// frames every cell of a square row at `edge × edge` from this, so the grid's geometry never
   /// depends on a proxy having loaded. Nil keeps a justified row value-identical to before.
   var squareEdge: CGFloat? = nil
+  /// IMGMGR-542 (R3-22): the scene whose peek band this row belongs to, nil for a stream row.
+  /// Nil keeps every stream row value-identical to before.
+  var band: Int? = nil
 }
 
 /// One section header, built ENTIRELY from `GET /api/image-groups` — the route's own words:
@@ -148,6 +151,7 @@ enum GridSectionLayout {
     spacing: CGFloat = 2,
     layout: GridLayoutStyle = .justified,
     remainderCount: Int? = nil,
+    bands: [SceneBand] = [],
     availability: (GridDisplayID, ProxyTier) -> ProxyAvailability
   ) -> [GridRenderRow] {
     // IMGMGR-541: the remainder row closes the stream, after the last section, when the caller
@@ -158,7 +162,33 @@ enum GridSectionLayout {
       }
       return .remainder(GroupRemainderRow(groupBy: groupBy, count: remainderCount))
     }()
+    // IMGMGR-542 (R3-22): each open band hangs under the packed row holding its card. The stream
+    // is packed exactly as without bands, so every stream row keeps its composition and size and
+    // the rows above a band keep their y. Bands under ONE row follow insertion order (`bands`'
+    // order); bands under different rows follow their cards. Each band row is its own element of
+    // the grid's lazy row list — a band is never one eager container.
+    func withBands(_ packed: [GridRenderRow]) -> [GridRenderRow] {
+      guard !bands.isEmpty else { return packed }
+      var out: [GridRenderRow] = []
+      for row in packed {
+        out.append(row)
+        guard case .tiles(let tiles) = row else { continue }
+        let cards = Set(
+          tiles.cells.compactMap { cell -> Int? in
+            guard case .stack(let id) = cell.id else { return nil }
+            return id
+          })
+        guard !cards.isEmpty else { continue }
+        for band in bands where cards.contains(band.stackID) && !band.rows.isEmpty {
+          out.append(contentsOf: packRows(band.rows, band: band.stackID))
+        }
+      }
+      return out
+    }
     func pack(_ slice: [SceneDisplayRow]) -> [GridRenderRow] {
+      withBands(packRows(slice, band: nil))
+    }
+    func packRows(_ slice: [SceneDisplayRow], band: Int?) -> [GridRenderRow] {
       let tiles = slice.map { JustifiedTile(id: $0.id, aspectRatio: $0.aspectRatio) }
       switch layout {
       case .justified:
@@ -168,7 +198,7 @@ enum GridSectionLayout {
           spacing: spacing, availability: availability
         )
         .compactMap { packed in
-          packed.first.map { .tiles(PackedRow(id: $0.id, cells: packed)) }
+          packed.first.map { .tiles(PackedRow(id: $0.id, cells: packed, band: band)) }
         }
       case .square:
         let edge = SquareGridLayout.geometry(
@@ -179,7 +209,9 @@ enum GridSectionLayout {
           spacing: spacing, availability: availability
         )
         .compactMap { packed in
-          packed.first.map { .tiles(PackedRow(id: $0.id, cells: packed, squareEdge: edge)) }
+          packed.first.map {
+            .tiles(PackedRow(id: $0.id, cells: packed, squareEdge: edge, band: band))
+          }
         }
       }
     }

@@ -46,7 +46,7 @@ struct GridViewMoreMenuTests {
         // WP29 P4 (IMGMGR-455): the four scene edits left for the Select bar's Scene ▸.
         // WP29 P3 (IMGMGR-454): the ticket's order — View · Actions · Shoot.
         // IMGMGR-539 (R3-5): Filename plates moved into the Tile overlays submenu.
-        "more.tileOverlays", "more.picksInGroups",
+        "more.tileOverlays", "more.picksInGroups", "more.collapseAllBands",
         "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
         "more.status",
       ])
@@ -54,7 +54,7 @@ struct GridViewMoreMenuTests {
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
-        "Tile overlays", "Picks in groups", "Clear mark", "Copy for Lightroom",
+        "Tile overlays", "Picks in groups", "Collapse all", "Clear mark", "Copy for Lightroom",
         "Open in New Window", "Status",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
@@ -65,11 +65,12 @@ struct GridViewMoreMenuTests {
 
   /// WP29 P3 (IMGMGR-454) acceptance probe: six rows, exactly three groups, an icon on every row,
   /// no duplicate title, and Hide mirrored archive absent (its one home is the tree's View menu).
-  @Test("More: 6 rows in exactly 3 groups, every row an icon, no duplicate title, no prune")
+  /// IMGMGR-542 (R3-22) added Collapse all to View: seven rows.
+  @Test("More: 7 rows in exactly 3 groups, every row an icon, no duplicate title, no prune")
   func moreMenuMeetsTheTicketShape() {
     let (store, _, _, _) = makeStore()
     #expect(GridMoreMenu.sections.count == 3)
-    #expect(GridMoreMenu.entries.count == 6)
+    #expect(GridMoreMenu.entries.count == 7)
     #expect(GridMoreMenu.entries.allSatisfy { !$0.systemImage.isEmpty })
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     // Positive control: the titles really were read, so uniqueness is not about an empty list.
@@ -252,6 +253,15 @@ struct GridViewMoreMenuTests {
         set(store, true)
         #expect(isOn(store), "the picks-in-groups toggle did not turn on")
         #expect(store.preferences.picksInGroups, "the toggle did not reach the preference")
+
+      case "more.collapseAllBands":
+        // IMGMGR-542: its closing effect needs an open band, which `PeekBandTests` drives
+        // (`collapseAllClosesEveryBand`); here: an action, disabled while no band is open.
+        guard case .action = entry.surface else {
+          Issue.record("more.collapseAllBands is not an action entry")
+          continue
+        }
+        #expect(entry.isEnabled(store) == false, "Collapse all is enabled with no band open")
 
       case "more.status":
         guard case .action(let run) = entry.surface else {
@@ -615,7 +625,7 @@ struct GridMoreMenuSectionsTests {
   /// WP29 P3 (IMGMGR-454) reordered the same six ids into the ticket's shape.
   private let shippedOrder = [
     // IMGMGR-539 (R3-5): the Tile overlays submenu took Filename plates' place in View.
-    "more.tileOverlays", "more.picksInGroups",
+    "more.tileOverlays", "more.picksInGroups", "more.collapseAllBands",
     "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
     "more.status",
   ]
@@ -632,8 +642,9 @@ struct GridMoreMenuSectionsTests {
     // WP29 P1 (IMGMGR-452): 13 → 12, Select having left for the bar. WP29 P2 (IMGMGR-453):
     // 12 → 10, Density and the archive prune having left.
     // WP29 P4 (IMGMGR-455): 10 → 6, the Scene group having left — the ≤ 6 row budget.
-    #expect(GridMoreMenu.entries.count == 6)
-    #expect(GridMoreMenu.entries.count <= 6)
+    // IMGMGR-542 (R3-22): 6 → 7, Collapse all joining View for the peek bands.
+    #expect(GridMoreMenu.entries.count == 7)
+    #expect(GridMoreMenu.entries.count <= 7)
   }
 
   /// WP29 P4 (IMGMGR-455): no scene edit is left in More, and every one is reachable from the
@@ -673,7 +684,7 @@ struct GridMoreMenuSectionsTests {
         "more.section.view", "View",
         // WP29 P2 (IMGMGR-453): Density and the archive prune left this run.
         // IMGMGR-539 (R3-5): Filename plates sits inside Tile overlays now.
-        ["more.tileOverlays", "more.picksInGroups"]
+        ["more.tileOverlays", "more.picksInGroups", "more.collapseAllBands"]
       ),
       (
         // WP29 P3 (IMGMGR-454): was "more.section.marks" / "Marks"; Clear mark stays (folded,
@@ -732,13 +743,14 @@ struct GridMoreMenuSectionsTests {
         // IMGMGR-539 (R3-5): Filename plates keeps its identifier inside the Tile overlays
         // submenu (`allEntries`); the submenu row is the new top-level identifier.
         "gridMoreMenu.more.tileOverlays", "gridMoreMenu.more.picksInGroups",
+        "gridMoreMenu.more.collapseAllBands",
         "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.openInNewWindow",
         "gridMoreMenu.more.status",
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
-        "rectangle.on.rectangle", "checkmark.square",
+        "rectangle.on.rectangle", "checkmark.square", "rectangle.compress.vertical",
         ActionBarMarkControl.clear.systemImage, "doc.on.clipboard", "macwindow.badge.plus",
         "info.circle",
       ])

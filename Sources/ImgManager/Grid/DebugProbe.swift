@@ -77,6 +77,10 @@
     /// WP442 P12: the two scroll slots, mirrored by the active grid instance (`none` = unset).
     var streamAnchor = "none"
     var sceneAnchor = "none"
+    /// IMGMGR-542 (R3-22): `GridFrameMonitor`'s counts under `-UITestFrameMonitor` — frames that
+    /// missed at least one vsync inside a measured scroll window, and how many windows opened.
+    var debugLongFrames = 0
+    var debugScrollWindows = 0
 
     /// IMGMGR-485: every tag edit the fixture transport answered, as the WIRE call it received
     /// (`add(tag: x, imageIDs: [2])`), so a UI test asserts which photograph a tag sheet wrote

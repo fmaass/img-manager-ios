@@ -26,6 +26,10 @@ struct MenuCommandDeclaration: Identifiable {
   /// command's second key is still declared HERE, so every reconciliation test still sees it,
   /// but it is handled silently by `SilentKeyCommandHost` rather than drawn as a twin row.
   let presentation: Presentation
+  /// IMGMGR-542: a further condition on a grid entry being live, read off the focused actions
+  /// (Esc is live only while a band can close). Nil for every other entry: live whenever the
+  /// grid's actions are published.
+  let isLive: ((GridKeyboardActions) -> Bool)?
 
   /// How a declaration reaches the keyboard (IMGMGR-463).
   enum Presentation {
@@ -70,7 +74,8 @@ struct MenuCommandDeclaration: Identifiable {
 
   private init(
     id: String, shortcut: ShortcutID?, title: String, key: KeyEquivalent?,
-    modifiers: EventModifiers, target: Target, presentation: Presentation = .menuRow
+    modifiers: EventModifiers, target: Target, presentation: Presentation = .menuRow,
+    isLive: ((GridKeyboardActions) -> Bool)? = nil
   ) {
     self.id = id
     self.shortcut = shortcut
@@ -79,6 +84,21 @@ struct MenuCommandDeclaration: Identifiable {
     self.modifiers = modifiers
     self.target = target
     self.presentation = presentation
+    self.isLive = isLive
+  }
+
+  /// IMGMGR-542: a key with NO menu row of its own — Esc, which closes the most recent peek band.
+  /// A dismiss key is not a menu command: drawn as a row it would sit in the menu bar disabled
+  /// nearly always. It is still declared here, catalogued and reconciled like every binding, and
+  /// enabled only while `isLive` says so, so the key falls through to whatever owns Esc otherwise.
+  static func hiddenKey(
+    id: String, shortcut: ShortcutID, title: String, key: KeyEquivalent,
+    modifiers: EventModifiers, run: @escaping (GridKeyboardActions) -> Void,
+    isLive: @escaping (GridKeyboardActions) -> Bool
+  ) -> MenuCommandDeclaration {
+    MenuCommandDeclaration(
+      id: id, shortcut: shortcut, title: title, key: key, modifiers: modifiers,
+      target: .grid(run), presentation: .silent, isLive: isLive)
   }
 
   /// This command's secondary key, handled silently (IMGMGR-463). Everything but the id and the
@@ -90,7 +110,7 @@ struct MenuCommandDeclaration: Identifiable {
   ) -> MenuCommandDeclaration {
     MenuCommandDeclaration(
       id: id, shortcut: shortcut, title: title, key: key, modifiers: modifiers, target: target,
-      presentation: .silent)
+      presentation: .silent, isLive: isLive)
   }
 
   /// What activating it does, given the focused grid actions — a no-op on a viewer-zoom entry,
@@ -105,7 +125,9 @@ struct MenuCommandDeclaration: Identifiable {
   /// mounted viewer, so it is disabled on the bare grid and live in the loupe and in Compare.
   func isEnabled(grid: GridKeyboardActions?, viewerZoom: ViewerZoomCommand?) -> Bool {
     switch target {
-    case .grid: return grid != nil
+    case .grid:
+      guard let grid else { return false }
+      return isLive?(grid) ?? true
     case .viewerZoom: return viewerZoom != nil
     }
   }
@@ -115,7 +137,7 @@ struct MenuCommandDeclaration: Identifiable {
   func perform(grid: GridKeyboardActions?, viewerZoom: ViewerZoomCommand?) {
     switch target {
     case .grid(let run):
-      if let grid { run(grid) }
+      if let grid, isLive?(grid) ?? true { run(grid) }
     case .viewerZoom(let run):
       if let viewerZoom { run(viewerZoom) }
     }
@@ -285,6 +307,7 @@ extension AppCommands {
       items: [
         openRow,
         openRow.silentTwin(id: "grid.open.space", key: .space, modifiers: []),
+        closeBandKey,
       ]),
     // Clear's chrome surface is the LOUPE's own mark bar (`ShortcutCatalog`'s own doc comment:
     // "P4's own bar has no Clear button") — the keyboard shortcut itself is scene-level, so it
@@ -444,6 +467,13 @@ extension AppCommands {
     id: "view.autoAdvance.command", shortcut: .autoAdvance, title: "Advance After Marking",
     key: KeyEquivalent("a"), modifiers: [.command, .shift],
     run: { $0.toggleAutoAdvanceOnMark() })
+
+  /// IMGMGR-542 (R3-22): Esc closes the most recently opened peek band — a hidden key, live only
+  /// while `GridStore.canCloseBand` (bare Scene stream, a band open, no loupe, nothing presented
+  /// over the grid). It sits in the Open group, whose Return row keeps the group drawn.
+  @MainActor static let closeBandKey = MenuCommandDeclaration.hiddenKey(
+    id: "grid.closeBand.escape", shortcut: .closeBand, title: "Close Band", key: .escape,
+    modifiers: [], run: { $0.closeMostRecentBand() }, isLive: { $0.canCloseBand() })
 
   @MainActor static let helpRow = MenuCommandDeclaration(
     id: "view.help.command", shortcut: .help, title: "Keyboard Shortcuts",

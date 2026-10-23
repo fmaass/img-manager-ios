@@ -74,6 +74,45 @@ enum GridScrollAnchor {
     }
     return best
   }
+
+  // MARK: - IMGMGR-542 (R3-22): peek-band restore
+
+  /// The first candidate that names a SURVIVING display id, else the nearest surviving
+  /// predecessor of `position` in `streamOrder` (the order before the change), else nil.
+  /// The one validation every band restore and every revalidation shares: no fallback may name a
+  /// row that is no longer rendered.
+  static func firstSurviving(
+    _ candidates: [GridDisplayID?], surviving: Set<GridDisplayID>,
+    predecessorOf position: GridDisplayID? = nil, streamOrder: [GridDisplayID] = []
+  ) -> GridDisplayID? {
+    for case let candidate? in candidates where surviving.contains(candidate) {
+      return candidate
+    }
+    guard let position, let index = streamOrder.firstIndex(of: position) else { return nil }
+    for id in streamOrder[..<index].reversed() where surviving.contains(id) { return id }
+    return nil
+  }
+
+  /// Where the viewport goes when `closing` bands close. Candidates, each validated against what
+  /// is rendered AFTER the close: the current anchor; then — when the current anchor sat inside a
+  /// closing band — that band's open-time anchor, its card, and the nearest surviving row before
+  /// the card; else nil (no scroll).
+  static func anchorAfterClosing(
+    current: GridDisplayID?, closing: [PeekBand],
+    members: [Int: [Int]], surviving: Set<GridDisplayID>, streamOrder: [GridDisplayID]
+  ) -> GridDisplayID? {
+    if let current, surviving.contains(current) { return current }
+    let holder =
+      closing.first { band in
+        guard case .image(let id)? = current else { return false }
+        return members[band.stackID]?.contains(id) == true
+      } ?? closing.last
+    guard let holder else { return nil }
+    let card = GridDisplayID.stack(holder.stackID)
+    return firstSurviving(
+      [holder.anchorAtOpen, card], surviving: surviving,
+      predecessorOf: card, streamOrder: streamOrder)
+  }
 }
 
 extension GridScrollAnchor {

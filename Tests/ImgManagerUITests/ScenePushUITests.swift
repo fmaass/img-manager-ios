@@ -57,7 +57,7 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
     let app = launched(extra: ["-UITestLatchDislikeLock"])
     let caption = app.staticTexts["lockModeCaption"]
     XCTAssertTrue(caption.waitForExistence(timeout: 20), "Precondition: the latch is not on.")
-    element(app, "sceneHandle-\(Self.scene)").tap()
+    pushScene(app, Self.scene)
     assertEntered(app, Self.scene)
     XCTAssertTrue(
       app.staticTexts["lockModeCaption"].waitForExistence(timeout: 10),
@@ -180,10 +180,11 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
       "The latch did not survive the push.")
   }
 
-  /// T6 · kills M19b (the handle no longer enters).
-  func testHandleTapPushesTheScene() throws {
+  /// T6 · kills M19b (the card no longer enters). IMGMGR-542: the chevron opens a peek band,
+  /// so the push is the card's.
+  func testCardTapPushesTheScene() throws {
     let app = launched()
-    element(app, "sceneHandle-\(Self.scene)").tap()
+    pushScene(app, Self.scene)
     assertEntered(app, Self.scene)
     assertTitle(app, Self.title)
   }

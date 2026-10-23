@@ -154,9 +154,7 @@ final class LoupeFilmstripScopeUITests: OrientationPinnedUITestCase {
 
   /// Pushes the fixture's scene, and waits for its members to be on screen.
   private func expandTheFixtureScene(_ app: XCUIApplication) {
-    let handle = element(app, "sceneHandle-5000")
-    XCTAssertTrue(handle.waitForExistence(timeout: 15), "The fixture scene's handle is missing.")
-    handle.tap()
+    pushScene(app, 5000)
     XCTAssertTrue(
       element(app, "gridTile-\(firstMemberID)").waitForExistence(timeout: 20),
       "Opening the scene did not put its members on screen.")

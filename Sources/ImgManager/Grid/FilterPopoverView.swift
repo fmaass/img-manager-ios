@@ -52,6 +52,10 @@ struct GridFilterControl: View {
       // adaptation is accepted rather than forced back into a popover the phone has no room for.
       FilterPopoverView(store: store)
     }
+    // IMGMGR-542: Esc belongs to the popover while it is up, not to the peek bands under it.
+    .onChange(of: isPresented) { _, now in
+      store.notePopover("gridFilterControl", isPresented: now)
+    }
   }
 
   /// The same shape `InspectorFacetFilters.infoButtonAccessibilityLabel` gives the Info button,

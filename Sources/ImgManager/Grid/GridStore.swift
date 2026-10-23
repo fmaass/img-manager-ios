@@ -182,6 +182,26 @@ final class GridStore {
   /// Computed, never stored: the edit subject, the paging fences and the filmstrip read it, so
   /// none of them can name a scene the display has left.
   var sceneExpanded: Set<Int> { enteredSceneID.map { [$0] } ?? [] }
+  /// IMGMGR-542 (R3-22): the open peek bands, in the order they were opened (last = most
+  /// recent). Stream state: entering or leaving a scene never touches it; a window rebuild
+  /// (`clearSceneWindow`) closes them all.
+  private(set) var peekBands: [PeekBand] = []
+  var openBandIDs: [Int] { peekBands.map(\.stackID) }
+  /// Membership on screen somewhere: the entered scene plus every open band. The filmstrip scope
+  /// and the membership paging/landing fences read this; the scene-EDIT subject keeps reading
+  /// `sceneExpanded` (no Split/Extract from inside a band).
+  var openMembershipIDs: Set<Int> {
+    Set(openBandIDs).union(enteredSceneID.map { [$0] } ?? [])
+  }
+  /// Bumped on every band open and every scene entry; a membership page lands only while the
+  /// token it was requested under is still current, so a closed-then-reopened band's OLD page is
+  /// dropped.
+  @ObservationIgnored private var membershipToken: [Int: Int] = [:]
+  /// Bands whose membership read failed; the chevron offers Retry.
+  private(set) var bandLoadFailed: Set<Int> = []
+  /// Bumped by every band close; `GridView` restores `bandCloseAnchor` when it moves.
+  private(set) var bandCloseRevision = 0
+  @ObservationIgnored private(set) var bandCloseAnchor: GridDisplayID?
   /// The scope the reader is looking at: the stream, or the entered scene.
   var activeScope: GridScope {
     switch entry {
@@ -228,6 +248,25 @@ final class GridStore {
     SceneRowBuilder.displayRows(rows: sceneRows)
   }
 
+  /// IMGMGR-542: the open bands as the packer takes them — in insertion order, only bands whose
+  /// card is still listed and whose membership has loaded (a derived prune: no path can render an
+  /// orphan band).
+  var peekBandRows: [SceneBand] {
+    guard displayMode == .scene else { return [] }
+    let listed = Set(
+      sceneRows.compactMap { row -> Int? in
+        guard case .stack(let stack) = row else { return nil }
+        return stack.stackId
+      })
+    return peekBands.compactMap { band in
+      guard listed.contains(band.stackID), let members = sceneMembers[band.stackID],
+        !members.isEmpty
+      else { return nil }
+      return SceneBand(
+        stackID: band.stackID, rows: SceneRowBuilder.enteredSceneRows(members: members))
+    }
+  }
+
   /// THE definition of what one grid instance renders. `.stream` keeps the Flat/Scene branch the
   /// view used to hold; `.scene(id)` is the entered scene's members.
   func displayRows(for scope: GridScope) -> [SceneDisplayRow] {
@@ -235,7 +274,7 @@ final class GridStore {
     case .stream:
       switch displayMode {
       case .flat: return images.map(SceneDisplayRow.image)
-      case .scene: return sceneDisplayRows
+      case .scene: return SceneRowBuilder.bandedDisplayRows(rows: sceneRows, bands: peekBandRows)
       }
     case .scene(let id):
       return SceneRowBuilder.enteredSceneRows(members: sceneMembers[id] ?? [])
@@ -272,7 +311,7 @@ final class GridStore {
   func openSceneMembers(containing imageID: Int) -> [Components.Schemas.ImageSummary]? {
     guard displayMode == .scene else { return nil }
     return SceneRowBuilder.openSceneMembers(
-      containing: imageID, expanded: sceneExpanded, members: sceneMembers)
+      containing: imageID, expanded: openMembershipIDs, members: sceneMembers)
   }
 
   /// THE list of "photographs on screen" — the single projection every mark, tag, undo, focus,
@@ -1439,6 +1478,8 @@ final class GridStore {
     sceneMembersInFlight = []
     sceneInlinePicks = [:]
     sceneInlinePicksInFlight = []
+    peekBands = []
+    bandLoadFailed = []
   }
 
   // MARK: - Authoritative refresh (P6: foreground + genuine same-shoot re-entry)
@@ -1556,12 +1597,22 @@ final class GridStore {
         if let held = sceneMembers[now] { refreshedMembers[now] = held }
         if let held = sceneMemberCursors[now] { refreshedCursors[now] = held }
       }
+      let bandOrderBeforeRefresh = displayRows(for: .stream).map(\.id)
       sceneRows = rows
       sceneNextCursor = page.nextCursor
       sceneMembers = refreshedMembers
       sceneMemberCursors = refreshedCursors
       sceneMembersInFlight = sceneMembersInFlight.intersection(now.map { [$0] } ?? [])
       if gone, let id = entered, enteredSceneID == id { leaveScene(.sceneGone) }
+      // IMGMGR-542: bands whose card is still listed are re-read (authoritative, like the entered
+      // scene); the rest close. Stored anchors are then revalidated against what survives.
+      let listed = Set(rows.map(\.displayID))
+      peekBands.removeAll { !listed.contains(.stack($0.stackID)) }
+      for band in peekBands where sceneMembers[band.stackID] == nil {
+        await fetchSceneMembers(stackID: band.stackID, cursor: nil)
+        guard generation == loadGeneration else { return false }
+      }
+      revalidateBandAnchors(previousOrder: bandOrderBeforeRefresh)
       // IMGMGR-261: a refresh re-reads every card, so a cached summary may now be stale.
       sceneInlinePicks = [:]
       sceneInlinePicksInFlight = []
@@ -2080,6 +2131,9 @@ final class GridStore {
     guard displayMode == .scene else { return }
     guard sceneRows.contains(where: { $0.displayID == .stack(stackID) }) else { return }
     transitionScene(to: .scene(SceneEntry(stackID: stackID)), reason: .userOpen)
+    // A second enter while this scene's page is still on the wire joins that request rather
+    // than asking again; only an enter with nothing in flight starts a new opening.
+    if !sceneMembersInFlight.contains(stackID) { membershipToken[stackID, default: 0] &+= 1 }
     guard sceneMembers[stackID] == nil else { return }
     await fetchSceneMembers(stackID: stackID, cursor: nil)
   }
@@ -2242,7 +2296,7 @@ final class GridStore {
 
   /// The rest of a long scene's membership. Appends in place; the card never moves.
   func loadMoreSceneMembers(stackID: Int) async {
-    guard displayMode == .scene, sceneExpanded.contains(stackID) else { return }
+    guard displayMode == .scene, openMembershipIDs.contains(stackID) else { return }
     guard case .more(let cursor) = sceneMemberCursors[stackID] else { return }
     await fetchSceneMembers(stackID: stackID, cursor: cursor)
   }
@@ -2250,10 +2304,22 @@ final class GridStore {
   /// One membership page, single-flighted per scene and generation-fenced like every other read
   /// here. `cursor == nil` is the first page (replaces), a cursor appends.
   private func fetchSceneMembers(stackID: Int, cursor: String?) async {
-    guard !sceneMembersInFlight.contains(stackID) else { return }
+    // IMGMGR-542: single-flight per (scene, token) — a request from an EARLIER opening must not
+    // block the reopened band's own request, or the band would wait on a page that is dropped.
+    let token = membershipToken[stackID, default: 0]
+    guard !(sceneMembersInFlight.contains(stackID) && inFlightToken[stackID] == token) else {
+      return
+    }
     sceneMembersInFlight.insert(stackID)
-    defer { sceneMembersInFlight.remove(stackID) }
+    inFlightToken[stackID] = token
+    defer {
+      if inFlightToken[stackID] == token {
+        sceneMembersInFlight.remove(stackID)
+        inFlightToken[stackID] = nil
+      }
+    }
     sceneLoadFailed.remove(stackID)
+    bandLoadFailed.remove(stackID)
     let generation = loadGeneration
     do {
       let page = try await service.stackMembers(
@@ -2261,12 +2327,13 @@ final class GridStore {
       // The window may have been replaced while the membership was on the wire — its rows belong
       // to a result set the reader has left, exactly as a late grid page would.
       guard generation == loadGeneration else { return }
-      // And the reader may have closed the scene in the meantime: splicing members under a card
-      // that is no longer open would put photographs on screen nobody asked to see.
-      guard enteredSceneID == stackID else { return }
+      // And the reader may have closed the scene (or its band) in the meantime, or closed and
+      // reopened it: splicing members nobody asked for — or an old opening's page — is refused.
+      guard openMembershipIDs.contains(stackID), membershipToken[stackID, default: 0] == token
+      else { return }
       if cursor == nil, page.items.isEmpty, page.nextCursor == nil {
         // An empty membership is never shown: the scene is gone (B5).
-        leaveScene(.sceneGone)
+        sceneGone(stackID)
         return
       }
       if cursor == nil {
@@ -2279,12 +2346,139 @@ final class GridStore {
       sceneMemberCursors[stackID] = page.nextCursor.map(SceneMemberCursor.more) ?? .exhausted
       lastPageLoadError = nil
     } catch GridServiceError.notFound {
-      guard generation == loadGeneration, enteredSceneID == stackID else { return }
-      leaveScene(.sceneGone)
+      guard generation == loadGeneration, openMembershipIDs.contains(stackID),
+        membershipToken[stackID, default: 0] == token
+      else { return }
+      sceneGone(stackID)
     } catch {
-      guard generation == loadGeneration else { return }
+      guard generation == loadGeneration, membershipToken[stackID, default: 0] == token else {
+        return
+      }
       lastPageLoadError = (error as? GridServiceError) ?? .unreachable
       if enteredSceneID == stackID { sceneLoadFailed.insert(stackID) }
+      if openBandIDs.contains(stackID) { bandLoadFailed.insert(stackID) }
+    }
+  }
+
+  @ObservationIgnored private var inFlightToken: [Int: Int] = [:]
+
+  /// A scene whose membership came back empty or 404: the entered scene is left (B5); a band of
+  /// it closes, and nothing else moves.
+  private func sceneGone(_ stackID: Int) {
+    if openBandIDs.contains(stackID) { closeBands([stackID]) }
+    if enteredSceneID == stackID { leaveScene(.sceneGone) }
+  }
+
+  // MARK: - Peek bands (IMGMGR-542, R3-22)
+
+  /// The card's chevron: open this scene's band under its card's row, or close it. Refused outside
+  /// Scene mode, outside the stream and for a card that is not listed. Never enters the scene and
+  /// never names a route.
+  func togglePeekBand(_ stackID: Int) async {
+    guard displayMode == .scene, activeScope == .stream else { return }
+    guard sceneRows.contains(where: { $0.displayID == .stack(stackID) }) else { return }
+    if openBandIDs.contains(stackID) {
+      closeBands([stackID])
+      return
+    }
+    peekBands.append(PeekBand(stackID: stackID, anchorAtOpen: scrollAnchor(for: .stream)))
+    membershipToken[stackID, default: 0] &+= 1
+    bandLoadFailed.remove(stackID)
+    guard sceneMembers[stackID] == nil else { return }
+    await fetchSceneMembers(stackID: stackID, cursor: nil)
+  }
+
+  /// Esc: close the most recently opened band. A no-op with none open.
+  func closeMostRecentBand() {
+    guard let last = peekBands.last else { return }
+    closeBands([last.stackID])
+  }
+
+  /// No page and no membership read in flight, and every open band fully loaded — the state the
+  /// scroll measurement waits for before it times anything.
+  var bandsSettled: Bool {
+    !isLoadingPage && sceneMembersInFlight.isEmpty
+      && peekBands.allSatisfy { sceneMemberCursors[$0.stackID] == .exhausted }
+  }
+
+  /// More › Collapse all.
+  func collapseAllBands() {
+    closeBands(openBandIDs)
+  }
+
+  /// Whether Esc closes a band right now. Only on the bare Scene stream: never in Flat, never
+  /// inside an entered scene or the remainder, never with the loupe open, and never while a sheet
+  /// or popover is up over the grid — Esc is that presentation's own key there.
+  var canCloseBand: Bool {
+    !peekBands.isEmpty && displayMode == .scene && activeScope == .stream && !isLoupeOpen
+      && !hasGridPresentation
+  }
+
+  /// A sheet or popover raised over the grid. The store-held flags plus the chrome popovers that
+  /// keep their own `isPresented` and report it through `notePopover(_:isPresented:)`.
+  var hasGridPresentation: Bool {
+    isTagEntryPresented || isShortcutHelpPresented || isStatusPresented || isTriagePresented
+      || isSceneMergePickerPresented || isSceneAbsorbPickerPresented || sceneEditError != nil
+      || !openGridPopovers.isEmpty
+  }
+
+  /// The grid chrome's own popovers (Arrange, Filters) that are up right now.
+  private(set) var openGridPopovers: Set<String> = []
+
+  func notePopover(_ id: String, isPresented: Bool) {
+    if isPresented { openGridPopovers.insert(id) } else { openGridPopovers.remove(id) }
+  }
+
+  private func closeBands(_ ids: [Int]) {
+    let closing = peekBands.filter { ids.contains($0.stackID) }
+    guard !closing.isEmpty else { return }
+    let closedMembers = Set(
+      closing.flatMap { band in (sceneMembers[band.stackID] ?? []).map(\.id) })
+    let before = displayRows(for: .stream).map(\.id)
+    let current = scrollAnchor(for: .stream)
+    peekBands.removeAll { ids.contains($0.stackID) }
+    for id in ids { bandLoadFailed.remove(id) }
+    let surviving = Set(displayRows(for: .stream).map(\.id))
+    let restore = GridScrollAnchor.anchorAfterClosing(
+      current: current, closing: closing,
+      members: Dictionary(
+        closing.map { ($0.stackID, (sceneMembers[$0.stackID] ?? []).map(\.id)) },
+        uniquingKeysWith: { a, _ in a }),
+      surviving: surviving, streamOrder: before)
+    if let focused = focusedImageID, closedMembers.contains(focused) { focusedImageID = nil }
+    selection.removeHidden(Array(closedMembers))
+    bandCloseAnchor = restore
+    if let restore { recordScrollAnchor(restore, for: .stream) }
+    revalidateBandAnchors()
+    bandCloseRevision &+= 1
+  }
+
+  /// Every stored anchor that no longer names a rendered row is reset, with the same
+  /// surviving-ID validation the close uses: a band's open-time anchor → nil; the stream anchor →
+  /// its band's card only if that card survives, else the nearest surviving predecessor, else
+  /// left for the next visibility report to replace.
+  func revalidateBandAnchors(previousOrder: [GridDisplayID]? = nil) {
+    let rows = displayRows(for: .stream).map(\.id)
+    let surviving = Set(rows)
+    for i in peekBands.indices {
+      if let anchor = peekBands[i].anchorAtOpen, !surviving.contains(anchor) {
+        peekBands[i].anchorAtOpen = nil
+      }
+    }
+    let listed = Set(sceneRows.map(\.displayID))
+    peekBands.removeAll { !listed.contains(.stack($0.stackID)) }
+    guard let anchor = scrollAnchor(for: .stream), !surviving.contains(anchor) else { return }
+    let owner: GridDisplayID? = {
+      guard case .image(let id) = anchor else { return nil }
+      return sceneMembers.first { $0.value.contains { $0.id == id } }.map { .stack($0.key) }
+    }()
+    if let replacement = GridScrollAnchor.firstSurviving(
+      [owner], surviving: surviving, predecessorOf: anchor,
+      streamOrder: previousOrder ?? rows)
+    {
+      recordScrollAnchor(replacement, for: .stream)
+    } else {
+      gridScrollAnchor = nil
     }
   }
 
@@ -2658,6 +2852,10 @@ final class GridStore {
     _ result: Components.Schemas.StackEditResult, request: SceneEditRequest,
     owner: SceneEditOwner
   ) async {
+    // IMGMGR-542: the reload rebuilds the window, which closes every band; the bands whose card
+    // survives the edit are reopened below and their stored anchors revalidated.
+    let bandsBeforeEdit = peekBands
+    let streamOrderBeforeEdit = displayRows(for: .stream).map(\.id)
     // Step 1: the KEEP reload; the destination is resolved below, not by revalidation.
     await reloadFirstPage(revalidatesEntry: false)
     let generation = loadGeneration
@@ -2682,14 +2880,36 @@ final class GridStore {
       present.insert(stackID)
     }
     guard generation == loadGeneration else { return }
+    reinstateBands(bandsBeforeEdit)
     // Step 3: navigation belongs to the scene the edit started in, at its revision.
-    guard ownsNavigation(owner) else {
+    if ownsNavigation(owner) {
+      let pending = SceneDestinationRetry(
+        owner: owner, candidates: result.stackIds, anchorImageID: request.anchorImageID)
+      await resolveDestination(pending, dissolved: result.dissolvedStackIds, generation: generation)
+    } else {
       await restoreEnteredScene(dissolved: result.dissolvedStackIds, generation: generation)
-      return
     }
-    let pending = SceneDestinationRetry(
-      owner: owner, candidates: result.stackIds, anchorImageID: request.anchorImageID)
-    await resolveDestination(pending, dissolved: result.dissolvedStackIds, generation: generation)
+    guard generation == loadGeneration else { return }
+    await rereadBandMembers(generation: generation)
+    guard generation == loadGeneration else { return }
+    revalidateBandAnchors(previousOrder: streamOrderBeforeEdit)
+  }
+
+  /// IMGMGR-542: after a topology edit, the bands that were open before it whose card is still
+  /// listed — in their opening order — and nothing else. A band whose card the edit dissolved
+  /// stays closed.
+  private func reinstateBands(_ before: [PeekBand]) {
+    let listed = Set(sceneRows.map(\.displayID))
+    peekBands = before.filter { listed.contains(.stack($0.stackID)) }
+    for band in peekBands { membershipToken[band.stackID, default: 0] &+= 1 }
+  }
+
+  /// Re-reads the first membership page of every open band the window rebuild emptied.
+  private func rereadBandMembers(generation: Int) async {
+    for band in peekBands where sceneMembers[band.stackID] == nil {
+      await fetchSceneMembers(stackID: band.stackID, cursor: nil)
+      guard generation == loadGeneration else { return }
+    }
   }
 
   /// §2.3a: ownership is re-checked after EVERY await of the coordinator.

@@ -7,8 +7,10 @@ import SwiftUI
 /// what it does and says which state it is in" is a contract, and a contract belongs in a test
 /// that reads a string, not in a screenshot that has to be looked at.
 enum SceneHandleAccessibility {
-  /// WP442 P12: the handle only ever opens (pushes) its scene.
-  static let label = "Open scene"
+  /// IMGMGR-542 (R3-22): the handle opens and closes the scene's peek band; a card tap pushes.
+  static let closedLabel = "Show this scene's photos"
+  static let openLabel = "Hide this scene's photos"
+  static func label(isOpen: Bool) -> String { isOpen ? openLabel : closedLabel }
 }
 
 /// What a collapsed card announces (IMGMGR-241 changed it): how big the scene is, whether it is
@@ -39,22 +41,32 @@ struct SceneExpandHandle: View {
   let store: GridStore
 
   var body: some View {
+    let isOpen = store.openBandIDs.contains(stackID)
+    let failed = store.bandLoadFailed.contains(stackID)
     Button {
-      Task { await store.enterScene(stackID) }
+      // A failed band retries: close and open again re-reads its membership.
+      Task {
+        if failed { await store.togglePeekBand(stackID) }
+        await store.togglePeekBand(stackID)
+      }
     } label: {
-      Image(systemName: "chevron.right")
-        .font(.caption2.weight(.semibold))
-        .frame(width: 24, height: 24)
-        .background(.black.opacity(0.65), in: Circle())
-        .foregroundStyle(.white)
-        // The ≥44×44 pt floor every other control in this app gets, without growing the drawn
-        // glyph: the justified solver owns the cell's pixels, so the target is padded, not the art.
-        .frame(minWidth: 44, minHeight: 44, alignment: .center)
-        .contentShape(Rectangle())
+      Image(
+        systemName: failed
+          ? "arrow.clockwise" : (isOpen ? "chevron.up" : "chevron.down")
+      )
+      .font(.caption2.weight(.semibold))
+      .frame(width: 24, height: 24)
+      .background(.black.opacity(0.65), in: Circle())
+      .foregroundStyle(.white)
+      // The ≥44×44 pt floor every other control in this app gets, without growing the drawn
+      // glyph: the justified solver owns the cell's pixels, so the target is padded, not the art.
+      .frame(minWidth: 44, minHeight: 44, alignment: .center)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier("sceneHandle-\(stackID)")
-    .accessibilityLabel(SceneHandleAccessibility.label)
+    .accessibilityLabel(SceneHandleAccessibility.label(isOpen: isOpen))
+    .accessibilityValue(failed ? "failed" : (isOpen ? "open" : "closed"))
     .padding(2)
   }
 }

@@ -43,6 +43,11 @@ struct GridKeyboardActions {
   /// header's toggle and the account sheet's row write, so the accelerator and its two chrome
   /// twins cannot disagree.
   var toggleAutoAdvanceOnMark: () -> Void
+  /// IMGMGR-542 (R3-22): Esc closes the most recently opened peek band. Both default to inert so
+  /// a probe built for another key needs neither.
+  var closeMostRecentBand: () -> Void = {}
+  /// Read LIVE off the store (the focused value is a snapshot): whether Esc may close a band now.
+  var canCloseBand: () -> Bool = { false }
 }
 
 private struct GridKeyboardActionsKey: FocusedValueKey {
@@ -84,7 +89,9 @@ extension GridStore {
       // Read off the store's OWN preference rather than a copy the menu holds, for the same
       // reason `toggleSceneMode` above does: the focused value is a snapshot, and a stale copy
       // would flip the wrong way after a change made from the account sheet's row.
-      toggleAutoAdvanceOnMark: { [self] in preferences.autoAdvanceOnMark.toggle() }
+      toggleAutoAdvanceOnMark: { [self] in preferences.autoAdvanceOnMark.toggle() },
+      closeMostRecentBand: { [self] in if canCloseBand { closeMostRecentBand() } },
+      canCloseBand: { [self] in canCloseBand }
     )
   }
 }

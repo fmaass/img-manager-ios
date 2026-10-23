@@ -188,6 +188,29 @@
       // WP14 lane B (IMGMGR-240/-241/-261): Scene mode's own fixture. Without these three the
       // Debug composition could not enter Scene mode with data at all, so the band, the ✓N badge
       // and the inline picks had no rendered evidence — only unit assertions.
+      // IMGMGR-542 (R3-22): the peek-band folders (`DebugPeekBandsFixture`).
+      case Operations.BrowseStacksApiBrowseStacksGet.id where DebugPeekBandsFixture.isOn:
+        let marks = markState
+        return try jsonResponse(
+          .ok,
+          DebugPeekBandsFixture.browsePage(
+            cursor: Self.queryParameters(of: request)["cursor"],
+            marks: { Self.seededState($0, marks: marks) }))
+      case Operations.ListStackMembersApiStacksStackIdMembersGet.id
+      where DebugPeekBandsFixture.isOn:
+        let marks = markState
+        let stackID = Self.sceneEditStackID(path: request.path).flatMap(Int.init) ?? 0
+        return try jsonResponse(
+          .ok,
+          DebugPeekBandsFixture.memberPage(
+            stackID: stackID, marks: { Self.seededState($0, marks: marks) }))
+      case Operations.GetStackApiStacksStackIdGet.id where DebugPeekBandsFixture.isOn:
+        let marks = markState
+        let stackID = Self.sceneEditStackID(path: request.path).flatMap(Int.init) ?? 0
+        return try jsonResponse(
+          .ok,
+          DebugPeekBandsFixture.stackRow(
+            stackID, marks: { Self.seededState($0, marks: marks) }))
       case Operations.BrowseStacksApiBrowseStacksGet.id:
         // IMGMGR-557: a folder opens in Scene exactly when this page holds a scene, so the scene
         // is served only to a launch that asks for one; every other launch browses a folder of

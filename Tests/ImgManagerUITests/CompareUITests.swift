@@ -286,9 +286,7 @@ final class CompareUITests: OrientationPinnedUITestCase {
     XCTAssertTrue(
       app.buttons["Dislike"].waitForExistence(timeout: 30),
       "The Scene-mode stub grid never rendered its action bar.")
-    let handle = element(app, "sceneHandle-5000")
-    XCTAssertTrue(handle.waitForExistence(timeout: 15), "The fixture scene's handle is missing.")
-    handle.tap()
+    pushScene(app, 5000)
     XCTAssertTrue(
       element(app, "gridTile-\(leftID)").waitForExistence(timeout: 20),
       "Opening the scene did not put its members on screen.")

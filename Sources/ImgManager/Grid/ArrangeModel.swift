@@ -169,6 +169,10 @@ struct GridArrangeControl: View {
     .popover(isPresented: $isPresented) {
       ArrangePopoverView(store: store)
     }
+    // IMGMGR-542: Esc belongs to the popover while it is up, not to the peek bands under it.
+    .onChange(of: isPresented) { _, now in
+      store.notePopover(Self.accessibilityIdentifier, isPresented: now)
+    }
   }
 }
 

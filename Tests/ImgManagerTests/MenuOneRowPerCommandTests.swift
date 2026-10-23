@@ -32,6 +32,8 @@ struct MenuOneRowPerCommandTests {
     binding(.rightArrow, [], "grid.focus.right", .arrowRight),
     binding(.return, [], "grid.open.return", .openSpaceEnter),
     binding(.space, [], "grid.open.space", .openSpaceEnter),
+    // IMGMGR-542 (R3-22): Esc, a hidden key with no menu row, closes the most recent peek band.
+    binding(.escape, [], "grid.closeBand.escape", .closeBand),
     binding(KeyEquivalent("p"), [], "grid.mark.pick", .pick),
     binding(KeyEquivalent("p"), [.shift], "grid.mark.pickAdvance", .shiftAdvance),
     binding(KeyEquivalent("x"), [], "grid.mark.dislike", .dislike),
@@ -78,7 +80,7 @@ struct MenuOneRowPerCommandTests {
 
   @Test("Every shipped (key, modifiers) → command binding survives, none added, none re-keyed")
   func shippedBindingsAreUnchanged() {
-    #expect(Self.shipped.count == 35)
+    #expect(Self.shipped.count == 36)
     #expect(Self.bindsExactlyTheShippedSet(AppCommands.declarations))
     // Each binding is rendered by exactly one host: a menu row or the silent host.
     let rows = (AppCommands.gridMenuGroups + AppCommands.viewMenuGroups).flatMap(\.menuRows)
@@ -140,15 +142,20 @@ struct MenuOneRowPerCommandTests {
     #expect(matching.first?.modifiers == modifiers)
   }
 
-  @Test("Only Space, bare A and ? are silent — no other binding lost its row")
+  @Test("Only Space, bare A, ? and the hidden Esc are silent — no other binding lost its row")
   func onlyTheThreeSecondaryKeysAreSilent() {
     let silent = AppCommands.silentDeclarations
-    let expected = ["grid.open.space", "view.autoAdvance.bare", "view.help.question"]
+    let expected = [
+      "grid.closeBand.escape", "grid.open.space", "view.autoAdvance.bare", "view.help.question",
+    ]
     #expect(silent.map(\.id).sorted() == expected)
     #expect(silent.allSatisfy { $0.modifiers.isEmpty })
     let keys = silent.compactMap { $0.key.map { String($0.character) } }
     #expect(keys.count == silent.count, "a silent declaration with no key renders nothing")
-    #expect(Set(keys) == [String(KeyEquivalent.space.character), "a", "?"])
+    #expect(
+      Set(keys) == [
+        String(KeyEquivalent.space.character), "a", "?", String(KeyEquivalent.escape.character),
+      ])
   }
 
   @Test("Every group still draws a row — no orphan Divider from an all-silent group")
@@ -170,7 +177,9 @@ struct MenuOneRowPerCommandTests {
     var calls: [String] = []
   }
 
-  private func recordingActions(_ log: DispatchLog) -> GridKeyboardActions {
+  private func recordingActions(
+    _ log: DispatchLog, canCloseBand: Bool = true
+  ) -> GridKeyboardActions {
     GridKeyboardActions(
       moveFocus: { log.calls.append("moveFocus.\($0)") },
       open: { log.calls.append("open") },
@@ -185,7 +194,9 @@ struct MenuOneRowPerCommandTests {
       toggleSortDirection: { log.calls.append("toggleSortDirection") },
       toggleSceneMode: { log.calls.append("toggleSceneMode") },
       showShortcutHelp: { log.calls.append("showShortcutHelp") },
-      toggleAutoAdvanceOnMark: { log.calls.append("toggleAutoAdvanceOnMark") })
+      toggleAutoAdvanceOnMark: { log.calls.append("toggleAutoAdvanceOnMark") },
+      closeMostRecentBand: { log.calls.append("closeMostRecentBand") },
+      canCloseBand: { canCloseBand })
   }
 
   private func calls(of declaration: MenuCommandDeclaration) -> [String] {
@@ -199,8 +210,10 @@ struct MenuOneRowPerCommandTests {
   func silentTwinsDispatchAndEnableLikeTheirMenuRows() {
     let rows = (AppCommands.gridMenuGroups + AppCommands.viewMenuGroups).flatMap(\.menuRows)
     let actions = recordingActions(DispatchLog())
-    #expect(AppCommands.silentDeclarations.count == 3)
-    for twin in AppCommands.silentDeclarations {
+    // The hidden Esc has no row by design; it is pinned by its own test below.
+    let twins = AppCommands.silentDeclarations.filter { $0.id != AppCommands.closeBandKey.id }
+    #expect(twins.count == 3)
+    for twin in twins {
       let row = rows.filter { $0.shortcut == twin.shortcut && $0.title == twin.title }
       #expect(row.count == 1, "\(twin.id) has no single menu row standing in front of it")
       guard let row = row.first else { continue }
@@ -218,12 +231,38 @@ struct MenuOneRowPerCommandTests {
     #expect(pick.map { calls(of: $0) } != calls(of: AppCommands.openRow))
   }
 
+  /// IMGMGR-542 (R3-22): Esc draws no row, closes the most recent band, and is live ONLY while a
+  /// band can close — disabled, the key falls through to whatever owns Esc (a sheet, a popover).
+  @Test("Esc draws no row, closes the most recent band, and is live only while one can close")
+  func escIsAHiddenKeyLiveOnlyWhileABandCanClose() {
+    let esc = AppCommands.closeBandKey
+    let rows = (AppCommands.gridMenuGroups + AppCommands.viewMenuGroups).flatMap(\.menuRows)
+    #expect(!rows.contains { $0.shortcut == .closeBand })
+    #expect(AppCommands.declarations.filter { $0.shortcut == .closeBand }.count == 1)
+    #expect(esc.key == .escape)
+    #expect(esc.modifiers.isEmpty)
+    #expect(calls(of: esc) == ["closeMostRecentBand"])
+
+    let live = recordingActions(DispatchLog(), canCloseBand: true)
+    let deadLog = DispatchLog()
+    let dead = recordingActions(deadLog, canCloseBand: false)
+    #expect(esc.isEnabled(grid: live, viewerZoom: nil))
+    #expect(!esc.isEnabled(grid: dead, viewerZoom: nil))
+    #expect(!esc.isEnabled(grid: nil, viewerZoom: nil))
+    // Disabled means inert even if invoked: nothing closes behind a sheet.
+    esc.perform(grid: dead, viewerZoom: nil)
+    #expect(deadLog.calls.isEmpty)
+    // POSITIVE CONTROL: the same `canCloseBand: false` does not disable an ordinary row.
+    #expect(AppCommands.openRow.isEnabled(grid: dead, viewerZoom: nil))
+  }
+
   @Test("The help sheet still lists Space, A and ? — the silent keys stay discoverable there")
   func helpSheetStillListsTheSecondaryKeys() {
     let keys = Dictionary(uniqueKeysWithValues: ShortcutHelpModel.rows.map { ($0.id, $0.key) })
     #expect(keys[ShortcutID.openSpaceEnter.rawValue] == "Space or Return")
     #expect(keys[ShortcutID.autoAdvance.rawValue] == "A or ⌘⇧A")
     #expect(keys[ShortcutID.help.rawValue] == "? or ⌘/")
+    #expect(keys[ShortcutID.closeBand.rawValue] == "Esc")
   }
 
   /// IMGMGR-541: the menu bar's group commands list no Day and no Month. They never did (the

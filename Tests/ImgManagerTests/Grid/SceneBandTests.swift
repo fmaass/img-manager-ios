@@ -295,11 +295,11 @@ struct SceneBandDerivationTests {
 @Suite("Scene chrome accessibility — the handle's name and state, the card's own summary")
 struct SceneChromeAccessibilityTests {
 
-  /// WP442 P12: the handle PUSHES the scene, so it names that action and carries no open/closed
-  /// state any more — a card is never open in place.
-  @Test("The handle names its one action, Open scene")
+  /// IMGMGR-542 (R3-22): the handle opens and closes the scene's peek band; a card tap pushes.
+  @Test("The handle names what it does to the peek band, in both states")
   func theHandleNamesItsAction() {
-    #expect(SceneHandleAccessibility.label == "Open scene")
+    #expect(SceneHandleAccessibility.label(isOpen: false) == "Show this scene's photos")
+    #expect(SceneHandleAccessibility.label(isOpen: true) == "Hide this scene's photos")
   }
 
   /// WP21 P2 (IMGMGR-339): the pencil states `edited_count`, and states nothing at zero — the

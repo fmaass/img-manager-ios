@@ -34,11 +34,7 @@ final class SceneMarkScrollPositionUITests: OrientationPinnedUITestCase {
       "Action bar (Dislike button) never appeared within 30s — expected the DEBUG fixture "
         + "composition's populated grid, got something else.")
 
-    let handle = app.descendants(matching: .any)["sceneHandle-5000"].firstMatch
-    XCTAssertTrue(
-      handle.waitForExistence(timeout: 20),
-      "No handle for the fixture scene — the fixture never entered Scene mode with data.")
-    handle.tap()
+    pushScene(app, 5000, timeout: 20)
     let lead = app.descendants(matching: .any)["gridTile-3"].firstMatch
     XCTAssertTrue(
       lead.waitForExistence(timeout: 15), "Opening the scene did not put its members on screen.")

@@ -32,10 +32,13 @@ struct ShortcutCatalogTests {
       .autoAdvance,
       // IMGMGR-495 (owner ruling, comment 10230): ⌘0, Fit ⟷ 100 % in the loupe and in Compare.
       .viewerZoomToggle,
+      // IMGMGR-542 (R3-22): Esc closes the most recent peek band — its chrome (the chevron, More ›
+      // Collapse all) ships in the same change.
+      .closeBand,
     ]
     let actual = Set(ShortcutCatalog.entries.map(\.id))
     #expect(actual == expected)
-    #expect(ShortcutCatalog.entries.count == 19)
+    #expect(ShortcutCatalog.entries.count == 20)
   }
 
   @Test("No C anywhere in the catalog")

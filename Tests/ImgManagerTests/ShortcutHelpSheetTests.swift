@@ -46,6 +46,11 @@ struct ShortcutHelpSheetTests {
     #expect(viewerZoom?.key == "⌘0")
     #expect(viewerZoom?.meaning == ShortcutID.viewerZoomToggle.meaning)
     #expect(viewerZoom?.accessibilityID == "shortcutHelpRow.viewerZoomToggle")
+    // IMGMGR-542 (R3-22): Esc has no menu row, so the sheet is where a reader finds it.
+    let closeBand = ShortcutHelpModel.rows.first { $0.id == ShortcutID.closeBand.rawValue }
+    #expect(closeBand?.key == "Esc")
+    #expect(closeBand?.meaning == "Close the scene band opened last")
+    #expect(closeBand?.accessibilityID == "shortcutHelpRow.closeBand")
   }
 
   @Test("Every row carries the ASCII identifier the rendered sheet is addressed by")

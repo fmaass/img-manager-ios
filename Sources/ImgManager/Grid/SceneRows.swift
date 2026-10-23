@@ -73,6 +73,23 @@ enum SceneBrowseRow: Sendable, Equatable {
   }
 }
 
+/// IMGMGR-542 (R3-22): one open peek band — a scene's members shown as their own rows under its
+/// card's row, without entering the scene. A band is NOT a route (`WorkspaceRoute` never names
+/// one); `GridStore.peekBands` holds them in the order they were opened.
+struct PeekBand: Sendable, Equatable {
+  let stackID: Int
+  /// The stream's scroll anchor when the chevron was pressed — the second restore candidate when
+  /// the band closes with the viewport inside it. Nil-ed by `GridStore.revalidateBandAnchors()`
+  /// once it no longer names a rendered row.
+  var anchorAtOpen: GridDisplayID?
+}
+
+/// One open band as the packer takes it: the scene's id and its members as display rows.
+struct SceneBand: Sendable, Equatable {
+  let stackID: Int
+  let rows: [SceneDisplayRow]
+}
+
 /// How much of one opened scene's membership is still unread. Absent from
 /// `GridStore.sceneMemberCursors` means "never opened"; `.exhausted` means "fully loaded" — a
 /// distinction a bare `String?` cannot make without a second set beside it.
@@ -140,6 +157,23 @@ enum SceneRowBuilder {
       case .stack(let stack): return .stack(stack)
       }
     }
+  }
+
+  /// IMGMGR-542 (R3-22): the stream as marks, focus and selection see it — each card followed by
+  /// the members of its OPEN peek band, in the card's place. The packer never reads this: it packs
+  /// `displayRows(rows:)` and hangs each band under its card's packed row
+  /// (`GridSectionLayout.renderRows`), so a member never shares a row with another card. A card
+  /// stays `.stack`, so it is still never a write target (ADR-0005).
+  static func bandedDisplayRows(rows: [SceneBrowseRow], bands: [SceneBand]) -> [SceneDisplayRow] {
+    let byStack = Dictionary(bands.map { ($0.stackID, $0.rows) }, uniquingKeysWith: { a, _ in a })
+    var out: [SceneDisplayRow] = []
+    for row in displayRows(rows: rows) {
+      out.append(row)
+      if case .stack(let stack) = row, let members = byStack[stack.stackId] {
+        out.append(contentsOf: members)
+      }
+    }
+    return out
   }
 
   /// The entered scene's screen: its members, capture-ordered, tombstones included.

@@ -94,7 +94,8 @@ enum GridMoreMenu {
       // the same static `pruneMirroredArchive` entry. 12 → 10 rows.
       // IMGMGR-539 (R3-5): Filename plates moved into the Tile overlays submenu, beside the
       // four new overlay toggles. Same identifier, same key.
-      entries: [tileOverlays, picksInGroups]),
+      // IMGMGR-542 (R3-22): Collapse all closes every open peek band.
+      entries: [tileOverlays, picksInGroups, collapseAllBands]),
     GridMoreMenuSection(
       id: "more.section.actions", title: "Actions",
       // WP29 P1 (IMGMGR-452): Select left this run for the grid's bar (`GridSelectCommand`),
@@ -282,6 +283,16 @@ enum GridMoreMenu {
     }
     return folded
   }
+
+  /// IMGMGR-542 (R3-22): close every open peek band; enabled only while one is open.
+  static let collapseAllBands = GridMoreMenuEntry(
+    id: "more.collapseAllBands",
+    accessibilityIdentifier: "gridMoreMenu.more.collapseAllBands",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "rectangle.compress.vertical",
+    title: { _ in "Collapse all" },
+    isEnabled: { store in !store.peekBands.isEmpty },
+    surface: .action { store in store.collapseAllBands() })
 
   static let status = GridMoreMenuEntry(
     id: "more.status",

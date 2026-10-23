@@ -378,7 +378,9 @@ actor GridStubTransport: ClientTransport {
   private var membersHoldEnabled = false
   private var membersHasStarted = false
   private var membersStartedContinuation: CheckedContinuation<Void, Never>?
-  private var membersReleaseContinuation: CheckedContinuation<Void, Never>?
+  /// FIFO, so two held membership requests (IMGMGR-542: a band closed and reopened while its
+  /// first page is still on the wire) are released one at a time, oldest first.
+  private var membersReleaseContinuations: [CheckedContinuation<Void, Never>] = []
 
   func holdStackMembersRequests(_ hold: Bool) { membersHoldEnabled = hold }
 
@@ -390,8 +392,9 @@ actor GridStubTransport: ClientTransport {
   }
 
   func releaseStackMembers() {
-    membersReleaseContinuation?.resume()
-    membersReleaseContinuation = nil
+    if !membersReleaseContinuations.isEmpty {
+      membersReleaseContinuations.removeFirst().resume()
+    }
     membersHasStarted = false
   }
 
@@ -931,7 +934,7 @@ actor GridStubTransport: ClientTransport {
         membersStartedContinuation?.resume()
         membersStartedContinuation = nil
         await withCheckedContinuation { continuation in
-          self.membersReleaseContinuation = continuation
+          self.membersReleaseContinuations.append(continuation)
         }
       }
       if let stackID, goneStacks.contains(stackID) {

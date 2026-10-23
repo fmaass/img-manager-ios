@@ -169,9 +169,7 @@ final class SelectBarSceneUITests: OrientationPinnedUITestCase {
   }
 
   private func expandTheFixtureScene(_ app: XCUIApplication) {
-    let handle = element(app, "sceneHandle-5000")
-    XCTAssertTrue(handle.waitForExistence(timeout: 15), "The fixture scene's handle is missing.")
-    handle.tap()
+    pushScene(app, 5000)
     XCTAssertTrue(
       element(app, "gridTile-\(Self.otherMember)").waitForExistence(timeout: 20),
       "Opening the scene did not put its members on screen.")

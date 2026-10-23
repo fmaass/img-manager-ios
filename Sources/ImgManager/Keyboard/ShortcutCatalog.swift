@@ -8,8 +8,11 @@ import Foundation
 /// (compare) stay excluded from the target inventory. Native Compare was cancelled by Amendment
 /// 7 and revived by the owner on 2026-09-27 as the iPad loupe's 2-up (p4128, WP30 P3), whose
 /// §Keyboard reads "shortcuts unchanged": Compare is reached from its toolbar control only, so
-/// `C` and `Tab` stay declared NOWHERE (never present-and-dead); `Escape` because the P3 fold's
-/// own target inventory line does not name it.
+/// `C` and `Tab` stay declared NOWHERE (never present-and-dead). `Escape` was excluded too,
+/// because the P3 fold's own target inventory line does not name it — UNTIL IMGMGR-542 (R3-22)
+/// gave it a surface of its own: Esc closes the most recently opened peek band (`closeBand`),
+/// live only on the bare Scene stream with a band open and nothing presented over the grid, so
+/// a sheet, a popover or the loupe keeps Esc as its own key.
 ///
 /// `A` (auto-advance) used to be listed among those exclusions, on the ground that "its own
 /// surface is WP13 P8's and a present-and-dead key is exactly what this catalog exists to
@@ -89,6 +92,10 @@ enum ShortcutID: String, CaseIterable, Sendable {
   /// nowhere else in this app and no iPadOS system default uses it, both asserted in
   /// `ShortcutCatalogTests`.
   case viewerZoomToggle = "⌘0"
+  /// IMGMGR-542 (R3-22): Esc closes the most recently opened peek band. A hidden binding (no
+  /// menu row), enabled only while a band can close (`GridStore.canCloseBand`); the band's own
+  /// chrome — the card's chevron and More › Collapse all — is its surface.
+  case closeBand = "Escape"
 }
 
 extension ShortcutID {
@@ -116,6 +123,7 @@ extension ShortcutID {
     case .sortDirection: return "⌥⌘R"
     case .autoAdvance: return "A or ⌘⇧A"
     case .viewerZoomToggle: return "⌘0"
+    case .closeBand: return "Esc"
     }
   }
 
@@ -148,6 +156,7 @@ extension ShortcutID {
     case .sortDirection: return "Reverse the sort direction"
     case .autoAdvance: return "Advance to the next photograph after marking, on or off"
     case .viewerZoomToggle: return "Zoom the loupe or Compare to Fit or to 100 %, and back"
+    case .closeBand: return "Close the scene band opened last"
     }
   }
 }
@@ -199,6 +208,9 @@ enum OwningPhase: String, Sendable {
   /// double-tap — plus the View menu row this phase adds; the entry arrives active in the same
   /// commit as that row and the focused value it dispatches into.
   case wp32p0 = "WP32 P0 — Loupe and Compare zoom key (⌘0)"
+  /// IMGMGR-542 (R3-22): the peek band. Its chrome is the card's chevron and More › Collapse
+  /// all, which ship in the same change as Esc.
+  case r3p14 = "R3 P14 — Peek band (chevron, Collapse all, Esc)"
 }
 
 /// One entry in the shortcut catalog fold item 1 requires: a PLANNED record of every
@@ -237,6 +249,8 @@ enum ShortcutCatalog {
   ///
   /// IMGMGR-495: `viewerZoomToggle` arrives active — the zoom it drives already has its chrome in
   /// both viewers, and its View menu row and focused value ship in this same commit.
+  ///
+  /// IMGMGR-542: `closeBand` arrives active — the chevron and More › Collapse all are its chrome.
   static let entries: [ShortcutCatalogEntry] = [
     ShortcutCatalogEntry(id: .arrowUp, owningPhase: .p4, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .arrowDown, owningPhase: .p4, hasChromeSurface: true),
@@ -257,6 +271,7 @@ enum ShortcutCatalog {
     ShortcutCatalogEntry(id: .sortDirection, owningPhase: .wp13p5b, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .autoAdvance, owningPhase: .wp13p8, hasChromeSurface: true),
     ShortcutCatalogEntry(id: .viewerZoomToggle, owningPhase: .wp32p0, hasChromeSurface: true),
+    ShortcutCatalogEntry(id: .closeBand, owningPhase: .r3p14, hasChromeSurface: true),
   ]
 
   static var activeEntries: [ShortcutCatalogEntry] { entries.filter(\.isActive) }

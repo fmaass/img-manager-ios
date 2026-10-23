@@ -58,6 +58,7 @@ struct GridView: View {
       .onChange(of: store.sceneRows) { _, _ in publishRows() }
       .onChange(of: store.activeScope) { _, _ in publishRows() }
       .onChange(of: store.sceneMembers) { _, _ in publishRows() }
+      .onChange(of: store.openBandIDs) { _, _ in publishRows() }
       .onChange(of: store.rowHeight) { _, _ in publishRows() }
       // IMGMGR-551 (R3-7): Justified ↔ Square moves every row break, so the navigation rows are
       // rebuilt from the new packing exactly as for a size step.
@@ -260,6 +261,18 @@ struct GridView: View {
           .accessibilityIdentifier("debugProbe.markRequests")
           .accessibilityValue(
             "markRequests=\(DebugProbe.shared.markRequests.joined(separator: "|"))")
+        // IMGMGR-542: the long-frame counts and whether every read the bands need has landed.
+        Text("debugProbeFrames")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.frames")
+          .accessibilityValue(
+            "longFrames=\(DebugProbe.shared.debugLongFrames);"
+              + "windows=\(DebugProbe.shared.debugScrollWindows);"
+              + "loading=\(store.bandsSettled ? "idle" : "busy");"
+              + "bands=\(store.openBandIDs.map(String.init).joined(separator: ","))")
         if scope == .stream, let card = firstSceneCardID {
           // T3: moves REAL focus onto the first card through the `@FocusState` itself.
           // Never focusable itself, so on an iPad with a hardware keyboard the tap cannot leave
@@ -451,6 +464,7 @@ struct GridView: View {
                     }
                   }
                 }
+                .modifier(PeekBandRowChrome(band: rowModel.band))
               }
             }
           }
@@ -476,6 +490,19 @@ struct GridView: View {
           restoreOrRecordScrollAnchor(visible: visible, proxy: scrollProxy)
         }
         .onChange(of: packingKey) { _, _ in restoreAfterRepack(proxy: scrollProxy) }
+        #if DEBUG
+          // IMGMGR-542: the long-frame counter's measured windows (`-UITestFrameMonitor` only).
+          .onScrollPhaseChange { _, phase in
+            GridFrameMonitor.shared.scrollPhaseChanged(isScrolling: phase != .idle)
+          }
+        #endif
+        // IMGMGR-542: a band close puts the validated anchor back at the top (never on open).
+        .onChange(of: store.bandCloseRevision) { _, _ in
+          guard scope == .stream,
+            let target = GridScrollAnchor.row(containing: store.bandCloseAnchor, in: renderRows)
+          else { return }
+          scrollProxy.scrollTo(target, anchor: .top)
+        }
         .onDisappear { scrollAnchorRestored = false }
         .coordinateSpace(name: "gridSpace")
         .onPreferenceChange(TileFramePreferenceKey.self) { tileFrames = $0 }
@@ -630,8 +657,12 @@ struct GridView: View {
   /// headers at all — byte-for-byte the shipped behaviour. Grouped, `GridSectionLayout` packs
   /// each section on its own, so no justified row straddles a boundary.
   private var renderRows: [GridRenderRow] {
-    let rows = displayRows
-    let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    let all = displayRows
+    let byID = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    // IMGMGR-542: in the Scene stream the packer takes cards + loose photographs only, and each
+    // open band hangs under its card's row (`GridSectionLayout.renderRows`).
+    let bands = scope == .stream ? store.peekBandRows : []
+    let rows = bands.isEmpty ? all : store.sceneDisplayRows
     return GridSectionLayout.renderRows(
       rows: rows,
       groupBy: store.activeGrouping.groupByKey,
@@ -641,7 +672,8 @@ struct GridView: View {
       targetRowHeight: store.rowHeight.rawValue, displayScale: displayScale,
       spacing: GridGutter.spacing(for: store.rowHeight),
       layout: store.layoutStyle,
-      remainderCount: scope == .stream && store.remainderReached ? store.remainderCount : nil
+      remainderCount: scope == .stream && store.remainderReached ? store.remainderCount : nil,
+      bands: bands
     ) { displayID, tier in
       guard let row = byID[displayID] else { return .missing }
       switch row {
@@ -1867,6 +1899,24 @@ private struct SquareCellFrame: ViewModifier {
   func body(content: Content) -> some View {
     if let edge {
       content.frame(width: edge, height: edge)
+    } else {
+      content
+    }
+  }
+}
+
+/// IMGMGR-542 (R3-22): a peek band's row — the same cells as any row, on a faint inset ground so
+/// the band reads as the card's photographs rather than the stream's. Stream rows pass nil and are
+/// untouched.
+struct PeekBandRowChrome: ViewModifier {
+  let band: Int?
+
+  func body(content: Content) -> some View {
+    if let band {
+      content
+        .background(Color.white.opacity(0.06))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("peekBandRow-\(band)")
     } else {
       content
     }

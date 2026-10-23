@@ -32,7 +32,8 @@ struct SelectBarLayoutTests {
       let selecting = ActionBarMetrics.tiers(carriesMore: carriesMore, selecting: true)
       #expect(selecting.allSatisfy { !$0.controls.contains(.tapToPick) })
     }
-    #expect(GridMoreMenu.entries.count == 6)
+    // IMGMGR-542 (R3-22): seven since Collapse all joined View for the peek bands.
+    #expect(GridMoreMenu.entries.count == 7)
   }
 
   @Test("Select: Regular is Pick · Dislike · Clear · Tag · Scene ‖ Undo; Compact adds More")

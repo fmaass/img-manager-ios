@@ -33,13 +33,16 @@ final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
       "The collapsed card does not announce its pick count. Label: '\(card.label)'")
 
     // IMGMGR-240: a REAL control, named — not a chevron that looks like one, and not a gesture
-    // the reader has to discover. WP442 P12: it has one action (push), so it carries no state.
+    // the reader has to discover. IMGMGR-542 (R3-22): it opens and closes the scene's peek band
+    // (a card tap pushes), so it names that action in its closed state.
     let handle = app.descendants(matching: .any)["sceneHandle-5000"].firstMatch
     XCTAssertTrue(
       handle.waitForExistence(timeout: 10),
       "The scene has no open handle — opening is gesture-only again.")
     XCTAssertTrue(handle.isHittable, "The open handle exists but cannot be tapped where it is.")
-    XCTAssertEqual(handle.label, "Open scene", "The handle does not name what it does.")
+    XCTAssertEqual(
+      handle.label, "Show this scene's photos", "The handle does not name what it does.")
+    XCTAssertEqual(handle.value as? String, "closed", "The handle does not state its band state.")
 
     // IMGMGR-261. The probe is used to OBSERVE which layout this destination resolved to, and for
     // nothing else — the expectation below is this test's own, written out here:
@@ -90,8 +93,8 @@ final class SceneBandScreenshotUITests: OrientationPinnedUITestCase {
     attach(name: "scene-card-badges-and-handle")
 
     // WP442 P12: opening PUSHES the scene screen — its members, each an ordinary tile, under
-    // the title "Scene · 41 photos".
-    handle.tap()
+    // the title "Scene · 41 photos". IMGMGR-542: the card pushes; the chevron peeks.
+    pushScene(app, 5000)
     // IMGMGR-481: the hierarchy as it stood right after the tap, so a lost tap is attributable
     // (was the handle covered, or did the push never happen?) rather than a bare timeout.
     let afterTap = XCTAttachment(string: app.debugDescription)
