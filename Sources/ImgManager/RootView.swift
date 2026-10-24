@@ -717,10 +717,20 @@ struct RootView: View {
       // field, a sheet or the inspector takes focus, the column never claims it back; focus
       // goes wherever SwiftUI restores it, and `.defaultFocus` only names the workspace as the
       // default. `.focusEffectDisabled()` hides the system halo around the whole workspace.
+      //
+      // IMGMGR-574: the claim is a column-sized BACKGROUND, a sibling of the grid, never its
+      // ancestor. A focusable container hides every focusable view inside it from the focus
+      // engine, so with the claim on `contentColumn` itself Tab never reached a scene card at
+      // Regular. Its frame is the column's, so an arrow finds nothing beyond its edge inside
+      // the workspace and still falls through to the grid's command, as before.
       contentColumn
-        .focusable()
-        .focusEffectDisabled()
-        .focused($workspaceOwnsKeyboard)
+        .background {
+          Color.clear
+            .focusable()
+            .focusEffectDisabled()
+            .focused($workspaceOwnsKeyboard)
+            .accessibilityHidden(true)
+        }
         .defaultFocus($workspaceOwnsKeyboard, true)
         .onAppear {
           guard !workspaceClaimedKeyboard else { return }
