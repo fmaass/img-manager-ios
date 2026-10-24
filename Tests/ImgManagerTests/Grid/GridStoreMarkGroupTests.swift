@@ -555,4 +555,246 @@ struct GridStoreMarkGroupTests {
     await store.pendingReconcile?.value
     #expect(await transport.recordedListImagesQueries.count == lists)
   }
+
+  // MARK: - IMGMGR-626: a keyset fixture whose photographs move
+
+  /// The UI fixture's shoot (9001…9500: 9001…9005 picked, 9006…9007 disliked, the rest without a
+  /// mark) served through `DebugMarkGroupsFixture`'s KEYSET cursors from `marks`, the server's
+  /// state at request time. Serving it again after a write moves the photograph that write marked,
+  /// and a cursor issued before still resolves — to the photographs after its OLD place.
+  private static let keysetSeed: [Int: String] = {
+    var marks: [Int: String] = [9006: "dislike", 9007: "dislike"]
+    for id in 9001...9005 { marks[id] = "pick" }
+    return marks
+  }()
+
+  private func serveKeyset(
+    _ marks: [Int: String], groupBy: GroupByKey = .mark, on transport: GridStubTransport
+  ) async {
+    await transport.setListImagesResolver { query in
+      DebugMarkGroupsFixture.page(query: query, marks: { marks[$0] ?? "none" })
+    }
+    await transport.setImageGroupsResult(
+      DebugMarkGroupsFixture.groups(
+        query: ["group_by": groupBy.rawValue], marks: { marks[$0] ?? "none" }))
+  }
+
+  private func keysetGrouped(
+    by key: GroupByKey, marks: [Int: String]? = nil, descending: Bool = false
+  ) async -> (GridStore, GridStubTransport) {
+    let (store, transport) = makeStore()
+    await serveKeyset(marks ?? Self.keysetSeed, groupBy: key, on: transport)
+    await store.selectShoot(folderID: 1)
+    if descending { await store.setSortDirection(.desc) }
+    await store.selectGrouping(.key(key))
+    await store.refreshGroupHeaders()
+    return (store, transport)
+  }
+
+  /// 150 picks, so the stream itself pages: page one is 9001…9100, all picks.
+  private static let longStreamSeed: [Int: String] = {
+    var marks: [Int: String] = [:]
+    for id in 9001...9150 { marks[id] = "pick" }
+    return marks
+  }()
+
+  @Test("A keyset cursor resumes after its own photograph, never on it")
+  func keysetCursorResumesAfterItsOwnPhotograph() {
+    let marks = Self.longStreamSeed
+    let first = DebugMarkGroupsFixture.page(query: ["group_by": "mark"]) { marks[$0] ?? "none" }
+    #expect(first.nextCursor == "mg-pick-9100")
+    let second = DebugMarkGroupsFixture.page(
+      query: ["group_by": "mark", "cursor": "mg-pick-9100"], marks: { marks[$0] ?? "none" })
+    #expect(second.items.first?.id == 9101)
+    #expect(Set(first.items.map(\.id)).isDisjoint(with: second.items.map(\.id)))
+  }
+
+  @Test("The keyset fixture moves a marked tail photograph and resolves its old cursor")
+  func keysetFixtureMovesTheMarkedTailAndResolvesItsOldCursor() {
+    var marks = Self.keysetSeed
+    let query = ["group_by": "mark"]
+    let before = DebugMarkGroupsFixture.page(query: query) { marks[$0] ?? "none" }
+    #expect(before.items.last?.id == 9100)
+    #expect(before.nextCursor == "mg-_-9100")
+    marks[9100] = "pick"
+    let after = DebugMarkGroupsFixture.page(query: query) { marks[$0] ?? "none" }
+    #expect(Array(after.items.prefix(6).map(\.id)) == [9001, 9002, 9003, 9004, 9005, 9100])
+    let resumed = DebugMarkGroupsFixture.page(
+      query: ["group_by": "mark", "cursor": "mg-_-9100"], marks: { marks[$0] ?? "none" })
+    #expect(resumed.items.map(\.id) == Array(9101...9200))
+  }
+
+  // T-N2 on the moving fixture.
+  @Test("Next after marking the remainder's tail resumes the cursor issued before the move")
+  func nextAfterMarkingTheTailResumesTheCursorIssuedBeforeTheMove() async {
+    let (store, transport) = await keysetGrouped(by: .mark)
+    store.enterRemainder()
+    #expect(store.remainderCursor == "mg-_-9100")
+    _ = await store.applyMark(.pick, to: [9100])
+    await serveKeyset(Self.keysetSeed.merging([9100: "pick"]) { $1 }, on: transport)
+    let result = await store.successor(after: 9100, pagesScenes: false)
+    #expect(result == .found(9101))
+    #expect(await transport.lastListImagesQuery?["cursor"] == "mg-_-9100")
+    #expect(await transport.recordedNeighboursQueries.isEmpty)
+    let ids = store.remainderImages.map(\.id)
+    #expect(ids == Array(9008...9200))
+    #expect(Set(ids).isDisjoint(with: 9001...9007))
+    #expect(store.remainderCursor == "mg-_-9200")
+    #expect(store.remainderImages.first { $0.id == 9100 }?.mark.state == .pick)
+  }
+
+  // T-R2 (remainder) on the moving fixture.
+  @Test("Cursor-invalid recovery in the remainder after the tail photograph moved")
+  func remainderRecoveryAfterTheTailMoved() async {
+    let (store, transport) = await keysetGrouped(by: .mark)
+    store.enterRemainder()
+    _ = await store.applyMark(.pick, to: [9100])
+    await serveKeyset(Self.keysetSeed.merging([9100: "pick"]) { $1 }, on: transport)
+    await transport.armListImagesRejectNonNilCursorOnce()
+    await store.loadMoreIfNeeded(currentItemID: 9100)
+    var ids = store.remainderImages.map(\.id)
+    #expect(Array(ids.prefix(93)) == Array(9008...9100), "retained order untouched")
+    #expect(store.remainderImages[92].mark.state == .pick)
+    // Page one now ends at 9099 (9100 moved under Picks), so the recovered page is 9101…9200.
+    #expect(ids == Array(9008...9200), "only the new photographs are appended")
+    #expect(store.remainderCursor == "mg-_-9200", "the dead cursor is replaced")
+    await store.loadMoreIfNeeded(currentItemID: 9200)
+    ids = store.remainderImages.map(\.id)
+    #expect(ids == Array(9008...9300))
+    #expect(Set(ids).isDisjoint(with: 9001...9007))
+  }
+
+  // T-R2 for the stream.
+  @Test("Cursor-invalid recovery in the stream keeps a locally marked tile where it was")
+  func streamRecoveryKeepsALocallyMarkedTileWhereItWas() async {
+    let (store, transport) = await keysetGrouped(by: .mark, marks: Self.longStreamSeed)
+    #expect(store.images.map(\.id) == Array(9001...9100))
+    #expect(store.nextCursor == "mg-pick-9100")
+    _ = await store.applyMark(.dislike, to: [9050])
+    await serveKeyset(Self.longStreamSeed.merging([9050: "dislike"]) { $1 }, on: transport)
+    await transport.armListImagesRejectNonNilCursorOnce()
+    await store.loadMoreIfNeeded(currentItemID: 9100)
+    var ids = store.images.map(\.id)
+    #expect(Array(ids.prefix(100)) == Array(9001...9100), "retained order untouched")
+    #expect(store.images[49].mark.state == .dislike)
+    #expect(store.images[49].groupKey == "pick", "placed where it was")
+    #expect(ids.count == 101 && ids.last == 9101, "only the new photograph is appended")
+    #expect(store.nextCursor == "mg-pick-9101", "the dead cursor is replaced")
+    await store.loadMoreIfNeeded(currentItemID: 9101)
+    ids = store.images.map(\.id)
+    #expect(ids == Array(9001...9150), "9050 is never appended a second time")
+    #expect(store.remainderReached)
+    #expect(Set(ids).isDisjoint(with: store.remainderImages.map(\.id)))
+  }
+
+  // MARK: - IMGMGR-626: recovery keeps paging ownership
+
+  @Test(
+    "Cursor recovery keeps paging ownership: an overlapping tail request waits it out",
+    arguments: [false, true])
+  func cursorRecoveryKeepsPagingOwnership(inRemainder: Bool) async {
+    let (store, transport) = await keysetGrouped(
+      by: .mark, marks: inRemainder ? Self.keysetSeed : Self.longStreamSeed)
+    if inRemainder { store.enterRemainder() }
+    await transport.armListImagesRejectNonNilCursorOnce()
+    await transport.holdNextListImagesRequest()
+    let first = Task { await store.loadMoreIfNeeded(currentItemID: 9100) }
+    await transport.waitUntilListImagesStarted()
+    #expect(store.isLoadingPage, "the recovery's page-one request runs without owning paging")
+    let issued = await listCursors(transport)
+    await store.loadMoreIfNeeded(currentItemID: 9100)
+    #expect(await listCursors(transport) == issued, "a second tail request started mid-recovery")
+    await transport.releaseListImages()
+    await first.value
+    #expect(!store.isLoadingPage)
+    if inRemainder {
+      #expect(store.remainderImages.map(\.id) == Array(9008...9200))
+      #expect(store.remainderCursor == "mg-_-9200")
+    } else {
+      #expect(store.images.map(\.id) == Array(9001...9150))
+      #expect(store.nextCursor == nil)
+      #expect(store.remainderImages.map(\.id) == Array(9151...9200))
+    }
+  }
+
+  // MARK: - IMGMGR-626: a reconcile whose stream reload fails
+
+  @Test("A failed stream reload at the reconcile never vouches fresh counts over the old rows")
+  func aFailedReloadAtTheReconcileNeverVouchesFreshCounts() async {
+    let (store, transport) = await groupedByMark()
+    store.enterRemainder()
+    _ = await store.applyMark(.pick, to: [8])
+    await serve(
+      orderedIDs(picks: picks + [8], dislikes: dislikes), picks: picks + [8],
+      dislikes: dislikes, on: transport)
+    await transport.setListImagesShouldFail(true)
+    store.leaveScene(.userBack)
+    await store.pendingReconcile?.value
+    #expect(store.lastPageLoadError != nil, "the reload did not fail")
+    #expect(store.images.map(\.id) == Array(1...7), "the stream was not reconciled")
+    #expect(store.groupHeaders.isEmpty, "headers were vouched for the unreconciled rows")
+    #expect(store.remainderCount == nil)
+    let titles: [String] = renderRows(store).compactMap {
+      switch $0 {
+      case .header(let header): return header.dotTitle
+      case .remainder(let row): return row.title
+      case .tiles: return nil
+      }
+    }
+    #expect(!titles.contains("Picks · 6"))
+    #expect(!titles.contains("492 photos without a mark"))
+  }
+
+  // MARK: - IMGMGR-626: coverage the P13 plan named
+
+  // T-O1 for Rating.
+  @Test("Rating's group order never reverses with the sort direction", arguments: [false, true])
+  func ratingGroupOrderNeverReversesWithDirection(descending: Bool) async {
+    let (store, _) = await keysetGrouped(by: .rating, descending: descending)
+    let order: [String] = renderRows(store).compactMap {
+      switch $0 {
+      case .header(let header): return header.dotTitle
+      case .remainder(let row): return row.title
+      case .tiles: return nil
+      }
+    }
+    #expect(order == ["5 · 3", "4 · 2", "1 · 2", "493 photos without a rating"])
+    let expected = descending ? [9003, 9002, 9001, 9005, 9004, 9007, 9006] : Array(9001...9007)
+    #expect(store.images.map(\.id) == expected)
+  }
+
+  // T-N1 for Triage.
+  @Test("Triage inside the remainder starts on its first tile and never steps into the stream")
+  func triageInsideTheRemainderStaysInTheRemainder() async {
+    let (store, _) = await groupedByMark()
+    store.enterRemainder()
+    #expect(store.triagePool.map(\.id) == Array(8...100), "no stream photo is in the pool")
+    let session = TriageSession(store: store)
+    #expect(session.cursor == 8)
+    #expect(session.position == 1)
+    session.didDisplay(8)
+    await session.decide(.skip)
+    #expect(session.cursor == 9)
+    await session.undo()
+    #expect(session.cursor == 8)
+    #expect(!session.canUndo, "nothing before the first remainder tile")
+    await session.undo()
+    #expect(session.cursor == 8)
+    #expect(store.isInRemainder)
+  }
+
+  // The scope-change test for a filter change.
+  @Test("A filter change leaves the remainder")
+  func filterChangeLeavesTheRemainder() async {
+    let (store, transport) = await groupedByMark()
+    store.enterRemainder()
+    await store.applyFilterChange { $0.keyword = "street" }
+    #expect(store.entry == nil)
+    #expect(!store.isInRemainder)
+    #expect(store.activeScope == .stream)
+    #expect(store.query.keyword == "street")
+    #expect(await transport.lastListImagesQuery?["cursor"] == nil)
+    #expect(store.remainderImages.map(\.id) == Array(8...100), "the new query's own first page")
+    #expect(store.remainderCursor == "c2")
+  }
 }

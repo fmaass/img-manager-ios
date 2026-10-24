@@ -12,6 +12,11 @@
   /// ascending, the null bucket last, whatever the direction; the direction orders photographs
   /// only within a group. `group_key` and the header counts are computed from the LIVE mark
   /// state, so a mark made in the app moves the photograph on the next request, as on a server.
+  ///
+  /// IMGMGR-626: cursors are KEYSET cursors, as the server's are — `mg-<group key>-<id>` names
+  /// the page's last photograph AND the group it sat in when the cursor was issued, and a request
+  /// resumes after that position in the order served NOW. So a cursor issued before a mark moved
+  /// its photograph still resolves, to the photographs that follow its old place.
   enum DebugMarkGroupsFixture {
     static var isOn: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestMarkGroups")
@@ -75,13 +80,42 @@
       -> Components.Schemas.ImagePage
     {
       let groupBy = query["group_by"]
-      let order = ordered(groupBy: groupBy, direction: query["direction"], marks: marks)
-      let start = query["cursor"].flatMap { Int($0.dropFirst(cursorPrefix.count)) } ?? 0
+      let direction = query["direction"]
+      let order = ordered(groupBy: groupBy, direction: direction, marks: marks)
+      var start = 0
+      if let cursor = query["cursor"] {
+        start = resumeIndex(
+          after: cursor, in: order, groupBy: groupBy, direction: direction, marks: marks)
+      }
       let end = min(start + pageSize, order.count)
       let items = order[start..<end].map { image($0, groupBy: groupBy, mark: marks($0)) }
-      return Components.Schemas.ImagePage(
-        items: items, limit: pageSize,
-        nextCursor: end < order.count ? "\(cursorPrefix)\(end)" : nil)
+      var next: String?
+      if end < order.count, let last = items.last {
+        next = "\(cursorPrefix)\(last.groupKey ?? nullToken)-\(last.id)"
+      }
+      return Components.Schemas.ImagePage(items: items, limit: pageSize, nextCursor: next)
+    }
+
+    /// The null bucket's token inside a cursor.
+    private static let nullToken = "_"
+
+    /// Where a keyset cursor resumes: the first photograph whose (group rank, place within the
+    /// group) sorts after the cursor's — its group as ISSUED, not where its photograph is now.
+    private static func resumeIndex(
+      after cursor: String, in order: [Int], groupBy: String?, direction: String?,
+      marks: (Int) -> String
+    ) -> Int {
+      let parts = cursor.dropFirst(cursorPrefix.count).split(separator: "-", maxSplits: 1)
+      guard parts.count == 2, let id = Int(parts[1]) else { return order.count }
+      let key: String? = parts[0] == nullToken ? nil : String(parts[0])
+      let within: [Int] = direction == "desc" ? ids.reversed() : ids
+      let place = Dictionary(uniqueKeysWithValues: within.enumerated().map { ($1, $0) })
+      let anchor = (rank(key), place[id] ?? Int.max)
+      let index = order.firstIndex { photo in
+        let photoRank = rank(groupKey(photo, groupBy: groupBy, mark: marks(photo)))
+        return (photoRank, place[photo] ?? Int.max) > anchor
+      }
+      return index ?? order.count
     }
 
     static func groups(query: [String: String], marks: (Int) -> String)

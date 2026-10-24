@@ -1787,7 +1787,8 @@ final class GridStore {
       // a tile marked in place stays where it is — so the dead cursor is recovered by re-paging
       // and appending only what is new.
       guard generation == loadGeneration else { return }
-      isLoadingPage = false
+      // IMGMGR-626: the recovery keeps paging ownership (`isLoadingPage`) until it ends,
+      // so no second tail request can start while it waits; the `defer` above releases it.
       await recoverGroupedCursor(for: .stream)
     } catch GridServiceError.cursorInvalid {
       // Pinned disposition (plan §Phase 4, "v0.9.1-era cursor behavior"): discard the cursor
@@ -1963,7 +1964,7 @@ final class GridStore {
       return .merged
     } catch GridServiceError.cursorInvalid {
       guard generation == loadGeneration, activeScope == scope else { return .stale }
-      isLoadingPage = false
+      // IMGMGR-626: paging stays owned through the recovery (the `defer` releases it).
       await recoverGroupedCursor(for: .remainder)
       return .merged
     } catch {
@@ -2000,7 +2001,7 @@ final class GridStore {
         outcome = .merged
       } catch GridServiceError.cursorInvalid {
         guard generation == loadGeneration else { return .stale }
-        isLoadingPage = false
+        // IMGMGR-626: paging stays owned through the recovery (the `defer` releases it).
         await recoverGroupedCursor(for: .stream)
         outcome = .merged
       } catch {
@@ -2217,7 +2218,9 @@ final class GridStore {
     defer { releaseLane() }
     vouchedGroups = nil
     await reloadFirstPage(revalidatesEntry: false)
-    await refreshGroupHeaders()
+    // IMGMGR-626: no header fetch of its own. `reloadFirstPage` fetches them only when the
+    // stream ARRIVED; a failed reload keeps the old rows, and headers fetched anyway would vouch
+    // fresh counts over that unreconciled membership.
   }
 
   /// A folder row tap from any shell: always lands on the folder's stream, even for the same

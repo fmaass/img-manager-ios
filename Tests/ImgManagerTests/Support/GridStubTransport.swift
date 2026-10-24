@@ -269,6 +269,14 @@ actor GridStubTransport: ClientTransport {
   private var listImagesRejectNonNilCursorOnceArmed = false
   func armListImagesRejectNonNilCursorOnce() { listImagesRejectNonNilCursorOnceArmed = true }
 
+  /// IMGMGR-626: answers every `ListImagesApiImagesGet` from the request's query parameters
+  /// instead of the fixed page-by-cursor table — a fixture that computes its order at request
+  /// time (`DebugMarkGroupsFixture`'s keyset cursors) moves a photograph between two requests as
+  /// a server does. The rejection and failure switches still apply first; nil restores the table.
+  typealias ListImagesResolver = @Sendable ([String: String]) -> Components.Schemas.ImagePage
+  private var listImagesResolver: ListImagesResolver?
+  func setListImagesResolver(_ resolver: ListImagesResolver?) { listImagesResolver = resolver }
+
   /// A `SentinelTransportError` (network-level failure, never a declared HTTP status) for the
   /// NEXT `ListImagesApiImagesGet` call — models an authoritative-refresh re-read that itself
   /// cannot reach the server (`GridServiceError.unreachable`), distinct from the 400
@@ -987,7 +995,11 @@ actor GridStubTransport: ClientTransport {
       // for "was it discarded" to be a real question, not `setListImagesPage` called again
       // afterward silently making the stale and fresh responses identical).
       let resolvedPage: Components.Schemas.ImagePage
-      if let cursorValue, !cursorValue.isEmpty, let page = listImagesPagesByCursor[cursorValue] {
+      if let listImagesResolver {
+        resolvedPage = listImagesResolver(queryParameters(of: request))
+      } else if let cursorValue, !cursorValue.isEmpty,
+        let page = listImagesPagesByCursor[cursorValue]
+      {
         resolvedPage = page
       } else {
         resolvedPage = listImagesPage

@@ -12,6 +12,10 @@ import XCTest
 final class MarkGroupsUITests: OrientationPinnedUITestCase {
 
   private static let markRow = "493 photos without a mark"
+  /// The stub shoot as each shell names it, which is what Back names: Regular uses its title
+  /// (`DebugStubLaunch.fixtureShootTitle`), Compact its path's last component.
+  private static let folder = "2026-08-27 — Stub Shoot"
+  private static let compactFolder = "stub"
 
   // MARK: - Acceptance
 
@@ -76,6 +80,10 @@ final class MarkGroupsUITests: OrientationPinnedUITestCase {
       app.navigationBars[Self.markRow].waitForExistence(timeout: 10),
       "The pushed screen is not titled '\(Self.markRow)'.")
     XCTAssertTrue(element(app, "gridTile-9008").waitForExistence(timeout: 10))
+    // IMGMGR-626: the system Back names the folder the remainder was entered from.
+    let back = app.navigationBars.buttons.element(boundBy: 0)
+    XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable, "No Back.")
+    XCTAssertEqual(back.label, Self.compactFolder, "Compact Back does not name the folder.")
 
     let window = app.windows.firstMatch
     window.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5)).press(
@@ -101,6 +109,11 @@ final class MarkGroupsUITests: OrientationPinnedUITestCase {
       "The remainder is not titled '\(Self.markRow)'.")
     let back = app.buttons["sceneBackButton"]
     XCTAssertTrue(back.waitForExistence(timeout: 10), "No Back button in the remainder.")
+    XCTAssertEqual(back.label, Self.folder, "Regular Back does not name the folder.")
+    let bar = app.navigationBars.firstMatch
+    XCTAssertTrue(
+      bar.frame.insetBy(dx: -1, dy: -1).contains(back.frame),
+      "Back at \(back.frame) lies outside the bar \(bar.frame).")
     back.tap()
     assertScope(app, "instance=stream;entered=none")
   }
