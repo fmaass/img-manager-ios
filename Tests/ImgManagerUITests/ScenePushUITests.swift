@@ -89,6 +89,8 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
     waitFor(
       app, "debugProbe.focus", "value BEGINSWITH %@", "uiFocus=card-\(Self.scene);",
       "precondition: card focus")
+    // IMGMGR-574: focusing the card opens nothing; the reader is still on the stream.
+    assertEntered(app, nil)
     app.typeKey("p", modifierFlags: [])
     Thread.sleep(forTimeInterval: 1.5)
     XCTAssertEqual(
