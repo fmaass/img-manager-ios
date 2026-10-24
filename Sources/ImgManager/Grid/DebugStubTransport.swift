@@ -1394,6 +1394,27 @@
       }
     }
 
+    /// IMGMGR-560: the four Tile overlays keys (`GridPreferences.overlay*Key`) are forgotten the
+    /// same way, so every fixture launch draws the default badges — an aborted or failed run of
+    /// `testTileOverlaysChangeTheDrawnBadges` cannot leave its toggles on for the suites after it.
+    /// No relaunch test reads an overlay back, so there is no keep argument.
+    @MainActor
+    static func resetTileOverlays(defaults: UserDefaults = .standard) {
+      guard isActive else { return }
+      forgetTileOverlays(in: defaults)
+    }
+
+    /// The reset itself, pure over the suite so a unit test pins exactly what it removes.
+    @MainActor
+    static func forgetTileOverlays(in defaults: UserDefaults) {
+      for key in [
+        GridPreferences.overlayMarksKey, GridPreferences.overlayEditedKey,
+        GridPreferences.overlayLightroomRatingKey, GridPreferences.overlaySourceKindKey,
+      ] {
+        defaults.removeObject(forKey: key)
+      }
+    }
+
     /// WP31 P2 (IMGMGR-461): the JSON `userInfo` of a Triage Handoff to continue once the
     /// fixture's shoot has loaded — the value after `-UITestContinueActivity`. It feeds the SAME
     /// decode-and-route function `.onContinueUserActivity` calls, so the receiving side is

@@ -853,6 +853,48 @@ struct GridPreferencesTests {
     #expect(GridPreferences(defaults: poisoned).pruneMirroredArchive == true)
   }
 
+  #if DEBUG
+    /// IMGMGR-560: a fixture launch forgets the four Tile overlays keys, so a toggle an earlier
+    /// or interrupted suite left behind never reaches the next one. Each key is stored as the
+    /// OPPOSITE of its default first, so reading the default back can only come from the reset.
+    @MainActor
+    @Test("A fixture launch forgets the Tile overlays keys and nothing else")
+    func fixtureLaunchForgetsTheTileOverlaysKeys() {
+      let defaults = makeEphemeralDefaults()
+      defaults.set(!GridPreferences.overlayMarksDefault, forKey: GridPreferences.overlayMarksKey)
+      defaults.set(!GridPreferences.overlayEditedDefault, forKey: GridPreferences.overlayEditedKey)
+      defaults.set(
+        !GridPreferences.overlayLightroomRatingDefault,
+        forKey: GridPreferences.overlayLightroomRatingKey)
+      defaults.set(
+        !GridPreferences.overlaySourceKindDefault, forKey: GridPreferences.overlaySourceKindKey)
+      // Positive control: the suite really holds the flipped values before the reset.
+      let before = GridPreferences(defaults: defaults)
+      #expect(before.overlayMarks != GridPreferences.overlayMarksDefault)
+      #expect(before.overlaySourceKind != GridPreferences.overlaySourceKindDefault)
+
+      let kept = [
+        GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey,
+        GridPreferences.picksInGroupsKey, GridPreferences.pruneMirroredArchiveKey,
+        SidebarVisibilityMemory.hiddenKey,
+      ]
+      for key in kept {
+        defaults.set("kept", forKey: key)
+      }
+
+      DebugStubLaunch.forgetTileOverlays(in: defaults)
+
+      let after = GridPreferences(defaults: defaults)
+      #expect(after.overlayMarks == GridPreferences.overlayMarksDefault)
+      #expect(after.overlayEdited == GridPreferences.overlayEditedDefault)
+      #expect(after.overlayLightroomRating == GridPreferences.overlayLightroomRatingDefault)
+      #expect(after.overlaySourceKind == GridPreferences.overlaySourceKindDefault)
+      for key in kept {
+        #expect(defaults.string(forKey: key) == "kept", "\(key) was reset")
+      }
+    }
+  #endif
+
 }
 
 /// A reference box for the spy: `ShootWindowOpener.open` is an escaping `@Sendable` closure, so it

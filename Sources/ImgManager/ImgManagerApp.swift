@@ -9,6 +9,8 @@ struct ImgManagerApp: App {
       DebugStubLaunch.resetSidebarMemoryUnlessKept()
       // IMGMGR-548: and on the Settings sheet's own defaults (`DebugStubLaunch.keepsSettings`).
       DebugStubLaunch.resetSettingsUnlessKept()
+      // IMGMGR-560: and on the default Tile overlays.
+      DebugStubLaunch.resetTileOverlays()
       // IMGMGR-549: and with no Pinned or Recent shoots.
       DebugStubLaunch.resetShortcuts()
       // IMGMGR-544: and with no saved looks (`DebugStubLaunch.keepsStubLooks`).
