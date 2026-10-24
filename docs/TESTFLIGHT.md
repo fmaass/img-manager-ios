@@ -28,6 +28,10 @@ as TestFlight's "What to Test" text after the archive and refuses the cut, befor
 and the upload, when it is missing, empty or duplicated (`fastlane/lib/release_notes.rb`). The app
 shows the same notes under Settings › About › Version.
 
+**Gate the bump sha from a worktree on a local branch.** `MAC_GATE_BRANCH` set in the enqueue's
+environment does not reach the queued run, so create the gate worktree with a branch:
+a detached HEAD is refused by `bin/mac-gate.sh`; use `git worktree add -b gate/<label> <path> <sha>`.
+
     ssh <merkur host>
     cd ~/projects/img-manager-ios
     set -a; source ~/.config/<the ci env file>; set +a
@@ -46,6 +50,12 @@ beside them BEFORE it uploads**, and finally reads App Store Connect back.
 to build any commit other than the one named — `verify_attach` proves a build reached the
 household, never what source produced it. The SHA, marketing version and build number are
 written as `provenance.json` next to that build's dSYMs.
+
+**Read "What to Test" back after the cut.** The `~/build/asc-read` helper on the build host
+takes the bundle id, not the numeric App Store Connect id, as `app_id:` (the numeric id fails
+with "undefined method downcase for nil"):
+`fastlane read_notes app_id:live.discomarder.imgmanager version:<version> build:<build>` must
+report one en-US localization carrying the build's section.
 
 ## The archive/pre-upload check
 
