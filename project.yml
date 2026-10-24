@@ -129,8 +129,8 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: >-
           UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
           UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-        MARKETING_VERSION: "0.15.4"
-        CURRENT_PROJECT_VERSION: "26"
+        MARKETING_VERSION: "0.15.5"
+        CURRENT_PROJECT_VERSION: "27"
   # WP12 (IMGMGR-199): the readiness widget. An app extension is its OWN process with its OWN
   # data container — it shares nothing with the app but the Keychain access group (one entry, the
   # app's, copied verbatim below) and the source files listed here, which are compiled into BOTH
@@ -191,8 +191,8 @@ targets:
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         # App Store validation refuses an archive whose embedded extension carries a version
         # other than its container app's — these two must move in lockstep with the app's.
-        MARKETING_VERSION: "0.15.4"
-        CURRENT_PROJECT_VERSION: "26"
+        MARKETING_VERSION: "0.15.5"
+        CURRENT_PROJECT_VERSION: "27"
         # An extension is installed as part of its host app, never on its own.
         SKIP_INSTALL: YES
 

@@ -6,6 +6,13 @@ refuses to upload when that section is missing, empty or duplicated; Settings �
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.15.5 (27)
+
+- Scene cards have a chevron in the bottom-right corner that opens the scene's photos in rows right below the card. Several scenes can be open at once. Esc closes the most recently opened one, More › Collapse all closes them all, and closing puts the grid back where it was.
+- New Sync to Lightroom sheet, under More › Shoot › Sync to Lightroom… and, on iPad, in the Sync section of the Shoot Summary. Choose This shoot or Whole library, turn on Lightroom is closed, then press Sync now. It writes picks and dislikes to the sidecars; a mark you cleared is removed from the sidecar too.
+- The sheet's status line shows how many marks are not yet written to sidecars, the last sync time, how many were refused, and how many sit on JPEG or HEIF files that can't travel. It also says Read Metadata from Files in Lightroom is not confirmed: run that in Lightroom after a sync.
+- Settings › Lightroom Sync shows the Mode, On demand. Automatic is listed but off, with the reason: it needs a signal that Lightroom is not writing sidecars, and that signal does not exist yet.
+
 ## 0.15.4 (26)
 
 - Arrange can now group by Mark or by Rating. Picks, Dislikes and each star rating get their own header with a count, and one row at the end opens the photos without a mark or without a rating.
