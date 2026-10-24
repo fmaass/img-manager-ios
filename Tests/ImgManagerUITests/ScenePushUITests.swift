@@ -71,7 +71,7 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
 
   /// T3 · kills M18 / M18s (card focus leaves the photo focus standing, so P marks it).
   func testPOnAFocusedCardSendsNoMarkRequest() throws {
-    let app = launched()
+    let app = launched(extra: ["-UITestFocusEngineProbe"])
     app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
     let focusProbe = element(app, "debugProbe.focus")
     let focused = XCTNSPredicateExpectation(
@@ -467,9 +467,11 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
   private func focusTheCardForReal(_ app: XCUIApplication) {
     let card = "uiFocus=card-\(Self.scene);"
     if app.frame.size.width >= Self.compactShellWidthCeiling {
-      for _ in 0..<12 where !probe(app, "debugProbe.focus").hasPrefix(card) {
+      for press in 0..<12 where !probe(app, "debugProbe.focus").hasPrefix(card) {
         app.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: [])
         Thread.sleep(forTimeInterval: 0.4)
+        let reading = "\(probe(app, "debugProbe.focus")) | \(probe(app, "debugProbe.focusEngine"))"
+        XCTContext.runActivity(named: "Tab \(press + 1): \(reading)") { _ in }
       }
       XCTContext.runActivity(named: "after Tab: \(probe(app, "debugProbe.focus"))") { _ in }
       if probe(app, "debugProbe.focus").hasPrefix(card) { return }

@@ -1,6 +1,10 @@
 import ImgManagerAPI
 import SwiftUI
 
+#if canImport(UIKit)
+  import UIKit
+#endif
+
 /// The contact-sheet grid: justified rows, the Pick Lock mode row when latched, and the
 /// persistent bottom action bar. Present in every layout mode — Compact and Regular alike
 /// (the inspector is what differs by layout mode, not this view).
@@ -108,9 +112,14 @@ struct GridView: View {
 
   private var stack: some View {
     VStack(spacing: 0) {
-      if isActive { debugProbeElement }
+      // IMGMGR-574: above the scroll area, so a test's tap on the 1pt probe button reaches the
+      // button and never the card the photographs scroll under it.
+      if isActive { debugProbeElement.zIndex(1) }
       chromeRows
       scrollArea
+        // IMGMGR-574: the grid is its own focus section, so Tab moves into it from the
+        // workspace's keyboard claim and lands on a scene card.
+        .focusSection()
         .onGeometryChange(for: CGFloat.self) {
           $0.size.width
         } action: { width in
@@ -289,8 +298,39 @@ struct GridView: View {
           .frame(width: 1, height: 1)
           .accessibilityIdentifier("debugFocusSceneCard")
         }
+        #if canImport(UIKit)
+          // IMGMGR-574: what UIKit's focus engine holds, re-read four times a second, under its
+          // own launch argument so no other test renders it.
+          if ProcessInfo.processInfo.arguments.contains("-UITestFocusEngineProbe") {
+            TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+              Text("debugProbeFocusEngine")
+                .font(.system(size: 1))
+                .foregroundStyle(.clear)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("debugProbe.focusEngine")
+                .accessibilityValue(Self.focusEngineProbeValue())
+            }
+          }
+        #endif
       }
     }
+
+    #if canImport(UIKit)
+      private static func focusEngineProbeValue() -> String {
+        let window = UIApplication.shared.connectedScenes
+          .compactMap { $0 as? UIWindowScene }
+          .flatMap(\.windows)
+          .first(where: \.isKeyWindow)
+        guard let window, let system = UIFocusSystem.focusSystem(for: window) else {
+          return "engine=unavailable"
+        }
+        guard let item = system.focusedItem else { return "engine=nil" }
+        let frame = item.frame.integral
+        let identifier = (item as? UIView)?.accessibilityIdentifier ?? "-"
+        return "engine=\(type(of: item)) id=\(identifier) frame=\(frame)"
+      }
+    #endif
 
     private var focusProbeValue: String {
       let card = focusedCard.map { "card-\($0)" } ?? "none"
