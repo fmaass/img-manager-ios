@@ -72,12 +72,6 @@ final class ScenePushUITests: OrientationPinnedUITestCase {
   /// T3 · kills M18 / M18s (card focus leaves the photo focus standing, so P marks it).
   func testPOnAFocusedCardSendsNoMarkRequest() throws {
     let app = launched()
-    // Owner ruling 2026-10-20 (IMGMGR-540 comment 12298): P12 ships without the iPad card-focus
-    // fix; IMGMGR-574 makes the card keyboard-reachable on iPad (the Regular shell) and removes
-    // this skip. Told apart by the rendered shell, as the idiom-grep leg requires.
-    guard rendersCompactShell(app) else {
-      throw XCTSkip("IMGMGR-574: scene card not reachable by keyboard focus on iPad")
-    }
     app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
     let focusProbe = element(app, "debugProbe.focus")
     let focused = XCTNSPredicateExpectation(
