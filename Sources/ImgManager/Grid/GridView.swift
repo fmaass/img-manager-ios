@@ -117,9 +117,6 @@ struct GridView: View {
       if isActive { debugProbeElement.zIndex(1) }
       chromeRows
       scrollArea
-        // IMGMGR-574: the grid is its own focus section, so Tab moves into it from the
-        // workspace's keyboard claim and lands on a scene card.
-        .focusSection()
         .onGeometryChange(for: CGFloat.self) {
           $0.size.width
         } action: { width in
