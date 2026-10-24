@@ -878,6 +878,13 @@ final class GridStore {
   /// result with stale data.
   private var loadGeneration = 0
 
+  /// The `loadGeneration` in which the reader last chose the mode that was ALREADY on
+  /// (IMGMGR-590). Such a choice changes nothing, so it starts no reload of its own — but a folder
+  /// open's scene check may still be out in that generation, sitting on the previous folder's mode
+  /// provisionally, and its answer must not overrule a choice made in the meantime. A real mode
+  /// change needs no record: its own reload bumps the generation and fences the check off.
+  private var sameModeChoiceGeneration: Int?
+
   init(
     service: GridService,
     preferences: GridPreferences = GridPreferences(),
@@ -987,8 +994,15 @@ final class GridStore {
   /// Every route out of Scene lands here — the Group menu, the View menu's pair, ⌘⇧G, and the
   /// Scene mode row's Exit button — so the restore is a property of the mode switch rather than
   /// of one control remembering to do it.
+  ///
+  /// Choosing the mode that is already on is still the reader's choice: it is recorded against
+  /// the current generation, so a folder open's scene check still out there keeps it
+  /// (IMGMGR-590).
   func setDisplayMode(_ next: GridDisplayMode) async {
-    guard next != displayMode else { return }
+    guard next != displayMode else {
+      sameModeChoiceGeneration = loadGeneration
+      return
+    }
     leaveScene(.scopeChanged)
     adoptDisplayMode(next)
     pickLock.exit()
@@ -1099,9 +1113,9 @@ final class GridStore {
   /// restored value already IS the chosen one, `applyFilterChange`'s own `next != query` guard
   /// makes the second step a no-op and the whole thing is a single reload.
   private func applyFlatPresentation(_ mutate: (inout GridImagesQuery) -> Void) async {
-    if displayMode == .scene {
-      await setDisplayMode(.flat)
-    }
+    // Unconditional: while already flat this is the same-mode choice `setDisplayMode` records,
+    // so None chosen during a folder open's scene check keeps the grid Flat (IMGMGR-590).
+    await setDisplayMode(.flat)
     await applyFilterChange(mutate)
   }
 
@@ -1405,8 +1419,12 @@ final class GridStore {
       let probe = try? await service.browseStacks(query, cursor: nil, limit: Self.scenePageLimit)
       guard generation == loadGeneration else { return }
       let hasScenes = probe.map(Self.holdsAScene) ?? false
-      adoptDisplayMode(hasScenes ? .scene : .flat)
-      if hasScenes {
+      // IMGMGR-590: a mode the reader chose while the check was out stands. The probe is still
+      // Scene's first page, so a chosen Scene shows it rather than asking for it again.
+      if sameModeChoiceGeneration != generation {
+        adoptDisplayMode(hasScenes ? .scene : .flat)
+      }
+      if displayMode == .scene, let probe {
         // The flat window goes for the same reason it goes above when Scene is already on.
         images = []
         nextCursor = nil

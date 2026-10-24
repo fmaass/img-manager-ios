@@ -283,4 +283,92 @@ struct GridStoreSceneDefaultTests {
     #expect(store.images.map(\.id) == [20])
     #expect(store.sceneRows.isEmpty)
   }
+
+  // MARK: - An explicit Group choice made while the scene check is in flight (IMGMGR-590)
+
+  /// The previous folder left Scene on, so the next folder sits in Scene PROVISIONALLY while its
+  /// scene check is out. Choosing Scene then is an explicit choice even though the mode does not
+  /// change, and the check coming back with "no scenes" must not take it away.
+  @Test(
+    "Scene chosen while the scene check is out stays Scene when the check finds none",
+    .timeLimit(.minutes(1)))
+  func sceneChosenDuringTheCheckSurvivesANoScenesAnswer() async throws {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await transport.setBrowseStacksPage(stacksPage([stackItem(id: 5, cover: 900)]))
+    await store.selectShoot(folderID: 1)
+    #expect(store.displayMode == .scene, "precondition: folder 1 opened in Scene")
+
+    await transport.setBrowseStacksPage(stacksPage([imageItem(20)]))
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 20, folderID: 2)], limit: 100, nextCursor: nil))
+    await transport.holdNextBrowseStacksRequest()
+    let stacksAsked = await transport.callCount(stacksOp)
+    let open = Task { await store.selectShoot(folderID: 2) }
+    await transport.waitUntilBrowseStacksStarted()
+    #expect(store.displayMode == .scene, "precondition: Scene is still on while the check is out")
+
+    await store.selectGrouping(.scene)
+    await transport.releaseBrowseStacks()
+    await open.value
+
+    #expect(store.currentQuery.folderID == 2)
+    #expect(store.displayMode == .scene, "the scene check overrode the reader's Scene")
+    #expect(try groupChecks(store) == (scene: true, none: false))
+    #expect(store.images.isEmpty, "Scene mode carried a flat window")
+    #expect(store.sceneRows.count == 1, "the scene check's page was not shown in Scene")
+    #expect(
+      await transport.callCount(stacksOp) == stacksAsked + 1,
+      "Scene asked for the page the scene check had already answered")
+  }
+
+  /// The mirror: the previous folder was Flat, the reader picks None while the next folder's
+  /// check is out, and the check coming back with scenes must not switch the grid into Scene.
+  @Test(
+    "None chosen while the scene check is out stays Flat when the check finds scenes",
+    .timeLimit(.minutes(1)))
+  func noneChosenDuringTheCheckSurvivesAScenesAnswer() async throws {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 1)
+    #expect(store.displayMode == .flat, "precondition: folder 1 opened Flat")
+
+    await transport.setBrowseStacksPage(stacksPage([stackItem(id: 5, cover: 900)]))
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 20, folderID: 2)], limit: 100, nextCursor: nil))
+    await transport.holdNextBrowseStacksRequest()
+    let open = Task { await store.selectShoot(folderID: 2) }
+    await transport.waitUntilBrowseStacksStarted()
+    #expect(store.displayMode == .flat, "precondition: Flat is still on while the check is out")
+
+    await store.selectGrouping(.none)
+    await transport.releaseBrowseStacks()
+    await open.value
+
+    #expect(store.currentQuery.folderID == 2)
+    #expect(store.displayMode == .flat, "the scene check overrode the reader's None")
+    #expect(try groupChecks(store) == (scene: false, none: true))
+    #expect(store.images.map(\.id) == [20])
+    #expect(store.sceneRows.isEmpty)
+  }
+
+  /// Scope: the choice belongs to the folder open it was made during. A same-mode choice made
+  /// with no check in flight must not pin the NEXT folder's default.
+  @Test("A same-mode choice made between folder opens leaves the next folder's default alone")
+  func aSameModeChoiceDoesNotPinTheNextFolder() async {
+    let (store, transport) = makeStore()
+    await transport.setListImagesPage(.init(items: [makeImage(id: 1)], limit: 100, nextCursor: nil))
+    await transport.setBrowseStacksPage(stacksPage([stackItem(id: 5, cover: 900)]))
+    await store.selectShoot(folderID: 1)
+    #expect(store.displayMode == .scene, "precondition: folder 1 opened in Scene")
+    await store.selectGrouping(.scene)
+
+    await transport.setBrowseStacksPage(stacksPage([imageItem(20)]))
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 20, folderID: 2)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+
+    #expect(store.displayMode == .flat, "an earlier same-mode choice pinned folder 2 to Scene")
+    #expect(store.images.map(\.id) == [20])
+  }
 }
