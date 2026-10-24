@@ -498,4 +498,111 @@ struct HeroThumbnailLoaderTests {
     #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
     #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
   }
+
+  // MARK: - IMGMGR-637: a restarted reader is not overtaken by the next newer fetch
+
+  /// Readers of `stamps` (all newer than list fetch 1) wait on a list-fetch-1 fetch parked on its
+  /// proxy request; the server re-tokens the cover before that request answers. What happens
+  /// after it answers is the contention under test: every waiter restarts at once, ONE of them
+  /// starts the next fetch, and the others meet it in flight under a stamp that is not theirs.
+  /// Returns the restarted readers once that next fetch is parked on its own proxy request with
+  /// all of them on it; the proxy hold is still armed.
+  private func restartedReadersMeetingANewerFetch(
+    _ loader: HeroThumbnailLoader, _ transport: GridStubTransport, stamps: [Date], old: Data
+  ) async -> [Task<HeroThumbnailLoader.FetchResult, Never>] {
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen1")))
+    await transport.setProxyOutcome(.ok(old))
+    await transport.holdProxyRequests(true)
+    let first = Task { await hero(loader, at: listFetch1) }
+    let firstParked = await waitUntil {
+      await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 1
+    }
+    #expect(firstParked)
+
+    var restarted: [Task<HeroThumbnailLoader.FetchResult, Never>] = []
+    for (index, stamp) in stamps.enumerated() {
+      restarted.append(Task { await hero(loader, at: stamp) })
+      let joined = await waitUntil {
+        await loader.debugReaderCount(folderID: 1, sourceTier: .local) == index + 2
+      }
+      #expect(joined)
+    }
+
+    await transport.setListImagesPage(page(makeImage(id: 1, gridToken: "gen2")))
+    await transport.releaseProxy()
+    #expect(await first.value == .image(old))
+    // The next fetch reads the new identity and parks on its proxy request; every restarted
+    // reader is on it — the one that started it and the ones it overtook.
+    let nextParked = await waitUntil {
+      await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2
+    }
+    #expect(nextParked)
+    let allOnIt = await waitUntil {
+      await loader.debugReaderCount(folderID: 1, sourceTier: .local) == stamps.count
+    }
+    #expect(allOnIt)
+    return restarted
+  }
+
+  @Test(
+    "A restarted reader overtaken by a newer fetch takes that fetch's answer, never a third wait"
+  )
+  func restartedReaderOvertakenByANewerFetchTakesItsAnswer() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let old = Data([0xFF, 0xD8, 0x10])
+    let new = Data([0xFF, 0xD8, 0x11])
+    let listFetch3 = Date(timeIntervalSince1970: 3_000)
+    // Whichever of the two restarts first starts the next fetch; the other meets it under the
+    // other stamp. In the order the ticket names, that fetch is list fetch 3's and the reader it
+    // overtook is list fetch 2's.
+    let restarted = await restartedReadersMeetingANewerFetch(
+      loader, transport, stamps: [listFetch2, listFetch3], old: old)
+
+    await transport.setProxyOutcome(.ok(new))
+    await transport.holdProxyRequests(false)
+    await transport.releaseProxy()
+
+    for reader in restarted { #expect(await reader.value == .image(new)) }
+    // Two limit-1 reads in all: the first fetch and the one both restarted readers shared. A
+    // reader that had gone round again would have read the page a third time.
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
+
+  @Test("Four restarted readers of four newer list fetches share ONE re-check")
+  func manyRestartedReadersShareOneRecheck() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let old = Data([0xFF, 0xD8, 0x12])
+    let new = Data([0xFF, 0xD8, 0x13])
+    let stamps = (2...5).map { Date(timeIntervalSince1970: Double($0) * 1_000) }
+    let restarted = await restartedReadersMeetingANewerFetch(
+      loader, transport, stamps: stamps, old: old)
+
+    await transport.setProxyOutcome(.ok(new))
+    await transport.holdProxyRequests(false)
+    await transport.releaseProxy()
+
+    for reader in restarted { #expect(await reader.value == .image(new)) }
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
+
+  @Test("A newer fetch that fails hands the overtaken reader the cached cover, not another round")
+  func failingNewerFetchServesTheOvertakenReaderTheCachedCover() async throws {
+    let (loader, transport) = makeLoader(maxConcurrent: 4)
+    let old = Data([0xFF, 0xD8, 0x14])
+    let listFetch3 = Date(timeIntervalSince1970: 3_000)
+    let restarted = await restartedReadersMeetingANewerFetch(
+      loader, transport, stamps: [listFetch2, listFetch3], old: old)
+
+    await transport.setProxyShouldFail(true)
+    await transport.holdProxyRequests(false)
+    await transport.releaseProxy()
+
+    // The failed re-check keeps the cover it has (`failedRecheckServesTheCachedCover`) for every
+    // reader of it, and leaves the entry unchecked, so the next reader of either stamp tries again.
+    for reader in restarted { #expect(await reader.value == .image(old)) }
+    #expect(await transport.callCount(Operations.ListImagesApiImagesGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 2)
+  }
 }

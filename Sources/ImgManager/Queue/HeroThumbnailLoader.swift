@@ -55,8 +55,9 @@ actor HeroThumbnailLoader {
     /// A `Set` is what makes "this reader has left" idempotent: the cancellation handler and the
     /// normal return can both fire for one call, and only the first of them may count.
     var readers: Set<Int>
-    /// The list fetch this fetch was started for. A reader of a DIFFERENT one still waits on it
-    /// (one fetch per key at a time) but does not take its answer as its own — see `read`.
+    /// The list fetch this fetch was started for. A reader of a DIFFERENT one that finds it
+    /// already in flight still waits on it (one fetch per key at a time) but does not take its
+    /// answer as its own — see `read`.
     let listFetchedAt: Date?
   }
   private var inFlight: [String: Fetch] = [:]
@@ -107,6 +108,18 @@ actor HeroThumbnailLoader {
   /// DIFFERENT list fetch: that fetch has completed, so it is never joined again — the reader
   /// starts its own re-check instead, even while the finished fetch's initiator has yet to clear
   /// its entry.
+  ///
+  /// That second pass is the reader's LAST (IMGMGR-637). Every reader the finished fetch had
+  /// restarts at once, so the one that resumes first starts the next fetch and the others meet it
+  /// in flight under its stamp, not theirs. Holding out for their own stamp again made each of
+  /// them wait out that fetch and then go round once more, and a key whose list refreshes kept
+  /// landing could pass a reader along that way indefinitely. A fetch met on the second pass is
+  /// not the one the reader arrived to find — that one is `alreadyAwaited` and never rejoined —
+  /// and a key's next entry is only ever created after its current one, so it STARTED after this
+  /// reader arrived and reads the identity no earlier than the reader's own re-check would: its
+  /// answer is taken as the reader's own. The round-1 rule stands for the first pass: a fetch
+  /// already in flight when the reader arrived may have read the identity before the server
+  /// changed it, so its answer never stands in for a different stamp.
   private func read(
     key: String, folderID: Int, sourceTier: GridSourceTier?, listFetchedAt: Date?,
     alreadyAwaited: Int?
@@ -160,10 +173,12 @@ actor HeroThumbnailLoader {
     // re-started by a later reader, and clearing that one would hand it a duplicate fetch.
     if isInitiator, inFlight[key]?.id == generation { inFlight[key] = nil }
     if Task.isCancelled { return .failure }
-    // A fetch started for a DIFFERENT list fetch (in practice an older one) may have read the
-    // identity before the server changed it: its answer is not this reader's, so it looks again
-    // and finds a cache entry checked against THIS stamp, or makes its own re-check.
-    guard fetchStamp == listFetchedAt else {
+    // A fetch started for a DIFFERENT list fetch (in practice an older one) that was already in
+    // flight when this reader arrived may have read the identity before the server changed it:
+    // its answer is not this reader's, so it looks again and finds a cache entry checked against
+    // THIS stamp, or makes its own re-check. On that second pass whatever it waited on started
+    // after it arrived, so the answer stands (see the doc comment).
+    guard fetchStamp == listFetchedAt || alreadyAwaited != nil else {
       return await read(
         key: key, folderID: folderID, sourceTier: sourceTier, listFetchedAt: listFetchedAt,
         alreadyAwaited: generation)
