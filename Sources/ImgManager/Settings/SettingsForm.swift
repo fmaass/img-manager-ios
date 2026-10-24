@@ -36,7 +36,7 @@ enum SettingsSection: String, CaseIterable, Sendable {
     switch self {
     case .sidebar: "Untouched, Pinned and Recent appear above Library."
     case .library: "Untouched lists Incoming folders dated on or after this day."
-    case .lightroomSync: "Sync from the app is not available yet."
+    case .lightroomSync: "Sync runs when you press Sync now in a shoot's More menu or Summary."
     case .storage: "Hides archive folders whose photos are already in the Incoming library."
     case .account, .culling, .gridDisplay, .about: nil
     }
@@ -173,6 +173,7 @@ enum SettingsStaticRow: CaseIterable, Sendable {
   case signOut
   case untouchedSince
   case lightroomMode
+  case lightroomAutomatic
   case version
 
   var title: String {
@@ -182,6 +183,7 @@ enum SettingsStaticRow: CaseIterable, Sendable {
     case .signOut: "Sign Out…"
     case .untouchedSince: "Untouched Since"
     case .lightroomMode: "Mode"
+    case .lightroomAutomatic: SyncCopy.automaticTitle
     case .version: "Version"
     }
   }
@@ -194,12 +196,14 @@ enum SettingsStaticRow: CaseIterable, Sendable {
     case .signOut: "settingsSignOutButton"
     case .untouchedSince: "settingsUntouchedSincePicker"
     case .lightroomMode: "settingsLightroomModeRow"
+    case .lightroomAutomatic: "settingsLightroomAutomaticRow"
     case .version: "settingsAboutVersion"
     }
   }
 
-  /// The inert Lightroom row's value until P17 builds sync.
+  /// IMGMGR-545: sync runs on demand; Automatic is shown, disabled, with its reason.
   static let lightroomModeValue = "On demand"
+  static let lightroomAutomaticReasonIdentifier = "settingsLightroomAutomaticReason"
 }
 
 /// About › Version, from the bundle's own Info dictionary (injected for the unit test).

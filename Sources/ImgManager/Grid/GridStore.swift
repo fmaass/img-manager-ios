@@ -349,6 +349,8 @@ final class GridStore {
   /// `isShortcutHelpPresented`, the same shape, for the same reason: the menu entry that raises
   /// it is declared as data (`GridMoreMenu`) and reaches this screen only through the store.
   var isStatusPresented = false
+  /// IMGMGR-545: the Sync sheet, raised from More › Shoot.
+  var isSyncPresented = false
   private(set) var statusSnapshot: Components.Schemas.StatusResponse?
   /// The status READ failed — distinct from "not loaded yet", which is `statusSnapshot == nil`
   /// with this false. Nothing on the sheet retries anything but the read itself.
@@ -2119,6 +2121,7 @@ final class GridStore {
   private func dismissGridPresentations() {
     isTagEntryPresented = false
     isStatusPresented = false
+    isSyncPresented = false
     isSceneMergePickerPresented = false
     isSceneAbsorbPickerPresented = false
     sceneEditError = nil
@@ -2417,7 +2420,8 @@ final class GridStore {
   /// A sheet or popover raised over the grid. The store-held flags plus the chrome popovers that
   /// keep their own `isPresented` and report it through `notePopover(_:isPresented:)`.
   var hasGridPresentation: Bool {
-    isTagEntryPresented || isShortcutHelpPresented || isStatusPresented || isTriagePresented
+    isTagEntryPresented || isShortcutHelpPresented || isStatusPresented || isSyncPresented
+      || isTriagePresented
       || isSceneMergePickerPresented || isSceneAbsorbPickerPresented || sceneEditError != nil
       || !openGridPopovers.isEmpty
   }
@@ -3416,6 +3420,14 @@ final class GridStore {
     statusReadFailed = false
     Task { await loadStatus() }
   }
+
+  /// IMGMGR-545: raise the Sync sheet. The sheet reads and writes through `syncService`.
+  func presentSync() {
+    isSyncPresented = true
+  }
+
+  /// The sync routes over this store's own client.
+  var syncService: SyncService { service.syncService }
 
   /// `GET /api/status`, through the SAME generated client every other call uses. Read-only by
   /// construction: this store exposes no maintenance mutation at all, and `POST /api/reindex`

@@ -1436,6 +1436,12 @@ struct ActionBarView: View {
     ) {
       StatusSheet(store: store)
     }
+    // IMGMGR-545: hosted beside Status, on the outer body, for the same reason.
+    .sheet(
+      isPresented: PresentationGate.binding($store.isSyncPresented, active: presentsSheets)
+    ) {
+      SyncSheet(service: store.syncService, folderID: store.query.folderID)
+    }
     // WP14 P4: hosted here for the same reason the two above are — on the OUTER body, never on a
     // `ViewThatFits` child, which would declare each of them once per tier.
     // WP29 P4 (IMGMGR-455): Scene ▸ is the only opener of both pickers, so both re-check the

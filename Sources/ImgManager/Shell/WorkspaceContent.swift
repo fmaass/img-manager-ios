@@ -133,7 +133,7 @@ struct WorkspaceContent: View {
           .sheet(isPresented: $showSummary) {
             ShootSummarySheet(
               queueStore: queueStore, folderID: store.query.folderID, title: title,
-              layoutMode: layoutMode)
+              layoutMode: layoutMode, syncService: service.syncService)
           }
       }
     }

@@ -135,12 +135,21 @@ struct SettingsSheetView: View {
       .environment(\.timeZone, UntouchedSince.displayTimeZone)
       .accessibilityIdentifier(SettingsStaticRow.untouchedSince.identifier)
     case .lightroomSync:
-      // Inert until P17 builds sync: shown, disabled, nothing stored.
+      // IMGMGR-545: On demand is the mode; Automatic is shown disabled with its reason (no
+      // signal yet says Lightroom is not writing). Nothing is stored.
       LabeledContent(
         SettingsStaticRow.lightroomMode.title, value: SettingsStaticRow.lightroomModeValue
       )
-      .disabled(true)
       .accessibilityIdentifier(SettingsStaticRow.lightroomMode.identifier)
+      VStack(alignment: .leading, spacing: 4) {
+        Toggle(SettingsStaticRow.lightroomAutomatic.title, isOn: .constant(false))
+          .disabled(true)
+          .accessibilityIdentifier(SettingsStaticRow.lightroomAutomatic.identifier)
+        Text(SyncCopy.automaticUnavailableReason)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier(SettingsStaticRow.lightroomAutomaticReasonIdentifier)
+      }
     case .about:
       // IMGMGR-587: the version line opens What's new, which starts on this very line's notes.
       let line = SettingsAbout.versionLine(info: Bundle.main.infoDictionary)

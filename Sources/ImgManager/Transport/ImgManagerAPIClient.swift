@@ -25,11 +25,14 @@ enum ImgManagerAPIClient {
   /// never duplicated elsewhere.
   static let baseURL = URL(string: "https://img.discomarder.live")!
 
+  /// IMGMGR-545: every client carries `RequiredNullBodyKeysMiddleware`, so a required nullable
+  /// request key (the sync request's `folder_id`) reaches the wire as `null`, never omitted.
   static func make(transport: any ClientTransport) -> any APIProtocol {
     Client(
       serverURL: baseURL,
       configuration: Configuration(dateTranscoder: RFC3339DateTranscoder()),
-      transport: transport)
+      transport: transport,
+      middlewares: [RequiredNullBodyKeysMiddleware()])
   }
 }
 

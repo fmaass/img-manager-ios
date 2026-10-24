@@ -104,7 +104,8 @@ enum GridMoreMenu {
       entries: [clearMark, copyForLightroom, openInNewWindow]),
     GridMoreMenuSection(
       id: "more.section.shoot", title: "Shoot",
-      entries: [status]),
+      // IMGMGR-545 (R3-13): Sync to Lightroom joins Status.
+      entries: [status, sync]),
     // WP29 P4 (IMGMGR-455): the Scene section (Merge into…, Split here, Extract selected, Add to
     // scene…) left for its one touch home, the Select bar's Scene ▸ (`SelectBarSceneMenu`), which
     // now holds those four declarations. 10 → 6 rows in 3 groups.
@@ -302,6 +303,17 @@ enum GridMoreMenu {
     title: { _ in "Status" },
     isEnabled: { _ in true },
     surface: .action { store in store.presentStatus() })
+
+  /// IMGMGR-545 (R3-13): the Sync sheet — status lines, the per-request "Lightroom is closed"
+  /// confirmation and Sync now. On both layouts; the Summary's block is the Regular-only one.
+  static let sync = GridMoreMenuEntry(
+    id: "more.sync",
+    accessibilityIdentifier: "gridMoreMenu.more.sync",
+    foldedAccessibilityIdentifier: nil,
+    systemImage: "arrow.triangle.2.circlepath",
+    title: { _ in "Sync to Lightroom…" },
+    isEnabled: { _ in true },
+    surface: .action { store in store.presentSync() })
 
   /// WP13 P11 (IMGMGR-220): "the second shoot beside the first" — the OS window arrangement, as
   /// a chrome menu item and never a gesture. It ships UNCONDITIONALLY: the capability

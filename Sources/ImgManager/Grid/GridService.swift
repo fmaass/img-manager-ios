@@ -437,6 +437,9 @@ struct GridService: Sendable {
   /// needs ("reachable or not"); copying it here would give one endpoint two client methods.
   var statusService: ImgManagerAPIService { ImgManagerAPIService(client: client) }
 
+  /// IMGMGR-545: the three sync routes, over the same client (`SyncService`).
+  var syncService: SyncService { SyncService(client: client) }
+
   /// `GET /api/marks/export` with the server's DEFAULTS — `state=pick`, `format=json`.
   ///
   /// `format=txt` is never requested: the vendored document declares only `application/json`

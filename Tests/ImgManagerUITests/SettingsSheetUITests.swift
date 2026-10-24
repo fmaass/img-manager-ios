@@ -75,6 +75,11 @@ final class SettingsSheetUITests: OrientationPinnedUITestCase {
     assertRow(app, "settingsUntouchedSincePicker")
     assertHeader(app, 3)
     assertRow(app, "settingsLightroomModeRow")
+    // IMGMGR-545: Automatic is shown, disabled, with its reason.
+    assertRow(app, "settingsLightroomAutomaticRow")
+    XCTAssertFalse(
+      element(app, "settingsLightroomAutomaticRow").isEnabled, "Automatic sync is selectable.")
+    assertRow(app, "settingsLightroomAutomaticReason")
     assertHeader(app, 4)
     assertRow(app, "accountAutoAdvanceToggle")
     assertRow(app, "settingsTapToPickDefaultToggle")

@@ -35,6 +35,8 @@
     private var splitPoint: Int?
     /// IMGMGR-586: how many mark writes this transport has refused (`-UITestFailMarkWrites`).
     private var failedMarkWrites = 0
+    /// IMGMGR-545: how many times the fixture sync request has been read back.
+    private var syncReads = 0
 
     /// A minimal valid 1×1 JPEG — the last-resort fallback where no drawing API exists.
     private static let tinyJPEG = Data(
@@ -53,6 +55,20 @@
         return try jsonResponse(.ok, Self.fixtureStatus())
       case Operations.ExportMarksApiMarksExportGet.id:
         return try jsonResponse(.ok, Self.fixtureMarksExport())
+      // IMGMGR-545: the sync routes. The status carries a SUCCEEDED latest, so nothing is
+      // being watched when the sheet opens; a request is pending, read once as running,
+      // then succeeded.
+      case Operations.GetFolderSyncStatusApiFoldersFolderIdSyncStatusGet.id:
+        return Self.rawJSON(.ok, Self.fixtureSyncStatus)
+      case Operations.CreateSyncRequestApiSyncPost.id:
+        syncReads = 0
+        return Self.rawJSON(.created, Self.fixtureSyncRequest(state: "pending", finished: nil))
+      case Operations.GetSyncRequestApiSyncRequestIdGet.id:
+        syncReads += 1
+        return syncReads == 1
+          ? Self.rawJSON(.ok, Self.fixtureSyncRequest(state: "running", finished: nil))
+          : Self.rawJSON(
+            .ok, Self.fixtureSyncRequest(state: "succeeded", finished: "2026-10-23T12:30:00Z"))
       case Operations.FolderTreeApiFoldersGet.id
       where DebugStubLaunch.failArchiveFolders
         && Self.queryParameters(of: request)["source_tier"] == GridSourceTier.archive.rawValue:
@@ -352,6 +368,37 @@
       return Dictionary(
         items.compactMap { item in item.value.map { (item.name, $0) } },
         uniquingKeysWith: { first, _ in first })
+    }
+
+    /// IMGMGR-545: a literal JSON body — the sync fixtures are written as the wire shape.
+    private static func rawJSON(
+      _ status: HTTPResponse.Status, _ json: String
+    ) -> (HTTPResponse, HTTPBody?) {
+      var response = HTTPResponse(status: status)
+      response.headerFields[.contentType] = "application/json"
+      return (response, HTTPBody(Data(json.utf8)))
+    }
+
+    /// Folder 1's tally (5 not yet written, 1 refused), 3 that cannot travel, and a succeeded
+    /// latest that finished 2026-10-23 12:05 UTC — 14:05 CEST.
+    private static var fixtureSyncStatus: String {
+      let latest = fixtureSyncRequest(id: 500, state: "succeeded", finished: "2026-10-23T12:05:00Z")
+      return """
+        {"folder_id": 1, "counts": {"synced": 5, "stale": 2, "refused": 1, "never": 3},
+         "cannot_travel": 3, "latest": \(latest)}
+        """
+    }
+
+    private static func fixtureSyncRequest(
+      id: Int = 501, state: String, finished: String?
+    ) -> String {
+      let finishedAt = finished.map { "\"\($0)\"" } ?? "null"
+      return """
+        {"id": \(id), "folder_id": 1, "states": ["pick", "dislike", "none"],
+         "state": "\(state)", "lightroom_closed_confirmed": true, "requested_by": "owner",
+         "requested_via": "bearer", "requested_at": "2026-10-23T12:00:00Z",
+         "started_at": null, "finished_at": \(finishedAt), "run_id": null}
+        """
     }
 
     private func jsonResponse<T: Encodable>(

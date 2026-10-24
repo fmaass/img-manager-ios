@@ -14,7 +14,12 @@ struct ShootSummarySheet: View {
   let folderID: Int?
   let title: String?
   let layoutMode: LayoutMode
+  /// IMGMGR-545: the sync routes for the Regular-only sync block; nil shows no block.
+  let syncService: SyncService?
   @Environment(\.dismiss) private var dismiss
+  /// IMGMGR-545: the sync block's model. The sheet owns and starts it: a `.task` inside the
+  /// List (on the block's section, then on its row) never delivered the status on iPad.
+  @State private var syncModel: SyncSheetModel?
   @State private var detent: PresentationDetent = .medium
 
   var body: some View {
@@ -33,6 +38,24 @@ struct ShootSummarySheet: View {
     // queue's own idempotent entry point; it never refetches over a loaded list.
     .task { await queueStore.loadIfNeeded() }
     .modifier(ShootSummarySizing(isCompact: layoutMode == .compact, detent: $detent))
+    // IMGMGR-545: one status read per presentation of a Regular Summary; no polling here.
+    .task(id: syncBlockFolderID) {
+      guard let syncService, let folderID = syncBlockFolderID else {
+        syncModel = nil
+        return
+      }
+      let model = SyncSheetModel(service: syncService, folderID: folderID)
+      syncModel = model
+      await model.start()
+    }
+  }
+
+  /// The folder the sync block reads, or nil where the block is not shown (Compact, no folder).
+  private var syncBlockFolderID: Int? {
+    guard syncService != nil, SyncPlacement.showsSummaryBlock(layoutMode: layoutMode) else {
+      return nil
+    }
+    return folderID
   }
 
   static let sheetTitle = "Shoot Summary"
@@ -77,6 +100,10 @@ struct ShootSummarySheet: View {
           countRow("Never", sync.never, id: "sync.never")
           countRow("Refused", sync.refused, id: "sync.refused")
         }
+      }
+      // IMGMGR-545 (R3-14): the sync block, Regular layouts only; the tally above is unchanged.
+      if let syncService, let syncModel, let folderID = syncBlockFolderID {
+        SyncSummaryBlock(model: syncModel, service: syncService, folderID: folderID)
       }
     }
   }

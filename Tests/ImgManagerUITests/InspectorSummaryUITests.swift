@@ -237,6 +237,68 @@ final class InspectorSummaryUITests: OrientationPinnedUITestCase {
     closeShootSummary(in: app, sheetBar: sheetBar)
   }
 
+  // MARK: - IMGMGR-545 (R3-14): the sync block, Regular layouts only
+
+  /// Scrolls the Summary's list until `target` exists, at most four swipes.
+  private func reveal(_ target: XCUIElement, in app: XCUIApplication) -> Bool {
+    for _ in 0..<4 where !target.exists {
+      app.collectionViews.firstMatch.swipeUp()
+    }
+    return target.waitForExistence(timeout: 2)
+  }
+
+  /// Regular: the block shows its status line, and "Sync…" pushes the Sync form.
+  func testGSummaryOnRegularCarriesTheSyncBlock() throws {
+    let app = launch(orientation: .landscapeLeft)
+    guard layout(of: app) != .compact else {
+      throw XCTSkip("IMGMGR-545 (g): the window resolves to compact; (g) is Regular.")
+    }
+    let sheetBar = openShootSummary(in: app, titleNames: [Self.folderOneName])
+    let link = app.descendants(matching: .any)["shootSummary.syncLink"].firstMatch
+    XCTAssertTrue(reveal(link, in: app), "The Regular Summary has no sync block.")
+    // The status is read when the block appears: wait for it rather than read it once.
+    let line = app.descendants(matching: .any)["shootSummary.syncStatusLine"].firstMatch
+    let read = NSPredicate(format: "label BEGINSWITH %@", "5 marks not yet written to sidecars")
+    let settled = XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: read, object: line)], timeout: 15)
+    XCTAssertEqual(settled, .completed, "The block's status line reads '\(line.label)'.")
+    link.tap()
+    XCTAssertTrue(
+      app.buttons["syncNowButton"].waitForExistence(timeout: 10), "Sync… pushed no Sync form.")
+    let formLine = app.descendants(matching: .any)["syncStatusLine"].firstMatch
+    let formRead = XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: read, object: formLine)], timeout: 15)
+    XCTAssertEqual(formRead, .completed, "The pushed form's status reads '\(formLine.label)'.")
+    XCTAssertFalse(app.buttons["syncNowButton"].isEnabled, "Sync now pressable unconfirmed.")
+    attach(app, named: "IMGMGR-545-g-summary-sync-form")
+    // Back through the pushed form's own bar (the grid's bar is still under the sheet).
+    let back = app.navigationBars["Sync to Lightroom"].buttons
+      .matching(NSPredicate(format: "identifier == 'BackButton' OR label == 'Shoot Summary'"))
+      .firstMatch
+    XCTAssertTrue(back.waitForExistence(timeout: 5), "The pushed Sync form has no back button.")
+    back.tap()
+    XCTAssertTrue(link.waitForExistence(timeout: 10), "Back did not return to the Summary.")
+    closeShootSummary(in: app, sheetBar: sheetBar)
+  }
+
+  /// Compact: no sync block, and the existing Sync tally is still there (the positive control:
+  /// the list was scrolled to where the block would be).
+  func testHSummaryOnCompactHasNoSyncBlock() throws {
+    let app = launch(orientation: .portrait)
+    try require(.compact, in: app, context: "(h)")
+    let sheetBar = openShootSummary(
+      in: app, titleNames: [Self.folderOneName, Self.folderOneSummaryName])
+    let tally = app.descendants(matching: .any)["shootSummary.sync.refused"].firstMatch
+    XCTAssertTrue(reveal(tally, in: app), "The Summary's Sync tally is gone.")
+    XCTAssertFalse(
+      app.descendants(matching: .any)["shootSummary.syncLink"].exists,
+      "The Compact Summary shows the iPad-only sync block.")
+    XCTAssertFalse(
+      app.descendants(matching: .any)["shootSummary.syncStatusLine"].exists,
+      "The Compact Summary shows the iPad-only sync status line.")
+    closeShootSummary(in: app, sheetBar: sheetBar)
+  }
+
   // MARK: - (f) The banner and the no-summary case
 
   /// (f), folder 1: the server says `nothing_left_unmarked == false`, so no banner.

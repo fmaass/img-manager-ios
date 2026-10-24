@@ -70,6 +70,8 @@ final class GridMoreMenuUITests: OrientationPinnedUITestCase {
       // every case — the built-product probe decided only whether project.yml needed the
       // capability key, never whether the affordance exists.
       "gridMoreMenu.more.openInNewWindow",
+      // IMGMGR-545 (R3-13): Sync to Lightroom joins Status in Shoot.
+      "gridMoreMenu.more.sync",
     ]
     // The open itself (IMGMGR-404): the first declared entry is what says the menu presented at
     // all, so it is waited for through the shared opener; the loop below is unchanged.

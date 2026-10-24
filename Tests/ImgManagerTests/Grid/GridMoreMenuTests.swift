@@ -48,14 +48,15 @@ struct GridViewMoreMenuTests {
         // IMGMGR-539 (R3-5): Filename plates moved into the Tile overlays submenu.
         "more.tileOverlays", "more.picksInGroups", "more.collapseAllBands",
         "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
-        "more.status",
+        // IMGMGR-545 (R3-13): Sync to Lightroom joins Status in Shoot.
+        "more.status", "more.sync",
       ])
 
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     #expect(
       titles == [
         "Tile overlays", "Picks in groups", "Collapse all", "Clear mark", "Copy for Lightroom",
-        "Open in New Window", "Status",
+        "Open in New Window", "Status", "Sync to Lightroom…",
       ])
     // Positive control for the 0-hit check below (LSN-0033): the titles really were read.
     #expect(titles.contains("Copy for Lightroom"))
@@ -66,11 +67,12 @@ struct GridViewMoreMenuTests {
   /// WP29 P3 (IMGMGR-454) acceptance probe: six rows, exactly three groups, an icon on every row,
   /// no duplicate title, and Hide mirrored archive absent (its one home is the tree's View menu).
   /// IMGMGR-542 (R3-22) added Collapse all to View: seven rows.
-  @Test("More: 7 rows in exactly 3 groups, every row an icon, no duplicate title, no prune")
+  /// IMGMGR-545 (R3-13) added Sync to Lightroom to Shoot: eight rows.
+  @Test("More: 8 rows in exactly 3 groups, every row an icon, no duplicate title, no prune")
   func moreMenuMeetsTheTicketShape() {
     let (store, _, _, _) = makeStore()
     #expect(GridMoreMenu.sections.count == 3)
-    #expect(GridMoreMenu.entries.count == 7)
+    #expect(GridMoreMenu.entries.count == 8)
     #expect(GridMoreMenu.entries.allSatisfy { !$0.systemImage.isEmpty })
     let titles = GridMoreMenu.entries.map { $0.title(store) }
     // Positive control: the titles really were read, so uniqueness is not about an empty list.
@@ -271,6 +273,16 @@ struct GridViewMoreMenuTests {
         #expect(store.isStatusPresented == false)
         run(store)
         #expect(store.isStatusPresented, "the Status entry did not raise the sheet")
+
+      case "more.sync":
+        guard case .action(let run) = entry.surface else {
+          Issue.record("more.sync is not an action entry")
+          continue
+        }
+        #expect(store.isSyncPresented == false)
+        run(store)
+        #expect(store.isSyncPresented, "the Sync entry did not raise the sheet")
+        #expect(store.hasGridPresentation, "the Sync sheet is not a grid presentation")
 
       case "more.openInNewWindow":
         guard case .sceneWindow(let run) = entry.surface else {
@@ -627,7 +639,8 @@ struct GridMoreMenuSectionsTests {
     // IMGMGR-539 (R3-5): the Tile overlays submenu took Filename plates' place in View.
     "more.tileOverlays", "more.picksInGroups", "more.collapseAllBands",
     "more.clearMark", "more.copyForLightroom", "more.openInNewWindow",
-    "more.status",
+    // IMGMGR-545 (R3-13): appended to Shoot's own run.
+    "more.status", "more.sync",
   ]
 
   @Test("`entries` is the sections flattened — one inventory, never a second hand-written list")
@@ -643,8 +656,9 @@ struct GridMoreMenuSectionsTests {
     // 12 → 10, Density and the archive prune having left.
     // WP29 P4 (IMGMGR-455): 10 → 6, the Scene group having left — the ≤ 6 row budget.
     // IMGMGR-542 (R3-22): 6 → 7, Collapse all joining View for the peek bands.
-    #expect(GridMoreMenu.entries.count == 7)
-    #expect(GridMoreMenu.entries.count <= 7)
+    // IMGMGR-545 (R3-13): 7 → 8, Sync to Lightroom joining Shoot (the ticket's More › Shoot row).
+    #expect(GridMoreMenu.entries.count == 8)
+    #expect(GridMoreMenu.entries.count <= 8)
   }
 
   /// WP29 P4 (IMGMGR-455): no scene edit is left in More, and every one is reachable from the
@@ -692,7 +706,7 @@ struct GridMoreMenuSectionsTests {
         "more.section.actions", "Actions",
         ["more.clearMark", "more.copyForLightroom", "more.openInNewWindow"]
       ),
-      ("more.section.shoot", "Shoot", ["more.status"]),
+      ("more.section.shoot", "Shoot", ["more.status", "more.sync"]),
       // WP29 P4 (IMGMGR-455): the Scene group left for the Select bar's Scene ▸.
     ]
     // Closures rather than key paths on the right: Swift has no key path to a tuple element.
@@ -746,13 +760,13 @@ struct GridMoreMenuSectionsTests {
         "gridMoreMenu.more.collapseAllBands",
         "gridMoreMenu.more.clearMark", "gridMoreMenu.more.copyForLightroom",
         "gridMoreMenu.more.openInNewWindow",
-        "gridMoreMenu.more.status",
+        "gridMoreMenu.more.status", "gridMoreMenu.more.sync",
       ])
     #expect(
       GridMoreMenu.entries.map(\.systemImage) == [
         "rectangle.on.rectangle", "checkmark.square", "rectangle.compress.vertical",
         ActionBarMarkControl.clear.systemImage, "doc.on.clipboard", "macwindow.badge.plus",
-        "info.circle",
+        "info.circle", "arrow.triangle.2.circlepath",
       ])
   }
 }
