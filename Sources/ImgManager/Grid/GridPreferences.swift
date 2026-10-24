@@ -70,7 +70,8 @@ final class GridPreferences {
   static let overlaySourceKindKey = "grid.overlay.sourceKind"
   static let overlaySourceKindDefault = false
 
-  private let defaults: UserDefaults
+  /// Also read by `LookFavourites` (IMGMGR-543), which keeps its own key in the same store.
+  let defaults: UserDefaults
 
   /// Show each tile's filename under it. FILENAME ONLY — never a path (p3220 §4.5); the plate's
   /// text is `ImageSummary.filename` verbatim, the same string the inspector already renders.

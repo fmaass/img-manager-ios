@@ -332,7 +332,15 @@ final class GridStore {
     }
   }
 
-  var focusedImageID: Int?
+  /// IMGMGR-543: every change of the focused photograph — whichever path makes it (arrows, swipe,
+  /// the filmstrip, advance-on-mark, `openLoupe(on:)`, Compare's Back, a page load) — cancels a
+  /// Looks draft held for another photograph. An observer rather than a list of call sites, so a
+  /// new path cannot forget it.
+  var focusedImageID: Int? {
+    didSet {
+      if focusedImageID != oldValue { looks.focusDidChange(to: focusedImageID) }
+    }
+  }
   /// `T`/the action bar's Tag control opens tag entry for the focused image (browse mode) or
   /// the current selection (Select mode); the actual write happens on submit, via `addTag`.
   var isTagEntryPresented = false
@@ -377,8 +385,8 @@ final class GridStore {
   let selection = SelectionState()
   let pickLock = PickLockState()
   let undo = UndoStack()
-  /// IMGMGR-382: the loupe's session-only look (`LookModel`). One per store, so it survives
-  /// frame-to-frame navigation and closing and reopening the loupe, and ends with the app.
+  /// IMGMGR-382 / IMGMGR-543: the loupe's look (`LookModel`) — a draft for ONE photograph while
+  /// the Looks strip is open, and the catalogue and favourites behind it.
   let looks: LookModel
 
   // MARK: - Loupe (P5)
@@ -422,6 +430,7 @@ final class GridStore {
   func closeLoupe() {
     compareState = nil
     isLoupeOpen = false
+    looks.cancel()
   }
 
   // MARK: - Triage (WP31 P1, IMGMGR-460)
@@ -677,6 +686,8 @@ final class GridStore {
     else { return }
     compareGeneration = loadGeneration
     compareState = session
+    // Compare replaces the loupe and its strip; a draft does not outlive them (IMGMGR-543).
+    looks.cancel()
   }
 
   /// Back: the loupe again, focused on the current left image (decision 5).
@@ -877,7 +888,9 @@ final class GridStore {
     self.preferences = preferences
     self.pasteboard = pasteboard
     self.startsWithTapToPick = startsWithTapToPick
-    self.looks = LookModel(fetchCatalogue: { try await service.looks() })
+    self.looks = LookModel(
+      fetchCatalogue: { try await service.looks() },
+      favourites: LookFavourites(defaults: preferences.defaults))
   }
 
   // MARK: - Loading
@@ -3389,6 +3402,17 @@ final class GridStore {
   /// never reach at all): the keyboard fast path stays a simple, uniform "open what's focused",
   /// same posture `PickLockState.activateFromKeyboard()` already documents for `P`.
   func handleOpenShortcut() {
+    // Return and Space share `open`. While the strip (or a presentation over it) owns the keys
+    // they are inert: Apply arrives with P16b, and the loupe is already open.
+    switch looksKeyOwner {
+    case .strip:
+      looks.apply()
+      return
+    case .presentation:
+      return
+    case .none:
+      break
+    }
     guard let id = focusedImageID else { return }
     openLoupe(on: id)
   }
@@ -4252,29 +4276,37 @@ final class GridStore {
   func loupePreview<Image>(
     imageID: Int, identityToken: String?, decode: (Data) -> Image?
   ) async -> LoupePreview<Image> {
-    guard let lookID = looks.activeLookID else {
+    guard let active = looks.activeLook(for: imageID) else {
       let data = await proxyData(imageID: imageID, tier: .preview, identityToken: identityToken)
       return LoupePreview(image: data.flatMap(decode), rendering: .unlooked)
     }
-    if let looked = await lookedProxyData(imageID: imageID, tier: .preview, lookID: lookID),
+    let lookID = active.lookID
+    if let looked = await lookedProxyData(
+      imageID: imageID, tier: .preview, lookID: lookID, strength: active.strength),
       let image = decode(looked)
     {
-      looks.recordRender(imageID: imageID, lookID: lookID, available: true)
+      looks.recordRender(
+        imageID: imageID, lookID: lookID, strength: active.strength, available: true)
       return LoupePreview(image: image, rendering: .looked(lookID: lookID))
     }
-    // A load the loupe cancelled (it moved to another frame or look) proves nothing about this
-    // photograph, so only a load that ran to its answer is recorded as unavailable.
+    // A load the loupe cancelled (it moved to another frame, look or strength) proves nothing
+    // about this photograph, so only a load that ran to its answer is recorded as unavailable.
     if !Task.isCancelled {
-      looks.recordRender(imageID: imageID, lookID: lookID, available: false)
+      looks.recordRender(
+        imageID: imageID, lookID: lookID, strength: active.strength, available: false)
     }
     let data = await fallbackProxyData(imageID: imageID, identityToken: identityToken)
     return LoupePreview(image: data.flatMap(decode), rendering: .fallback(lookID: lookID))
   }
 
   /// One looked render, always a fresh request.
-  private func lookedProxyData(imageID: Int, tier: ProxyTier, lookID: String) async -> Data? {
+  private func lookedProxyData(
+    imageID: Int, tier: ProxyTier, lookID: String, strength: Int
+  ) async -> Data? {
     do {
-      switch try await service.lookedProxy(imageID: imageID, tier: tier, lookID: lookID) {
+      switch try await service.lookedProxy(
+        imageID: imageID, tier: tier, lookID: lookID, strength: strength)
+      {
       case .ok(let data):
         return data
       case .notFound, .refused:
@@ -4298,6 +4330,93 @@ final class GridStore {
     }
     return cached
   }
+
+  // MARK: - Looks strip (IMGMGR-543)
+
+  /// The strip's tile renders, for the open strip only: keyed by session, photograph and look.
+  @ObservationIgnored private var lookTiles: [LookTileKey: Data] = [:]
+
+  /// One tile of the open strip: the focused photograph's `.grid` proxy through `lookID` at the
+  /// look's authored strength (100), or unlooked for None. A render that finishes after its strip
+  /// was cancelled — or cancelled and reopened on the same photograph — is dropped, never cached.
+  func lookTile(imageID: Int, lookID: String?, identityToken: String?) async -> Data? {
+    guard looks.isStripOpen(for: imageID) else { return nil }
+    guard let lookID else {
+      return await proxyData(imageID: imageID, tier: .grid, identityToken: identityToken)
+    }
+    let key = LookTileKey(session: looks.stripSession, imageID: imageID, lookID: lookID)
+    if let cached = lookTiles[key] { return cached }
+    let data = await lookedProxyData(
+      imageID: imageID, tier: .grid, lookID: lookID, strength: LookStrength.standard)
+    guard !Task.isCancelled, looks.stripSession == key.session,
+      looks.isStripOpen(for: imageID)
+    else { return nil }
+    lookTiles = lookTiles.filter { $0.key.session == key.session }
+    if let data { lookTiles[key] = data }
+    return data
+  }
+
+  /// The Looks control: open the strip on the focused photograph, or cancel it.
+  func toggleLooksStrip() {
+    guard let focused = focusedImageID else { return }
+    if looks.isStripOpen(for: focused) {
+      looks.cancel()
+    } else {
+      looks.openStrip(imageID: focused)
+    }
+  }
+
+  /// A presentation the LOUPE raised that a store flag does not already name — today the share
+  /// sheet, held by the loupe's own `ShareLauncher` — reported here, the `notePopover` shape.
+  private(set) var openLoupePresentations: Set<String> = []
+
+  func noteLoupePresentation(_ id: String, isPresented: Bool) {
+    if isPresented { openLoupePresentations.insert(id) } else { openLoupePresentations.remove(id) }
+  }
+
+  /// Something presented over the loupe that owns the keyboard before the strip does.
+  var hasLoupePresentation: Bool {
+    isTagEntryPresented || isShortcutHelpPresented || isStatusPresented
+      || !openLoupePresentations.isEmpty
+  }
+
+  /// Who the strip's keys (←→↑↓, Return/Space, Esc) belong to right now.
+  var looksKeyOwner: LooksKeyOwner {
+    guard isLoupeOpen, looks.isStripOpen(for: focusedImageID) else { return .none }
+    return hasLoupePresentation ? .presentation : .strip
+  }
+
+  /// ←/→/↑/↓ (`GridKeyboardActions.moveFocus`): the strip's look and strength while it owns the
+  /// keys; NOTHING while a presentation over the open strip does (a key reaching beneath a sheet
+  /// must not navigate and so cancel the draft); otherwise the focus, as always.
+  func handleArrowShortcut(_ direction: GridArrowDirection) {
+    switch looksKeyOwner {
+    case .strip:
+      switch direction {
+      case .left: looks.step(.previous)
+      case .right: looks.step(.next)
+      case .up: looks.nudgeStrength(by: LookStrength.nudge)
+      case .down: looks.nudgeStrength(by: -LookStrength.nudge)
+      }
+    case .presentation:
+      return
+    case .none:
+      moveFocus(direction)
+    }
+  }
+
+  /// Esc, through the one hidden Esc declaration (`AppCommands.closeBandKey`): cancel the strip
+  /// while it owns the keys, else close the most recent band when one can close.
+  func handleEscape() {
+    switch looksKeyOwner {
+    case .strip: looks.cancel()
+    case .presentation: return
+    case .none: if canCloseBand { closeMostRecentBand() }
+    }
+  }
+
+  /// Whether Esc has anything to do — the declaration's enablement.
+  var canEscape: Bool { looksKeyOwner == .strip || canCloseBand }
 
   // MARK: - Tags (T)
 
@@ -4560,4 +4679,21 @@ enum LoupeRendering: Equatable, Sendable {
 struct LoupePreview<Image> {
   let image: Image?
   let rendering: LoupeRendering
+}
+
+/// Who owns the Looks strip's keys (IMGMGR-543).
+enum LooksKeyOwner: Equatable, Sendable {
+  /// No strip on the focused photograph: the keys mean what they always did.
+  case none
+  /// The strip, with nothing presented over it.
+  case strip
+  /// A sheet or the share sheet over the open strip: the strip's keys do nothing.
+  case presentation
+}
+
+/// One tile render of one strip session (IMGMGR-543).
+struct LookTileKey: Hashable, Sendable {
+  let session: Int
+  let imageID: Int
+  let lookID: String
 }

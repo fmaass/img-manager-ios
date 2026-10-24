@@ -531,22 +531,26 @@ struct GridService: Sendable {
     return body.looks
   }
 
-  /// `GET /api/images/{id}/proxy/{tier}/look/{look_id}` — the cached proxy for `tier` with one
-  /// catalogued look applied, rendered on the fly by the server (`Cache-Control: no-store`, never
-  /// a validator, so there is no `v` and no 304 here).
+  /// `GET /api/images/{id}/proxy/{tier}/look/{look_id}?strength=` — the cached proxy for `tier`
+  /// with one catalogued look applied at `strength` percent (img-manager v0.24.0; 0 is the proxy,
+  /// 100 the look, 200 doubles it). The strength is ALWAYS sent, 100 included, so the request
+  /// says what it shows. No `v` is sent (the immutable-response handshake is P16b's), so the
+  /// response is `no-store` and there is no 304 here.
   ///
   /// The 404 is NOT the unlooked proxy's 404: nothing is queued by asking for a look, so a caller
   /// that gets `.notFound` asks for the unlooked proxy, which is the request that enqueues one.
   /// The coded 422 (`unknown_look`, `invalid_request`) arrives typed, in the stack-edit
   /// refusals' idiom; an undecodable 422 body, an undeclared status or a transport failure is
   /// `.unreachable`.
-  func lookedProxy(imageID: Int, tier: ProxyTier, lookID: String) async throws
+  func lookedProxy(imageID: Int, tier: ProxyTier, lookID: String, strength: Int) async throws
     -> LookedProxyFetchResult
   {
     let output: Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.Output
     do {
       output = try await client.getLookedProxyApiImagesImageIdProxyTierLookLookIdGet(
-        .init(path: .init(imageId: imageID, tier: tier.rawValue, lookId: lookID)))
+        .init(
+          path: .init(imageId: imageID, tier: tier.rawValue, lookId: lookID),
+          query: .init(strength: strength)))
     } catch {
       throw GridServiceError.unreachable
     }

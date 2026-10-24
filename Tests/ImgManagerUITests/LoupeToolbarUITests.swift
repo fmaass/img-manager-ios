@@ -191,8 +191,8 @@ final class LoupeToolbarUITests: OrientationPinnedUITestCase {
   // MARK: - Looks (IMGMGR-382)
 
   /// Looks leads the trailing group — Looks · Compare · Info · More on the iPad, Looks · More on
-  /// the phone — and choosing a look or None is stated on the control's value and, once the
-  /// bytes are painted, on the loupe image's label.
+  /// the phone — and a look previewed from its strip is stated on the control's value and, once
+  /// the bytes are painted, on the loupe image's label.
   @MainActor
   func testLooksLeadsTheTrailingGroupAndChoosesALook() throws {
     let app = launchAndOpenLoupe()
@@ -224,13 +224,16 @@ final class LoupeToolbarUITests: OrientationPinnedUITestCase {
       "Looks never became choosable: the stub catalogue did not arrive.")
     XCTAssertEqual(looks.value as? String, "Off", "With no look chosen, Looks does not read Off.")
 
-    let warm = element(app, "loupeLook-warm-film")
-    XCTAssertTrue(
-      openPresentation(looks, revealing: warm, timeout: 15), "Looks did not open its popover.")
-    XCTAssertTrue(element(app, "loupeLook-none").exists, "The popover has no None row.")
-    attach(app, name: "loupe-looks-popover")
-    warm.tap()
-    XCTAssertTrue(warm.waitForNonExistence(timeout: 10), "Choosing a look did not dismiss.")
+    // IMGMGR-543: Looks opens the strip in the filmstrip's place (the popover is gone); a tile
+    // previews its look, and Looks again cancels it.
+    looks.tap()
+    let warm = element(app, "loupeLookTile-warm-film")
+    XCTAssertTrue(warm.waitForExistence(timeout: 15), "Looks did not open its strip.")
+    XCTAssertTrue(element(app, "loupeLookTile-none").exists, "The strip has no None tile.")
+    attach(app, name: "loupe-looks-strip")
+    // XCUITest computes no hit point for a strip tile (`LooksStripUITestCase.press`); a centre
+    // tap still lands on it, and the value check below proves it did.
+    warm.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     let named = XCTNSPredicateExpectation(predicate: valueIs("Warm Film"), object: looks)
     XCTAssertEqual(
       XCTWaiter().wait(for: [named], timeout: 10), .completed,
@@ -245,22 +248,19 @@ final class LoupeToolbarUITests: OrientationPinnedUITestCase {
       .completed, "The loupe never painted the looked render: '\(image.label)'.")
     attach(app, name: "loupe-looks-warm-film")
 
-    let none = element(app, "loupeLook-none")
-    XCTAssertTrue(
-      openPresentation(looks, revealing: none, timeout: 15), "Looks did not reopen its popover.")
-    none.tap()
-    XCTAssertTrue(none.waitForNonExistence(timeout: 10), "Choosing None did not dismiss.")
+    looks.tap()
+    XCTAssertTrue(warm.waitForNonExistence(timeout: 10), "Looks again did not close the strip.")
     let off = XCTNSPredicateExpectation(predicate: valueIs("Off"), object: looks)
     XCTAssertEqual(
       XCTWaiter().wait(for: [off], timeout: 10), .completed,
-      "After choosing None, Looks reads '\(looks.value as? String ?? "nil")'.")
+      "After closing the strip, Looks reads '\(looks.value as? String ?? "nil")'.")
     // "Photograph" is only ever the label of PAINTED unlooked bytes; nothing painted reads
     // "Photograph not loaded", so this wait needs a real image on screen.
     let unlookedLabel = NSPredicate(format: "label == %@", "Photograph")
     XCTAssertEqual(
       XCTWaiter().wait(
         for: [XCTNSPredicateExpectation(predicate: unlookedLabel, object: image)], timeout: 15),
-      .completed, "After None the loupe did not repaint unlooked: '\(image.label)'.")
+      .completed, "After closing the strip the loupe did not repaint unlooked: '\(image.label)'.")
   }
 
   // MARK: - Shared

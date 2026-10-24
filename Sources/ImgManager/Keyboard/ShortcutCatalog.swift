@@ -137,11 +137,11 @@ extension ShortcutID {
   /// What pressing it does, in the reader's words — the help sheet's meaning column.
   var meaning: String {
     switch self {
-    case .arrowUp: return "Move the focus up a row"
-    case .arrowDown: return "Move the focus down a row"
-    case .arrowLeft: return "Move the focus to the previous photograph"
-    case .arrowRight: return "Move the focus to the next photograph"
-    case .openSpaceEnter: return "Open the focused photograph"
+    case .arrowUp: return "Move the focus up a row; in Looks, strength +10 %"
+    case .arrowDown: return "Move the focus down a row; in Looks, strength −10 %"
+    case .arrowLeft: return "Move the focus to the previous photograph; in Looks, the previous look"
+    case .arrowRight: return "Move the focus to the next photograph; in Looks, the next look"
+    case .openSpaceEnter: return "Open the focused photograph (does nothing while Looks is open)"
     case .pick: return "Pick"
     case .dislike: return "Dislike"
     case .clear: return "Clear the mark"
@@ -156,7 +156,7 @@ extension ShortcutID {
     case .sortDirection: return "Reverse the sort direction"
     case .autoAdvance: return "Advance to the next photograph after marking, on or off"
     case .viewerZoomToggle: return "Zoom the loupe or Compare to Fit or to 100 %, and back"
-    case .closeBand: return "Close the scene band opened last"
+    case .closeBand: return "Close the scene band opened last, or cancel Looks"
     }
   }
 }

@@ -3552,7 +3552,7 @@
   },
   "info": {
     "title": "img-manager",
-    "version": "0.22.0"
+    "version": "0.24.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7443,7 +7443,7 @@
     },
     "/api/images/{image_id}/proxy/{tier}/look/{look_id}": {
       "get": {
-        "description": "The cached proxy with a catalogued look applied \u2014 a display-time colour transform.\n\nA look is not an edit and not library state: nothing here writes a row, a sidecar or a\nfile, and the bytes it returns exist only in this response.",
+        "description": "The cached proxy with a catalogued look applied \u2014 a display-time colour transform.\n\nA look is not an edit and not library state: nothing here writes a row or a sidecar. The\none file it may write is the looked cache entry (ADR-0010), which nothing references.",
         "operationId": "get_looked_proxy_api_images__image_id__proxy__tier__look__look_id__get",
         "parameters": [
           {
@@ -7476,6 +7476,34 @@
               "title": "Look Id",
               "type": "string"
             }
+          },
+          {
+            "description": "look strength in percent: 0 is the proxy, 100 the look, 200 doubles it (clipped)",
+            "in": "query",
+            "name": "strength",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "look strength in percent: 0 is the proxy, 100 the look, 200 doubles it (clipped)",
+              "maximum": 200,
+              "minimum": 0,
+              "title": "Strength",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the X-Look-Version of an earlier response; when it names these bytes the response is private and immutable, otherwise no-store",
+            "in": "query",
+            "name": "v",
+            "required": false,
+            "schema": {
+              "description": "the X-Look-Version of an earlier response; when it names these bytes the response is private and immutable, otherwise no-store",
+              "title": "V",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7488,7 +7516,16 @@
                 }
               }
             },
-            "description": "the cached proxy for this tier with the look applied, rendered on the fly; always Cache-Control: no-store, never a validator, never a 304"
+            "description": "the cached proxy for this tier with the look applied at `strength`, served from the looked cache or rendered and cached; `Cache-Control: private, max-age=31536000, immutable` when `v` equals the `X-Look-Version` key, `no-store` otherwise; never a validator, never a 304",
+            "headers": {
+              "X-Look-Version": {
+                "description": "the looked-cache key of these bytes; pass it back as `v` to receive the immutable response",
+                "schema": {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                }
+              }
+            }
           },
           "404": {
             "description": "no proxy is cached for this image and tier, or the tier is unknown; nothing is queued \u2014 the unlooked proxy request is what enqueues"

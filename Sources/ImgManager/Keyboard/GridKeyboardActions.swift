@@ -68,7 +68,8 @@ extension GridStore {
   /// same thing.
   var keyboardActions: GridKeyboardActions {
     GridKeyboardActions(
-      moveFocus: { [self] direction in moveFocus(direction) },
+      // IMGMGR-543: the arrows drive the Looks strip while it owns the keys (`looksKeyOwner`).
+      moveFocus: { [self] direction in handleArrowShortcut(direction) },
       open: { [self] in handleOpenShortcut() },
       pick: { [self] shiftHeld in Task { await handlePickShortcut(shiftHeld: shiftHeld) } },
       dislike: { [self] shiftHeld in Task { await handleDislikeShortcut(shiftHeld: shiftHeld) } },
@@ -90,8 +91,10 @@ extension GridStore {
       // reason `toggleSceneMode` above does: the focused value is a snapshot, and a stale copy
       // would flip the wrong way after a change made from the account sheet's row.
       toggleAutoAdvanceOnMark: { [self] in preferences.autoAdvanceOnMark.toggle() },
-      closeMostRecentBand: { [self] in if canCloseBand { closeMostRecentBand() } },
-      canCloseBand: { [self] in canCloseBand }
+      // IMGMGR-543: the one hidden Esc key also cancels the Looks strip — same declaration, same
+      // two fields; the store decides which (`handleEscape`, `canEscape`).
+      closeMostRecentBand: { [self] in handleEscape() },
+      canCloseBand: { [self] in canEscape }
     )
   }
 }

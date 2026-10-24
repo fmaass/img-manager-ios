@@ -162,7 +162,12 @@ struct LoupeView: View {
       // IMGMGR-406: on a loose photograph in Scene mode the strip is not built at all, so the
       // main image takes its 72 pt back. Emitting nothing is what frees the height — a strip that
       // rendered an empty band would still occupy this row of the stack in every layout mode.
-      if FilmstripScope.resolve(for: store).isRendered {
+      //
+      // IMGMGR-543 (R3-10): while Looks is open on this photograph its strip takes the
+      // filmstrip's place.
+      if store.looks.isStripOpen(for: store.focusedImageID), let image = focusedImage {
+        LooksStripView(store: store, image: image)
+      } else if FilmstripScope.resolve(for: store).isRendered {
         filmstrip.make(store)
       }
       ConflictRecoveryBanner(store: store)
@@ -185,6 +190,11 @@ struct LoupeView: View {
     // double-tap and the More row's "Zoom to 100%" call, so the key cannot mean a second value.
     .focusedSceneValue(\.viewerZoomCommand, ViewerZoomCommand(toggle: zoomToggle))
     .modifier(ShareLauncherPresentation(launcher: shareLauncher, share: share))
+    // IMGMGR-543: the share sheet owns the keyboard over the Looks strip (`looksKeyOwner`).
+    .onChange(of: shareLauncher.isSharePresented) { _, presented in
+      store.noteLoupePresentation("share", isPresented: presented)
+    }
+    .onDisappear { store.noteLoupePresentation("share", isPresented: false) }
     // WP30 P2 (IMGMGR-457): tag entry for the focused photograph, hosted HERE while the loupe is
     // open — the docked Regular loupe replaces the grid that hosts it otherwise, and the Compact
     // loupe covers it. `TagEntryHost` gives the one flag exactly one host.
@@ -322,15 +332,17 @@ struct LoupeView: View {
         // state (spec), including when `focusedImage` is nil (nothing loaded yet), which
         // `LoupeFidelityLabel.label(sourceKind:)`'s own `nil` branch renders as the SAME visible
         // fallback a present-but-unrecognized value would.
-        Text(LoupeFidelityLabel.label(sourceKind: focusedImage?.sourceKind))
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          .accessibilityIdentifier("loupeFidelityLabel")
+        // IMGMGR-543 (R3-9): "Master · ★★★★☆ · ● Red" — the fidelity label keeps its own
+        // element and text; Lightroom's rating and colour label follow it, display-only.
+        LoupeSubtitleView(
+          parts: LoupeSubtitle.parts(
+            sourceKind: focusedImage?.sourceKind, lightroom: focusedImage?.lightroom))
       }
     case .looks:
       // IMGMGR-382: the server-rendered look, for the main image only.
-      LoupeLooksControl(looks: store.looks, focusedImageID: store.focusedImageID)
+      LoupeLooksControl(looks: store.looks, focusedImageID: store.focusedImageID) {
+        store.toggleLooksStrip()
+      }
     case .compare:
       // WP30 P3 (IMGMGR-458): opens Compare on the focused photograph and the next scope image.
       // Enabled iff the filmstrip scope holds at least two photographs (plan decision 2).
@@ -578,7 +590,9 @@ struct LoupeView: View {
   }
 
   var mainImageRequest: LoupeImageRequest {
-    LoupeImageRequest(imageID: store.focusedImageID, lookID: store.looks.activeLookID)
+    let active = store.looks.activeLook(for: store.focusedImageID)
+    return LoupeImageRequest(
+      imageID: store.focusedImageID, lookID: active?.lookID, strength: active?.strength)
   }
 
   func loadMainImage() async {
@@ -622,6 +636,8 @@ struct LoupeView: View {
 struct LoupeImageRequest: Hashable, Sendable {
   let imageID: Int?
   let lookID: String?
+  /// IMGMGR-543: a strength change reloads the main image too.
+  var strength: Int? = nil
 
   /// Whether a finished load may paint: only when it was not cancelled AND the frame and the
   /// look it was asked for are still the ones in front of the reader. Cancellation alone is not

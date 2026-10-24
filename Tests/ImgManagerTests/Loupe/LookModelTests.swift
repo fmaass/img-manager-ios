@@ -46,9 +46,9 @@ struct LookModelTests {
   @Test("Default: no look, the control reads Off and is not offered before a catalogue")
   func defaultsToNone() async {
     let (store, _, _) = await LookFixtures.loadedStore()
-    #expect(store.looks.activeLookID == nil)
-    #expect(store.looks.activeLook == nil)
-    #expect(store.looks.isActive == false)
+    #expect(store.looks.draft == nil)
+    #expect(store.looks.activeLook(for: 1) == nil)
+    #expect(store.looks.isStripOpen(for: 1) == false)
     #expect(store.looks.canChoose == false)
     #expect(store.looks.catalogueState == .notLoaded)
     #expect(store.looks.accessibilityValue(focusedImageID: 1) == "Off")
@@ -57,22 +57,26 @@ struct LookModelTests {
   @Test("Selection: a catalogued look, then None; an id outside the catalogue is refused")
   func selection() async {
     let (store, _, _) = await LookFixtures.loadedStore()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
-    #expect(store.looks.activeLookID == nil)  // nothing to choose from before the catalogue
+    // Nothing to choose from before the catalogue: the strip does not open.
+    #expect(store.looks.draft == nil)
 
     await store.looks.loadCatalogueIfNeeded()
     #expect(store.looks.catalogue.map(\.id) == ["warm-film", "cool-matte", "classic-mono"])
     #expect(store.looks.canChoose)
+    store.looks.openStrip(imageID: 1)
     store.looks.select("cool-matte")
-    #expect(store.looks.activeLookID == "cool-matte")
-    #expect(store.looks.isActive)
+    #expect(store.looks.draft?.lookID == "cool-matte")
+    #expect(store.looks.activeLook(for: 1) == .init(lookID: "cool-matte", strength: 100))
     #expect(store.looks.accessibilityValue(focusedImageID: 1) == "Cool Matte")
 
     store.looks.select("not-a-look")
-    #expect(store.looks.activeLookID == "cool-matte")
+    #expect(store.looks.draft?.lookID == "cool-matte")
 
     store.looks.select(nil)
-    #expect(store.looks.activeLookID == nil)
+    #expect(store.looks.draft?.lookID == nil)
+    #expect(store.looks.isStripOpen(for: 1))  // None is a choice in the open strip
     #expect(store.looks.accessibilityValue(focusedImageID: 1) == "Off")
   }
 
@@ -113,34 +117,48 @@ struct LookModelTests {
     #expect(store.looks.catalogueState == .loaded)
   }
 
-  @Test("The look survives frame-to-frame navigation and a close and reopen of the loupe")
-  func survivesNavigation() async {
+  @Test("IMGMGR-543: a look belongs to one photograph — moving on, closing or Compare cancels it")
+  func aDraftEndsWithItsPhotograph() async {
     let (store, _, _) = await LookFixtures.loadedStore()
     await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
     store.loupeFocus(on: 2)
-    #expect(store.looks.activeLookID == "warm-film")
+    #expect(store.looks.draft == nil)
+    #expect(store.looks.activeLook(for: 2) == nil)
     store.loupePrevious()
     #expect(store.focusedImageID == 1)
-    #expect(store.looks.activeLookID == "warm-film")
+    #expect(store.looks.activeLook(for: 1) == nil)  // returning does not revive it
+
+    store.looks.openStrip(imageID: 1)
+    store.looks.select("warm-film")
     store.closeLoupe()
-    store.openLoupe(on: 2)
-    #expect(store.looks.activeLookID == "warm-film")
+    #expect(store.looks.draft == nil)
+    store.openLoupe(on: 1)
+    #expect(store.looks.activeLook(for: 1) == nil)
   }
 
-  @Test("Nothing about a look is written to UserDefaults")
+  @Test("Nothing about a CHOSEN look is written to UserDefaults — only favourite ids may be")
   func nothingPersisted() async {
     let (store, _, defaults) = await LookFixtures.loadedStore()
     let ownBefore = Set(defaults.dictionaryRepresentation().keys)
     let standardBefore = Set(UserDefaults.standard.dictionaryRepresentation().keys)
 
     await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("classic-mono")
+    store.looks.setStrength(140)
     _ = await store.loupePreviewBytes(imageID: 1, identityToken: nil)
     store.loupeFocus(on: 2)
     store.looks.select(nil)
 
     #expect(Set(defaults.dictionaryRepresentation().keys) == ownBefore)
+    // Favourites are the one look-shaped key, and they hold ids only.
+    store.looks.favourites.toggle("classic-mono")
+    #expect(
+      Set(defaults.dictionaryRepresentation().keys).subtracting(ownBefore)
+        == [LookFavourites.key])
+    #expect(defaults.stringArray(forKey: LookFavourites.key) == ["classic-mono"])
     let standardAfter = Set(UserDefaults.standard.dictionaryRepresentation().keys)
     let standardAdded = standardAfter.subtracting(standardBefore)
     #expect(standardAdded.filter { $0.lowercased().contains("look") }.isEmpty)
@@ -178,13 +196,16 @@ struct LoupeLookedLoadingTests {
   func activeLookTakesTheLookedPath() async {
     let (store, transport, _) = await LookFixtures.loadedStore()
     await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
     let preview = await store.loupePreviewBytes(imageID: 1, identityToken: "t1")
     #expect(preview.image == LookFixtures.lookedBytes)
     #expect(preview.rendering == .looked(lookID: "warm-film"))
     let paths = await transport.recordedLookedProxyRequests
     #expect(paths.count == 1)
-    #expect(paths.first?.hasSuffix("/api/images/1/proxy/preview/look/warm-film") == true)
+    let path = paths.first.flatMap { URLComponents(string: $0)?.path } ?? ""
+    #expect(path.hasSuffix("/api/images/1/proxy/preview/look/warm-film"))
+    #expect(paths.first.map(LookStripTests.query) == [URLQueryItem(name: "strength", value: "100")])
     #expect(await transport.callCount(proxyGet) == 0)
     #expect(store.looks.accessibilityValue(focusedImageID: 1) == "Warm Film")
 
@@ -208,6 +229,7 @@ struct LoupeLookedLoadingTests {
   func fallsBackToTheUnlookedProxy(outcome: GridStubTransport.LookedProxyOutcome) async {
     let (store, transport, _) = await LookFixtures.loadedStore()
     await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
     await transport.setLookedProxyOutcome(outcome)
 
@@ -216,11 +238,11 @@ struct LoupeLookedLoadingTests {
     #expect(preview.rendering == .fallback(lookID: "warm-film"))
     // The unlooked request was made — it is the one that makes the server enqueue a proxy.
     #expect(await transport.recordedProxyTiers == [ProxyTier.preview.rawValue])
-    #expect(store.looks.activeLookID == "warm-film")
+    #expect(store.looks.draft?.lookID == "warm-film")
     #expect(
       store.looks.accessibilityValue(focusedImageID: 1) == "Warm Film, unavailable for this photo")
     // Another photograph is not tarred with this one's failure.
-    #expect(store.looks.accessibilityValue(focusedImageID: 2) == "Warm Film")
+    #expect(store.looks.accessibilityValue(focusedImageID: 2) == "Off")
 
     // A successful render of the same photograph clears it.
     await transport.setLookedProxyOutcome(.ok(LookFixtures.lookedBytes))
@@ -233,6 +255,9 @@ struct LoupeLookedLoadingTests {
   func transportFailureFallsBack() async {
     let (store, transport, _) = await LookFixtures.loadedStore()
     await store.looks.loadCatalogueIfNeeded()
+    // The draft belongs to the photograph rendered: photo 2, focused first.
+    store.loupeFocus(on: 2)
+    store.looks.openStrip(imageID: 2)
     store.looks.select("cool-matte")
     await transport.setLookedProxyShouldFail(true)
     let preview = await store.loupePreviewBytes(imageID: 2, identityToken: nil)
@@ -250,6 +275,7 @@ struct LoupeLookedLoadingTests {
     await transport.setProxyOutcome(.ok(validJPEG))
     await transport.setLookedProxyOutcome(.ok(Data("not an image".utf8)))
     await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
 
     let preview = await store.loupePreview(
@@ -270,6 +296,7 @@ struct LoupeLookedLoadingTests {
     _ = await store.loupePreviewBytes(imageID: 1, identityToken: "t1")
     #expect(await transport.callCount(proxyGet) == 1)
 
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
     await transport.setLookedProxyOutcome(.notFound)
     let preview = await store.loupePreviewBytes(imageID: 1, identityToken: "t1")
@@ -287,8 +314,10 @@ struct LoupeLookedLoadingTests {
   func staleReportIsDropped() async {
     let (store, _, _) = await LookFixtures.loadedStore()
     await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
     store.looks.select("warm-film")
-    store.looks.recordRender(imageID: 1, lookID: "cool-matte", available: false)
+    store.looks.recordRender(imageID: 1, lookID: "cool-matte", strength: 100, available: false)
+    store.looks.recordRender(imageID: 1, lookID: "warm-film", strength: 120, available: false)
     #expect(store.looks.accessibilityValue(focusedImageID: 1) == "Warm Film")
   }
 
@@ -371,10 +400,18 @@ struct LookLeakTests {
 
   /// Pick in the loupe (with its advance), Dislike on the second photograph, Undo that Dislike,
   /// then tag the first photograph.
-  private func writeSession(_ store: GridStore) async {
+  ///
+  /// IMGMGR-543: a look belongs to one photograph and the Pick's advance cancels it, so `look`
+  /// re-opens a draft on the photograph each write targets, right before that write — every write
+  /// of the looked session runs under an active look on its own photograph.
+  private func writeSession(_ store: GridStore, look: (Int) -> Void = { _ in }) async {
+    look(1)
     #expect(await store.applyLoupeMark(.pick))
+    look(2)
     #expect(await store.applyMark(.dislike, to: [2]))
     _ = await store.undoLastMark()
+    store.loupeFocus(on: 1)
+    look(1)
     await store.addTag("keeper", to: [1])
   }
 
@@ -394,10 +431,15 @@ struct LookLeakTests {
 
     let (looked, lookedTransport, _) = await LookFixtures.loadedStore()
     await looked.looks.loadCatalogueIfNeeded()
+    looked.looks.openStrip(imageID: 1)
     looked.looks.select("warm-film")
     _ = await looked.loupePreviewBytes(imageID: 1, identityToken: nil)
-    await writeSession(looked)
-    #expect(looked.looks.activeLookID == "warm-film")
+    await writeSession(looked) { imageID in
+      looked.looks.openStrip(imageID: imageID)
+      looked.looks.select("warm-film")
+      #expect(looked.looks.activeLook(for: imageID)?.lookID == "warm-film")
+    }
+    #expect(looked.looks.activeLook(for: 1)?.lookID == "warm-film")
 
     let plainWire = await plainTransport.recordedWire
     let lookedWire = await lookedTransport.recordedWire
@@ -424,5 +466,21 @@ struct LookLeakTests {
       #expect(!request.path.lowercased().contains("look"), "\(request.operationID) names a look")
       #expect(!body.lowercased().contains("look"), "\(request.operationID)'s body names a look")
     }
+  }
+}
+
+@Suite("Look draft and advance (IMGMGR-543)")
+@MainActor
+struct LookDraftAdvanceTests {
+  @Test("A Pick's advance moves to the next photograph, which opens unlooked")
+  func autoAdvanceCancelsTheDraft() async {
+    let (store, _, _) = await LookFixtures.loadedStore()
+    await store.looks.loadCatalogueIfNeeded()
+    store.looks.openStrip(imageID: 1)
+    store.looks.select("warm-film")
+    #expect(await store.applyLoupeMark(.pick))
+    #expect(store.focusedImageID == 2)
+    #expect(store.looks.draft == nil)
+    #expect(store.looks.activeLook(for: 2) == nil)
   }
 }

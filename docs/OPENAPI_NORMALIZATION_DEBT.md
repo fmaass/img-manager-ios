@@ -1,5 +1,9 @@
 # OpenAPI normalization bridge — pinned debt (RESOLVED)
 
+**Addendum 2026-10-23 (P16a, IMGMGR-543) — re-vendored at img-manager v0.24.0
+`39118bbb33cd18fc1743f42b6649309a5774ab69`.** The only contract change since `22726ee` is the looked route's optional
+`strength`/`v` query and its `X-Look-Version` header; the rewrite counts are unchanged (9 optional, 2 required, 0 dropped).
+
 **Addendum 2026-10-20 (round 3 P8, IMGMGR-538) — a second, separately counted rewrite, for two
 REQUIRED sites.** Re-vendored at img-manager `22726eec7a9f3877fd87378988329ec169849c6b`. Its sync
 routes declare `FolderSyncStatusOut.latest` (-> `SyncRequestOut`) and `SyncRequestOut.report`

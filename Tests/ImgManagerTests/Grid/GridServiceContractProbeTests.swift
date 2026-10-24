@@ -448,13 +448,16 @@ struct GridServiceContractProbeTests {
     let bytes = Data([0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x20])
     await transport.setLookedProxyOutcome(.ok(bytes))
     let result = try await makeService(transport).lookedProxy(
-      imageID: 7, tier: .preview, lookID: "warm-film")
+      imageID: 7, tier: .preview, lookID: "warm-film", strength: 100)
     #expect(result == .ok(bytes))
     let paths = await transport.recordedLookedProxyRequests
     #expect(paths.count == 1)
-    #expect(paths.first?.hasSuffix("/api/images/7/proxy/preview/look/warm-film") == true)
-    // No validator on this route: the request carries no `v`.
-    #expect(paths.first?.contains("?") == false)
+    let route = paths.first.flatMap { URLComponents(string: $0)?.path } ?? ""
+    #expect(route.hasSuffix("/api/images/7/proxy/preview/look/warm-film"))
+    // IMGMGR-543 (v0.24.0): the strength travels, 100 included; no `v` is sent (P16b's).
+    #expect(
+      paths.first.flatMap { URLComponents(string: $0)?.queryItems }
+        == [URLQueryItem(name: "strength", value: "100")])
     // It is not the unlooked operation.
     #expect(await transport.callCount(Operations.GetProxyApiImagesImageIdProxyTierGet.id) == 0)
   }
@@ -465,16 +468,18 @@ struct GridServiceContractProbeTests {
     let service = makeService(transport)
 
     await transport.setLookedProxyOutcome(.notFound)
-    #expect(try await service.lookedProxy(imageID: 1, tier: .preview, lookID: "x") == .notFound)
+    #expect(
+      try await service.lookedProxy(imageID: 1, tier: .preview, lookID: "x", strength: 100)
+        == .notFound)
 
     await transport.setLookedProxyOutcome(.refused(code: "unknown_look"))
     #expect(
-      try await service.lookedProxy(imageID: 1, tier: .preview, lookID: "x")
+      try await service.lookedProxy(imageID: 1, tier: .preview, lookID: "x", strength: 100)
         == .refused(.unknownLook))
 
     await transport.setLookedProxyOutcome(.refused(code: "invalid_request"))
     #expect(
-      try await service.lookedProxy(imageID: 1, tier: .grid, lookID: "x")
+      try await service.lookedProxy(imageID: 1, tier: .grid, lookID: "x", strength: 100)
         == .refused(.invalidRequest))
   }
 
@@ -483,7 +488,8 @@ struct GridServiceContractProbeTests {
     let transport = GridStubTransport()
     await transport.setLookedProxyShouldFail(true)
     await #expect(throws: GridServiceError.unreachable) {
-      _ = try await makeService(transport).lookedProxy(imageID: 1, tier: .preview, lookID: "x")
+      _ = try await makeService(transport).lookedProxy(
+        imageID: 1, tier: .preview, lookID: "x", strength: 100)
     }
   }
 }

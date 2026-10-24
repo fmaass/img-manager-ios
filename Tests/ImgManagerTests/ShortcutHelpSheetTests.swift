@@ -49,7 +49,7 @@ struct ShortcutHelpSheetTests {
     // IMGMGR-542 (R3-22): Esc has no menu row, so the sheet is where a reader finds it.
     let closeBand = ShortcutHelpModel.rows.first { $0.id == ShortcutID.closeBand.rawValue }
     #expect(closeBand?.key == "Esc")
-    #expect(closeBand?.meaning == "Close the scene band opened last")
+    #expect(closeBand?.meaning == "Close the scene band opened last, or cancel Looks")
     #expect(closeBand?.accessibilityID == "shortcutHelpRow.closeBand")
   }
 
