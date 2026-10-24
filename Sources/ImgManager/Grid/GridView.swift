@@ -560,7 +560,9 @@ struct GridView: View {
     case .stack(let stackRow):
       SceneCardView(row: stackRow, plan: plan, store: store, cropsToFill: cropsToFill)
         // §2.6: real focus for keyboard/FKA readers, only in browse; it adds no mark path.
-        .focusable(store.selection.mode == .browse, interactions: .activate)
+        // IMGMGR-574: `.activate` alone is focusable on iOS only under Full Keyboard Access;
+        // `.edit` is what Tab on a plain hardware keyboard reaches. Focus pushes nothing.
+        .focusable(store.selection.mode == .browse, interactions: [.activate, .edit])
         .focused($focusedCard, equals: stackRow.stackId)
         // Empty outside the DEBUG screenshot fixture, exactly like `tierProbeValue` on the More
         // control and for the same reason: the inline picks ship on Regular only (a measured
