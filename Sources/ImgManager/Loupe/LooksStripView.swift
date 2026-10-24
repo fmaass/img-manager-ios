@@ -4,7 +4,7 @@ import SwiftUI
 /// IMGMGR-543 (R3-10): the Looks strip — in the filmstrip's place while Looks is open on the
 /// focused photograph. None, Favourites, Film · Camera · Mono (`LookStripSections`), each tile the
 /// photograph's `.grid` proxy through that look; the strength slider (0…200 %, detents at 0, 100
-/// and 200); Cancel, and Apply — present but inert until P16b.
+/// and 200); Cancel, and Apply, which saves the draft (IMGMGR-544, `GridStore.applyLook`).
 ///
 /// Every control is `.focusable(false)`: a tapped or dragged control must never become the focus
 /// target that takes ←→↑↓ before the key commands do (`GridStore.handleArrowShortcut`). The
@@ -56,6 +56,13 @@ struct LooksStripView: View {
         }
       }
       controls(draft: draft)
+      // IMGMGR-544: a failed save, for THIS strip session only.
+      if let failure = looks.visibleSaveFailure(for: image.id) {
+        Text(failure.copy)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("loupeLooksSaveFailure")
+      }
     }
     .padding(.vertical, 6)
     .accessibilityElement(children: .contain)
@@ -83,6 +90,8 @@ struct LooksStripView: View {
     }
     .buttonStyle(.plain)
     .focusable(false)
+    // IMGMGR-544: the draft is frozen while its save is on the wire.
+    .disabled(looks.isSaving(image.id))
     .id(Self.tileIdentifier(for: lookID))
     .accessibilityIdentifier(Self.tileIdentifier(for: lookID))
     .accessibilityLabel(name)
@@ -117,17 +126,17 @@ struct LooksStripView: View {
         commit: { looks.setStrength($0) },
         nudge: { looks.nudgeStrength(by: $0) }
       )
-      .disabled(draft?.lookID == nil)
+      .disabled(draft?.lookID == nil || looks.isSaving(image.id))
       Text(LookStrength.label(shown))
         .font(.caption.monospacedDigit())
         .frame(minWidth: 48, alignment: .trailing)
         .accessibilityHidden(true)
-      // P16a: present, inert — Apply saves the look with P16b.
-      Button("Apply") { looks.apply() }
-        .disabled(true)
+      // IMGMGR-544: Apply saves the draft on the server (`GridStore.applyLook`); disabled while
+      // that save is on the wire. Cancel stays live: it closes the strip, it cannot recall it.
+      Button("Apply") { Task { await store.applyLook() } }
+        .disabled(draft == nil || looks.isSaving(image.id))
         .focusable(false)
         .accessibilityIdentifier("loupeLooksApply")
-        .accessibilityHint("Available in a later build")
     }
     .padding(.horizontal, 12)
   }

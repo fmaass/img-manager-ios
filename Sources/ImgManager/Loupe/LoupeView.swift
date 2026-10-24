@@ -336,7 +336,8 @@ struct LoupeView: View {
         // element and text; Lightroom's rating and colour label follow it, display-only.
         LoupeSubtitleView(
           parts: LoupeSubtitle.parts(
-            sourceKind: focusedImage?.sourceKind, lightroom: focusedImage?.lightroom))
+            sourceKind: focusedImage?.sourceKind, lightroom: focusedImage?.lightroom),
+          lookChip: focusedImage.flatMap(store.loupeLookChip(for:)))
       }
     case .looks:
       // IMGMGR-382: the server-rendered look, for the main image only.
@@ -589,10 +590,19 @@ struct LoupeView: View {
     }
   }
 
+  /// IMGMGR-544: the loupe rule (`GridStore.loupeLook`: an open draft, None included, else the
+  /// saved look), the focused summary's `.preview` identity, and — when a SAVED look renders —
+  /// the looked cache's epoch, so a refreshed summary or a reload repaints the frame.
   var mainImageRequest: LoupeImageRequest {
-    let active = store.looks.activeLook(for: store.focusedImageID)
+    guard let imageID = store.focusedImageID else {
+      return LoupeImageRequest(imageID: nil, lookID: nil)
+    }
+    let active = store.loupeLook(forImageID: imageID)
+    let rendersSaved = active != nil && !store.loupeLookIsDraft(imageID: imageID)
     return LoupeImageRequest(
-      imageID: store.focusedImageID, lookID: active?.lookID, strength: active?.strength)
+      imageID: imageID, lookID: active?.lookID, strength: active?.strength,
+      proxy: focusedImage.map { ProxyLocalIdentity.make(image: $0, tier: .preview) },
+      lookEpoch: rendersSaved ? store.lookEpoch : nil)
   }
 
   func loadMainImage() async {
@@ -608,7 +618,9 @@ struct LoupeView: View {
     // IMGMGR-382: through the active look when there is one, falling back to the unlooked proxy
     // inside the store (an undecodable looked render included). Still the `.preview` tier.
     let preview = await store.loupePreview(
-      imageID: image.id, identityToken: token, decode: { PlatformImage(data: $0) })
+      imageID: image.id, identityToken: token,
+      proxy: ProxyLocalIdentity.make(image: image, tier: .preview),
+      decode: { PlatformImage(data: $0) })
     // A load the frame or the look moved on from never paints over the newer one.
     let fresh = LoupeImageRequest.mayPublish(
       requested: request, current: mainImageRequest, isCancelled: Task.isCancelled)
@@ -638,6 +650,12 @@ struct LoupeImageRequest: Hashable, Sendable {
   let lookID: String?
   /// IMGMGR-543: a strength change reloads the main image too.
   var strength: Int? = nil
+  /// IMGMGR-544: the focused summary's `.preview` identity (token + dimensions): a refreshed
+  /// summary reloads the main image.
+  var proxy: ProxyLocalIdentity? = nil
+  /// IMGMGR-544: the looked cache's epoch when a SAVED look renders, nil otherwise: a reload
+  /// re-asks the looked render.
+  var lookEpoch: Int? = nil
 
   /// Whether a finished load may paint: only when it was not cancelled AND the frame and the
   /// look it was asked for are still the ones in front of the reader. Cancellation alone is not

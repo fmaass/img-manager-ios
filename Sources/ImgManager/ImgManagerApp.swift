@@ -11,6 +11,8 @@ struct ImgManagerApp: App {
       DebugStubLaunch.resetSettingsUnlessKept()
       // IMGMGR-549: and with no Pinned or Recent shoots.
       DebugStubLaunch.resetShortcuts()
+      // IMGMGR-544: and with no saved looks (`DebugStubLaunch.keepsStubLooks`).
+      DebugStubLaunch.resetSavedLooksUnlessKept()
     #endif
   }
 

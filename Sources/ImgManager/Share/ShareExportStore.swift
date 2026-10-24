@@ -91,7 +91,14 @@ final class ShareExportStore {
   /// offering the previous photograph under the new one's chrome. `finish()` bumps the
   /// generation for exactly this reason — cancelling in-flight work is the whole point of it,
   /// not just clearing what has already landed.
-  func prepare(_ variant: ShareVariant, for image: Components.Schemas.ImageSummary) async {
+  ///
+  /// IMGMGR-544: `look` is the photograph's SAVED look (`LookPersistence.savedRender`); with one,
+  /// the preview export is the looked render — or a refusal, never the unlooked bytes in its
+  /// place. A master export ignores it: the edit supersedes the look.
+  func prepare(
+    _ variant: ShareVariant, for image: Components.Schemas.ImageSummary,
+    look: LookModel.Active? = nil
+  ) async {
     guard !isPreparing else { return }
     generation &+= 1
     let requested = generation
@@ -105,7 +112,7 @@ final class ShareExportStore {
     let outcome: State
     switch variant {
     case .preview:
-      outcome = await preparePreview(for: image, in: destination)
+      outcome = await preparePreview(for: image, in: destination, look: look)
     case .master:
       outcome = await prepareMaster(for: image, in: destination)
     }
@@ -167,9 +174,28 @@ final class ShareExportStore {
     state = .idle
   }
 
-  private func preparePreview(for image: Components.Schemas.ImageSummary, in destination: URL)
-    async -> State
-  {
+  private func preparePreview(
+    for image: Components.Schemas.ImageSummary, in destination: URL, look: LookModel.Active?
+  ) async -> State {
+    if let look {
+      let looked: LookedProxyFetchResult
+      do {
+        looked = try await service.lookedProxy(
+          imageID: image.id, tier: .preview, lookID: look.lookID, strength: look.strength)
+      } catch {
+        return .refused(.notConnected)
+      }
+      switch looked {
+      case .ok(let data, _):
+        // A looked 200 that is not a JPEG (no SOI marker) is not the photograph through its look.
+        guard data.starts(with: [0xFF, 0xD8]) else { return .refused(.lookUnavailable) }
+        return writePreview(data, for: image, in: destination)
+      case .notFound:
+        return .refused(.noPreview)
+      case .refused:
+        return .refused(.lookUnavailable)
+      }
+    }
     let token = ProxyIdentity.token(
       from: image.proxies.additionalProperties[ProxyTier.preview.rawValue]?.url)
     let outcome: ProxyFetchResult
@@ -186,6 +212,13 @@ final class ShareExportStore {
       // are no bytes to hand over.
       return .refused(.noPreview)
     }
+    return writePreview(data, for: image, in: destination)
+  }
+
+  /// The preview export's cap, name and write, looked or not.
+  private func writePreview(
+    _ data: Data, for image: Components.Schemas.ImageSummary, in destination: URL
+  ) -> State {
     guard data.count <= ShareExportPlan.previewByteCap else { return .refused(.tooLarge) }
     let filename = ShareExportPlan.previewFilename(for: image.filename)
     guard let url = write(data, named: filename, in: destination) else {

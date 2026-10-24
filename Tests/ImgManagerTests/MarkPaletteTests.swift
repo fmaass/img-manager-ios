@@ -88,7 +88,9 @@ struct MarkPaletteTests {
     #expect(TileBadgeItem.changedElsewhere.markRole == nil)
     #expect(TileBadgeItem.sourceKind.markRole == nil)
     // An eighth badge added later has to answer this question deliberately.
-    #expect(TileBadgeItem.allCases.count == 7)
+    // IMGMGR-544: the look glyph is a provenance mark of the pixels, not a verdict — white.
+    #expect(TileBadgeItem.look.markRole == nil)
+    #expect(TileBadgeItem.allCases.count == 8)
   }
 
   @Test("The badge SF-Symbols are byte-identical to 4753450 — colour never replaces shape")

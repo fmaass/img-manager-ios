@@ -7,14 +7,19 @@ import ImgManagerAPI
 /// A look belongs to a photograph: the Looks strip opens a `Draft` for the focused photograph,
 /// and `activeLook(for:)` answers for that photograph only, so the next photograph opens unlooked
 /// by construction. Any focus change, closing the loupe or opening Compare cancels the draft
-/// (`GridStore.focusedImageID`'s observer). Apply is inert until P16b.
+/// (`GridStore.focusedImageID`'s observer).
+///
+/// IMGMGR-544 (P16b): Apply SAVES the draft on the server (`GridStore.applyLook`, PUT or DELETE
+/// `/api/images/{id}/look`); the saved look then lives on the photograph's summary (`look`), not
+/// here. The strip opens seeded from it, and is frozen while its save is on the wire (`saving`).
 ///
 /// What it is not, by construction:
-/// - not persisted: the chosen look and its strength live in `draft` only. The one thing kept on
-///   the device is the reader's FAVOURITE look ids (`LookFavourites`);
-/// - not library state: nothing here reaches a mark, a tag, a sync or any write. The only
-///   requests that ever carry a look id are `GET /api/looks` and the looked proxy, which
-///   `LookLeakTests` pins on the wire;
+/// - not persisted on the device: the draft lives in `draft` only and the saved look on the
+///   server only. The one thing kept on the device is the reader's FAVOURITE look ids
+///   (`LookFavourites`);
+/// - not a mark, a tag, a keyword or XMP: the only requests that ever carry a look id are
+///   `GET /api/looks`, the looked proxy and the saved-look PUT/DELETE, which the wire pin in
+///   `LookModelTests` holds;
 /// - not a colour table: the app neither bundles nor downloads a LUT, so there is no Core Image
 ///   path — only the server's looked proxy.
 ///
@@ -40,12 +45,47 @@ final class LookModel {
     let imageID: Int
     var lookID: String?
     var strength: Int
+    /// IMGMGR-544: bumped on every change of the look or the strength.
+    var revision = 0
   }
 
   /// What a photograph is rendered through right now.
-  struct Active: Equatable, Sendable {
+  struct Active: Hashable, Sendable {
     let lookID: String
     let strength: Int
+  }
+
+  /// IMGMGR-544: why a save did not land, as the strip says it.
+  enum SaveFailure: Equatable, Sendable {
+    /// The server refused it (422): nothing was written.
+    case refused
+    /// The photograph is gone (404): nothing was written.
+    case gone
+    /// No answer: the server may or may not hold it.
+    case uncertain
+
+    init(_ error: LookWriteError) {
+      switch error {
+      case .refused: self = .refused
+      case .gone: self = .gone
+      case .uncertain: self = .uncertain
+      }
+    }
+
+    var copy: String {
+      switch self {
+      case .refused: "Couldn't save the look. Try again."
+      case .gone: "This photo is no longer in the library."
+      case .uncertain: "Couldn't confirm the look was saved."
+      }
+    }
+  }
+
+  /// A failed save, scoped to the strip session it was made in.
+  struct SaveFailureNote: Equatable, Sendable {
+    let imageID: Int
+    let session: Int
+    let reason: SaveFailure
   }
 
   enum Step: Sendable {
@@ -61,6 +101,12 @@ final class LookModel {
   /// The photographs the active draft could not be rendered for (404, 422, transport), each of
   /// which the loupe showed unlooked instead. Cleared whenever the look or strength changes.
   private(set) var unavailableImageIDs: Set<Int> = []
+  /// IMGMGR-544: the photographs whose save is on the wire. While a photograph is here its draft
+  /// is frozen (every mutator is a no-op) and Apply cannot be pressed again.
+  private(set) var saving: Set<Int> = []
+  /// IMGMGR-544: the last failed save. Shown only for the strip session it was made in
+  /// (`visibleSaveFailure`), so a reopened draft never inherits an earlier failure.
+  private(set) var saveFailure: SaveFailureNote?
   let favourites: LookFavourites
 
   private let fetchCatalogue: @Sendable () async throws -> [Look]
@@ -114,24 +160,62 @@ final class LookModel {
     }
   }
 
-  /// Opens the strip on `imageID` at None and the standard strength. Already open there: no-op.
-  func openStrip(imageID: Int) {
+  /// Opens the strip on `imageID`, seeded from its SAVED look (IMGMGR-544), else at None and the
+  /// standard strength. Already open there: no-op.
+  func openStrip(imageID: Int, saved: Components.Schemas.ImageLookView? = nil) {
     guard canChoose, draft?.imageID != imageID else { return }
-    draft = Draft(imageID: imageID, lookID: nil, strength: LookStrength.standard)
+    draft = Draft(
+      imageID: imageID, lookID: saved?.lookId,
+      strength: saved.map { LookStrength.clamped($0.strength) } ?? LookStrength.standard)
     stripSession += 1
     unavailableImageIDs = []
+    saveFailure = nil
   }
 
-  /// Cancel: the strip closes and the photograph is unlooked again. Nothing is remembered.
+  /// Cancel: the strip closes and the photograph shows its saved look (or none) again. A save
+  /// already on the wire is not recalled.
   func cancel() {
     guard draft != nil else { return }
     draft = nil
     stripSession += 1
     unavailableImageIDs = []
+    saveFailure = nil
   }
 
-  /// P16a: Apply is present but inert — no request, no keyword, no state change (P16b).
-  func apply() {}
+  /// Whether `imageID`'s save is on the wire.
+  func isSaving(_ imageID: Int?) -> Bool {
+    guard let imageID else { return false }
+    return saving.contains(imageID)
+  }
+
+  /// The ONE insertion into `saving` (`GridStore.applyLook`, followed at once by its `defer`).
+  func beginSave(_ imageID: Int) {
+    saving.insert(imageID)
+    saveFailure = nil
+  }
+
+  /// The ONE removal from `saving`, run on every completion path by `GridStore.applyLook`.
+  func endSave(_ imageID: Int) {
+    saving.remove(imageID)
+  }
+
+  func noteSaveFailure(imageID: Int, session: Int, reason: SaveFailure) {
+    saveFailure = SaveFailureNote(imageID: imageID, session: session, reason: reason)
+  }
+
+  /// The failure the open strip on `imageID` shows: only one made in THIS strip session.
+  func visibleSaveFailure(for imageID: Int?) -> SaveFailure? {
+    guard let note = saveFailure, note.session == stripSession, isStripOpen(for: imageID),
+      note.imageID == imageID
+    else { return nil }
+    return note.reason
+  }
+
+  /// Whether the open draft may change: not while its save is on the wire.
+  private var isDraftFrozen: Bool {
+    guard let draft else { return true }
+    return saving.contains(draft.imageID)
+  }
 
   /// The focused photograph changed: a draft for another photograph is cancelled.
   func focusDidChange(to imageID: Int?) {
@@ -142,33 +226,35 @@ final class LookModel {
   /// Preview a look, or None with `nil`, in the open strip. An id the catalogue does not hold is
   /// refused: the previewed look is always one the reader could have picked.
   func select(_ lookID: String?) {
-    guard var next = draft else { return }
+    guard var next = draft, !isDraftFrozen else { return }
     if let lookID, !catalogue.contains(where: { $0.id == lookID }) { return }
     guard next.lookID != lookID else { return }
     next.lookID = lookID
+    next.revision += 1
     draft = next
     unavailableImageIDs = []
   }
 
   /// Sets the strength, clamped to 0…200 (`LookStrength.clamped`, the one clamp).
   func setStrength(_ value: Int) {
-    guard var next = draft else { return }
+    guard var next = draft, !isDraftFrozen else { return }
     let strength = LookStrength.clamped(value)
     guard next.strength != strength else { return }
     next.strength = strength
+    next.revision += 1
     draft = next
     unavailableImageIDs = []
   }
 
   /// ↑/↓: ±10 through `setStrength`. With None there is no strength to change.
   func nudgeStrength(by delta: Int) {
-    guard let draft, draft.lookID != nil else { return }
+    guard let draft, draft.lookID != nil, !isDraftFrozen else { return }
     setStrength(draft.strength + delta)
   }
 
   /// ←/→: the previous or next tile, stopping at either end.
   func step(_ direction: Step) {
-    guard let draft else { return }
+    guard let draft, !isDraftFrozen else { return }
     let order = stripOrder
     let index = order.firstIndex(of: draft.lookID) ?? 0
     let target = direction == .next ? index + 1 : index - 1
@@ -213,6 +299,11 @@ final class LookModel {
     case .fallback(let lookID):
       return "Photograph, without \(name(of: lookID))"
     }
+  }
+
+  /// The catalogue's name for `lookID`, nil when the catalogue does not hold it.
+  func catalogueName(of lookID: String) -> String? {
+    catalogue.first { $0.id == lookID }?.name
   }
 
   private func name(of lookID: String) -> String {

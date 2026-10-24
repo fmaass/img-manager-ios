@@ -45,7 +45,7 @@ extension TileBadgeItem {
     case .pick: return .pick
     case .dislike: return .dislike
     case .edited: return .edited
-    case .selected, .lightroomRating, .changedElsewhere, .sourceKind: return nil
+    case .selected, .look, .lightroomRating, .changedElsewhere, .sourceKind: return nil
     }
   }
 }

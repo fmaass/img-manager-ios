@@ -1,4 +1,5 @@
 #if DEBUG
+  import CryptoKit
   import Foundation
   import HTTPTypes
   import ImgManagerAPI
@@ -26,6 +27,98 @@
 
     init(probe: DebugProbe? = nil) {
       self.probe = probe
+      self.savedLooks = Self.loadSavedLooks(from: .standard)
+    }
+
+    /// IMGMGR-544: the photographs' SAVED looks, owned by this actor and written back to standard
+    /// `UserDefaults` (`savedLooksKey`) on every PUT/DELETE, so a relaunched process reads what
+    /// the previous one saved. `ImgManagerApp.init` clears the key on a fixture launch unless
+    /// `-UITestKeepStubLooks` is passed (`DebugStubLaunch.resetSavedLooksUnlessKept`).
+    private var savedLooks: [Int: SavedLook]
+
+    struct SavedLook: Codable, Equatable, Sendable {
+      var lookID: String
+      var strength: Int
+    }
+
+    static let savedLooksKey = "debugStub.savedLooks"
+
+    private static func loadSavedLooks(from defaults: UserDefaults) -> [Int: SavedLook] {
+      guard let data = defaults.data(forKey: savedLooksKey),
+        let stored = try? JSONDecoder().decode([String: SavedLook].self, from: data)
+      else { return [:] }
+      return Dictionary(
+        uniqueKeysWithValues: stored.compactMap { key, look in Int(key).map { ($0, look) } })
+    }
+
+    private func storeSavedLooks() {
+      let stored = Dictionary(uniqueKeysWithValues: savedLooks.map { (String($0.key), $0.value) })
+      guard let data = try? JSONEncoder().encode(stored) else { return }
+      UserDefaults.standard.set(data, forKey: Self.savedLooksKey)
+    }
+
+    private func lookView(of imageID: Int) -> Components.Schemas.ImageLookView? {
+      savedLooks[imageID].map {
+        Components.Schemas.ImageLookView(
+          lookId: $0.lookID, strength: $0.strength,
+          updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+      }
+    }
+
+    /// The fixture page with each photograph's saved look, narrowed by `has_look` when asked.
+    private func withSavedLooks(
+      _ images: [Components.Schemas.ImageSummary], hasLook: String?
+    ) -> [Components.Schemas.ImageSummary] {
+      let looked = images.map { image in
+        var image = image
+        image.look = lookView(of: image.id)
+        return image
+      }
+      switch hasLook {
+      case "true": return looked.filter { $0.look != nil }
+      case "false": return looked.filter { $0.look == nil }
+      default: return looked
+      }
+    }
+
+    /// `PUT /api/images/{id}/look` (the catalogue's 422 for an unknown look) and
+    /// `DELETE /api/images/{id}/look` (204), both against `savedLooks`.
+    private func lookWrite(
+      _ request: HTTPRequest, body: HTTPBody?, isDelete: Bool
+    ) async throws -> (HTTPResponse, HTTPBody?) {
+      let path = request.path.flatMap { URLComponents(string: $0)?.path } ?? ""
+      let components = path.split(separator: "/").map(String.init)
+      guard components.count >= 2, let imageID = Int(components[components.count - 2]) else {
+        return (HTTPResponse(status: .notFound), nil)
+      }
+      if isDelete {
+        savedLooks[imageID] = nil
+        storeSavedLooks()
+        return (HTTPResponse(status: .noContent), nil)
+      }
+      var bytes = Data()
+      if let body, let collected = try? await Data(collecting: body, upTo: 1 << 16) {
+        bytes = collected
+      }
+      guard
+        let sent = try? JSONDecoder().decode(
+          Components.Schemas.ImageLookRequest.self, from: bytes),
+        Self.fixtureLooks.contains(where: { $0.id == sent.lookId })
+      else {
+        return try jsonResponse(
+          .unprocessableContent,
+          Components.Schemas.LookRefusalError(
+            detail: .init(code: .unknownLook, message: "unknown look")))
+      }
+      savedLooks[imageID] = SavedLook(lookID: sent.lookId, strength: sent.strength ?? 100)
+      storeSavedLooks()
+      return try jsonResponse(.ok, lookView(of: imageID)!)
+    }
+
+    /// The looked 200's `X-Look-Version`: 32 lower-case hex digits of `md5(lookID|strength|tier)`.
+    static func lookVersion(lookID: String, strength: Int, tier: String?) -> String {
+      Insecure.MD5.hash(data: Data("\(lookID)|\(strength)|\(tier ?? "")".utf8))
+        .map { String(format: "%02x", $0) }.joined()
     }
 
     /// WP442 P12 (§2.7): the fixture's mark state, seeded from the static fixture and moved only
@@ -127,8 +220,10 @@
         return try jsonResponse(
           .ok,
           Components.Schemas.ImagePage(
-            items: Self.fixtureImages(scopedTo: Self.perFolderScope(of: request)), limit: 100,
-            nextCursor: nil))
+            items: withSavedLooks(
+              Self.fixtureImages(scopedTo: Self.perFolderScope(of: request)),
+              hasLook: Self.queryParameters(of: request)["has_look"]),
+            limit: 100, nextCursor: nil))
       case Operations.ImageGroupsApiImageGroupsGet.id where DebugMarkGroupsFixture.isOn:
         let marks = markState
         return try jsonResponse(
@@ -158,7 +253,9 @@
         return try jsonResponse(
           .ok, Components.Schemas.ImagePage(items: [], limit: 5, nextCursor: nil))
       case Operations.GetImageApiImagesImageIdGet.id:
-        return try jsonResponse(.ok, Self.fixtureDetail())
+        var detail = Self.fixtureDetail()
+        detail.look = lookView(of: detail.id)
+        return try jsonResponse(.ok, detail)
       case Operations.GetProxyApiImagesImageIdProxyTierGet.id
       where DebugStubLaunch.noPreviews
         && Self.proxyTier(of: request) == ProxyTier.preview.rawValue:
@@ -198,9 +295,19 @@
               detail: .init(code: .unknownLook, message: "unknown look")))
         }
         let tier = components.count >= 3 ? components[components.count - 3] : nil
+        let strength = Self.queryParameters(of: request)["strength"].flatMap(Int.init) ?? 100
         var response = HTTPResponse(status: .ok)
         response.headerFields[.contentType] = "image/jpeg"
+        if let name = HTTPField.Name("X-Look-Version") {
+          response.headerFields[name] = Self.lookVersion(
+            lookID: lookID, strength: strength, tier: tier)
+        }
         return (response, HTTPBody(Self.fixtureLookedProxy(tier: tier)))
+      // IMGMGR-544: Apply saves (PUT) or removes (DELETE) a photograph's look.
+      case Operations.PutImageLookApiImagesImageIdLookPut.id:
+        return try await lookWrite(request, body: body, isDelete: false)
+      case Operations.DeleteImageLookApiImagesImageIdLookDelete.id:
+        return try await lookWrite(request, body: body, isDelete: true)
       // WP14 lane B (IMGMGR-240/-241/-261): Scene mode's own fixture. Without these three the
       // Debug composition could not enter Scene mode with data at all, so the band, the ✓N badge
       // and the inline picks had no rendered evidence — only unit assertions.
@@ -1258,6 +1365,19 @@
     /// the argument-domain override (`-culling.tapToPickDefault YES`), which is never written.
     static var keepsSettings: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestKeepSettings")
+    }
+
+    /// IMGMGR-544: the stub's saved looks (`DebugStubTransport.savedLooksKey`) are forgotten on a
+    /// fixture launch, so every suite starts with no photograph looked. `-UITestKeepStubLooks`
+    /// keeps them: the relaunch half of `LookPersistenceUITests` reads back what its previous
+    /// launch saved. Called once from `ImgManagerApp.init`, before the transport exists.
+    static var keepsStubLooks: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestKeepStubLooks")
+    }
+
+    static func resetSavedLooksUnlessKept(defaults: UserDefaults = .standard) {
+      guard isActive, !keepsStubLooks else { return }
+      defaults.removeObject(forKey: DebugStubTransport.savedLooksKey)
     }
 
     @MainActor

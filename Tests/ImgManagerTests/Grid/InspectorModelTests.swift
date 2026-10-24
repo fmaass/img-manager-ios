@@ -130,7 +130,7 @@ struct InspectorModelTests {
   @Test("Every dimension the Stats tab renders is actionable: a tap applies, a second clears")
   func everyRenderedDimensionIsActionable() {
     let facets = serverFacets()
-    for field in InspectorFacetField.allCases {
+    for field in InspectorFacetFilters.statsFields {
       let counts = field.counts(from: facets)
       #expect(!counts.isEmpty, "\(field.rawValue) renders no row for a populated facet list")
       guard let value = counts.first?.value else { continue }
@@ -319,7 +319,8 @@ struct InspectorModelTests {
     #expect(serverFacets().sidecar?.isEmpty == false)  // positive control: the server DOES send it
     // Ten until WP21 P2 added `.camera` (IMGMGR-376), the one dimension img-manager v0.20.0
     // made both countable and sendable.
-    #expect(InspectorFacetField.allCases.count == 11)
+    // Twelve since IMGMGR-544 added the uncounted `.hasLook` (filter-only, not a Stats row).
+    #expect(InspectorFacetField.allCases.count == 12)
     #expect(InspectorFacetField.allCases.contains(.camera))
   }
 

@@ -668,6 +668,117 @@ actor GridStubTransport: ClientTransport {
 
   private(set) var recordedWire: [RecordedWireRequest] = []
 
+  /// IMGMGR-544: the `X-Look-Version` the NEXT looked 200s carry (nil sends no header).
+  var lookedProxyVersion: String?
+  func setLookedProxyVersion(_ version: String?) { lookedProxyVersion = version }
+
+  /// IMGMGR-544: the hold/release pattern for the looked proxy — lets a test reload the grid
+  /// while one looked response is in flight.
+  private var lookedProxyHoldEnabled = false
+  private var lookedProxyHasStarted = false
+  private var lookedProxyStartedContinuation: CheckedContinuation<Void, Never>?
+  private var lookedProxyReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdLookedProxyRequests(_ hold: Bool) { lookedProxyHoldEnabled = hold }
+
+  func waitUntilLookedProxyStarted() async {
+    if lookedProxyHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.lookedProxyStartedContinuation = continuation
+    }
+  }
+
+  func releaseLookedProxy() {
+    lookedProxyReleaseContinuation?.resume()
+    lookedProxyReleaseContinuation = nil
+    lookedProxyHasStarted = false
+  }
+
+  // MARK: - IMGMGR-544: PUT / DELETE /api/images/{id}/look
+
+  /// The saved-look write's outcomes at the WIRE level. `.ok` echoes the request's own look id
+  /// and strength back as the `ImageLookView` the server would answer.
+  enum LookWriteOutcome: Sendable {
+    case ok
+    case notFound
+    case refused(code: String)
+    /// A 200 whose body is not an `ImageLookView` (the server may have committed).
+    case undecodable
+    case transportFailure
+  }
+
+  var lookWriteOutcomes: [LookWriteOutcome] = []
+  /// Queued outcomes, one per write, in order; an empty queue answers `.ok`.
+  func enqueueLookWriteOutcomes(_ outcomes: [LookWriteOutcome]) {
+    lookWriteOutcomes.append(contentsOf: outcomes)
+  }
+  /// Every PUT/DELETE look write, in order: method, path, body bytes.
+  struct RecordedLookWrite: Sendable, Equatable {
+    let method: String
+    let path: String
+    let body: Data
+  }
+  private(set) var recordedLookWrites: [RecordedLookWrite] = []
+
+  /// The same hold/release pattern as `markState`: lets a test act while a look write is
+  /// genuinely on the wire.
+  private var lookWriteHoldEnabled = false
+  private var lookWriteHasStarted = false
+  private var lookWriteStartedContinuation: CheckedContinuation<Void, Never>?
+  private var lookWriteReleaseContinuation: CheckedContinuation<Void, Never>?
+
+  func holdLookWrites(_ hold: Bool) { lookWriteHoldEnabled = hold }
+
+  func waitUntilLookWriteStarted() async {
+    if lookWriteHasStarted { return }
+    await withCheckedContinuation { continuation in
+      self.lookWriteStartedContinuation = continuation
+    }
+  }
+
+  func releaseLookWrite() {
+    lookWriteReleaseContinuation?.resume()
+    lookWriteReleaseContinuation = nil
+    lookWriteHasStarted = false
+  }
+
+  private func lookWriteResponse(
+    _ request: HTTPRequest, bodyBytes: Data, isDelete: Bool
+  ) async throws -> (HTTPResponse, HTTPBody?) {
+    recordedLookWrites.append(
+      RecordedLookWrite(
+        method: isDelete ? "DELETE" : "PUT", path: request.path ?? "", body: bodyBytes))
+    if lookWriteHoldEnabled {
+      lookWriteHasStarted = true
+      lookWriteStartedContinuation?.resume()
+      lookWriteStartedContinuation = nil
+      await withCheckedContinuation { continuation in
+        self.lookWriteReleaseContinuation = continuation
+      }
+    }
+    let outcome = lookWriteOutcomes.isEmpty ? .ok : lookWriteOutcomes.removeFirst()
+    switch outcome {
+    case .ok:
+      if isDelete { return (HTTPResponse(status: .noContent), nil) }
+      let sent = try JSONDecoder.grid.decode(
+        Components.Schemas.ImageLookRequest.self, from: bodyBytes)
+      return try jsonResponse(
+        .ok,
+        Components.Schemas.ImageLookView(
+          lookId: sent.lookId, strength: sent.strength ?? 100,
+          updatedAt: Date(timeIntervalSince1970: 1_800_000_000)))
+    case .notFound:
+      return (HTTPResponse(status: .notFound), nil)
+    case .refused(let code):
+      return jsonBytes(
+        .unprocessableContent, #"{"detail": {"code": "\#(code)", "message": "refused"}}"#)
+    case .undecodable:
+      return jsonBytes(.ok, #"{"unexpected": true}"#)
+    case .transportFailure:
+      throw SentinelTransportError(raw: "GridStubTransport: forced look write failure")
+    }
+  }
+
   // MARK: - WP12 (IMGMGR-196): GET /api/images/{id}/download
 
   /// The download endpoint's outcomes, modelled at the WIRE level so the contract probe decodes
@@ -1072,6 +1183,14 @@ actor GridStubTransport: ClientTransport {
 
     case Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.id:
       recordedLookedProxyRequests.append(request.path ?? "")
+      if lookedProxyHoldEnabled {
+        lookedProxyHasStarted = true
+        lookedProxyStartedContinuation?.resume()
+        lookedProxyStartedContinuation = nil
+        await withCheckedContinuation { continuation in
+          self.lookedProxyReleaseContinuation = continuation
+        }
+      }
       if lookedProxyShouldFail {
         lookedProxyShouldFail = false
         throw SentinelTransportError(raw: "GridStubTransport: forced looked proxy failure")
@@ -1080,6 +1199,9 @@ actor GridStubTransport: ClientTransport {
       case .ok(let data):
         var response = HTTPResponse(status: .ok)
         response.headerFields[.contentType] = "image/jpeg"
+        if let version = lookedProxyVersion, let name = HTTPField.Name("X-Look-Version") {
+          response.headerFields[name] = version
+        }
         return (response, HTTPBody(data))
       case .notFound:
         return (HTTPResponse(status: .notFound), nil)
@@ -1087,6 +1209,12 @@ actor GridStubTransport: ClientTransport {
         return jsonBytes(
           .unprocessableContent, #"{"detail": {"code": "\#(code)", "message": "refused"}}"#)
       }
+
+    case Operations.PutImageLookApiImagesImageIdLookPut.id:
+      return try await lookWriteResponse(request, bodyBytes: bodyBytes, isDelete: false)
+
+    case Operations.DeleteImageLookApiImagesImageIdLookDelete.id:
+      return try await lookWriteResponse(request, bodyBytes: bodyBytes, isDelete: true)
 
     case Operations.DownloadImageApiImagesImageIdDownloadGet.id:
       lastDownloadQuery = request.path.flatMap(URLComponents.init(string:))?.query

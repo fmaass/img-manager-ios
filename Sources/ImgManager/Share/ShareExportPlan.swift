@@ -34,6 +34,9 @@ enum ShareRefusal: Sendable, Equatable {
   case couldNotPrepare
   /// `ShareMasterSeam.isAvailable == false` — see that type for what activates it.
   case masterContractUnavailable
+  /// IMGMGR-544: the photograph's saved look could not be rendered for the export (a coded 422,
+  /// or a 200 that is not a JPEG). Refused rather than shared unlooked.
+  case lookUnavailable
 
   var copy: String {
     switch self {
@@ -53,6 +56,8 @@ enum ShareRefusal: Sendable, Equatable {
       return "Couldn't prepare this photo for sharing."
     case .masterContractUnavailable:
       return "Sharing the edited master isn't available in this build yet."
+    case .lookUnavailable:
+      return "This photo's look couldn't be prepared for sharing."
     }
   }
 }

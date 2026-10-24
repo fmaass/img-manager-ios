@@ -95,7 +95,12 @@ struct FilterPopoverModelTests {
     let rows = sections.flatMap(\.rows)
     #expect(!rows.isEmpty)
     #expect(rows.allSatisfy({ $0.count == 0 }))
-    #expect(rows.allSatisfy({ !$0.isEnabled }))
+    // IMGMGR-544: the uncounted Has-look row is the one row a missing count cannot disable.
+    let counted = rows.filter { $0.isCounted }
+    let uncounted = rows.filter { !$0.isCounted }
+    #expect(counted.allSatisfy({ !$0.isEnabled }))
+    #expect(uncounted.map(\.id) == ["hasLook-true"])
+    #expect(uncounted.allSatisfy { $0.isEnabled })
     #expect(rows.allSatisfy({ !$0.isActive }))
   }
 
@@ -290,15 +295,15 @@ struct FilterPopoverModelTests {
       exactRows?.rows.contains(where: { $0.value == FilterPopoverModel.overflowValue }) == false)
   }
 
-  @Test("The declared sections are Rating, Mark, Edited, Type, Camera and Keyword, in order")
+  @Test("The declared sections are Rating, Mark, Edited, Look, Type, Camera and Keyword, in order")
   func theDeclaredSectionSet() {
     #expect(
       FilterPopoverModel.sections.map(\.field) == [
-        .rating, .mark, .hasMaster, .ext, .camera, .keyword,
+        .rating, .mark, .hasMaster, .hasLook, .ext, .camera, .keyword,
       ])
     #expect(
       FilterPopoverModel.sections.map(\.title) == [
-        "Rating", "Mark", "Edited", "Type", "Camera", "Keyword",
+        "Rating", "Mark", "Edited", "Look", "Type", "Camera", "Keyword",
       ])
     let live = FilterPopoverModel.rows(liveShapedFacets(), GridImagesQuery())
     #expect(row(live, .hasMaster, "true")?.title == "Edited in Lightroom")
@@ -381,4 +386,48 @@ struct FilterPopoverModelTests {
       #expect(DebugStubTransport.fixtureFacets().total == 12)
     }
   #endif
+
+  // MARK: - Has look (IMGMGR-544)
+
+  private func hasLookRow(_ query: GridImagesQuery) -> FilterPopoverRow? {
+    FilterPopoverModel.rows(nil, query).flatMap(\.rows).first { $0.field == .hasLook }
+  }
+
+  @Test("Has look is one uncounted row, reachable without a count, active when set")
+  func hasLookRowUncounted() throws {
+    let row = try #require(hasLookRow(GridImagesQuery()))
+    #expect(row.accessibilityIdentifier == "filterPopoverRow-hasLook-true")
+    #expect(row.title == "Has look")
+    #expect(!row.isCounted)
+    #expect(row.isEnabled)
+    #expect(!row.isActive)
+    var query = GridImagesQuery()
+    query.hasLook = true
+    let active = try #require(hasLookRow(query))
+    #expect(active.isActive && active.isEnabled)
+  }
+
+  @Test("A2: a counted row still disables at zero; Has look toggles and clears")
+  func hasLookActivationAndClearing() {
+    var query = GridImagesQuery()
+    InspectorFacetField.hasLook.toggle("true", in: &query)
+    #expect(query.hasLook == true)
+    #expect(InspectorFacetFilters.activeCount(query) == 1)
+    InspectorFacetField.hasLook.toggle("true", in: &query)
+    #expect(query.hasLook == nil)
+    query.hasLook = true
+    query.mark = "pick"
+    InspectorFacetFilters.clear(&query)
+    #expect(query.hasLook == nil && query.mark == nil)
+    let zeroMaster = FilterPopoverModel.rows(nil, GridImagesQuery()).flatMap(\.rows)
+      .first { $0.field == .hasMaster }
+    #expect(zeroMaster?.isEnabled == false)
+  }
+
+  @Test("The Stats tab renders no Look row")
+  func statsTabHasNoLookRow() {
+    #expect(!InspectorFacetFilters.statsFields.contains(.hasLook))
+    #expect(InspectorFacetFilters.statsFields.count == InspectorFacetField.allCases.count - 1)
+    #expect(InspectorFacetFilters.clearableFields.contains(.hasLook))
+  }
 }

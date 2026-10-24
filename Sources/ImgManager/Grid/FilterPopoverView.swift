@@ -180,7 +180,9 @@ struct FilterPopoverView: View {
         }
         Text(row.title).fontWeight(row.isActive ? .semibold : .regular)
         Spacer()
-        Text("\(row.count)").foregroundStyle(.secondary).monospacedDigit()
+        if row.isCounted {
+          Text("\(row.count)").foregroundStyle(.secondary).monospacedDigit()
+        }
       }
       .padding(.horizontal, 16)
       .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -197,7 +199,7 @@ struct FilterPopoverView: View {
     // The label is the row's own name and the value is its count, separately: a combined string
     // would make the count unreadable to anything but a person, including this phase's own tests.
     .accessibilityLabel(row.title)
-    .accessibilityValue("\(row.count)")
+    .accessibilityValue(row.isCounted ? "\(row.count)" : "")
     .accessibilityAddTraits(row.isActive ? [.isSelected] : [])
   }
 

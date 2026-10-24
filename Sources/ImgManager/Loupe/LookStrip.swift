@@ -108,3 +108,34 @@ final class LookFavourites {
     defaults.set(ids, forKey: Self.key)
   }
 }
+
+/// IMGMGR-544 (P16b): the SAVED-look rule — grid tiles, the tile glyph, share, and the loupe when
+/// no strip is open all read a photograph's look through here, never through a draft. A Lightroom
+/// edit supersedes a saved look: the photograph renders as the edit, so the pencil and a look can
+/// never be drawn together.
+enum LookPersistence {
+  /// What a photograph renders through by its saved state: nil when nothing is saved, or when an
+  /// edit (`hasEdit == true`) supersedes the saved look.
+  static func savedRender(
+    look: Components.Schemas.ImageLookView?, hasEdit: Bool?
+  ) -> LookModel.Active? {
+    guard let look, hasEdit != true else { return nil }
+    return LookModel.Active(lookID: look.lookId, strength: LookStrength.clamped(look.strength))
+  }
+
+  /// A look is saved, and an edit renders instead of it.
+  static func isSuperseded(look: Components.Schemas.ImageLookView?, hasEdit: Bool?) -> Bool {
+    look != nil && hasEdit == true
+  }
+
+  /// The loupe chip: "Portra 400 · 120 %", or "Portra 400 · superseded by edit". Nil without a
+  /// saved look. `lookName` is the catalogue's name; the id stands in when it has none.
+  static func chipText(
+    look: Components.Schemas.ImageLookView?, hasEdit: Bool?, lookName: String?
+  ) -> String? {
+    guard let look else { return nil }
+    let name = lookName ?? look.lookId
+    if isSuperseded(look: look, hasEdit: hasEdit) { return "\(name) · superseded by edit" }
+    return "\(name) · \(LookStrength.label(LookStrength.clamped(look.strength)))"
+  }
+}

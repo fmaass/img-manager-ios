@@ -454,7 +454,12 @@ struct LookLeakTests {
     }
 
     let lookedProxy = Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.id
-    let lookOperations: Set<String> = [Operations.ListLooksApiLooksGet.id, lookedProxy]
+    // IMGMGR-544: the saved-look PUT/DELETE join the look operations; nothing else may carry one.
+    let lookOperations: Set<String> = [
+      Operations.ListLooksApiLooksGet.id, lookedProxy,
+      Operations.PutImageLookApiImagesImageIdLookPut.id,
+      Operations.DeleteImageLookApiImagesImageIdLookDelete.id,
+    ]
     // Positive control: the looked proxy request DID carry the id, so the scan below is not
     // vacuously empty.
     let lookedRenders = lookedWire.filter { $0.operationID == lookedProxy }

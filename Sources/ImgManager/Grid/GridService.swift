@@ -534,8 +534,10 @@ struct GridService: Sendable {
   /// `GET /api/images/{id}/proxy/{tier}/look/{look_id}?strength=` — the cached proxy for `tier`
   /// with one catalogued look applied at `strength` percent (img-manager v0.24.0; 0 is the proxy,
   /// 100 the look, 200 doubles it). The strength is ALWAYS sent, 100 included, so the request
-  /// says what it shows. No `v` is sent (the immutable-response handshake is P16b's), so the
-  /// response is `no-store` and there is no 304 here.
+  /// says what it shows. No `v` is EVER sent, so every response is `no-store`, URLSession's HTTP
+  /// cache can never answer it, and there is no 304 here. IMGMGR-544: the 200's `X-Look-Version`
+  /// (the server's looked-cache key of these bytes) is handed back as `version`, which is what
+  /// `LookedCache` keys bytes by.
   ///
   /// The 404 is NOT the unlooked proxy's 404: nothing is queued by asking for a look, so a caller
   /// that gets `.notFound` asks for the unlooked proxy, which is the request that enqueues one.
@@ -559,18 +561,74 @@ struct GridService: Sendable {
       guard case .jpeg(let body) = ok.body else { throw GridServiceError.unreachable }
       // The same bound as the unlooked proxy: a looked render is the same size of image.
       let data = try await Data(collecting: body, upTo: 30 * 1024 * 1024)
-      return .ok(data)
+      return .ok(data, version: ok.headers.xLookVersion)
     case .notFound:
       return .notFound
     case .unprocessableContent(let refusal):
       guard let body = try? refusal.body.json else { throw GridServiceError.unreachable }
-      switch body.detail.code {
-      case .unknownLook: return .refused(.unknownLook)
-      case .invalidRequest: return .refused(.invalidRequest)
-      }
+      return .refused(LookRefusalCode(body.detail.code))
     case .undocumented:
       throw GridServiceError.unreachable
     }
+  }
+
+  // MARK: - Saved look (IMGMGR-544, img-manager v0.24.0)
+
+  /// `PUT /api/images/{id}/look` — save `lookID` at `strength` on one photograph (an upsert on
+  /// the server, last write wins). Answers the saved `ImageLookView`. Throws `LookWriteError`
+  /// only: `.refused` and `.gone` are definite (nothing was written), `.uncertain` is a transport
+  /// failure, an undeclared status or an undecodable 200, after which the server MAY hold it.
+  func putLook(imageID: Int, lookID: String, strength: Int) async throws
+    -> Components.Schemas.ImageLookView
+  {
+    let body = Components.Schemas.ImageLookRequest(lookId: lookID, strength: strength)
+    let output: Operations.PutImageLookApiImagesImageIdLookPut.Output
+    do {
+      output = try await client.putImageLookApiImagesImageIdLookPut(
+        .init(path: .init(imageId: imageID), body: .json(body)))
+    } catch {
+      throw LookWriteError.uncertain
+    }
+    switch output {
+    case .ok(let ok):
+      guard let view = try? ok.body.json else { throw LookWriteError.uncertain }
+      return view
+    case .notFound:
+      throw LookWriteError.gone
+    case .unprocessableContent(let refusal):
+      throw LookWriteError.refused(Self.refusalCode(try? refusal.body.json))
+    case .undocumented:
+      throw LookWriteError.uncertain
+    }
+  }
+
+  /// `DELETE /api/images/{id}/look` — remove the saved look (204). The same error vocabulary
+  /// as `putLook`.
+  func deleteLook(imageID: Int) async throws {
+    let output: Operations.DeleteImageLookApiImagesImageIdLookDelete.Output
+    do {
+      output = try await client.deleteImageLookApiImagesImageIdLookDelete(
+        .init(path: .init(imageId: imageID)))
+    } catch {
+      throw LookWriteError.uncertain
+    }
+    switch output {
+    case .noContent:
+      return
+    case .notFound:
+      throw LookWriteError.gone
+    case .unprocessableContent(let refusal):
+      throw LookWriteError.refused(Self.refusalCode(try? refusal.body.json))
+    case .undocumented:
+      throw LookWriteError.uncertain
+    }
+  }
+
+  /// A 422 is a refusal whether or not its body decodes: nothing was written.
+  private static func refusalCode(_ body: Components.Schemas.LookRefusalError?)
+    -> LookRefusalCode
+  {
+    body.map { LookRefusalCode($0.detail.code) } ?? .invalidRequest
   }
 
   // MARK: - Marks (revision-precondition path only — never unconditional)
@@ -735,7 +793,8 @@ enum ProxyFetchResult: Equatable, Sendable {
 /// What `GridService.lookedProxy` answered (IMGMGR-382). No `.notModified`: the looked route
 /// never sends a validator.
 enum LookedProxyFetchResult: Equatable, Sendable {
-  case ok(Data)
+  /// `version` is the response's `X-Look-Version`, nil when the header was absent.
+  case ok(Data, version: String? = nil)
   /// No proxy is cached for this image and tier — and nothing was queued by asking.
   case notFound
   /// The coded 422.
@@ -747,6 +806,23 @@ enum LookedProxyFetchResult: Equatable, Sendable {
 enum LookRefusalCode: Sendable, Equatable {
   case unknownLook
   case invalidRequest
+
+  init(_ code: Components.Schemas.LookRefusal.CodePayload) {
+    switch code {
+    case .unknownLook: self = .unknownLook
+    case .invalidRequest: self = .invalidRequest
+    }
+  }
+}
+
+/// What a saved-look write (`putLook`/`deleteLook`, IMGMGR-544) failed with.
+enum LookWriteError: Error, Sendable, Equatable {
+  /// The coded 422: nothing was written.
+  case refused(LookRefusalCode)
+  /// 404: no photograph has this id; nothing was written.
+  case gone
+  /// Transport, an undeclared status or an undecodable 200: the server MAY have committed.
+  case uncertain
 }
 
 struct GridImagesPage: Sendable, Equatable {
@@ -866,6 +942,9 @@ struct GridImagesQuery: Sendable, Equatable {
   /// see one camera's photographs and a header count for all of them.
   var camera: String?
   var hasMaster: Bool?
+  /// IMGMGR-544: photographs with a SAVED look (`has_look`), whether or not an edit supersedes
+  /// its rendering. Uncounted: `/api/facets` has no `has_look` facet.
+  var hasLook: Bool?
   var mark: String?
   var dateFrom: Date?
   var dateTo: Date?
@@ -902,8 +981,9 @@ struct GridImagesQuery: Sendable, Equatable {
       groupBy: groupBy.flatMap(GroupByKey.init(rawValue:))?.listImagesPayload,
       cursor: cursor, limit: limit, folderId: folderID, ratingMin: ratingMin, good: good,
       label: label, keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.listImagesPayload,
-      tree: tree, ext: ext, camera: camera, hasMaster: hasMaster, mark: mark,
-      dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing,
+      tree: tree, ext: ext, camera: camera, hasMaster: hasMaster, hasLook: hasLook,
+      mark: mark, dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly,
+      missing: missing,
       sort: sort.flatMap(Operations.ListImagesApiImagesGet.Input.Query.SortPayload.init),
       direction: direction.flatMap(
         Operations.ListImagesApiImagesGet.Input.Query.DirectionPayload.init))
@@ -913,7 +993,7 @@ struct GridImagesQuery: Sendable, Equatable {
     .init(
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.facetsPayload, tree: tree, ext: ext, camera: camera,
-      hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
+      hasMaster: hasMaster, hasLook: hasLook, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
       cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 
@@ -929,8 +1009,8 @@ struct GridImagesQuery: Sendable, Equatable {
       direction: direction.payload, cursor: cursor, seekDate: seekDate, limit: limit,
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.browseStacksPayload, tree: tree, ext: ext,
-      camera: camera, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+      camera: camera, hasMaster: hasMaster, hasLook: hasLook, mark: mark, dateFrom: dateFrom,
+      dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 
   /// The filter context ONE card is re-read in (`GET /api/stacks/{id}`) so its `matched_count`
@@ -940,8 +1020,8 @@ struct GridImagesQuery: Sendable, Equatable {
     .init(
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.stackRowPayload, tree: tree, ext: ext,
-      camera: camera, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+      camera: camera, hasMaster: hasMaster, hasLook: hasLook, mark: mark, dateFrom: dateFrom,
+      dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 
   /// P5's own forward-neighbour call shape — the same filter surface as `asListImagesQuery`,
@@ -954,7 +1034,7 @@ struct GridImagesQuery: Sendable, Equatable {
       groupBy: groupBy.flatMap(GroupByKey.init(rawValue:))?.neighboursPayload,
       limit: limit, folderId: folderID, ratingMin: ratingMin, good: good, label: label,
       keyword: keyword, q: q, tag: tag, sourceTier: sourceTier?.neighboursPayload, tree: tree,
-      ext: ext, camera: camera, hasMaster: hasMaster, mark: mark,
+      ext: ext, camera: camera, hasMaster: hasMaster, hasLook: hasLook, mark: mark,
       dateFrom: dateFrom, dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing,
       sort: sort.flatMap(
         Operations.ImageNeighboursApiImagesImageIdNeighboursGet.Input.Query.SortPayload.init),
@@ -975,7 +1055,7 @@ struct GridImagesQuery: Sendable, Equatable {
       groupBy: key.imageGroupsPayload,
       folderId: folderID, ratingMin: ratingMin, good: good, label: label, keyword: keyword, q: q,
       tag: tag, sourceTier: sourceTier?.imageGroupsPayload, tree: tree, ext: ext,
-      camera: camera, hasMaster: hasMaster, mark: mark, dateFrom: dateFrom, dateTo: dateTo,
-      cameraPreviewOnly: cameraPreviewOnly, missing: missing)
+      camera: camera, hasMaster: hasMaster, hasLook: hasLook, mark: mark, dateFrom: dateFrom,
+      dateTo: dateTo, cameraPreviewOnly: cameraPreviewOnly, missing: missing)
   }
 }

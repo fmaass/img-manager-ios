@@ -48,6 +48,9 @@ struct LoupeSubtitle: Equatable, Sendable {
 /// text and identifier.
 struct LoupeSubtitleView: View {
   let parts: LoupeSubtitle
+  /// IMGMGR-544: the SAVED look's chip ("Warm Film · 120 %" / "Warm Film · superseded by
+  /// edit", `LookPersistence.chipText`); nil without a saved look.
+  var lookChip: String? = nil
 
   var body: some View {
     HStack(spacing: 0) {
@@ -68,6 +71,14 @@ struct LoupeSubtitleView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label) label")
         .accessibilityIdentifier("loupeSubtitleLabel")
+      }
+      if let lookChip {
+        Text(" · ").accessibilityHidden(true)
+        Text(lookChip)
+          .padding(.horizontal, 6)
+          .background(Capsule().fill(.quaternary))
+          .accessibilityLabel(lookChip)
+          .accessibilityIdentifier("loupeLookChip")
       }
     }
     .font(.caption)

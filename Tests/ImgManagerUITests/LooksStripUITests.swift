@@ -9,23 +9,31 @@ import XCTest
 /// reach the gate's simulators (`SilentKeysUITests`), so a key that does not arrive is a FAILURE.
 class LooksStripUITestCase: OrientationPinnedUITestCase {
 
-  /// The DEBUG fixture grid with advance-on-mark off, the loupe open on its first photograph and
-  /// the look catalogue arrived (the Looks control enabled).
-  func launchIntoTheLoupe() -> XCUIApplication {
+  /// The DEBUG fixture grid with advance-on-mark off, the loupe open on `tile` (its first
+  /// photograph unless asked) and the look catalogue arrived (the Looks control enabled).
+  func launchIntoTheLoupe(
+    tile tileID: String = "gridTile-1", extraArguments: [String] = []
+  ) -> XCUIApplication {
     let app = XCUIApplication()
-    app.launchArguments = ["-UITestStubGrid", "-UITestStubNoAutoAdvance"]
+    app.launchArguments = ["-UITestStubGrid", "-UITestStubNoAutoAdvance"] + extraArguments
     app.launch()
+    return openLoupe(app, tile: tileID)
+  }
+
+  /// From the launched fixture grid, opens the loupe on `tileID` and waits for Looks.
+  @discardableResult
+  func openLoupe(_ app: XCUIApplication, tile tileID: String) -> XCUIApplication {
     XCTAssertTrue(
       app.buttons["Dislike"].waitForExistence(timeout: 30),
       "The DEBUG fixture grid never rendered its action bar.")
     let back = app.buttons["loupeBack"]
     for _ in 0..<3 where !back.exists {
-      let tile = element(app, "gridTile-1")
+      let tile = element(app, tileID)
       guard tile.waitForExistence(timeout: 15) else { break }
       tile.tap()
       _ = back.waitForExistence(timeout: 3)
     }
-    XCTAssertTrue(back.exists, "Tapping gridTile-1 never opened the loupe.")
+    XCTAssertTrue(back.exists, "Tapping \(tileID) never opened the loupe.")
     let looks = element(app, "loupeLooksButton")
     XCTAssertTrue(looks.waitForExistence(timeout: 10), "The loupe has no Looks control.")
     XCTAssertTrue(
@@ -79,7 +87,8 @@ class LooksStripUITestCase: OrientationPinnedUITestCase {
 final class LooksStripUITests: LooksStripUITestCase {
 
   /// AC4: the strip replaces the filmstrip, a tile previews its look on the main image, Apply is
-  /// present but inert, and Cancel brings back the unlooked photograph and the filmstrip.
+  /// there and live with a look chosen (not pressed: nothing is saved here), and Cancel brings
+  /// back the unlooked photograph and the filmstrip.
   func testStripPreviewsALookAndCancelRestoresTheUnlookedPhoto() throws {
     let app = launchIntoTheLoupe()
     let image = element(app, "loupeImage")
@@ -105,7 +114,7 @@ final class LooksStripUITests: LooksStripUITestCase {
     XCTAssertEqual(strength(app), 100, "The strength does not start at 100 %.")
     let apply = element(app, "loupeLooksApply")
     XCTAssertTrue(apply.exists, "The strip has no Apply.")
-    XCTAssertFalse(apply.isEnabled, "Apply is live before P16b.")
+    XCTAssertTrue(waitFor(apply, "isEnabled == true"), "Apply is not live with a look chosen.")
     attach(app, name: "looks-strip-warm-film")
 
     press(element(app, "loupeLooksCancel"))
@@ -215,7 +224,8 @@ final class LooksStripKeysUITests: LooksStripUITestCase {
     start.press(forDuration: 0.1, thenDragTo: end)
   }
 
-  /// Return and Space share Open, and both are inert in the strip: Apply arrives with P16b.
+  /// Return and Space share Open, and both are inert in the strip: only Apply saves a look, so
+  /// neither closes the strip, changes the draft, or saves (no chip appears).
   func testReturnAndSpaceAreInertInTheStrip() throws {
     let app = launchIntoTheLoupe()
     let title = element(app, "loupeTitle")
@@ -230,7 +240,7 @@ final class LooksStripKeysUITests: LooksStripUITestCase {
       element(app, "loupeLookTile-warm-film").value as? String, "Selected",
       "Return or Space changed the previewed look.")
     XCTAssertEqual(strength(app), 100, "Return or Space changed the strength.")
-    XCTAssertFalse(element(app, "loupeLooksApply").isEnabled, "Apply became live.")
+    XCTAssertFalse(element(app, "loupeLookChip").exists, "Return or Space saved the look.")
     XCTAssertTrue(app.buttons["loupeBack"].exists, "Return or Space left the loupe.")
     XCTAssertEqual(title.label, position, "Return or Space moved to another photograph.")
   }

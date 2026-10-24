@@ -19,6 +19,9 @@ struct FilterPopoverRow: Identifiable, Sendable {
   /// from the same surface that applied it.
   let isEnabled: Bool
   let markRole: MarkRole?
+  /// IMGMGR-544: false for a row the server offers no count for (Has look): its `count` is not
+  /// a number to show, and it is reachable whatever it is.
+  var isCounted: Bool = true
 
   var id: String { "\(field.rawValue)-\(value)" }
   var accessibilityIdentifier: String { "filterPopoverRow-\(id)" }
@@ -97,6 +100,9 @@ enum FilterPopoverModel {
   private struct Declaration {
     let field: InspectorFacetField
     let title: String
+    /// IMGMGR-544: false for a dimension with no server facet (Has look): its rows show no
+    /// count and are never disabled for want of one.
+    var isCounted = true
     /// Empty means the values come from the RESPONSE rather than from here. Type and Camera both
     /// do: `ext` and `camera` are free-form strings in the vendored contract (no enum), so a
     /// declared list of extensions or camera bodies would be invented wire vocabulary — the
@@ -167,6 +173,11 @@ enum FilterPopoverModel {
     Declaration(
       field: .hasMaster, title: "Edited",
       values: [DeclaredValue(value: "true", title: "Edited in Lightroom", markRole: .edited)]),
+    // IMGMGR-544 (Q6): its own section after Edited. `has_look` matches the SAVED row whether or
+    // not an edit supersedes its rendering; v0.24.0 has no facet for it, so it is uncounted.
+    Declaration(
+      field: .hasLook, title: "Look", isCounted: false,
+      values: [DeclaredValue(value: "true", title: "Has look")]),
     Declaration(field: .ext, title: "Type"),
     // WP21 P2: response-discovered and capped, after the judgement rows the owner's order
     // names first.
@@ -264,7 +275,7 @@ enum FilterPopoverModel {
       return discoveredRows(declaration, facets, query)
     }
     return declaration.values.map { declared in
-      declaredRow(declared, declaration.field, facets, query)
+      declaredRow(declared, declaration.field, facets, query, isCounted: declaration.isCounted)
     }
   }
 
@@ -276,12 +287,12 @@ enum FilterPopoverModel {
 
   private static func declaredRow(
     _ declared: DeclaredValue, _ field: InspectorFacetField,
-    _ facets: Components.Schemas.ImageFacets?, _ query: GridImagesQuery
+    _ facets: Components.Schemas.ImageFacets?, _ query: GridImagesQuery, isCounted: Bool = true
   ) -> FilterPopoverRow {
-    let count = declaredCount(declared.value, field, facets)
+    let count = isCounted ? declaredCount(declared.value, field, facets) : 0
     return row(
       field: field, value: declared.value, title: declared.title, count: count,
-      markRole: declared.markRole, query: query)
+      markRole: declared.markRole, query: query, isCounted: isCounted)
   }
 
   /// A declared row's number. Everywhere but Rating this is the server's own count for that exact
@@ -433,11 +444,11 @@ enum FilterPopoverModel {
 
   private static func row(
     field: InspectorFacetField, value: String, title: String, count: Int, markRole: MarkRole?,
-    query: GridImagesQuery
+    query: GridImagesQuery, isCounted: Bool = true
   ) -> FilterPopoverRow {
     let isActive = field.isActive(value, in: query)
     return FilterPopoverRow(
       field: field, value: value, title: title, count: count, isActive: isActive,
-      isEnabled: count > 0 || isActive, markRole: markRole)
+      isEnabled: !isCounted || count > 0 || isActive, markRole: markRole, isCounted: isCounted)
   }
 }

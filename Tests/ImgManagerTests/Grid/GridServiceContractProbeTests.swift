@@ -410,6 +410,43 @@ struct GridServiceContractProbeTests {
     #expect(unfiltered.asListImagesQuery().camera == nil)
   }
 
+  // MARK: - IMGMGR-544: the Has-look filter on every projection
+
+  @Test("`has_look=true` reaches the wire on every recorded projection; unset sends none")
+  func hasLookReachesEverySurface() async throws {
+    for value: Bool? in [true, nil] {
+      let transport = GridStubTransport()
+      let service = makeService(transport)
+      var query = GridImagesQuery(folderID: 1)
+      query.hasLook = value
+
+      _ = try await service.images(query, cursor: nil, limit: 10)
+      _ = try await service.facets(query)
+      _ = try await service.browseStacks(query, direction: .asc, cursor: nil, limit: 10)
+      _ = try await service.neighbours(after: 7, query: query, limit: 5)
+      _ = try await service.imageGroups(query, groupBy: .camera)
+
+      let recorded: [(String, [String: String]?)] = [
+        ("list-images", await transport.lastListImagesQuery),
+        ("facets", await transport.lastFacetsQuery),
+        ("scene browse", await transport.lastBrowseStacksQuery),
+        ("neighbours", await transport.lastNeighboursQuery),
+        ("group headers", await transport.lastImageGroupsQuery),
+      ]
+      for (surface, sent) in recorded {
+        #expect(sent?["has_look"] == value.map { String($0) }, "\(surface): has_look")
+        #expect(sent?["folder_id"] == "1", "\(surface) recorded no request")
+      }
+      // The sixth, on the generated type (the stub records no stack-row query).
+      #expect(query.asStackRowQuery().hasLook == value)
+      #expect(query.asStackRowQuery().folderId == 1)
+      // No path at all carries the name when the filter is unset (literal-in-string guard).
+      if value == nil {
+        #expect(await transport.recordedWire.allSatisfy { !$0.path.contains("has_look") })
+      }
+    }
+  }
+
   // MARK: - IMGMGR-382: the v0.21.0 look operations
 
   static func look(_ id: String, name: String, category: String = "Film")
@@ -481,6 +518,78 @@ struct GridServiceContractProbeTests {
     #expect(
       try await service.lookedProxy(imageID: 1, tier: .grid, lookID: "x", strength: 100)
         == .refused(.invalidRequest))
+  }
+
+  @Test("Looked proxy: the 200's X-Look-Version comes back as the version; absent is nil")
+  func lookedProxyVersionProbe() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    let bytes = Data([0xFF, 0xD8, 0xFF, 0xE1])
+    await transport.setLookedProxyOutcome(.ok(bytes))
+    await transport.setLookedProxyVersion("0123456789abcdef0123456789abcdef")
+    #expect(
+      try await service.lookedProxy(imageID: 7, tier: .grid, lookID: "warm-film", strength: 120)
+        == .ok(bytes, version: "0123456789abcdef0123456789abcdef"))
+    await transport.setLookedProxyVersion(nil)
+    #expect(
+      try await service.lookedProxy(imageID: 7, tier: .grid, lookID: "warm-film", strength: 120)
+        == .ok(bytes, version: nil))
+    // `v` is never sent: the strength is the one query item, every time.
+    for path in await transport.recordedLookedProxyRequests {
+      #expect(
+        URLComponents(string: path)?.queryItems == [URLQueryItem(name: "strength", value: "120")])
+    }
+  }
+
+  @Test("Saved look: PUT carries exactly look_id and strength and decodes the ImageLookView")
+  func putLookProbe() async throws {
+    let transport = GridStubTransport()
+    let view = try await makeService(transport).putLook(
+      imageID: 1, lookID: "warm-film", strength: 120)
+    #expect(view.lookId == "warm-film")
+    #expect(view.strength == 120)
+    let writes = await transport.recordedLookWrites
+    #expect(writes.count == 1)
+    #expect(writes.first?.method == "PUT")
+    #expect(writes.first.flatMap { URLComponents(string: $0.path)?.path } == "/api/images/1/look")
+    let body = try #require(writes.first?.body)
+    let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    #expect(Set(json.keys) == ["look_id", "strength"])
+    #expect(json["look_id"] as? String == "warm-film")
+    #expect(json["strength"] as? Int == 120)
+  }
+
+  @Test("Saved look: DELETE is a 204; 404 is .gone, 422 .refused, transport .uncertain")
+  func deleteLookProbe() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    try await service.deleteLook(imageID: 3)
+    let writes = await transport.recordedLookWrites
+    #expect(writes.map(\.method) == ["DELETE"])
+    #expect(writes.first.flatMap { URLComponents(string: $0.path)?.path } == "/api/images/3/look")
+    #expect(writes.first?.body.isEmpty == true)
+
+    await transport.enqueueLookWriteOutcomes([
+      .notFound, .refused(code: "unknown_look"), .transportFailure, .notFound,
+      .refused(code: "invalid_request"), .undecodable, .transportFailure,
+    ])
+    await #expect(throws: LookWriteError.gone) { try await service.deleteLook(imageID: 3) }
+    await #expect(throws: LookWriteError.refused(.unknownLook)) {
+      try await service.deleteLook(imageID: 3)
+    }
+    await #expect(throws: LookWriteError.uncertain) { try await service.deleteLook(imageID: 3) }
+    await #expect(throws: LookWriteError.gone) {
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+    }
+    await #expect(throws: LookWriteError.refused(.invalidRequest)) {
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+    }
+    await #expect(throws: LookWriteError.uncertain) {
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+    }
+    await #expect(throws: LookWriteError.uncertain) {
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+    }
   }
 
   @Test("Looked proxy: a transport failure is .unreachable")

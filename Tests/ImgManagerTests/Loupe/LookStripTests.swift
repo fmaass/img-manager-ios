@@ -183,6 +183,7 @@ struct LookStripTests {
     for presentation in ["tag", "share"] {
       let (store, transport) = await Self.storeWithStrip()
       store.looks.setStrength(130)
+      let before = store.looks.draft
       if presentation == "tag" {
         store.isTagEntryPresented = true
       } else {
@@ -196,7 +197,8 @@ struct LookStripTests {
       #expect(!esc.isEnabled(grid: keys, viewerZoom: nil), "\(presentation): Esc is live")
       esc.perform(grid: keys, viewerZoom: nil)
       #expect(store.focusedImageID == 1, "\(presentation): the focus moved")
-      #expect(store.looks.draft == .init(imageID: 1, lookID: "warm-film", strength: 130))
+      #expect(store.looks.draft?.strength == 130)
+      #expect(store.looks.draft == before, "\(presentation): the draft changed")
       #expect(store.isLoupeOpen)
       #expect(await transport.recordedLookedProxyRequests.isEmpty)
 
@@ -206,15 +208,6 @@ struct LookStripTests {
       store.keyboardActions.moveFocus(.up)
       #expect(store.looks.draft?.strength == 140)
     }
-  }
-
-  @Test("Apply is inert: no request, no write, the draft unchanged")
-  func applyWritesNothing() async {
-    let (store, transport) = await Self.storeWithStrip()
-    let before = await transport.recordedWire.count
-    store.looks.apply()
-    #expect(store.looks.draft?.lookID == "warm-film")
-    #expect(await transport.recordedWire.count == before)
   }
 
   @Test("Tile renders are kept per strip session: Cancel and reopen asks the server again")

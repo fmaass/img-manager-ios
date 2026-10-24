@@ -181,6 +181,9 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
   case good
   case hasMaster
   case cameraPreviewOnly
+  /// IMGMGR-544: a saved look (`has_look`). The server has no facet for it, so it is uncounted:
+  /// offered only by the filter popover, never as a Stats row (`statsFields`).
+  case hasLook
 
   var id: String { rawValue }
 
@@ -197,6 +200,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .good: return "Good"
     case .hasMaster: return "Master"
     case .cameraPreviewOnly: return "Camera preview only"
+    case .hasLook: return "Look"
     }
   }
 
@@ -215,6 +219,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .good: return facets.good ?? []
     case .hasMaster: return facets.hasMaster ?? []
     case .cameraPreviewOnly: return facets.cameraPreviewOnly ?? []
+    case .hasLook: return []
     }
   }
 
@@ -222,7 +227,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
   /// values ("true"/"false") are not something a person reads. Counts are never touched.
   func displayValue(_ value: String) -> String {
     switch self {
-    case .good, .hasMaster, .cameraPreviewOnly:
+    case .good, .hasMaster, .cameraPreviewOnly, .hasLook:
       switch value {
       case "true": return "Yes"
       case "false": return "No"
@@ -253,6 +258,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     // The parameter's contract default is `false`, so only `true` is ever a filter — the
     // server offers no "false" row for it either.
     case .cameraPreviewOnly: return query.cameraPreviewOnly == true && value == "true"
+    case .hasLook: return query.hasLook.map { String($0) } == value
     }
   }
 
@@ -278,6 +284,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .good: return query.good.map { String($0) }
     case .hasMaster: return query.hasMaster.map { String($0) }
     case .cameraPreviewOnly: return query.cameraPreviewOnly == true ? "true" : nil
+    case .hasLook: return query.hasLook.map { String($0) }
     }
   }
 
@@ -306,6 +313,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .good: query.good = Bool(value)
     case .hasMaster: query.hasMaster = Bool(value)
     case .cameraPreviewOnly: query.cameraPreviewOnly = value == "true" ? true : nil
+    case .hasLook: query.hasLook = Bool(value)
     }
   }
 
@@ -322,6 +330,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .good: query.good = nil
     case .hasMaster: query.hasMaster = nil
     case .cameraPreviewOnly: query.cameraPreviewOnly = nil
+    case .hasLook: query.hasLook = nil
     }
   }
 
@@ -338,6 +347,7 @@ enum InspectorFacetField: String, CaseIterable, Identifiable, Sendable {
     case .good: return query.good != nil
     case .hasMaster: return query.hasMaster != nil
     case .cameraPreviewOnly: return query.cameraPreviewOnly == true
+    case .hasLook: return query.hasLook != nil
     }
   }
 }
@@ -358,7 +368,14 @@ enum InspectorFacetFilters {
     // atomically — so it counts towards the active-filter badge and Clear takes it with the
     // rest, exactly like Type.
     .mark, .rating, .label, .keyword, .tag, .ext, .camera, .good, .hasMaster, .cameraPreviewOnly,
+    .hasLook,
   ]
+
+  /// The dimensions the inspector's Stats tab renders: every field with a server facet.
+  /// IMGMGR-544: `.hasLook` has none, so it is filter-only.
+  static let statsFields: [InspectorFacetField] = InspectorFacetField.allCases.filter {
+    $0 != .hasLook
+  }
 
   static func activeCount(_ query: GridImagesQuery) -> Int {
     clearableFields.filter { $0.isSet(in: query) }.count

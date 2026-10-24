@@ -3403,10 +3403,9 @@ final class GridStore {
   /// same posture `PickLockState.activateFromKeyboard()` already documents for `P`.
   func handleOpenShortcut() {
     // Return and Space share `open`. While the strip (or a presentation over it) owns the keys
-    // they are inert: Apply arrives with P16b, and the loupe is already open.
+    // they are inert: the loupe is already open, and Apply is the strip's button (IMGMGR-544).
     switch looksKeyOwner {
     case .strip:
-      looks.apply()
       return
     case .presentation:
       return
@@ -4273,18 +4272,30 @@ final class GridStore {
   /// 200 whose bytes do not decode) the unlooked proxy is shown instead, the look stays selected,
   /// and the failure is recorded on `looks` so the Looks control can say so. A look never leaves
   /// the loupe blank.
+  ///
+  /// IMGMGR-544: the look is the LOUPE rule (`loupeLook`): an open draft, None included, else the
+  /// saved look. A draft renders fresh as above; a SAVED look goes through `LookedCache`
+  /// (`savedLookedImage`, keyed by `proxy`, the summary's `.preview` identity).
   func loupePreview<Image>(
-    imageID: Int, identityToken: String?, decode: (Data) -> Image?
+    imageID: Int, identityToken: String?, proxy: ProxyLocalIdentity? = nil,
+    decode: (Data) -> Image?
   ) async -> LoupePreview<Image> {
-    guard let active = looks.activeLook(for: imageID) else {
+    guard let active = loupeLook(forImageID: imageID) else {
       let data = await proxyData(imageID: imageID, tier: .preview, identityToken: identityToken)
       return LoupePreview(image: data.flatMap(decode), rendering: .unlooked)
     }
     let lookID = active.lookID
-    if let looked = await lookedProxyData(
-      imageID: imageID, tier: .preview, lookID: lookID, strength: active.strength),
-      let image = decode(looked)
-    {
+    let rendered: Image?
+    if loupeLookIsDraft(imageID: imageID) {
+      rendered = await lookedProxyData(
+        imageID: imageID, tier: .preview, lookID: lookID, strength: active.strength
+      ).flatMap(decode)
+    } else {
+      rendered = await savedLookedImage(
+        proxy: proxy ?? ProxyLocalIdentity(imageID: imageID, tier: .preview, token: identityToken),
+        lookID: lookID, strength: active.strength, decode: decode)
+    }
+    if let image = rendered {
       looks.recordRender(
         imageID: imageID, lookID: lookID, strength: active.strength, available: true)
       return LoupePreview(image: image, rendering: .looked(lookID: lookID))
@@ -4303,18 +4314,89 @@ final class GridStore {
   private func lookedProxyData(
     imageID: Int, tier: ProxyTier, lookID: String, strength: Int
   ) async -> Data? {
+    await lookedProxyResponse(imageID: imageID, tier: tier, lookID: lookID, strength: strength)?
+      .data
+  }
+
+  /// One looked render with the `X-Look-Version` its 200 carried; nil on 404, 422 or transport.
+  private func lookedProxyResponse(
+    imageID: Int, tier: ProxyTier, lookID: String, strength: Int
+  ) async -> (data: Data, version: String?)? {
     do {
       switch try await service.lookedProxy(
         imageID: imageID, tier: tier, lookID: lookID, strength: strength)
       {
-      case .ok(let data):
-        return data
+      case .ok(let data, let version):
+        return (data, version)
       case .notFound, .refused:
         return nil
       }
     } catch {
       return nil
     }
+  }
+
+  // MARK: - Saved looked pixels (IMGMGR-544)
+
+  /// Looked bytes of SAVED looks, keyed by `X-Look-Version` with per-epoch freshness
+  /// (`LookedCache`). Draft renders never come here.
+  @ObservationIgnored private(set) var lookedCache = LookedCache()
+
+  /// The looked cache's freshness epoch: `loadGeneration`, which moves on every first-page
+  /// reload (the moment summaries, and a render-profile switch with them, are re-read).
+  var lookEpoch: Int { loadGeneration }
+
+  /// The render key of one grid tile: its proxy identity and, by the SAVED rule only
+  /// (`LookPersistence.savedRender`; a draft never reaches the grid), the look it renders.
+  func tileRenderKey(image: Components.Schemas.ImageSummary, tier: ProxyTier) -> TileRenderKey {
+    let proxy = ProxyLocalIdentity.make(image: image, tier: tier)
+    guard let saved = LookPersistence.savedRender(look: image.look, hasEdit: image.hasEdit) else {
+      return TileRenderKey(proxy: proxy)
+    }
+    return TileRenderKey(
+      proxy: proxy, lookID: saved.lookID, strength: saved.strength, lookEpoch: lookEpoch)
+  }
+
+  /// One grid tile's pixels, decoded by `decode`. No look: exactly `proxyData(identity:)`,
+  /// `.unlooked`. A look: the looked render through `LookedCache`, `.looked`; when it is not
+  /// available (404, 422, transport) or its 200 does not decode, the unlooked proxy,
+  /// `.fallback`, and nothing is cached. The tile's glyph follows this rendering.
+  func tileImage<Image>(
+    _ key: TileRenderKey, decode: (Data) -> Image?
+  ) async -> TileRender<Image> {
+    guard let lookID = key.lookID, let strength = key.strength else {
+      let data = await proxyData(identity: key.proxy)
+      return TileRender(image: data.flatMap(decode), rendering: .unlooked)
+    }
+    if let image = await savedLookedImage(
+      proxy: key.proxy, lookID: lookID, strength: strength, decode: decode)
+    {
+      return TileRender(image: image, rendering: .looked(lookID: lookID))
+    }
+    let data = await proxyData(identity: key.proxy)
+    return TileRender(image: data.flatMap(decode), rendering: .fallback(lookID: lookID))
+  }
+
+  /// A saved look's decoded render of `proxy`: fresh cached bytes when a response in this epoch
+  /// named them, otherwise a request whose bytes are cached only once they decode and only when
+  /// no reload happened while it was in flight (the epoch is captured BEFORE the await).
+  func savedLookedImage<Image>(
+    proxy: ProxyLocalIdentity, lookID: String, strength: Int, decode: (Data) -> Image?
+  ) async -> Image? {
+    let key = LookedRequestKey(proxy: proxy, lookID: lookID, strength: strength)
+    let issuingEpoch = loadGeneration
+    if let held = lookedCache.fresh(key, epoch: issuingEpoch), let image = decode(held) {
+      return image
+    }
+    guard
+      let response = await lookedProxyResponse(
+        imageID: proxy.imageID, tier: proxy.tier, lookID: lookID, strength: strength),
+      let image = decode(response.data)
+    else { return nil }
+    lookedCache.record(
+      key, version: response.version, data: response.data, issuingEpoch: issuingEpoch,
+      currentEpoch: loadGeneration)
+    return image
   }
 
   /// The looked fallback's unlooked bytes. The unlooked request ALWAYS reaches the server — a
@@ -4356,13 +4438,101 @@ final class GridStore {
     return data
   }
 
-  /// The Looks control: open the strip on the focused photograph, or cancel it.
+  /// The Looks control: open the strip on the focused photograph, seeded from its saved look
+  /// (IMGMGR-544), or cancel it.
   func toggleLooksStrip() {
     guard let focused = focusedImageID else { return }
     if looks.isStripOpen(for: focused) {
       looks.cancel()
     } else {
-      looks.openStrip(imageID: focused)
+      let saved = actionableImages.first { $0.id == focused }?.look
+      looks.openStrip(imageID: focused, saved: saved)
+    }
+  }
+
+  // MARK: - Saved look (IMGMGR-544)
+
+  /// The LOUPE rule: an open draft for `image`, None included, overrides its saved look (a draft
+  /// at None is unlooked); without a draft, the saved rule (`LookPersistence.savedRender`). It
+  /// branches on the draft's EXISTENCE. Grid tiles and share never read this.
+  func loupeLook(for image: Components.Schemas.ImageSummary) -> LookModel.Active? {
+    if let draft = looks.draft, draft.imageID == image.id {
+      return draft.lookID.map { LookModel.Active(lookID: $0, strength: draft.strength) }
+    }
+    return LookPersistence.savedRender(look: image.look, hasEdit: image.hasEdit)
+  }
+
+  /// Whether the loupe's look for `imageID` is the open DRAFT (rendered fresh, never cached)
+  /// rather than the saved one.
+  func loupeLookIsDraft(imageID: Int) -> Bool {
+    looks.draft?.imageID == imageID
+  }
+
+  /// The loupe chip for `image`'s SAVED look (`LookPersistence.chipText`), named from the
+  /// catalogue; nil without a saved look.
+  func loupeLookChip(for image: Components.Schemas.ImageSummary) -> String? {
+    LookPersistence.chipText(
+      look: image.look, hasEdit: image.hasEdit,
+      lookName: image.look.flatMap { looks.catalogueName(of: $0.lookId) })
+  }
+
+  /// `loupeLook` by id: the actionable photograph's, or the draft's alone when it is not loaded.
+  func loupeLook(forImageID imageID: Int) -> LookModel.Active? {
+    guard let image = actionableImages.first(where: { $0.id == imageID }) else {
+      return looks.activeLook(for: imageID)
+    }
+    return loupeLook(for: image)
+  }
+
+  /// Apply: save the open draft on the focused photograph — PUT `{look_id, strength}`, or DELETE
+  /// when the draft is None and a look is saved; nothing at all when the draft already IS the
+  /// saved state (the strip just closes). Pessimistic: the summary's `look` changes only on the
+  /// server's answer. The draft is frozen while the request is on the wire, and `saving` is
+  /// cleared on EVERY completion path by the `defer` right after `beginSave`.
+  ///
+  /// A refusal (422) or a gone photograph (404) writes nothing and keeps the strip open with its
+  /// draft and a line saying so. No answer (transport, an undeclared status, an undecodable 200)
+  /// may have committed: one `detail` read reconciles the look field; if that fails too, the next
+  /// first-page reload is the authority.
+  func applyLook() async {
+    guard looksKeyOwner == .strip, let draft = looks.draft, draft.imageID == focusedImageID,
+      !looks.isSaving(draft.imageID),
+      let image = actionableImages.first(where: { $0.id == draft.imageID })
+    else { return }
+    let id = draft.imageID
+    let session = looks.stripSession
+    let saved = image.look
+    let unchanged =
+      draft.lookID == saved?.lookId
+      && (draft.lookID == nil || draft.strength == saved?.strength)
+    if unchanged {
+      looks.cancel()
+      return
+    }
+    looks.beginSave(id)
+    defer { looks.endSave(id) }
+    do {
+      let written: Components.Schemas.ImageLookView?
+      if let lookID = draft.lookID {
+        written = try await service.putLook(imageID: id, lookID: lookID, strength: draft.strength)
+      } else {
+        try await service.deleteLook(imageID: id)
+        written = nil
+      }
+      mutateActionable([id], isMark: false) { $0.look = written }
+      // Close the strip only if it is still the one this Apply was pressed in (a Cancel and a
+      // reopen while the request was on the wire leaves the new draft alone).
+      if looks.stripSession == session, looks.draft?.imageID == id,
+        looks.draft?.revision == draft.revision
+      {
+        looks.cancel()
+      }
+    } catch {
+      let failure = (error as? LookWriteError) ?? .uncertain
+      looks.noteSaveFailure(imageID: id, session: session, reason: .init(failure))
+      if failure == .uncertain, let detail = try? await service.detail(imageID: id) {
+        mutateActionable([id], isMark: false) { $0.look = detail.look }
+      }
     }
   }
 
@@ -4491,7 +4661,8 @@ final class GridStore {
   /// write target), and its aggregate fields come back from the server's own re-read
   /// (`refreshScenesFor`) rather than being guessed at locally.
   private func mutateActionable(
-    _ ids: Set<Int>, _ transform: (inout Components.Schemas.ImageSummary) -> Void
+    _ ids: Set<Int>, isMark: Bool = true,
+    _ transform: (inout Components.Schemas.ImageSummary) -> Void
   ) {
     switch displayMode {
     case .flat:
@@ -4499,10 +4670,10 @@ final class GridStore {
         transform(&images[i])
       }
       // IMGMGR-541: the remainder's photographs are patched IN PLACE too — a mark never moves a
-      // tile out of the slice it was made on (R3-21).
+      // tile out of the slice it was made on (R3-21). A saved look (IMGMGR-544) is not a mark.
       for i in remainderImages.indices where ids.contains(remainderImages[i].id) {
         transform(&remainderImages[i])
-        if isInRemainder { remainderMarkedDuringVisit = true }
+        if isInRemainder && isMark { remainderMarkedDuringVisit = true }
       }
     case .scene:
       for i in sceneRows.indices {
@@ -4679,6 +4850,20 @@ enum LoupeRendering: Equatable, Sendable {
 struct LoupePreview<Image> {
   let image: Image?
   let rendering: LoupeRendering
+}
+
+/// `GridStore.tileImage`'s answer (IMGMGR-544): the loupe's shape, so a tile's glyph follows
+/// what it painted exactly as the loupe's label does.
+typealias TileRender<Image> = LoupePreview<Image>
+
+/// What one grid tile renders (IMGMGR-544): its proxy identity and, by the SAVED rule, the look
+/// and the looked cache's epoch. The tile's load task is keyed by it, so a saved or removed
+/// look, a new strength, a refreshed proxy or a reload each reload the tile.
+struct TileRenderKey: Hashable, Sendable {
+  var proxy: ProxyLocalIdentity
+  var lookID: String? = nil
+  var strength: Int? = nil
+  var lookEpoch: Int? = nil
 }
 
 /// Who owns the Looks strip's keys (IMGMGR-543).

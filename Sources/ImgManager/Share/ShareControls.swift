@@ -68,7 +68,10 @@ final class ShareLauncher {
   /// A refusal is NOT presented: nothing is on disk, so there is nothing to hand to a sheet, and
   /// `ShareStatusBar` renders the refusal inline exactly as it always did.
   private func present(share: ShareExportStore, image: Components.Schemas.ImageSummary) async {
-    await share.prepare(ShareExportPlan.variant(hasEdit: image.hasEdit), for: image)
+    // IMGMGR-544: the SAVED look (never an unapplied draft) goes with a preview export.
+    await share.prepare(
+      ShareExportPlan.variant(hasEdit: image.hasEdit), for: image,
+      look: LookPersistence.savedRender(look: image.look, hasEdit: image.hasEdit))
     // A prepare that finishes AFTER the loupe is gone must not present anything. The store has
     // already ended that export (its cancellation path), so `.ready` is not reachable here
     // either — this is the second half of the same statement, said where the presentation

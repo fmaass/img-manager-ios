@@ -16,8 +16,11 @@ struct TileView: View {
   /// pass draws the same answer.
   let showsFilenamePlate: Bool
   @State private var proxyImage: PlatformImage?
-  /// The identity `proxyImage` was decoded from (R3-15 stale-completion guard).
-  @State private var loadedKey: TileLoadKey?
+  /// The render key `proxyImage` was decoded from (R3-15 stale-completion guard).
+  @State private var loadedKey: TileRenderKey?
+  /// IMGMGR-544: what `proxyImage` was rendered as. The look glyph follows THIS, never the saved
+  /// row alone: a looked render that failed paints unlooked pixels and shows no glyph.
+  @State private var paintedRendering: LoupeRendering?
   let store: GridStore
   /// WP13 P11 (IMGMGR-220): the pointer-hover seam, injectable in the shape of
   /// `GridView.pointerGestureInstaller` so a spy can prove this cell really installs the effect.
@@ -106,20 +109,27 @@ struct TileView: View {
     // R3-15: keyed on the proxy's local identity (token + reported dimensions), so a row adopted
     // from a 400-px to an 800-px grid file reloads even though its image id and tier are the same.
     // The request is built from the same key, so the key and the bytes cannot disagree.
-    .task(id: TileLoadKey.make(image: image, tier: tier)) {
-      let key = TileLoadKey.make(image: image, tier: tier)
-      // A different photograph never shows the previous one's pixels; the same photograph keeps
-      // its old pixels until the new bytes decode, so an adoption does not flash blank.
-      if key.imageID != loadedKey?.imageID { proxyImage = nil }
-      guard let data = await store.proxyData(identity: key),
-        let decoded = PlatformImage(data: data)
-      else { return }
+    // IMGMGR-544: the key also carries the SAVED look (and the looked cache's epoch), so saving
+    // or removing a look reloads the tile; decoding happens inside `tileImage`, so an undecodable
+    // looked 200 falls back to the unlooked pixels instead of leaving the tile as it was.
+    .task(id: store.tileRenderKey(image: image, tier: tier)) {
+      let key = store.tileRenderKey(image: image, tier: tier)
+      // A different photograph never shows the previous one's pixels (nor its glyph); the same
+      // photograph keeps its old pixels and their rendering until the new bytes decode, so an
+      // adoption does not flash blank.
+      if key.proxy.imageID != loadedKey?.proxy.imageID {
+        proxyImage = nil
+        paintedRendering = nil
+      }
+      let render = await store.tileImage(key) { PlatformImage(data: $0) }
+      guard let decoded = render.image else { return }
       // A superseded load is cancelled by `.task(id:)` when the key changes, and writes nothing.
-      // The check and both writes are synchronous — no suspension point between them — so a
+      // The check and the writes are synchronous — no suspension point between them — so a
       // completion cannot land after its key was replaced. (SwiftUI runtime behaviour: the unit
       // tests do not exercise cancellation.)
       if !Task.isCancelled {
         proxyImage = decoded
+        paintedRendering = render.rendering
         loadedKey = key
       }
     }
@@ -224,14 +234,24 @@ struct TileView: View {
     }
   }
 
+  /// IMGMGR-544: the tile shows looked pixels right now — it presents its photograph (not a
+  /// tombstone or a placeholder) and the pixels it painted were a looked render.
+  private var rendersLook: Bool {
+    guard proxyImage != nil, let paintedRendering, TileBadgeItem.isLooked(paintedRendering)
+    else { return false }
+    if case .display = TilePresentation.resolve(missing: image.missing, plan: plan) { return true }
+    return false
+  }
+
   /// The badges this tile DRAWS: the overlay-filtered priority list, capped. One computation
   /// feeds both the drawn row and the fixture-only readback, so the two cannot disagree.
   private var shownBadges: [TileBadgeItem] {
     let items = TileBadgeItem.items(
       changedElsewhere: store.changedElsewhereImageIDs.contains(image.id),
       selected: isSelectMode && isSelected, mark: image.mark.state, hasEdit: image.hasEdit,
+      rendersLook: rendersLook,
       rating: image.lightroom.rating, sourceKind: image.sourceKind, overlays: overlays)
-    return Array(items.prefix(TileBadgeItem.cap))
+    return TileBadgeItem.drawn(items)
   }
 }
 
@@ -324,7 +344,7 @@ struct TileFixtureBadgeReadback: ViewModifier {
 /// `.lightroomRating` in the same slot (it now draws the rating, "★N"), and `.sourceKind` is
 /// appended last, so no existing pair changes relative order.
 enum TileBadgeItem: Hashable, CaseIterable, Sendable {
-  case selected, pick, dislike, edited, lightroomRating, changedElsewhere, sourceKind
+  case selected, pick, dislike, edited, look, lightroomRating, changedElsewhere, sourceKind
 
   /// At most two badges on a tile.
   static let cap = 2
@@ -335,6 +355,7 @@ enum TileBadgeItem: Hashable, CaseIterable, Sendable {
     case .pick: return "hand.thumbsup.fill"
     case .dislike: return "hand.thumbsdown.fill"
     case .edited: return "pencil.circle.fill"
+    case .look: return "camera.filters"
     case .lightroomRating: return "star.fill"
     case .changedElsewhere: return "arrow.triangle.2.circlepath"
     case .sourceKind: return "doc"
@@ -352,17 +373,35 @@ enum TileBadgeItem: Hashable, CaseIterable, Sendable {
     case .sourceKind:
       guard let symbol = TileBadgeContent.sourceKindSymbol(sourceKind) else { return nil }
       return .sourceKind(symbol: symbol, label: LoupeFidelityLabel.label(sourceKind: sourceKind))
-    case .selected, .pick, .dislike, .edited, .changedElsewhere:
+    case .selected, .pick, .dislike, .edited, .look, .changedElsewhere:
       return .symbol(systemImage)
     }
+  }
+
+  /// The badges a tile DRAWS: the eligible list (`items`) capped at `cap`. The one function
+  /// both the drawn row and the fixture readback use.
+  static func drawn(_ eligible: [TileBadgeItem]) -> [TileBadgeItem] {
+    Array(eligible.prefix(cap))
+  }
+
+  /// Whether a painted rendering went through a look (IMGMGR-544): `.looked` only; a fallback
+  /// painted unlooked pixels.
+  static func isLooked(_ rendering: LoupeRendering) -> Bool {
+    if case .looked = rendering { return true }
+    return false
   }
 
   /// The tile's badge list in priority order, BEFORE the cap: changed elsewhere and the Select
   /// tick are mandatory; the mark, Edited, the Lightroom rating and the source kind each follow
   /// their overlay. An item with nothing to draw is not emitted, so it never takes a slot.
+  ///
+  /// IMGMGR-544: `.look` (after Edited) is always on — no overlay gates it — and is eligible
+  /// only when the tile PAINTED a looked render (`rendersLook`) and the photograph has no
+  /// Lightroom edit: the look glyph and the edit pencil never appear together.
   static func items(
     changedElsewhere: Bool, selected: Bool, mark: Components.Schemas.MarkView.StatePayload?,
-    hasEdit: Bool?, rating: Int?, sourceKind: String?, overlays: TileOverlaySet
+    hasEdit: Bool?, rendersLook: Bool = false, rating: Int?, sourceKind: String?,
+    overlays: TileOverlaySet
   ) -> [TileBadgeItem] {
     var items: [TileBadgeItem] = []
     // P6 (IMGMGR-116): highest priority — a refused write's compact, tile-local recovery
@@ -378,6 +417,7 @@ enum TileBadgeItem: Hashable, CaseIterable, Sendable {
       }
     }
     if overlays.edited && hasEdit == true { items.append(.edited) }
+    if rendersLook && hasEdit != true { items.append(.look) }
     for item in [TileBadgeItem.lightroomRating, .sourceKind] {
       let isOn = item == .lightroomRating ? overlays.lightroomRating : overlays.sourceKind
       if isOn && item.content(rating: rating, sourceKind: sourceKind) != nil {

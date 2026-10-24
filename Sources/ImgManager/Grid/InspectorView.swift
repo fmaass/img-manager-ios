@@ -114,7 +114,7 @@ struct InspectorView: View {
       // still active, the way out must not disappear along with them.
       clearFiltersRow
       if let facets = store.facets {
-        ForEach(InspectorFacetField.allCases) { field in
+        ForEach(InspectorFacetFilters.statsFields) { field in
           facetRows(field, facets)
         }
       } else {
