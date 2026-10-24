@@ -3965,8 +3965,10 @@ final class GridStore {
     } catch {
       let mutationError = (error as? GridServiceError) ?? .unreachable
       // IMGMGR-586: recorded BEFORE the stale-generation escape — a write that failed while the
-      // reader changed scope is just as unsaved. A 409 is the conflict banner's instead.
-      if mutationError == .conflict {
+      // reader changed scope is just as unsaved. A 409 is the conflict banner's instead — but
+      // only in the scope it was made in (IMGMGR-589): after a scope change `handleConflict`
+      // never runs, so the mark stays unsaved and the next Retry meets the conflict there.
+      if mutationError == .conflict, generation == loadGeneration {
         forgetUnsaved(priors)
       } else {
         recordUnsaved(state, priors: priors)

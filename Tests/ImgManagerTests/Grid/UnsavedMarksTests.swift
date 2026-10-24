@@ -203,6 +203,61 @@ struct UnsavedMarksTests {
     #expect(store.unsavedMarks[1]?.state == .pick, "the failed pick vanished with the scope")
   }
 
+  @Test("IMGMGR-589: a Retry refused with a 409 after the reader switched shoots keeps the mark")
+  func retryConflictAfterAScopeChangeKeepsTheMark() async throws {
+    let (store, transport) = await loadedStore()
+    await transport.setMarkStateOutcome(.serverError)
+    await store.applyMark(.pick, to: [1])
+    try #require(store.unsavedMarks.count == 1)
+
+    await transport.setMarkStateOutcome(.conflict)
+    await transport.holdMarkStateRequests(true)
+    async let retry: Void = store.retryUnsavedMarks()
+    await transport.waitUntilMarkStateStarted()
+
+    await transport.setListImagesPage(.init(items: [makeImage(id: 5)], limit: 100, nextCursor: nil))
+    await store.selectShoot(folderID: 2)
+    await transport.holdMarkStateRequests(false)
+    await transport.releaseMarkState()
+    _ = await retry
+
+    #expect(await markCalls(transport) == 2, "1 refused write + 1 retry")
+    // The 409 arrived in a scope that no longer shows the photograph, so the conflict banner
+    // cannot take it; the unsaved banner keeps it, still against the revision it was made on.
+    #expect(store.unsavedMarks[1]?.state == .pick, "the rejected pick is under neither banner")
+    #expect(store.unsavedMarks[1]?.prior.revisionBefore == "r0")
+  }
+
+  @Test("Retry after a refresh sends the original precondition and lands in the conflict banner")
+  func retryAfterARefreshConflicts() async throws {
+    let (store, transport) = await loadedStore()
+    await transport.setMarkStateOutcome(.serverError)
+    await store.applyMark(.pick, to: [1])
+    try #require(store.unsavedMarks.count == 1)
+
+    // Another device changed the photograph meanwhile; the refresh shows its new revision.
+    await transport.setListImagesPage(
+      .init(items: [makeImage(id: 1, mark: .dislike, revision: "r1")], limit: 100, nextCursor: nil))
+    _ = await store.authoritativeRefresh()
+    try #require(store.images.first?.mark.revision == "r1")
+    try #require(store.unsavedMarks[1]?.prior.revisionBefore == "r0")
+
+    await transport.setMarkStateOutcome(.conflict)
+    await store.retryUnsavedMarks()
+
+    let request = await transport.lastMarkStateRequest
+    #expect(request?.imageIds == [1])
+    #expect(request?.state == .pick)
+    #expect(request?.preconditions?.first?.revision == "r0", "Retry overwrote the other device")
+    guard case .identified(_, _, let changedIDs) = store.conflictRecovery else {
+      Issue.record(
+        "no conflict banner after the refused Retry: \(String(describing: store.conflictRecovery))")
+      return
+    }
+    #expect(changedIDs == [1])
+    #expect(store.unsavedMarks.isEmpty, "one photograph under two banners")
+  }
+
   @Test("Two Retry presses racing send the failed write once")
   func racingRetriesWriteOnce() async throws {
     let (store, transport) = await loadedStore()
