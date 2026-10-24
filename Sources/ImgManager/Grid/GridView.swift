@@ -315,12 +315,15 @@ struct GridView: View {
 
     #if canImport(UIKit)
       private static func focusEngineProbeValue() -> String {
-        let window = UIApplication.shared.connectedScenes
+        let windows = UIApplication.shared.connectedScenes
           .compactMap { $0 as? UIWindowScene }
           .flatMap(\.windows)
-          .first(where: \.isKeyWindow)
-        guard let window, let system = UIFocusSystem.focusSystem(for: window) else {
-          return "engine=unavailable"
+        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first else {
+          return "engine=noWindow"
+        }
+        // nil when UIKit runs no focus system for this window (no keyboard focus at all).
+        guard let system = UIFocusSystem.focusSystem(for: window) else {
+          return "engine=noFocusSystem"
         }
         guard let item = system.focusedItem else { return "engine=nil" }
         let frame = item.frame.integral
