@@ -6,6 +6,16 @@ refuses to upload when that section is missing, empty or duplicated; Settings �
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.15.6 (28)
+
+- In the photo view, Looks now opens a strip in the filmstrip's place, each tile showing the photo through one look: None first, then Favourites, Film, Camera, Mono and Other. Long-press a look to add it to Favourites, which are kept on this device. Set the strength under the strip, from 0 to 200 %, then press Apply or Cancel. With a keyboard, ← and → choose a look, ↑ and ↓ change the strength by 10 %, and Esc cancels.
+- The line under the photo view's title now shows Lightroom's star rating and colour label after the source, for example Master · ★★★★☆ · ● Red, when the photo's sidecar carries them.
+- Apply saves the look on the photo: the grid and the photo view show the photo through it, its tile carries the Looks icon, and the line under the title names the look and its strength. Choose None and Apply to remove it. A Lightroom edit shows instead of the look, and the line says superseded by edit. Filters has a new Look section with Has look, and Share sends the preview through the saved look, or says it couldn't be prepared.
+- A pick or dislike that hit a conflict after you moved to another folder or changed the filter now stays in the banner of marks that did not save, so Retry can still deal with it. Before, it could drop out of the count unsaved.
+- Choosing None or Scene under Arrange › Group while a folder is still opening now sticks. Before, the folder's own default could switch it back a moment later.
+- A folder cover could stay empty while the list of shoots kept refreshing. It now loads.
+- Grouped by Mark or Rating, the photo list recovers cleanly when it went out of date while you scrolled, and after a refresh that fails the group headers no longer show counts that don't match the photos below them.
+
 ## 0.15.5 (27)
 
 - Scene cards have a chevron in the bottom-right corner that opens the scene's photos in rows right below the card. Several scenes can be open at once. Esc closes the most recently opened one, More › Collapse all closes them all, and closing puts the grid back where it was.
