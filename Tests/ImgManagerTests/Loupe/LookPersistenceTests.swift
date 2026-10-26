@@ -9,8 +9,12 @@ import Testing
 @Suite("Look persistence (IMGMGR-544)")
 @MainActor
 struct LookPersistenceTests {
-  static func savedLook(_ id: String, _ strength: Int) -> Components.Schemas.ImageLookView {
-    .init(lookId: id, strength: strength, updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+  static func savedLook(
+    _ id: String, _ strength: Int, stale: Bool = false
+  ) -> Components.Schemas.ImageLookView {
+    .init(
+      lookId: id, stale: stale, strength: strength,
+      updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
   }
 
   /// A loaded store with the loupe open on photograph 1, whose saved look is `saved`.
@@ -39,7 +43,7 @@ struct LookPersistenceTests {
     store.actionableImages.first { $0.id == id }
   }
 
-  @Test("AC3: Apply PUTs exactly look_id and strength, writes the summary, closes the strip")
+  @Test("AC3: Apply PUTs look_id, strength and the previewed version, writes the summary")
   func applyPutsLookIDAndStrength() async throws {
     let (store, transport) = await Self.store()
     store.toggleLooksStrip()
@@ -51,9 +55,10 @@ struct LookPersistenceTests {
     #expect(writes.first.flatMap { URLComponents(string: $0.path)?.path } == "/api/images/1/look")
     let body = try #require(writes.first?.body)
     let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-    #expect(Set(json.keys) == ["look_id", "strength"])
+    #expect(Set(json.keys) == ["look_id", "strength", "look_version"])
     #expect(json["look_id"] as? String == "warm-film")
     #expect(json["strength"] as? Int == 120)
+    #expect(json["look_version"] as? String == "v1-warm-film")
     #expect(summary(store)?.look?.lookId == "warm-film")
     #expect(summary(store)?.look?.strength == 120)
     #expect(store.looks.draft == nil)
@@ -123,7 +128,8 @@ struct LookPersistenceTests {
     "`saving` is cleared on every completion path",
     arguments: [
       GridStubTransport.LookWriteOutcome.ok, .notFound, .refused(code: "unknown_look"),
-      .transportFailure, .undecodable,
+      .transportFailure, .undecodable, .versionConflict(current: "v2-warm-film"),
+      .versionConflict(current: nil),
     ])
   func savingClearedOnEveryPath(outcome: GridStubTransport.LookWriteOutcome) async {
     let (store, transport) = await Self.store()
@@ -299,5 +305,236 @@ struct LookPersistenceTests {
     let (edited, _) = await Self.store(saved: Self.savedLook("warm-film", 120), hasEdit: true)
     let editedFirst = try #require(summary(edited))
     #expect(edited.loupeLookChip(for: editedFirst) == "Warm Film · superseded by edit")
+  }
+
+  // MARK: - The look version check (IMGMGR-544 AC addendum, IMGMGR-642)
+
+  static let updatedBytes = Data([0xFF, 0xD8, 0xFF, 0xD9, 0x03])
+
+  /// The fixture catalogue with each look at the version given.
+  static func catalogue(
+    warmFilm: String, coolMatte: String, classicMono: String
+  ) -> [Components.Schemas.LookSummary] {
+    [
+      GridServiceContractProbeTests.look("warm-film", name: "Warm Film", version: warmFilm),
+      GridServiceContractProbeTests.look(
+        "cool-matte", name: "Cool Matte", category: "Creative", version: coolMatte),
+      GridServiceContractProbeTests.look(
+        "classic-mono", name: "Classic Mono", category: "Mono", version: classicMono),
+    ]
+  }
+
+  /// The catalogue after the server moved warm-film only.
+  static let warmFilmMoved = catalogue(
+    warmFilm: "v2-warm-film", coolMatte: "v1-cool-matte", classicMono: "v1-classic-mono")
+
+  private func lookedRequests(_ transport: GridStubTransport, _ lookID: String) async -> Int {
+    await transport.recordedLookedProxyRequests.filter { $0.contains("/look/\(lookID)?") }.count
+  }
+
+  private func putVersion(_ transport: GridStubTransport, _ index: Int) async throws -> String? {
+    let writes = await transport.recordedLookWrites
+    let body = try #require(writes.indices.contains(index) ? writes[index].body : nil)
+    let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    return json["look_version"] as? String
+  }
+
+  private func tile(_ store: GridStore, _ lookID: String) async -> Data? {
+    await store.lookTile(imageID: 1, lookID: lookID, identityToken: nil)
+  }
+
+  @Test("AC-A: the version is the one captured at preview, not re-read at Apply")
+  func applySendsVersionCapturedAtPreview() async throws {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    #expect(store.looks.draft?.lookVersion == "v1-warm-film")
+    await transport.setLooksCatalogue(Self.warmFilmMoved)
+    await store.looks.refetchCatalogue()
+    #expect(store.looks.version(of: "warm-film") == "v2-warm-film")
+    await store.applyLook()
+    #expect(try await putVersion(transport, 0) == "v1-warm-film")
+  }
+
+  @Test("AC-A: a strip seeded from a saved look takes that look's catalogue version")
+  func seededDraftTakesTheCatalogueVersion() async {
+    let (store, _) = await Self.store(saved: Self.savedLook("cool-matte", 120))
+    store.toggleLooksStrip()
+    #expect(store.looks.draft?.lookVersion == "v1-cool-matte")
+    store.looks.select(nil)
+    #expect(store.looks.draft?.lookVersion == nil)
+  }
+
+  @Test("AC-B: a 409 is one PUT, unsaved, a catalogue re-fetch, and the tile re-rendered")
+  func versionConflictIsNotRetried() async throws {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    #expect(await tile(store, "warm-film") == LookFixtures.lookedBytes)
+    #expect(await lookedRequests(transport, "warm-film") == 1)
+    let token = store.looks.tileToken(for: "warm-film")
+    await transport.setLooksCatalogue(Self.warmFilmMoved)
+    await transport.setLookedProxyOutcome(.ok(Self.updatedBytes))
+    await transport.enqueueLookWriteOutcomes([.versionConflict(current: "v2-warm-film")])
+    let wireBefore = await transport.recordedWire.count
+    await store.applyLook()
+    let writes = await transport.recordedLookWrites
+    #expect(writes.map(\.method) == ["PUT"])
+    #expect(try await putVersion(transport, 0) == "v1-warm-film")
+    #expect(summary(store)?.look == nil)
+    #expect(store.looks.draft?.lookID == "warm-film")
+    #expect(store.looks.draft?.strength == LookStrength.standard)
+    #expect(store.looks.draft?.lookVersion == "v2-warm-film")
+    #expect(store.looks.visibleSaveFailure(for: 1) == .versionChanged)
+    #expect(store.looks.visibleSaveFailure(for: 1)?.copy == "Look updated \u{2014} preview again")
+    #expect(await transport.callCount(Operations.ListLooksApiLooksGet.id) == 2)
+    #expect(await transport.callCount(Operations.GetImageApiImagesImageIdGet.id) == 0)
+    #expect(store.looks.saving.isEmpty)
+    let after = await transport.recordedWire.dropFirst(wireBefore).map(\.operationID)
+    #expect(
+      Set(after)
+        == [Operations.PutImageLookApiImagesImageIdLookPut.id, Operations.ListLooksApiLooksGet.id])
+    #expect(store.looks.tileToken(for: "warm-film") > token)
+    #expect(await tile(store, "warm-film") == Self.updatedBytes)
+    #expect(await lookedRequests(transport, "warm-film") == 2)
+  }
+
+  @Test("AC-B: no auto-resave; the reader's next Apply sends the new version")
+  func secondApplyAfterConflictSendsNewVersion() async throws {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    await transport.setLooksCatalogue(Self.warmFilmMoved)
+    await transport.enqueueLookWriteOutcomes([.versionConflict(current: "v2-warm-film")])
+    await store.applyLook()
+    #expect(await transport.recordedLookWrites.count == 1)
+    await store.applyLook()
+    #expect(await transport.recordedLookWrites.count == 2)
+    #expect(try await putVersion(transport, 1) == "v2-warm-film")
+    #expect(summary(store)?.look?.lookId == "warm-film")
+    #expect(store.looks.draft == nil)
+  }
+
+  @Test("AC-B: a 409 whose body does not decode is still a conflict, never reconciled")
+  func malformedConflictIsNotReconciled() async {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    await transport.enqueueLookWriteOutcomes([.versionConflict(current: nil)])
+    await store.applyLook()
+    #expect(await transport.recordedLookWrites.count == 1)
+    #expect(store.looks.visibleSaveFailure(for: 1) == .versionChanged)
+    #expect(await transport.callCount(Operations.GetImageApiImagesImageIdGet.id) == 0)
+    #expect(await transport.callCount(Operations.ListLooksApiLooksGet.id) == 2)
+    #expect(summary(store)?.look == nil)
+    #expect(store.looks.draft?.lookID == "warm-film")
+  }
+
+  @Test("Scope: after a 409 only tiles whose catalogue version moved are asked again")
+  func invalidationFollowsMovedVersions() async {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    for lookID in ["warm-film", "cool-matte", "classic-mono"] {
+      #expect(await tile(store, lookID) == LookFixtures.lookedBytes)
+    }
+    let monoToken = store.looks.tileToken(for: "classic-mono")
+    await transport.setLooksCatalogue(
+      Self.catalogue(
+        warmFilm: "v2-warm-film", coolMatte: "v2-cool-matte", classicMono: "v1-classic-mono"))
+    await transport.setLookedProxyOutcome(.ok(Self.updatedBytes))
+    await transport.enqueueLookWriteOutcomes([.versionConflict(current: "v2-warm-film")])
+    await store.applyLook()
+    #expect(store.looks.tileToken(for: "classic-mono") == monoToken)
+    #expect(await tile(store, "classic-mono") == LookFixtures.lookedBytes)
+    #expect(await lookedRequests(transport, "classic-mono") == 1)
+    #expect(await tile(store, "cool-matte") == Self.updatedBytes)
+    #expect(await lookedRequests(transport, "cool-matte") == 2)
+    #expect(await tile(store, "warm-film") == Self.updatedBytes)
+    #expect(await lookedRequests(transport, "warm-film") == 2)
+  }
+
+  @Test("Concurrency: a tile render in flight across its invalidation is dropped")
+  func lateTileCompletionAfterInvalidationIsDropped() async {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    await transport.holdLookedProxyRequests(true)
+    let late = Task { await store.lookTile(imageID: 1, lookID: "warm-film", identityToken: nil) }
+    await transport.waitUntilLookedProxyStarted()
+    store.invalidateLookTile(lookID: "warm-film")
+    await transport.releaseLookedProxy()
+    #expect(await late.value == nil)
+    await transport.holdLookedProxyRequests(false)
+    await transport.setLookedProxyOutcome(.ok(Self.updatedBytes))
+    #expect(await tile(store, "warm-film") == Self.updatedBytes)
+    #expect(await lookedRequests(transport, "warm-film") == 2)
+  }
+
+  @Test("Concurrency: Cancel and reopen while a conflicted save is on the wire")
+  func cancelReopenDuringConflictedSave() async {
+    let (store, transport) = await Self.store()
+    await transport.holdLookWrites(true)
+    await transport.enqueueLookWriteOutcomes([.versionConflict(current: "v2-warm-film")])
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    let apply = Task { await store.applyLook() }
+    await transport.waitUntilLookWriteStarted()
+    store.toggleLooksStrip()
+    store.toggleLooksStrip()
+    #expect(store.looks.draft?.lookID == nil)
+    await transport.setLooksCatalogue(Self.warmFilmMoved)
+    await transport.releaseLookWrite()
+    await apply.value
+    #expect(await transport.recordedLookWrites.count == 1)
+    #expect(store.looks.visibleSaveFailure(for: 1) == nil)
+    #expect(store.looks.draft?.lookID == nil)
+    #expect(store.looks.draft?.lookVersion == nil)
+    #expect(await transport.callCount(Operations.ListLooksApiLooksGet.id) == 2)
+    #expect(store.looks.saving.isEmpty)
+  }
+
+  @Test("A failed re-fetch keeps the catalogue and the open strip")
+  func refetchFailureKeepsCatalogue() async {
+    let (store, transport) = await Self.store()
+    store.toggleLooksStrip()
+    await transport.setLooksShouldFail(true)
+    await store.looks.refetchCatalogue()
+    #expect(store.looks.catalogue.count == LookFixtures.catalogue.count)
+    #expect(store.looks.catalogueState == .loaded)
+    #expect(store.looks.canChoose)
+    #expect(store.looks.isStripOpen(for: 1))
+  }
+
+  @Test("AC-C: the chip appends \u{201C}updated\u{201D} to either form when the look is stale")
+  func chipStaleBySuperseded() async throws {
+    let fresh = Self.savedLook("warm-film", 120)
+    let stale = Self.savedLook("warm-film", 120, stale: true)
+    #expect(
+      LookPersistence.chipText(look: fresh, hasEdit: false, lookName: "Warm Film")
+        == "Warm Film · 120 %")
+    #expect(
+      LookPersistence.chipText(look: stale, hasEdit: false, lookName: "Warm Film")
+        == "Warm Film · 120 % · updated")
+    #expect(
+      LookPersistence.chipText(look: fresh, hasEdit: true, lookName: "Warm Film")
+        == "Warm Film · superseded by edit")
+    #expect(
+      LookPersistence.chipText(look: stale, hasEdit: true, lookName: "Warm Film")
+        == "Warm Film · superseded by edit · updated")
+    let (store, _) = await Self.store(saved: stale)
+    let first = try #require(summary(store))
+    #expect(store.loupeLookChip(for: first) == "Warm Film · 120 % · updated")
+  }
+
+  @Test("A stale look keeps its glyph and its saved render")
+  func staleLookKeepsGlyphAndRender() async throws {
+    let stale = Self.savedLook("warm-film", 120, stale: true)
+    #expect(
+      LookPersistence.savedRender(look: stale, hasEdit: false)
+        == LookModel.Active(lookID: "warm-film", strength: 120))
+    let (store, _) = await Self.store(saved: stale)
+    let first = try #require(summary(store))
+    #expect(store.tileRenderKey(image: first, tier: .grid).lookID == "warm-film")
+    #expect(store.loupeLook(forImageID: 1) == LookModel.Active(lookID: "warm-film", strength: 120))
   }
 }

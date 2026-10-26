@@ -713,6 +713,10 @@ actor GridStubTransport: ClientTransport {
     /// A 200 whose body is not an `ImageLookView` (the server may have committed).
     case undecodable
     case transportFailure
+    /// IMGMGR-642: the 409 `look_version_mismatch`, naming the version the catalogue serves now.
+    /// `current: nil` sends a 409 whose body is NOT a `LookVersionConflictError`, so the
+    /// generated client fails to decode it inside the call.
+    case versionConflict(current: String?)
   }
 
   var lookWriteOutcomes: [LookWriteOutcome] = []
@@ -773,7 +777,7 @@ actor GridStubTransport: ClientTransport {
       return try jsonResponse(
         .ok,
         Components.Schemas.ImageLookView(
-          lookId: sent.lookId, strength: sent.strength ?? 100,
+          lookId: sent.lookId, stale: false, strength: sent.strength ?? 100,
           updatedAt: Date(timeIntervalSince1970: 1_800_000_000)))
     case .notFound:
       return (HTTPResponse(status: .notFound), nil)
@@ -784,6 +788,16 @@ actor GridStubTransport: ClientTransport {
       return jsonBytes(.ok, #"{"unexpected": true}"#)
     case .transportFailure:
       throw SentinelTransportError(raw: "GridStubTransport: forced look write failure")
+    case .versionConflict(let current):
+      guard let current else { return jsonBytes(.conflict, #"{"unexpected": true}"#) }
+      let sent = try JSONDecoder.grid.decode(
+        Components.Schemas.ImageLookRequest.self, from: bodyBytes)
+      let detail: [String: String] = [
+        "code": "look_version_mismatch", "look_id": sent.lookId,
+        "requested_version": sent.lookVersion ?? "", "current_version": current,
+      ]
+      let json = try JSONSerialization.data(withJSONObject: ["detail": detail])
+      return jsonBytes(.conflict, String(decoding: json, as: UTF8.self))
     }
   }
 

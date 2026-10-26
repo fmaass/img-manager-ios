@@ -60,7 +60,7 @@
     private func lookView(of imageID: Int) -> Components.Schemas.ImageLookView? {
       savedLooks[imageID].map {
         Components.Schemas.ImageLookView(
-          lookId: $0.lookID, strength: $0.strength,
+          lookId: $0.lookID, stale: false, strength: $0.strength,
           updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
       }
     }
@@ -562,7 +562,8 @@
     {
       Components.Schemas.LookSummary(
         category: category, id: id, licence: "Debug fixture, no colour table", name: name,
-        source: "img-manager-ios debug stub", sourceUrl: "https://example.invalid/looks/\(id)")
+        source: "img-manager-ios debug stub", sourceUrl: "https://example.invalid/looks/\(id)",
+        version: "debug0000001")
     }
 
     /// A dozen fixture images spanning several aspect ratios — including a panorama (index 3)

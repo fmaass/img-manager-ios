@@ -95,7 +95,8 @@ struct ShareLookedExportTests {
   @Test("An edit supersedes the look: no saved render, and a master export asks no look")
   func supersededLookSharesTheMaster() async {
     let saved = Components.Schemas.ImageLookView(
-      lookId: "warm-film", strength: 120, updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+      lookId: "warm-film", stale: false, strength: 120,
+      updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
     #expect(LookPersistence.savedRender(look: saved, hasEdit: true) == nil)
     let directory = scratchDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

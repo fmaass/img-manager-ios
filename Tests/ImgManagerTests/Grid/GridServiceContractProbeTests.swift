@@ -449,12 +449,12 @@ struct GridServiceContractProbeTests {
 
   // MARK: - IMGMGR-382: the v0.21.0 look operations
 
-  static func look(_ id: String, name: String, category: String = "Film")
-    -> Components.Schemas.LookSummary
-  {
+  static func look(
+    _ id: String, name: String, category: String = "Film", version: String? = nil
+  ) -> Components.Schemas.LookSummary {
     Components.Schemas.LookSummary(
       category: category, id: id, licence: "test licence", name: name, source: "test",
-      sourceUrl: "https://example.invalid/\(id)")
+      sourceUrl: "https://example.invalid/\(id)", version: version ?? "v1-\(id)")
   }
 
   @Test("Looks: GET /api/looks decodes the real LookList, in the server's own order")
@@ -541,11 +541,11 @@ struct GridServiceContractProbeTests {
     }
   }
 
-  @Test("Saved look: PUT carries exactly look_id and strength and decodes the ImageLookView")
+  @Test("Saved look: PUT carries look_id, strength and look_version, decodes the ImageLookView")
   func putLookProbe() async throws {
     let transport = GridStubTransport()
     let view = try await makeService(transport).putLook(
-      imageID: 1, lookID: "warm-film", strength: 120)
+      imageID: 1, lookID: "warm-film", strength: 120, lookVersion: "v1-warm-film")
     #expect(view.lookId == "warm-film")
     #expect(view.strength == 120)
     let writes = await transport.recordedLookWrites
@@ -554,9 +554,59 @@ struct GridServiceContractProbeTests {
     #expect(writes.first.flatMap { URLComponents(string: $0.path)?.path } == "/api/images/1/look")
     let body = try #require(writes.first?.body)
     let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-    #expect(Set(json.keys) == ["look_id", "strength"])
+    #expect(Set(json.keys) == ["look_id", "strength", "look_version"])
     #expect(json["look_id"] as? String == "warm-film")
     #expect(json["strength"] as? Int == 120)
+    #expect(json["look_version"] as? String == "v1-warm-film")
+  }
+
+  @Test("Saved look: a look id spelled like the field is still only the look_id value")
+  func putLookVersionKeyIsTheField() async throws {
+    let transport = GridStubTransport()
+    _ = try await makeService(transport).putLook(
+      imageID: 1, lookID: "look_version", strength: 100, lookVersion: "v1-look_version")
+    let body = try #require(await transport.recordedLookWrites.first?.body)
+    let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    #expect(Set(json.keys) == ["look_id", "strength", "look_version"])
+    #expect(json["look_id"] as? String == "look_version")
+    #expect(json["look_version"] as? String == "v1-look_version")
+  }
+
+  @Test("Saved look: no version leaves look_version out of the body")
+  func putLookOmitsAbsentVersion() async throws {
+    let transport = GridStubTransport()
+    _ = try await makeService(transport).putLook(
+      imageID: 1, lookID: "warm-film", strength: 120, lookVersion: nil)
+    let body = try #require(await transport.recordedLookWrites.first?.body)
+    let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    #expect(Set(json.keys) == ["look_id", "strength"])
+  }
+
+  @Test("Saved look: a 409 is .versionConflict, decodable or not; a bad 200 stays .uncertain")
+  func putLookVersionConflictProbe() async throws {
+    let transport = GridStubTransport()
+    let service = makeService(transport)
+    await transport.enqueueLookWriteOutcomes([
+      .versionConflict(current: "v2-warm-film"), .versionConflict(current: nil), .undecodable,
+      .transportFailure,
+    ])
+    await #expect(throws: LookWriteError.versionConflict(current: "v2-warm-film")) {
+      _ = try await service.putLook(
+        imageID: 3, lookID: "warm-film", strength: 100, lookVersion: "v1-warm-film")
+    }
+    await #expect(throws: LookWriteError.versionConflict(current: nil)) {
+      _ = try await service.putLook(
+        imageID: 3, lookID: "warm-film", strength: 100, lookVersion: "v1-warm-film")
+    }
+    await #expect(throws: LookWriteError.uncertain) {
+      _ = try await service.putLook(
+        imageID: 3, lookID: "warm-film", strength: 100, lookVersion: "v1-warm-film")
+    }
+    await #expect(throws: LookWriteError.uncertain) {
+      _ = try await service.putLook(
+        imageID: 3, lookID: "warm-film", strength: 100, lookVersion: "v1-warm-film")
+    }
+    #expect(await transport.recordedLookWrites.count == 4)
   }
 
   @Test("Saved look: DELETE is a 204; 404 is .gone, 422 .refused, transport .uncertain")
@@ -579,16 +629,16 @@ struct GridServiceContractProbeTests {
     }
     await #expect(throws: LookWriteError.uncertain) { try await service.deleteLook(imageID: 3) }
     await #expect(throws: LookWriteError.gone) {
-      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100, lookVersion: nil)
     }
     await #expect(throws: LookWriteError.refused(.invalidRequest)) {
-      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100, lookVersion: nil)
     }
     await #expect(throws: LookWriteError.uncertain) {
-      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100, lookVersion: nil)
     }
     await #expect(throws: LookWriteError.uncertain) {
-      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100)
+      _ = try await service.putLook(imageID: 3, lookID: "x", strength: 100, lookVersion: nil)
     }
   }
 

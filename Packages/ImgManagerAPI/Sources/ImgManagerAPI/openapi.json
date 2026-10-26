@@ -933,6 +933,13 @@
             "title": "Look Id",
             "type": "string"
           },
+          "look_version": {
+            "title": "Look Version",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "strength": {
             "default": 100,
             "maximum": 200.0,
@@ -954,6 +961,10 @@
             "title": "Look Id",
             "type": "string"
           },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
           "strength": {
             "title": "Strength",
             "type": "integer"
@@ -967,7 +978,8 @@
         "required": [
           "look_id",
           "strength",
-          "updated_at"
+          "updated_at",
+          "stale"
         ],
         "title": "ImageLookView",
         "type": "object"
@@ -1284,7 +1296,7 @@
         "type": "object"
       },
       "LookSummary": {
-        "description": "One catalogued look (WP24 P0, IMGMGR-380) \u2014 a display-time colour transform, never\nlibrary state and never anything written to a photograph.\n\nThe published fields are the catalogue's descriptive half only. The asset filename and\nits digest stay server-side: the first is a filesystem-shaped field this module's R-B6\nrule keeps off the wire, and the second answers a question (\"are the shipped bytes\nintact\") the server has already answered by the time it publishes a look at all.\n\n``licence`` is ONE line that must carry the whole record, including a split one. Nine of\nthe twelve looks have a LUT-data licence that is UNRESOLVED and a mirror-repository\nlicence (GPL-3.0) that covers only that repository's packaging; the manifest states both\nhalves in this single string and this model copies it verbatim. Narrowing it to the\nresolved half would publish settled terms where there are none, which is exactly what\n``tests/test_looks_catalogue.py`` and ``tests/test_api_looks.py`` exist to prevent.",
+        "description": "One catalogued look (WP24 P0, IMGMGR-380) \u2014 a display-time colour transform, never\nlibrary state and never anything written to a photograph.\n\nThe published fields are the catalogue's descriptive half plus ``version``. The asset\nfilename and its digest stay server-side: the first is a filesystem-shaped field this\nmodule's R-B6 rule keeps off the wire, and the second answers a question (\"are the\nshipped bytes intact\") the server has already answered by the time it publishes a look\nat all. ``version`` (IMGMGR-642) is the first twelve hex of that digest, but it is not\nthe integrity digest: it is the identity a client saves a look against, sent back as\n``ImageLookRequest.look_version``. R-B6 concerns path-shaped fields only.\n\n``licence`` is ONE line that must carry the whole record, including a split one. Nine of\nthe twelve looks have a LUT-data licence that is UNRESOLVED and a mirror-repository\nlicence (GPL-3.0) that covers only that repository's packaging; the manifest states both\nhalves in this single string and this model copies it verbatim. Narrowing it to the\nresolved half would publish settled terms where there are none, which is exactly what\n``tests/test_looks_catalogue.py`` and ``tests/test_api_looks.py`` exist to prevent.",
         "properties": {
           "category": {
             "title": "Category",
@@ -1309,6 +1321,10 @@
           "source_url": {
             "title": "Source Url",
             "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
           }
         },
         "required": [
@@ -1317,9 +1333,53 @@
           "category",
           "source",
           "source_url",
-          "licence"
+          "licence",
+          "version"
         ],
         "title": "LookSummary",
+        "type": "object"
+      },
+      "LookVersionConflict": {
+        "description": "Why a saved-look write refused (IMGMGR-642): the client chose the look at a version\nthe catalogue no longer serves. A NEW model rather than a new ``LookRefusalCode`` value:\na response enum may not change under ``app.openapi_contract``. Nothing was written.",
+        "properties": {
+          "code": {
+            "const": "look_version_mismatch",
+            "title": "Code",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "string"
+          },
+          "look_id": {
+            "title": "Look Id",
+            "type": "string"
+          },
+          "requested_version": {
+            "title": "Requested Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "look_id",
+          "requested_version",
+          "current_version"
+        ],
+        "title": "LookVersionConflict",
+        "type": "object"
+      },
+      "LookVersionConflictError": {
+        "description": "The 409 body as it goes on the wire \u2014 the :class:`SyncConflictError` idiom.",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/LookVersionConflict"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "LookVersionConflictError",
         "type": "object"
       },
       "MaintenanceBusy": {
@@ -6947,6 +7007,16 @@
           },
           "404": {
             "description": "No image has this id."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LookVersionConflictError"
+                }
+              }
+            },
+            "description": "`look_version_mismatch`: the catalogue's version of this look is no longer the one the request names. Nothing was written."
           },
           "422": {
             "content": {

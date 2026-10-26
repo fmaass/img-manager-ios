@@ -4443,7 +4443,9 @@ final class GridStore {
 
   /// One tile of the open strip: the focused photograph's `.grid` proxy through `lookID` at the
   /// look's authored strength (100), or unlooked for None. A render that finishes after its strip
-  /// was cancelled — or cancelled and reopened on the same photograph — is dropped, never cached.
+  /// was cancelled — or cancelled and reopened on the same photograph — is dropped, never cached,
+  /// and so is one that finishes after its tile was invalidated (IMGMGR-544: the generation is
+  /// captured before the request and checked after it).
   func lookTile(imageID: Int, lookID: String?, identityToken: String?) async -> Data? {
     guard looks.isStripOpen(for: imageID) else { return nil }
     guard let lookID else {
@@ -4451,14 +4453,24 @@ final class GridStore {
     }
     let key = LookTileKey(session: looks.stripSession, imageID: imageID, lookID: lookID)
     if let cached = lookTiles[key] { return cached }
+    let generation = looks.tileToken(for: lookID)
     let data = await lookedProxyData(
       imageID: imageID, tier: .grid, lookID: lookID, strength: LookStrength.standard)
     guard !Task.isCancelled, looks.stripSession == key.session,
       looks.isStripOpen(for: imageID)
     else { return nil }
+    guard looks.tileToken(for: lookID) == generation else { return nil }
     lookTiles = lookTiles.filter { $0.key.session == key.session }
     if let data { lookTiles[key] = data }
     return data
+  }
+
+  /// IMGMGR-544: drop `lookID`'s rendered tile in the open strip and bump its generation, so the
+  /// tile view asks again and a render already in flight is not cached. Other looks' tiles stay.
+  func invalidateLookTile(lookID: String) {
+    let session = looks.stripSession
+    lookTiles = lookTiles.filter { !($0.key.session == session && $0.key.lookID == lookID) }
+    looks.bumpTile(lookID)
   }
 
   /// The Looks control: open the strip on the focused photograph, seeded from its saved look
@@ -4517,6 +4529,12 @@ final class GridStore {
   /// draft and a line saying so. No answer (transport, an undeclared status, an undecodable 200)
   /// may have committed: one `detail` read reconciles the look field; if that fails too, the next
   /// first-page reload is the authority.
+  ///
+  /// IMGMGR-544 / IMGMGR-642: the PUT carries the version the strip previewed. A 409 (the server
+  /// serves another version now) also writes nothing and is NEVER retried: the catalogue is
+  /// fetched again, the draft takes the new version of its look, every strip tile whose version
+  /// moved — the conflicting look's always — is invalidated and re-rendered, and the strip says
+  /// "Look updated — preview again". The reader presses Apply again; nothing saves on its own.
   func applyLook() async {
     guard looksKeyOwner == .strip, let draft = looks.draft, draft.imageID == focusedImageID,
       !looks.isSaving(draft.imageID),
@@ -4537,7 +4555,8 @@ final class GridStore {
     do {
       let written: Components.Schemas.ImageLookView?
       if let lookID = draft.lookID {
-        written = try await service.putLook(imageID: id, lookID: lookID, strength: draft.strength)
+        written = try await service.putLook(
+          imageID: id, lookID: lookID, strength: draft.strength, lookVersion: draft.lookVersion)
       } else {
         try await service.deleteLook(imageID: id)
         written = nil
@@ -4553,10 +4572,27 @@ final class GridStore {
     } catch {
       let failure = (error as? LookWriteError) ?? .uncertain
       looks.noteSaveFailure(imageID: id, session: session, reason: .init(failure))
-      if failure == .uncertain, let detail = try? await service.detail(imageID: id) {
+      if case .versionConflict = failure, let lookID = draft.lookID {
+        await refreshAfterVersionConflict(imageID: id, session: session, lookID: lookID)
+      } else if failure == .uncertain, let detail = try? await service.detail(imageID: id) {
         mutateActionable([id], isMark: false) { $0.look = detail.look }
       }
     }
+  }
+
+  /// The 409 path of `applyLook`, run while the save is still in `saving` (so Apply cannot be
+  /// pressed again until it is done). One catalogue fetch; the summary is not touched.
+  private func refreshAfterVersionConflict(imageID: Int, session: Int, lookID: String) async {
+    var before: [String: String] = [:]
+    for look in looks.catalogue { before[look.id] = look.version }
+    await looks.refetchCatalogue()
+    looks.adoptCatalogueVersion(imageID: imageID, session: session, lookID: lookID)
+    guard looks.stripSession == session else { return }
+    var moved: Set<String> = [lookID]
+    for look in looks.catalogue where before[look.id] != look.version {
+      moved.insert(look.id)
+    }
+    for id in moved.sorted() { invalidateLookTile(lookID: id) }
   }
 
   /// A presentation the LOUPE raised that a store flag does not already name — today the share

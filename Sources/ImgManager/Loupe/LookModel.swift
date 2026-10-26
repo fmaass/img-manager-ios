@@ -47,6 +47,10 @@ final class LookModel {
     var strength: Int
     /// IMGMGR-544: bumped on every change of the look or the strength.
     var revision = 0
+    /// IMGMGR-544 / IMGMGR-642: the catalogue `version` of `lookID` when the draft took that
+    /// look — what the strip previewed, and what Apply sends as `look_version`. Never re-read at
+    /// Apply time. Nil for None, and for a saved look the catalogue does not hold.
+    var lookVersion: String?
   }
 
   /// What a photograph is rendered through right now.
@@ -63,12 +67,16 @@ final class LookModel {
     case gone
     /// No answer: the server may or may not hold it.
     case uncertain
+    /// The look changed on the server since it was previewed (409): nothing was written, and
+    /// the strip's tile now shows the new version.
+    case versionChanged
 
     init(_ error: LookWriteError) {
       switch error {
       case .refused: self = .refused
       case .gone: self = .gone
       case .uncertain: self = .uncertain
+      case .versionConflict: self = .versionChanged
       }
     }
 
@@ -77,6 +85,7 @@ final class LookModel {
       case .refused: "Couldn't save the look. Try again."
       case .gone: "This photo is no longer in the library."
       case .uncertain: "Couldn't confirm the look was saved."
+      case .versionChanged: "Look updated \u{2014} preview again"
       }
     }
   }
@@ -107,6 +116,10 @@ final class LookModel {
   /// IMGMGR-544: the last failed save. Shown only for the strip session it was made in
   /// (`visibleSaveFailure`), so a reopened draft never inherits an earlier failure.
   private(set) var saveFailure: SaveFailureNote?
+  /// IMGMGR-544: per-look tile generations of the open strip, bumped when a tile is invalidated
+  /// (`GridStore.invalidateLookTile`). The tile view's task id carries it, so a bump re-renders
+  /// the tile; `GridStore.lookTile` drops a render that was asked for under an older one.
+  private(set) var tileGeneration: [String: Int] = [:]
   let favourites: LookFavourites
 
   private let fetchCatalogue: @Sendable () async throws -> [Look]
@@ -160,16 +173,52 @@ final class LookModel {
     }
   }
 
+  /// IMGMGR-544: fetch the catalogue AGAIN, after a save found the server serving another version
+  /// of a look. On success the catalogue is replaced; on failure the one already held is KEPT,
+  /// so a failed re-fetch never disables an open strip. The draft is not touched.
+  func refetchCatalogue() async {
+    guard let fresh = try? await fetchCatalogue() else { return }
+    catalogue = fresh
+    catalogueState = .loaded
+  }
+
+  /// IMGMGR-544: after `refetchCatalogue`, the open draft takes the catalogue's version of its
+  /// own look — the version its tile now previews — so the reader's next Apply sends it. Only for
+  /// the strip session the save was made in, and only while the draft still holds `lookID`.
+  /// Allowed while the draft is frozen (it runs before the save leaves `saving`); it saves
+  /// nothing, and does not bump `revision`.
+  func adoptCatalogueVersion(imageID: Int, session: Int, lookID: String) {
+    guard var next = draft, stripSession == session else { return }
+    guard next.imageID == imageID, next.lookID == lookID else { return }
+    next.lookVersion = version(of: lookID)
+    draft = next
+  }
+
+  /// The tile generation `lookID`'s strip tile is rendered under; 0 for None and for a look whose
+  /// tile was never invalidated.
+  func tileToken(for lookID: String?) -> Int {
+    guard let lookID else { return 0 }
+    return tileGeneration[lookID] ?? 0
+  }
+
+  /// Invalidate `lookID`'s strip tile (`GridStore.invalidateLookTile` is the caller).
+  func bumpTile(_ lookID: String) {
+    tileGeneration[lookID, default: 0] += 1
+  }
+
   /// Opens the strip on `imageID`, seeded from its SAVED look (IMGMGR-544), else at None and the
   /// standard strength. Already open there: no-op.
   func openStrip(imageID: Int, saved: Components.Schemas.ImageLookView? = nil) {
     guard canChoose, draft?.imageID != imageID else { return }
+    let savedVersion = version(of: saved?.lookId)
     draft = Draft(
       imageID: imageID, lookID: saved?.lookId,
-      strength: saved.map { LookStrength.clamped($0.strength) } ?? LookStrength.standard)
+      strength: saved.map { LookStrength.clamped($0.strength) } ?? LookStrength.standard,
+      lookVersion: savedVersion)
     stripSession += 1
     unavailableImageIDs = []
     saveFailure = nil
+    tileGeneration = [:]
   }
 
   /// Cancel: the strip closes and the photograph shows its saved look (or none) again. A save
@@ -180,6 +229,7 @@ final class LookModel {
     stripSession += 1
     unavailableImageIDs = []
     saveFailure = nil
+    tileGeneration = [:]
   }
 
   /// Whether `imageID`'s save is on the wire.
@@ -230,6 +280,7 @@ final class LookModel {
     if let lookID, !catalogue.contains(where: { $0.id == lookID }) { return }
     guard next.lookID != lookID else { return }
     next.lookID = lookID
+    next.lookVersion = version(of: lookID)
     next.revision += 1
     draft = next
     unavailableImageIDs = []
@@ -299,6 +350,12 @@ final class LookModel {
     case .fallback(let lookID):
       return "Photograph, without \(name(of: lookID))"
     }
+  }
+
+  /// The catalogue's `version` of `lookID`, nil for None or when the catalogue does not hold it.
+  func version(of lookID: String?) -> String? {
+    guard let lookID else { return nil }
+    return catalogue.first { $0.id == lookID }?.version
   }
 
   /// The catalogue's name for `lookID`, nil when the catalogue does not hold it.

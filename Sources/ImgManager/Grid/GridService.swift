@@ -576,16 +576,26 @@ struct GridService: Sendable {
 
   /// `PUT /api/images/{id}/look` — save `lookID` at `strength` on one photograph (an upsert on
   /// the server, last write wins). Answers the saved `ImageLookView`. Throws `LookWriteError`
-  /// only: `.refused` and `.gone` are definite (nothing was written), `.uncertain` is a transport
-  /// failure, an undeclared status or an undecodable 200, after which the server MAY hold it.
-  func putLook(imageID: Int, lookID: String, strength: Int) async throws
+  /// only: `.refused`, `.gone` and `.versionConflict` are definite (nothing was written),
+  /// `.uncertain` is a transport failure, an undeclared status or an undecodable 200, after which
+  /// the server MAY hold it.
+  ///
+  /// `lookVersion` (IMGMGR-642) is the catalogue `version` of the look the strip previewed; nil
+  /// leaves `look_version` out of the body. A 409 says the catalogue serves another version now.
+  /// The generated client decodes a JSON body inside the call, so a 409 whose body does not
+  /// decode arrives as a `ClientError` carrying the 409 response; it is classified by that status
+  /// before the catch-all, and stays definite.
+  func putLook(imageID: Int, lookID: String, strength: Int, lookVersion: String?) async throws
     -> Components.Schemas.ImageLookView
   {
-    let body = Components.Schemas.ImageLookRequest(lookId: lookID, strength: strength)
+    let body = Components.Schemas.ImageLookRequest(
+      lookId: lookID, lookVersion: lookVersion, strength: strength)
     let output: Operations.PutImageLookApiImagesImageIdLookPut.Output
     do {
       output = try await client.putImageLookApiImagesImageIdLookPut(
         .init(path: .init(imageId: imageID), body: .json(body)))
+    } catch let error as ClientError where error.response?.status.code == 409 {
+      throw LookWriteError.versionConflict(current: nil)
     } catch {
       throw LookWriteError.uncertain
     }
@@ -597,6 +607,9 @@ struct GridService: Sendable {
       throw LookWriteError.gone
     case .unprocessableContent(let refusal):
       throw LookWriteError.refused(Self.refusalCode(try? refusal.body.json))
+    case .conflict(let conflict):
+      let current = (try? conflict.body.json)?.detail.currentVersion
+      throw LookWriteError.versionConflict(current: current)
     case .undocumented:
       throw LookWriteError.uncertain
     }
@@ -821,6 +834,10 @@ enum LookWriteError: Error, Sendable, Equatable {
   case refused(LookRefusalCode)
   /// 404: no photograph has this id; nothing was written.
   case gone
+  /// 409 `look_version_mismatch` (PUT only): the catalogue no longer serves the version the
+  /// request named; nothing was written. `current` is the server's version when the body
+  /// decoded. Never retried: the reader previews again and presses Apply.
+  case versionConflict(current: String?)
   /// Transport, an undeclared status or an undecodable 200: the server MAY have committed.
   case uncertain
 }

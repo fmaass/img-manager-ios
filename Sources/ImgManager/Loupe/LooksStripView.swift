@@ -151,6 +151,12 @@ private struct LookTileImage: View {
   let session: Int
   @State private var rendered: PlatformImage?
 
+  /// What one render answers for: the strip session, the photograph, the look and (IMGMGR-544)
+  /// the look's tile generation, so an invalidated tile is asked for again.
+  private var renderID: String {
+    "\(session)|\(image.id)|\(lookID ?? "none")|\(store.looks.tileToken(for: lookID))"
+  }
+
   var body: some View {
     ZStack {
       Rectangle().fill(.quaternary)
@@ -159,7 +165,7 @@ private struct LookTileImage: View {
           .scaledToFill()
       }
     }
-    .task(id: "\(session)|\(image.id)|\(lookID ?? "none")") {
+    .task(id: renderID) {
       rendered = nil
       let token = ProxyIdentity.token(
         from: image.proxies.additionalProperties[ProxyTier.grid.rawValue]?.url)

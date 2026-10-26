@@ -1,5 +1,12 @@
 # OpenAPI normalization bridge — pinned debt (RESOLVED)
 
+**Addendum 2026-10-26 (IMGMGR-544 AC addendum, IMGMGR-642) — re-vendored at img-manager
+`fbd9745ab1f8259bce642e4a47975a05b847f5ee`.** The contract changes since `39118bb` are the saved-look version
+check: `LookSummary.version` (required string), `ImageLookRequest.look_version` (optional `string | null`),
+`ImageLookView.stale` (required boolean), the new models `LookVersionConflict` and `LookVersionConflictError`, and
+a `409` response on `PUT /api/images/{image_id}/look`. `LookRefusalCode` is unchanged. None of the new fields is a
+nullable `$ref`, so the rewrite counts are unchanged (9 optional, 2 required, 0 dropped).
+
 **Addendum 2026-10-23 (P16a, IMGMGR-543) — re-vendored at img-manager v0.24.0
 `39118bbb33cd18fc1743f42b6649309a5774ab69`.** The only contract change since `22726ee` is the looked route's optional
 `strength`/`v` query and its `X-Look-Version` header; the rewrite counts are unchanged (9 optional, 2 required, 0 dropped).

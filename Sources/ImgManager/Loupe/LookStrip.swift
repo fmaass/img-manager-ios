@@ -128,14 +128,21 @@ enum LookPersistence {
     look != nil && hasEdit == true
   }
 
-  /// The loupe chip: "Portra 400 · 120 %", or "Portra 400 · superseded by edit". Nil without a
-  /// saved look. `lookName` is the catalogue's name; the id stands in when it has none.
+  /// The loupe chip: "Portra 400 · 120 %", or "Portra 400 · superseded by edit"; either form
+  /// gains " · updated" when the server reports the saved look `stale` (IMGMGR-544: the catalogue
+  /// now serves another version of it). Nil without a saved look. `lookName` is the catalogue's
+  /// name; the id stands in when it has none. A stale look is still drawn and still named.
   static func chipText(
     look: Components.Schemas.ImageLookView?, hasEdit: Bool?, lookName: String?
   ) -> String? {
     guard let look else { return nil }
     let name = lookName ?? look.lookId
-    if isSuperseded(look: look, hasEdit: hasEdit) { return "\(name) · superseded by edit" }
-    return "\(name) · \(LookStrength.label(LookStrength.clamped(look.strength)))"
+    let base: String
+    if isSuperseded(look: look, hasEdit: hasEdit) {
+      base = "\(name) · superseded by edit"
+    } else {
+      base = "\(name) · \(LookStrength.label(LookStrength.clamped(look.strength)))"
+    }
+    return look.stale ? "\(base) · updated" : base
   }
 }
