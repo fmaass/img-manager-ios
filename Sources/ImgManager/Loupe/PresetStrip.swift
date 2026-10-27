@@ -280,7 +280,12 @@ struct PresetStripView: View {
             launcher.startPreset(
               share: share, image: image,
               presetName: presets.preset(id: snapshot.presetID)?.name ?? snapshot.presetID,
-              render: snapshot)
+              render: snapshot,
+              renderGone: {
+                render.invalidate(
+                  imageID: snapshot.imageID, presetID: snapshot.presetID,
+                  renderHash: snapshot.renderHash ?? "")
+              })
           }
           .disabled(share.isPreparing)
           .focusable(false)

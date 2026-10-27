@@ -110,11 +110,15 @@ final class ShareExportStore {
   /// `/file` route under the render's own hash, read up to `presetByteCap`. It runs `prepare`'s
   /// own generation lifecycle: a supersede while the bytes are on the wire (the focus moved)
   /// deletes what arrives and never delivers it into the newer generation.
+  ///
+  /// `renderGone` runs when the render turned out to be gone (`.presetUnavailable`), so the
+  /// caller can drop the stale `ok` it holds and the next tap requests the render again.
   func preparePreset(
     for image: Components.Schemas.ImageSummary, presetName: String,
-    render: PresetRenderSnapshot
+    render: PresetRenderSnapshot, renderGone: @MainActor () -> Void = {}
   ) async {
     await run(.preview, .preset(name: presetName, render: render), for: image)
+    if state == .refused(.presetUnavailable) { renderGone() }
   }
 
   /// What one export reads: the photograph's own variant, or a preset render (IMGMGR-658).

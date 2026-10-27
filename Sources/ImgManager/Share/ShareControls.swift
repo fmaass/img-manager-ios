@@ -55,11 +55,12 @@ final class ShareLauncher {
   /// IMGMGR-658: the same launch for a preset render's full-size JPEG.
   func startPreset(
     share: ShareExportStore, image: Components.Schemas.ImageSummary, presetName: String,
-    render: PresetRenderSnapshot
+    render: PresetRenderSnapshot, renderGone: @escaping @MainActor () -> Void = {}
   ) {
     prepareTask?.cancel()
     prepareTask = Task {
-      await share.preparePreset(for: image, presetName: presetName, render: render)
+      await share.preparePreset(
+        for: image, presetName: presetName, render: render, renderGone: renderGone)
       guard !Task.isCancelled else { return }
       guard case .ready = share.state else { return }
       self.presentedToken = share.currentToken

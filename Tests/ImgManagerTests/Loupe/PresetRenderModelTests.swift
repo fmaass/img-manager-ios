@@ -155,8 +155,9 @@ struct PresetRenderModelTests {
     model.start(imageID: 1, presetID: "p")
     await model.settle()
     #expect(model.phase == .timedOut)
+    // 59 reads at 3…177 s; the 60th sleep reaches 180 s, where no fetch may start.
     #expect(clock.sleeps == 60)
-    #expect(script.reads == 60)
+    #expect(script.reads == 59)
     #expect(script.posts == 1)
 
     model.checkAgain()
@@ -164,7 +165,48 @@ struct PresetRenderModelTests {
     await model.settle()
     #expect(model.phase == .timedOut)
     #expect(script.posts == 1)
-    #expect(script.reads == 121)
+    #expect(script.reads == 119)
+  }
+
+  @Test(
+    "The deadline bounds an in-flight fetch: timedOut at 180 s, and the late ok is dropped",
+    .timeLimit(.minutes(1)))
+  func deadlineBoundsAStalledFetch() async {
+    let timedFor = PresetLocked<[Duration]>([])
+    let release = PresetLocked<CheckedContinuation<Void, Never>?>(nil)
+    let delivered = PresetLocked(false)
+    let clock = PresetPollClock(
+      now: { ContinuousClock.now },
+      sleep: { _ in },
+      timeout: { duration in
+        // The timer fires only once the fetch is on the wire: the fetch is stalled past it.
+        while release.withLock({ $0 == nil }) { await Task.yield() }
+        timedFor.withLock { $0.append(duration) }
+      })
+    let model = PresetRenderModel(
+      request: { imageID, presetID in
+        await withCheckedContinuation { continuation in
+          release.withLock { $0 = continuation }
+        }
+        delivered.withLock { $0 = true }
+        return PresetRenderSnapshot(
+          imageID: imageID, presetID: presetID, generation: 1, status: .ok, renderHash: "late")
+      },
+      status: { _, _ in throw PresetRenderError.gone },
+      clock: clock)
+
+    model.start(imageID: 1, presetID: "p")
+    await model.settle()
+
+    #expect(model.phase == .timedOut)
+    #expect(timedFor.withLock { $0.count } == 1)
+    #expect((timedFor.withLock { $0.first } ?? .zero) > .seconds(179))
+    // The stalled request answers ok now; it must not change the state.
+    release.withLock { $0 }?.resume()
+    while !delivered.withLock({ $0 }) { await Task.yield() }
+    for _ in 0..<10 { await Task.yield() }
+    #expect(model.phase == .timedOut)
+    #expect(model.shownRender(imageID: 1) == nil)
   }
 
   @Test("A focus change while polling cancels the poll; the late ok never lands")

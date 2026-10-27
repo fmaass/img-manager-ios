@@ -106,6 +106,34 @@ struct SharePresetExportTests {
     #expect(!FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)))
   }
 
+  @Test("A share that finds the render evicted drops the stale ok, so a tap requests again")
+  func evictedShareInvalidatesTheRender() async {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = PresetStubTransport()
+    await transport.setFileOutcome(.notFound)
+    let store = makeStore(transport, directory: directory)
+    let render = Self.render
+    let model = PresetRenderModel(
+      request: { _, _ in render }, status: { _, _ in render },
+      clock: PresetPollClock(now: { ContinuousClock.now }, sleep: { _ in }))
+    model.start(imageID: render.imageID, presetID: render.presetID)
+    await model.settle()
+    #expect(model.phase == .ok(render))
+
+    await store.preparePreset(
+      for: image(), presetName: "Warm Matte", render: render,
+      renderGone: {
+        model.invalidate(
+          imageID: render.imageID, presetID: render.presetID, renderHash: "h1")
+      })
+
+    #expect(store.state == .refused(.presetUnavailable))
+    #expect(model.phase(imageID: render.imageID, presetID: render.presetID) == .idle)
+    model.start(imageID: render.imageID, presetID: render.presetID)
+    #expect(model.phase == .requested)
+  }
+
   @Test("Bounded transfer: a render past the cap refuses as too large, before or after asking")
   func boundedTransfer() async {
     let directory = scratchDirectory()
