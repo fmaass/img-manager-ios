@@ -110,6 +110,77 @@
         "title": "Body_estimate_download_selected_api_images_download_estimate_post",
         "type": "object"
       },
+      "CatalogueResult": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "deactivated": {
+            "title": "Deactivated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "deactivated"
+        ],
+        "title": "CatalogueResult",
+        "type": "object"
+      },
+      "ClaimIn": {
+        "properties": {
+          "generation": {
+            "minimum": 1.0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "integer"
+          },
+          "preset_id": {
+            "pattern": "^[0-9a-f]{12}$",
+            "title": "Preset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_id",
+          "preset_id",
+          "generation"
+        ],
+        "title": "ClaimIn",
+        "type": "object"
+      },
+      "ClaimOut": {
+        "properties": {
+          "claim_token": {
+            "title": "Claim Token",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "integer"
+          },
+          "preset_id": {
+            "title": "Preset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_id",
+          "preset_id",
+          "generation",
+          "claim_token"
+        ],
+        "title": "ClaimOut",
+        "type": "object"
+      },
       "CountCancelled": {
         "description": "A count on this request was cancelled by the server before it finished (IMGMGR-176).\n\nThe count path answers population questions over the whole library \u2014 the facet chips, a\ngrouped grid's ``total``, the selection size \u2014 and those are the statements a backup\nwindow or an operator ``pg_cancel_backend`` cancels first. Postgres reports the cancel as\nSQLSTATE ``57014``, which reaches the app WRAPPED as ``sqlalchemy.exc.DBAPIError``; left\nunhandled it surfaced as a bare 500, which tells a client the server is broken when the\ntruth is that it is busy and the identical request will work shortly.\n\nSo: 503 with this code and a ``Retry-After`` beside it, exactly as\n:class:`StackEditBusy` answers a folder lock it could not take. Never a partial body and\nnever a null ``total`` \u2014 a count that could not be taken is not a count of zero.",
         "properties": {
@@ -1200,6 +1271,146 @@
         "title": "IndexRunCounters",
         "type": "object"
       },
+      "LaneRenderOut": {
+        "description": "The recorded row. The lane's ``error`` text is stored but never echoed: it is free text\nfrom another process and may name paths on its own host.",
+        "properties": {
+          "attempted_at": {
+            "format": "date-time",
+            "title": "Attempted At",
+            "type": "string"
+          },
+          "converter_version": {
+            "title": "Converter Version",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine": {
+            "title": "Engine",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "height": {
+            "title": "Height",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "culling",
+            "title": "Kind",
+            "type": "string"
+          },
+          "render_hash": {
+            "title": "Render Hash",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "render_profile": {
+            "title": "Render Profile",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "title": "Size",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_hash": {
+            "title": "Source Hash",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "image_id",
+          "kind",
+          "status",
+          "source_hash",
+          "attempted_at"
+        ],
+        "title": "LaneRenderOut",
+        "type": "object"
+      },
+      "LaneWorkItem": {
+        "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "datetime_original": {
+            "format": "date-time",
+            "title": "Datetime Original",
+            "type": "string"
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "ext": {
+            "title": "Ext",
+            "type": "string"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "render_profile": {
+            "title": "Render Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_id",
+          "path",
+          "ext",
+          "content_hash",
+          "datetime_original",
+          "render_profile",
+          "engine_version"
+        ],
+        "title": "LaneWorkItem",
+        "type": "object"
+      },
       "LightroomMeta": {
         "description": "Read-only truth from the XMP sidecar. Never merged with the app's own marks.\n\n``sidecar_present`` is a first-class field because absence is data: no sidecar means\nLightroom has never touched the image, which is a different statement from rating 0.",
         "properties": {
@@ -1513,6 +1724,89 @@
         "title": "MaintenanceStatus",
         "type": "object"
       },
+      "Manifest": {
+        "properties": {
+          "presets": {
+            "items": {
+              "$ref": "#/components/schemas/ManifestEntry"
+            },
+            "maxItems": 20000,
+            "minItems": 1,
+            "title": "Presets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "presets"
+        ],
+        "title": "Manifest",
+        "type": "object"
+      },
+      "ManifestEntry": {
+        "properties": {
+          "approximate": {
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "favourite_rank": {
+            "minimum": 0.0,
+            "title": "Favourite Rank",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "file": {
+            "maxLength": 300,
+            "minLength": 1,
+            "pattern": "^[^./\\\\\\x00-\\x1f][^/\\\\\\x00-\\x1f]*$",
+            "title": "File",
+            "type": "string"
+          },
+          "group": {
+            "maxLength": 300,
+            "title": "Group",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "preset_id": {
+            "pattern": "^[0-9a-f]{12}$",
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Reasons",
+            "type": "array"
+          },
+          "xmp_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Xmp Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset_id",
+          "name",
+          "file",
+          "approximate",
+          "reasons",
+          "xmp_sha256"
+        ],
+        "title": "ManifestEntry",
+        "type": "object"
+      },
       "MarkPrecondition": {
         "description": "One submitted image id's expected current revision (IMGMGR-117 fold item 1).\n\nOptional on every mark-mutating request, and additive FOREVER: a request that omits\n``preconditions`` entirely is unconditional, exactly as before this field existed, and\nno future phase may make it mandatory (that would be a breaking request change against\nIMGMGR-117's own acceptance contract).",
         "properties": {
@@ -1813,6 +2107,215 @@
           }
         },
         "title": "PrecomputeRunCounters",
+        "type": "object"
+      },
+      "PresetOut": {
+        "properties": {
+          "approximate": {
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "approximate_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Approximate Reasons",
+            "type": "array"
+          },
+          "favourite_rank": {
+            "title": "Favourite Rank",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "group": {
+            "title": "Group",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "use_count": {
+            "title": "Use Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "group",
+          "approximate",
+          "approximate_reasons",
+          "favourite_rank",
+          "use_count"
+        ],
+        "title": "PresetOut",
+        "type": "object"
+      },
+      "PresetRenderOut": {
+        "description": "One render's state. The lane's ``error`` text is stored but never echoed: it is free\ntext from another process and may name paths on its own host.",
+        "properties": {
+          "approximate": {
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "title": "Claimed At",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "file_url": {
+            "description": "Set when `ok`: the render, bound to its `render_hash`.",
+            "title": "File Url",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "format": "date-time",
+            "title": "Finished At",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "height": {
+            "title": "Height",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "integer"
+          },
+          "preset_id": {
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "render_hash": {
+            "title": "Render Hash",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "rendering",
+              "ok",
+              "failed",
+              "evicted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "image_id",
+          "preset_id",
+          "generation",
+          "status",
+          "approximate",
+          "engine_version",
+          "requested_at"
+        ],
+        "title": "PresetRenderOut",
+        "type": "object"
+      },
+      "PresetWorkItem": {
+        "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "ext": {
+            "title": "Ext",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "preset_id": {
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "preset_path": {
+            "title": "Preset Path",
+            "type": "string"
+          },
+          "xmp_sha256": {
+            "title": "Xmp Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_id",
+          "preset_id",
+          "generation",
+          "path",
+          "ext",
+          "content_hash",
+          "preset_path",
+          "xmp_sha256",
+          "engine_version"
+        ],
+        "title": "PresetWorkItem",
         "type": "object"
       },
       "ProxyState": {
@@ -3604,9 +4107,15 @@
     "securitySchemes": {
       "bearerAuth": {
         "bearerFormat": "imgmgr_pat",
-        "description": "A personal access token (`imgmgr_pat_...`), minted by the native device login handoff (`POST /api/auth/native/exchange`) or, for a sibling service, the `mint-service-pat` command. Accepted only on `/api/auth/native/renew`, `/api/auth/native/logout` and `/api/lookup/stems` \u2014 every other route stays edge-authenticated (Traefik + Authelia) and reads no Bearer claim, except that `POST /api/sync` records a presented token's subject as the requester (the two sync reads record nothing).",
+        "description": "A personal access token (`imgmgr_pat_...`), minted by the native device login handoff (`POST /api/auth/native/exchange`) or, for a sibling service, the `mint-service-pat` command. Accepted only on `/api/auth/native/renew`, `/api/auth/native/logout` and `/api/lookup/stems` \u2014 every other route stays edge-authenticated (Traefik + Authelia) and reads no Bearer claim, except that `POST /api/sync` records a presented token's subject as the requester (the two sync reads record nothing), and that the lane routes accept a PAT as an alternative to `laneToken`.",
         "scheme": "bearer",
         "type": "http"
+      },
+      "laneToken": {
+        "description": "The out-of-app renderer's shared secret (`LANE_TOKEN`), accepted only on the lane routes. Every lane route answers 404 while no token is configured.",
+        "in": "header",
+        "name": "X-Lane-Token",
+        "type": "apiKey"
       }
     }
   },
@@ -6934,6 +7443,320 @@
         ]
       }
     },
+    "/api/images/{image_id}/lane-renders/culling": {
+      "put": {
+        "description": "Record a culling render (multipart, the JPEG as ``file``) or a failure (JSON).\n\n409 ``lane_source_mismatch`` / ``lane_recipe_mismatch`` on either form; 413 over\n``LANE_MAX_RENDER_BYTES``; 415 when the bytes are not a JPEG; 409 ``lane_render_current``\nwhen a failure would overwrite a render that is current for the same identity; 409\n``lane_image_not_local`` for an image of any store but the local one, which the work list\nnever offers.",
+        "operationId": "put_culling_render_api_images__image_id__lane_renders_culling_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "converter_version": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Converter Version",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "engine": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Engine",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "engine_version": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Engine Version",
+                    "type": "string"
+                  },
+                  "error": {
+                    "maxLength": 4000,
+                    "title": "Error",
+                    "type": "string"
+                  },
+                  "render_profile": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Render Profile",
+                    "type": "string"
+                  },
+                  "source_hash": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Source Hash",
+                    "type": "string"
+                  },
+                  "status": {
+                    "const": "failed",
+                    "title": "Status",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "status",
+                  "error",
+                  "source_hash",
+                  "render_profile",
+                  "engine_version"
+                ],
+                "title": "LaneRenderFailedIn",
+                "type": "object"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "converter_version": {
+                    "type": "string"
+                  },
+                  "engine": {
+                    "type": "string"
+                  },
+                  "engine_version": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "render_profile": {
+                    "type": "string"
+                  },
+                  "source_hash": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file",
+                  "source_hash",
+                  "render_profile",
+                  "engine_version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaneRenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "laneToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Put Culling Render",
+        "tags": [
+          "lane"
+        ]
+      }
+    },
+    "/api/images/{image_id}/lane-renders/presets/{preset_id}": {
+      "put": {
+        "description": "Complete a claimed render: the JPEG (multipart, ``file``) or ``{status: failed, error}``\n(JSON). Accepted only while the row is ``rendering`` at the presented generation and claim\ntoken, for its source hash, and for an engine that is both the generation's and the app's\ncurrent one. 409 ``lane_claim_stale`` / ``lane_recipe_mismatch`` / ``lane_source_mismatch``;\n413 over ``LANE_MAX_RENDER_BYTES``; 415 when the bytes are not a JPEG.",
+        "operationId": "put_preset_render_api_images__image_id__lane_renders_presets__preset_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "claim_token": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Claim Token",
+                    "type": "string"
+                  },
+                  "engine": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Engine",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "engine_version": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Engine Version",
+                    "type": "string"
+                  },
+                  "error": {
+                    "maxLength": 4000,
+                    "title": "Error",
+                    "type": "string"
+                  },
+                  "generation": {
+                    "minimum": 1,
+                    "title": "Generation",
+                    "type": "integer"
+                  },
+                  "source_hash": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+$",
+                    "title": "Source Hash",
+                    "type": "string"
+                  },
+                  "status": {
+                    "const": "failed",
+                    "title": "Status",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "generation",
+                  "claim_token",
+                  "source_hash",
+                  "engine_version",
+                  "status",
+                  "error"
+                ],
+                "title": "PresetRenderFailedIn",
+                "type": "object"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "claim_token": {
+                    "type": "string"
+                  },
+                  "engine": {
+                    "type": "string"
+                  },
+                  "engine_version": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "generation": {
+                    "type": "integer"
+                  },
+                  "source_hash": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file",
+                  "generation",
+                  "claim_token",
+                  "source_hash",
+                  "engine_version"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetRenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "laneToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Put Preset Render",
+        "tags": [
+          "lane"
+        ]
+      }
+    },
     "/api/images/{image_id}/look": {
       "delete": {
         "operationId": "delete_image_look_api_images__image_id__look_delete",
@@ -7437,6 +8260,226 @@
         ]
       }
     },
+    "/api/images/{image_id}/presets": {
+      "get": {
+        "operationId": "list_preset_renders_api_images__image_id__presets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetRenderOut"
+                  },
+                  "title": "Response List Preset Renders Api Images  Image Id  Presets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No lane is provisioned."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every preset render of a photograph",
+        "tags": [
+          "presets"
+        ]
+      }
+    },
+    "/api/images/{image_id}/presets/{preset_id}": {
+      "get": {
+        "operationId": "get_preset_render_api_images__image_id__presets__preset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetRenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No render of this preset exists here, or no lane is provisioned."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A preset render's status",
+        "tags": [
+          "presets"
+        ]
+      },
+      "post": {
+        "description": "Issue (or keep) the render. Unchanged: an ``ok`` row of the current source and engine,\na ``pending`` row of the current source and engine, and ANY ``rendering`` row \u2014 running\nwork is never reset here; an abandoned claim is the maintenance sweep's to re-issue.\nOtherwise the row is re-issued at ``generation + 1`` as ``pending``. Every accepted\nrequest counts one use of the preset.",
+        "operationId": "request_preset_render_api_images__image_id__presets__preset_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetRenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No image has this id, or no lane is provisioned."
+          },
+          "409": {
+            "description": "`lane_image_not_local` (another store's image) or `lane_source_unavailable` (the original is missing or unhashed)."
+          },
+          "422": {
+            "description": "`unknown_preset` (not an active catalogue entry) or `lane_preset_unsupported_input`: only ARW originals take a preset (a DNG never has a sidecar placed beside it; RAF is unmeasured)."
+          }
+        },
+        "summary": "Request a preset render of a photograph",
+        "tags": [
+          "presets"
+        ]
+      }
+    },
+    "/api/images/{image_id}/presets/{preset_id}/file": {
+      "get": {
+        "description": "The JPEG, ``ETag: \"<render_hash>\"``, ``Cache-Control: no-cache``. A ``v`` other than the\ncurrent ``render_hash`` is 404, never the replacement's bytes under the old URL.",
+        "operationId": "preset_render_file_api_images__image_id__presets__preset_id__file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the `render_hash` the URL was issued for",
+            "in": "query",
+            "name": "v",
+            "required": false,
+            "schema": {
+              "description": "the `render_hash` the URL was issued for",
+              "title": "V",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {}
+            },
+            "description": "The full-size render."
+          },
+          "304": {
+            "description": "The client's copy (If-None-Match) is still the render."
+          },
+          "404": {
+            "description": "No `ok` render, a `v` that is not the current `render_hash`, or no lane is provisioned."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download a preset render",
+        "tags": [
+          "presets"
+        ]
+      }
+    },
     "/api/images/{image_id}/proxy/{tier}": {
       "get": {
         "operationId": "get_proxy_api_images__image_id__proxy__tier__get",
@@ -7614,6 +8657,250 @@
         "summary": "Get Looked Proxy",
         "tags": [
           "proxies"
+        ]
+      }
+    },
+    "/api/lane/presets/catalogue": {
+      "put": {
+        "description": "Replace the catalogue with the lane's manifest. Every listed preset is upserted active\n(its ``use_count`` kept); every active preset the manifest leaves out is deactivated, never\ndeleted, so its renders and usage survive a re-sync that brings it back. 422 on an entry\nwhose ``preset_id`` is not its digest's prefix, on a duplicate id, and on an empty list.",
+        "operationId": "put_catalogue_api_lane_presets_catalogue_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Manifest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogueResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "laneToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Put Catalogue",
+        "tags": [
+          "lane"
+        ]
+      }
+    },
+    "/api/lane/presets/claim": {
+      "post": {
+        "description": "One atomic transition ``pending`` \u2192 ``rendering`` at exactly ``generation``, with a fresh\nclaim token the completion must present. A second claim of the same generation is 409.",
+        "operationId": "claim_preset_render_api_lane_presets_claim_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "`lane_claim_conflict`: not pending at that generation."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "laneToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Claim Preset Render",
+        "tags": [
+          "lane"
+        ]
+      }
+    },
+    "/api/lane/presets/work": {
+      "get": {
+        "description": "Pending generations of the current engine whose preset is active and whose image is a\npresent, hashed ARW of the local store, oldest request first.",
+        "operationId": "preset_work_api_lane_presets_work_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetWorkItem"
+                  },
+                  "title": "Response Preset Work Api Lane Presets Work Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "laneToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Preset Work",
+        "tags": [
+          "lane"
+        ]
+      }
+    },
+    "/api/lane/work": {
+      "get": {
+        "operationId": "lane_work_api_lane_work_get",
+        "parameters": [
+          {
+            "description": "the render kind the lane is working",
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "const": "culling",
+              "description": "the render kind the lane is working",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "'<datetime_original>,<image_id>' of the previous page's last item",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "description": "'<datetime_original>,<image_id>' of the previous page's last item",
+              "title": "After",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LaneWorkItem"
+                  },
+                  "title": "Response Lane Work Api Lane Work Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "laneToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Lane Work",
+        "tags": [
+          "lane"
         ]
       }
     },
@@ -7848,6 +9135,32 @@
         "summary": "Edit Mark Tags",
         "tags": [
           "marks"
+        ]
+      }
+    },
+    "/api/presets": {
+      "get": {
+        "description": "Active presets, most used first, then the favourites' seed rank, then name. ``[]``\nwhile no lane is provisioned, so a client shows no preset section at all.",
+        "operationId": "list_presets_api_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetOut"
+                  },
+                  "title": "Response List Presets Api Presets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The preset catalogue",
+        "tags": [
+          "presets"
         ]
       }
     },
