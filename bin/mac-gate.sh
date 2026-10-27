@@ -139,7 +139,7 @@
 #                            (default: com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB)
 #   MAC_GATE_ARTIFACTS      local directory for copied-back logs (default: .gate-artifacts/)
 #   MAC_GATE_REMOTE_CAP     wall-clock budget in seconds for the detached remote run
-#                            (default: 16200, at most 7 digits); exceeding it records
+#                            (default: 21600, at most 7 digits); exceeding it records
 #                            remote-run=124 and stops the remote process tree (SIGTERM, then
 #                            SIGKILL); if that cannot be confirmed both locks stay in place
 #   MAC_GATE_LOCK_WAIT      seconds to wait for the host-wide gate lock (default: 21600, at
@@ -1008,8 +1008,9 @@ stop_remote_run() {
     *) locks_frozen=1; say "remote run  : could not confirm the remote run stopped (${out:-no reply}) — locks frozen" ;;
   esac
 }
-# 7200 fired mid-suite on healthy full runs (IMGMGR-512); the longest measured full run is 13544 s (build 28).
-remote_cap="${MAC_GATE_REMOTE_CAP:-16200}"
+# 7200 and 16200 both sit below healthy full runs (IMGMGR-512): 13544 s on mars (build 28) and
+# 17030 s on merkur (the IMGMGR-552 latch-matrix gate, run under an explicit 21600).
+remote_cap="${MAC_GATE_REMOTE_CAP:-21600}"
 case "$remote_cap" in ''|*[!0-9]*) die_refuse "MAC_GATE_REMOTE_CAP must be a whole number of seconds (got '$remote_cap')" ;; esac
 [ "${#remote_cap}" -le 7 ] || die_refuse "MAC_GATE_REMOTE_CAP must be at most 7 digits (got '$remote_cap')"
 # Two calls on purpose: the script body goes up through the login shell (zsh on macOS, which
