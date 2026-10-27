@@ -1,9 +1,9 @@
 # Provenance of the img-manager artefact vendored into this package.
 # Written by scripts/sync-openapi.sh — do not edit by hand.
 repo=img-manager
-commit=fbd9745ab1f8259bce642e4a47975a05b847f5ee
-subject=Merge branch 'feature/imgmgr-642-look-version' (squash)
-committed=2026-10-26T10:10:44+01:00
+commit=e92be7e25c304eb0a714cd74cdaa18d7fb611caa
+subject=Merge branch 'feature/looks-lane-p3-presets' (squash)
+committed=2026-10-26T17:17:29+01:00
 files=Sources/ImgManagerAPI/openapi.json (source, with the nullable-$ref canonicalization below)
 canonicalized_nullable_refs=9
 canonicalized_required_nullable_refs=2

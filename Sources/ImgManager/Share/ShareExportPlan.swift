@@ -37,6 +37,9 @@ enum ShareRefusal: Sendable, Equatable {
   /// IMGMGR-544: the photograph's saved look could not be rendered for the export (a coded 422,
   /// or a 200 that is not a JPEG). Refused rather than shared unlooked.
   case lookUnavailable
+  /// IMGMGR-658: the preset render is gone (evicted, or re-rendered under a new hash) or its
+  /// bytes are not a JPEG.
+  case presetUnavailable
 
   var copy: String {
     switch self {
@@ -58,6 +61,8 @@ enum ShareRefusal: Sendable, Equatable {
       return "Sharing the edited master isn't available in this build yet."
     case .lookUnavailable:
       return "This photo's look couldn't be prepared for sharing."
+    case .presetUnavailable:
+      return "This preset render is no longer available. Render it again to share it."
     }
   }
 }
@@ -109,6 +114,15 @@ enum ShareExportPlan {
   /// The filename stem, stripped of anything that could make the temp path escape its own
   /// directory or name a hidden/dotted entry. Falls back to a fixed name rather than ever
   /// producing an empty or relative component.
+  /// IMGMGR-658: a preset render's export is `<stem>-<preset>.jpg` — the source's stem and the
+  /// preset's name, each made safe the same way; the preset's id stands in for a name that
+  /// sanitizes to nothing.
+  static func presetFilename(
+    for sourceFilename: String, presetName: String, presetID: String
+  ) -> String {
+    "\(stem(of: sourceFilename))-\(sanitize(presetName) ?? presetID).jpg"
+  }
+
   static func stem(of sourceFilename: String) -> String {
     let component = lastPathComponent(of: sourceFilename)
     var candidate = component

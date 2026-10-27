@@ -303,6 +303,27 @@
             lookID: lookID, strength: strength, tier: tier)
         }
         return (response, HTTPBody(Self.fixtureLookedProxy(tier: tier)))
+      // IMGMGR-658: the preset catalogue and its render, ONLY under `-UITestStubPresets`; every
+      // other launch answers the default 404, which hides the Presets row, so the Looks panel
+      // keeps the one-row layout the Looks tests were written against. A request is accepted
+      // as pending and stays pending, so the chip's progress state holds still to be read.
+      case Operations.ListPresetsApiPresetsGet.id where DebugStubLaunch.stubPresets:
+        return Self.rawJSON(.ok, Self.fixturePresets)
+      case Operations.RequestPresetRenderApiImagesImageIdPresetsPresetIdPost.id
+      where DebugStubLaunch.stubPresets,
+        Operations.GetPresetRenderApiImagesImageIdPresetsPresetIdGet.id
+      where DebugStubLaunch.stubPresets:
+        let path = request.path.flatMap { URLComponents(string: $0)?.path } ?? ""
+        let components = path.split(separator: "/").map(String.init)
+        let presetID = components.last ?? ""
+        let imageID = components.count >= 3 ? components[components.count - 3] : "0"
+        return Self.rawJSON(
+          .ok,
+          """
+          {"image_id": \(Int(imageID) ?? 0), "preset_id": "\(presetID)", "generation": 1,
+           "status": "pending", "approximate": false, "engine_version": "stub",
+           "requested_at": "2026-10-26T12:00:00Z"}
+          """)
       // IMGMGR-544: Apply saves (PUT) or removes (DELETE) a photograph's look.
       case Operations.PutImageLookApiImagesImageIdLookPut.id:
         return try await lookWrite(request, body: body, isDelete: false)
@@ -476,6 +497,21 @@
         items.compactMap { item in item.value.map { (item.name, $0) } },
         uniquingKeysWith: { first, _ in first })
     }
+
+    /// IMGMGR-658: a four-preset catalogue in the server's order — one favourite (so the row
+    /// opens collapsed and "All" has something to expand to), two groups, one approximate.
+    private static let fixturePresets = """
+      [
+        {"id": "a1b2c3d4e5f6", "name": "Warm Matte", "group": "Film", "approximate": false,
+         "approximate_reasons": [], "favourite_rank": 1, "use_count": 4},
+        {"id": "b2c3d4e5f6a1", "name": "Faded Teal", "group": "Film", "approximate": true,
+         "approximate_reasons": ["look_table"], "favourite_rank": null, "use_count": 2},
+        {"id": "c3d4e5f6a1b2", "name": "Crisp Mono", "group": "Mono", "approximate": false,
+         "approximate_reasons": [], "favourite_rank": null, "use_count": 1},
+        {"id": "d4e5f6a1b2c3", "name": "Soft Light", "group": "Film", "approximate": false,
+         "approximate_reasons": [], "favourite_rank": null, "use_count": 0}
+      ]
+      """
 
     /// IMGMGR-545: a literal JSON body — the sync fixtures are written as the wire shape.
     private static func rawJSON(
@@ -1235,6 +1271,13 @@
     /// queue's own screenshot capture skip the auto-select and see the sidebar/queue as a real
     /// launch actually would — `RegularThreeScreenshotUITests` passes no such argument, so its
     /// own grid-focused screenshot is completely unaffected.
+    /// IMGMGR-658: the preset catalogue and a render that stays pending
+    /// (`DebugStubTransport`'s preset routes). Off, the routes answer 404 and the Presets row is
+    /// not built.
+    static var stubPresets: Bool {
+      ProcessInfo.processInfo.arguments.contains("-UITestStubPresets")
+    }
+
     static var skipAutoSelect: Bool {
       ProcessInfo.processInfo.arguments.contains("-UITestStubSkipAutoSelect")
     }
