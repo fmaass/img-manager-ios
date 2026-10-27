@@ -88,6 +88,9 @@ struct LoupeView: View {
   @State private var imageViewport: CGSize = .zero
   /// The Share row's prepare and sheet (WP30 P1): owned here, because the row lives in a menu.
   @State private var shareLauncher = ShareLauncher()
+  /// IMGMGR-658: the `ok` preset render's full-size bytes, decoded, for the render it was
+  /// fetched for — held in memory only, never written to disk.
+  @State private var presetImage: (render: PresetRenderSnapshot, image: PlatformImage)?
   @Environment(\.displayScale) private var displayScale
 
   init(
@@ -167,6 +170,11 @@ struct LoupeView: View {
       // filmstrip's place.
       if store.looks.isStripOpen(for: store.focusedImageID), let image = focusedImage {
         LooksStripView(store: store, image: image)
+        // IMGMGR-658: the Presets row, the panel's second row, built only when the server
+        // lists presets.
+        if !store.presets.isRowHidden {
+          PresetStripView(store: store, image: image, share: share, launcher: shareLauncher)
+        }
       } else if FilmstripScope.resolve(for: store).isRendered {
         filmstrip.make(store)
       }
@@ -223,6 +231,8 @@ struct LoupeView: View {
     .onChange(of: store.isLoupeOpen) { _, isOpen in
       if !isOpen {
         pagingLifetime.end()
+        // IMGMGR-658: a preset render ends with the loupe.
+        store.presets.render.cancel()
         // A tag entry the loupe hosted ends with it, rather than re-presenting on the grid.
         store.isTagEntryPresented = false
       }
@@ -231,6 +241,8 @@ struct LoupeView: View {
     // IMGMGR-382: the look catalogue, fetched once per app session on the first open; a failed
     // fetch is asked again on the next open (`LookModel.loadCatalogueIfNeeded`).
     .task { await store.looks.loadCatalogueIfNeeded() }
+    // IMGMGR-658: the preset catalogue, the same once-per-session fetch.
+    .task { await store.presets.loadCatalogueIfNeeded() }
     .task(id: store.focusedImageID) {
       // Commit the frame-change reset to storage (the render already reflects it through
       // `resolvedZoom`): without this, stepping away from a zoomed frame and back would restore
@@ -241,6 +253,19 @@ struct LoupeView: View {
       // left behind for whatever the user shares next. This is the SUPERSEDE, not a completion:
       // the context changed, so it abandons every generation rather than ending a named one.
       share.supersede()
+      // IMGMGR-658: a render of the photograph the loupe left is abandoned with its poll.
+      store.presets.render.focusChanged(to: store.focusedImageID)
+    }
+    // IMGMGR-658: the overlay's bytes, fetched for the render it shows and dropped with it.
+    .task(id: shownPresetRender) {
+      guard let render = shownPresetRender else {
+        presetImage = nil
+        return
+      }
+      guard presetImage?.render != render else { return }
+      let data = await store.presets.overlayData(for: render)
+      guard !Task.isCancelled, shownPresetRender == render else { return }
+      presetImage = data.flatMap { PlatformImage(data: $0) }.map { (render: render, image: $0) }
     }
     // The main image reloads on a frame change AND on a look change (IMGMGR-382). Its own task,
     // so choosing a look neither supersedes a prepared export (the share is never looked) nor
@@ -486,7 +511,12 @@ struct LoupeView: View {
       zoomControls.attachGestures(
         AnyView(
           Group {
-            if let proxyImage {
+            if let shown = shownPresetImage {
+              // IMGMGR-658: the preset render, in place of the preview while toggled on.
+              PlatformImageView(image: shown)
+                .aspectRatio(contentMode: .fit)
+                .overlay(alignment: .topLeading) { presetBadge }
+            } else if let proxyImage {
               PlatformImageView(image: proxyImage)
                 .aspectRatio(contentMode: .fit)
             } else {
@@ -588,6 +618,31 @@ struct LoupeView: View {
     case .ignored:
       break
     }
+  }
+
+  /// IMGMGR-658: the `ok` preset render the loupe paints over the preview — only while the
+  /// Looks panel that holds its toggle is open on this photograph.
+  var shownPresetRender: PresetRenderSnapshot? {
+    guard store.looks.isStripOpen(for: store.focusedImageID) else { return nil }
+    return store.presets.render.shownRender(imageID: store.focusedImageID)
+  }
+
+  private var shownPresetImage: PlatformImage? {
+    guard let render = shownPresetRender, let presetImage, presetImage.render == render else {
+      return nil
+    }
+    return presetImage.image
+  }
+
+  private var presetBadge: some View {
+    let name = shownPresetRender.flatMap { store.presets.preset(id: $0.presetID)?.name }
+    return Text(name.map { "Preset \u{00B7} \($0)" } ?? "Preset")
+      .font(.caption.weight(.semibold))
+      .padding(.horizontal, 8)
+      .padding(.vertical, 4)
+      .background(.thinMaterial, in: Capsule())
+      .padding(8)
+      .accessibilityIdentifier("loupePresetBadge")
   }
 
   /// IMGMGR-544: the loupe rule (`GridStore.loupeLook`: an open draft, None included, else the

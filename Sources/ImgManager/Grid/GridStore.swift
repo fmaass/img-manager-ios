@@ -388,6 +388,9 @@ final class GridStore {
   /// IMGMGR-382 / IMGMGR-543: the loupe's look (`LookModel`) — a draft for ONE photograph while
   /// the Looks strip is open, and the catalogue and favourites behind it.
   let looks: LookModel
+  /// IMGMGR-658: the loupe's presets — the catalogue behind the Presets row and the one render
+  /// of the focused photograph (`PresetRenderModel`).
+  let presets: PresetModel
 
   // MARK: - Loupe (P5)
 
@@ -898,6 +901,15 @@ final class GridStore {
     self.looks = LookModel(
       fetchCatalogue: { try await service.looks() },
       favourites: LookFavourites(defaults: preferences.defaults))
+    self.presets = PresetModel(
+      fetchCatalogue: { try await service.presets() },
+      fetchFile: { imageID, presetID, renderHash in
+        try await service.presetRenderFile(
+          imageID: imageID, presetID: presetID, renderHash: renderHash)
+      },
+      render: PresetRenderModel(
+        request: { try await service.requestPresetRender(imageID: $0, presetID: $1) },
+        status: { try await service.presetRender(imageID: $0, presetID: $1) }))
   }
 
   // MARK: - Loading

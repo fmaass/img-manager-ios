@@ -31,6 +31,8 @@ final class ShareExportStore {
   private let master: any MasterDownloading
   private let masterAvailable: Bool
   private let directory: URL
+  /// IMGMGR-658: the most of one preset render a share reads.
+  private let presetByteCap: Int
   /// Increments on every `prepare` and every `finish` — see `prepare` for what it guards.
   private var generation = 0
 
@@ -42,12 +44,14 @@ final class ShareExportStore {
     service: GridService,
     master: any MasterDownloading = UnavailableMasterDownloader(),
     masterAvailable: Bool = ShareMasterSeam.isAvailable,
-    directory: URL = ShareExportStore.defaultDirectory
+    directory: URL = ShareExportStore.defaultDirectory,
+    presetByteCap: Int = PresetRenderPlan.fileByteCap
   ) {
     self.service = service
     self.master = master
     self.masterAvailable = masterAvailable
     self.directory = directory
+    self.presetByteCap = presetByteCap
   }
 
   /// A share-lane-private subdirectory of the system temp directory. Each export gets its OWN
@@ -99,6 +103,29 @@ final class ShareExportStore {
     _ variant: ShareVariant, for image: Components.Schemas.ImageSummary,
     look: LookModel.Active? = nil
   ) async {
+    await run(variant, .export(look: look), for: image)
+  }
+
+  /// IMGMGR-658: prepares a preset render's full-size JPEG, `<stem>-<preset>.jpg`, from the
+  /// `/file` route under the render's own hash, read up to `presetByteCap`. It runs `prepare`'s
+  /// own generation lifecycle: a supersede while the bytes are on the wire (the focus moved)
+  /// deletes what arrives and never delivers it into the newer generation.
+  func preparePreset(
+    for image: Components.Schemas.ImageSummary, presetName: String,
+    render: PresetRenderSnapshot
+  ) async {
+    await run(.preview, .preset(name: presetName, render: render), for: image)
+  }
+
+  /// What one export reads: the photograph's own variant, or a preset render (IMGMGR-658).
+  private enum Job {
+    case export(look: LookModel.Active?)
+    case preset(name: String, render: PresetRenderSnapshot)
+  }
+
+  private func run(
+    _ variant: ShareVariant, _ job: Job, for image: Components.Schemas.ImageSummary
+  ) async {
     guard !isPreparing else { return }
     generation &+= 1
     let requested = generation
@@ -110,11 +137,14 @@ final class ShareExportStore {
     clearDirectory()
     let destination = exportDirectory(for: requested)
     let outcome: State
-    switch variant {
-    case .preview:
+    switch (job, variant) {
+    case (.export(let look), .preview):
       outcome = await preparePreview(for: image, in: destination, look: look)
-    case .master:
+    case (.export, .master):
       outcome = await prepareMaster(for: image, in: destination)
+    case (.preset(let name, let render), _):
+      outcome = await preparePresetFile(
+        for: image, presetName: name, render: render, in: destination)
     }
     guard requested == generation else {
       // Stale: something moved on while this was in flight. Its bytes name a photograph that is
@@ -216,6 +246,40 @@ final class ShareExportStore {
   }
 
   /// The preview export's cap, name and write, looked or not.
+  private func preparePresetFile(
+    for image: Components.Schemas.ImageSummary, presetName: String,
+    render: PresetRenderSnapshot, in destination: URL
+  ) async -> State {
+    guard let hash = render.renderHash else { return .refused(.presetUnavailable) }
+    if let size = render.size, size > presetByteCap { return .refused(.tooLarge) }
+    let result: PresetFileFetchResult
+    do {
+      result = try await service.presetRenderFile(
+        imageID: render.imageID, presetID: render.presetID, renderHash: hash,
+        byteCap: presetByteCap)
+    } catch {
+      return .refused(.notConnected)
+    }
+    switch result {
+    case .ok(let data):
+      guard data.starts(with: [0xFF, 0xD8]) else { return .refused(.presetUnavailable) }
+      let filename = ShareExportPlan.presetFilename(
+        for: image.filename, presetName: presetName, presetID: render.presetID)
+      guard let url = write(data, named: filename, in: destination) else {
+        return .refused(.couldNotPrepare)
+      }
+      return .ready(
+        ShareExportFile(
+          url: url, filename: filename, contentType: ShareExportPlan.previewContentType))
+    case .notFound, .notModified:
+      // Evicted or re-rendered since the status read. No validator was sent, so a 304 carries
+      // nothing this export could use.
+      return .refused(.presetUnavailable)
+    case .tooLarge:
+      return .refused(.tooLarge)
+    }
+  }
+
   private func writePreview(
     _ data: Data, for image: Components.Schemas.ImageSummary, in destination: URL
   ) -> State {

@@ -572,6 +572,126 @@ struct GridService: Sendable {
     }
   }
 
+  // MARK: - Presets (IMGMGR-658, img-manager e92be7e)
+
+  /// `GET /api/presets` — the active presets, in the server's own order. The route answers `[]`
+  /// while no lane is provisioned; a 404 (a server that predates the route) is that same "no
+  /// presets here", so the loupe's Presets row is simply not built in either case.
+  func presets() async throws -> [Components.Schemas.PresetOut] {
+    let output: Operations.ListPresetsApiPresetsGet.Output
+    do {
+      output = try await client.listPresetsApiPresetsGet(.init())
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let body = try? ok.body.json else { throw GridServiceError.unreachable }
+      return body
+    case .undocumented(let statusCode, _) where statusCode == 404:
+      return []
+    case .undocumented:
+      throw GridServiceError.unreachable
+    }
+  }
+
+  /// `POST /api/images/{id}/presets/{preset_id}` — issue the render, or keep the one the server
+  /// already holds (an `ok` or `pending` row of the current source, any `rendering` row).
+  /// Answers the row as the server now has it.
+  func requestPresetRender(imageID: Int, presetID: String) async throws -> PresetRenderSnapshot {
+    let output: Operations.RequestPresetRenderApiImagesImageIdPresetsPresetIdPost.Output
+    do {
+      output = try await client.requestPresetRenderApiImagesImageIdPresetsPresetIdPost(
+        .init(path: .init(imageId: imageID, presetId: presetID)))
+    } catch {
+      throw PresetRenderError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let body = try? ok.body.json else { throw PresetRenderError.unreachable }
+      return PresetRenderSnapshot(body)
+    case .notFound:
+      throw PresetRenderError.gone
+    case .conflict:
+      throw PresetRenderError.sourceUnavailable
+    case .unprocessableContent:
+      throw PresetRenderError.unsupported
+    case .undocumented:
+      throw PresetRenderError.unreachable
+    }
+  }
+
+  /// `GET /api/images/{id}/presets/{preset_id}` — the render's current state. 404: there is no
+  /// render of this preset here (or no lane), which a poll reads as `.gone`.
+  func presetRender(imageID: Int, presetID: String) async throws -> PresetRenderSnapshot {
+    let output: Operations.GetPresetRenderApiImagesImageIdPresetsPresetIdGet.Output
+    do {
+      output = try await client.getPresetRenderApiImagesImageIdPresetsPresetIdGet(
+        .init(path: .init(imageId: imageID, presetId: presetID)))
+    } catch {
+      throw PresetRenderError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard let body = try? ok.body.json else { throw PresetRenderError.unreachable }
+      return PresetRenderSnapshot(body)
+    case .notFound:
+      throw PresetRenderError.gone
+    case .unprocessableContent, .undocumented:
+      throw PresetRenderError.unreachable
+    }
+  }
+
+  /// `GET /api/images/{id}/presets/{preset_id}/file?v=<render_hash>` — the full-size render,
+  /// through the same authenticated client as every other call (the Bearer token rides the
+  /// transport). `v` is ALWAYS the render's hash, so a re-render is a new URL and the server
+  /// answers an old hash with 404, never the replacement's bytes. The body is read up to
+  /// `byteCap` and no further: a larger body is `.tooLarge`, never buffered without bound. Held
+  /// in memory only; nothing here writes it to disk.
+  func presetRenderFile(
+    imageID: Int, presetID: String, renderHash: String,
+    byteCap: Int = PresetRenderPlan.fileByteCap
+  ) async throws -> PresetFileFetchResult {
+    let output: Operations.PresetRenderFileApiImagesImageIdPresetsPresetIdFileGet.Output
+    do {
+      output = try await client.presetRenderFileApiImagesImageIdPresetsPresetIdFileGet(
+        .init(
+          path: .init(imageId: imageID, presetId: presetID),
+          query: .init(v: renderHash)))
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    switch output {
+    case .ok(let ok):
+      guard case .jpeg(let body) = ok.body else { throw GridServiceError.unreachable }
+      return try await Self.collect(body, upTo: byteCap)
+    case .notModified:
+      return .notModified
+    case .notFound:
+      return .notFound
+    case .unprocessableContent, .undocumented:
+      throw GridServiceError.unreachable
+    }
+  }
+
+  /// Reads `body` chunk by chunk and stops at the first byte past `cap` — the overflow is a
+  /// value (`.tooLarge`), told apart from a transport failure, which throws.
+  private static func collect(_ body: HTTPBody, upTo cap: Int) async throws
+    -> PresetFileFetchResult
+  {
+    if case .known(let length) = body.length, length > Int64(cap) { return .tooLarge }
+    var data = Data()
+    do {
+      for try await chunk in body {
+        guard data.count + chunk.count <= cap else { return .tooLarge }
+        data.append(contentsOf: chunk)
+      }
+    } catch {
+      throw GridServiceError.unreachable
+    }
+    return .ok(data)
+  }
+
   // MARK: - Saved look (IMGMGR-544, img-manager v0.24.0)
 
   /// `PUT /api/images/{id}/look` — save `lookID` at `strength` on one photograph (an upsert on

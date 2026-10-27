@@ -52,6 +52,21 @@ final class ShareLauncher {
     prepareTask = nil
   }
 
+  /// IMGMGR-658: the same launch for a preset render's full-size JPEG.
+  func startPreset(
+    share: ShareExportStore, image: Components.Schemas.ImageSummary, presetName: String,
+    render: PresetRenderSnapshot
+  ) {
+    prepareTask?.cancel()
+    prepareTask = Task {
+      await share.preparePreset(for: image, presetName: presetName, render: render)
+      guard !Task.isCancelled else { return }
+      guard case .ready = share.state else { return }
+      self.presentedToken = share.currentToken
+      self.isSharePresented = true
+    }
+  }
+
   /// ONE TAP (IMGMGR-348). Owner device pass on 0.11.0 (14), verbatim: "the sharing is weird: on
   /// a single picture screen, the sharing button should immediatly open the native share
   /// functionality and share that picture". So the menu, the inline "Preparing…"/filename row and
