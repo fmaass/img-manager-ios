@@ -107,41 +107,6 @@ struct PresetPollClock: Sendable {
     sleep: { try await Task.sleep(for: $0) })
 }
 
-/// The first of two racers to finish wins, exactly once: the in-flight fetch (an answer) or the
-/// deadline timer (nil). The loser is cancelled, and whatever it delivers later is dropped.
-private final class PresetDeadlineRace: @unchecked Sendable {
-  typealias Answer = Result<PresetRenderSnapshot, PresetRenderError>?
-
-  private let lock = NSLock()
-  private var continuation: CheckedContinuation<Answer, Never>?
-  private var racers: [Task<Void, Never>] = []
-
-  init(_ continuation: CheckedContinuation<Answer, Never>) {
-    self.continuation = continuation
-  }
-
-  func add(_ racer: Task<Void, Never>) {
-    let finished = lock.withLock {
-      guard continuation != nil else { return true }
-      racers.append(racer)
-      return false
-    }
-    if finished { racer.cancel() }
-  }
-
-  func finish(_ answer: Answer) {
-    let (winner, losers) = lock.withLock {
-      let taken = (continuation, racers)
-      continuation = nil
-      racers = []
-      return taken
-    }
-    guard let winner else { return }
-    losers.forEach { $0.cancel() }
-    winner.resume(returning: answer)
-  }
-}
-
 /// One preset render for the focused photograph (IMGMGR-658):
 /// `idle → requested → pending → ok | failed | timedOut`.
 ///
@@ -193,6 +158,9 @@ final class PresetRenderModel {
     let imageID: Int
     let presetID: String
   }
+
+  /// One request or status read: the row, or why there is none.
+  typealias Answer = Result<PresetRenderSnapshot, PresetRenderError>
 
   private(set) var target: Target?
   private(set) var phase: Phase = .idle
@@ -268,7 +236,6 @@ final class PresetRenderModel {
   func cancel() {
     generation &+= 1
     task?.cancel()
-    task = nil
     target = nil
     phase = .idle
     showsPreset = false
@@ -319,20 +286,22 @@ final class PresetRenderModel {
 
   private func isCurrent(_ token: Int) -> Bool { token == generation }
 
-  /// `fetch(_:reissue:)` raced against `remaining` on the clock's deadline timer; nil when the
-  /// timer wins.
+  /// `fetch(_:reissue:)` raced against `remaining` on the clock's deadline timer, in a task
+  /// group: the first to finish wins and the other is cancelled, and a cancelled poll cancels
+  /// both. nil when the timer wins.
   private func fetch(_ target: Target, reissue: Bool, within remaining: Duration) async
-    -> Result<PresetRenderSnapshot, PresetRenderError>?
+    -> Answer?
   {
     let timeout = clock.timeout
-    return await withCheckedContinuation { continuation in
-      let race = PresetDeadlineRace(continuation)
-      race.add(Task { race.finish(await self.fetch(target, reissue: reissue)) })
-      race.add(
-        Task {
-          guard (try? await timeout(remaining)) != nil else { return }
-          race.finish(nil)
-        })
+    return await withTaskGroup(of: Answer?.self) { group in
+      group.addTask { await self.fetch(target, reissue: reissue) }
+      group.addTask {
+        _ = try? await timeout(remaining)
+        return nil
+      }
+      let first = await group.next() ?? nil
+      group.cancelAll()
+      return first
     }
   }
 
@@ -353,19 +322,22 @@ final class PresetRenderModel {
   }
 
   private func run(_ target: Target, token: Int, post: Bool) async {
-    let started = clock.now()
+    let end = clock.now().advanced(by: deadline)
     var reissue = post
     while true {
-      // The deadline bounds the fetch itself, not only the sleeps between fetches: a request
-      // still on the wire when the time runs out is cancelled, and its late answer dropped.
-      let remaining = deadline - started.duration(to: clock.now())
-      guard remaining > .zero, let answer = await fetch(target, reissue: reissue, within: remaining)
-      else {
-        guard isCurrent(token) else { return }
+      // The deadline bounds the fetch itself, not only the sleeps between fetches, and it is
+      // decided by the clock, not by which racer won: no fetch starts at or past it, and an
+      // answer that arrives at or past it is dropped.
+      let remaining = clock.now().duration(to: end)
+      var answer: Answer?
+      if remaining > .zero {
+        answer = await fetch(target, reissue: reissue, within: remaining)
+      }
+      guard isCurrent(token) else { return }
+      guard let answer, clock.now() < end else {
         phase = .timedOut
         return
       }
-      guard isCurrent(token) else { return }
       let snapshot: PresetRenderSnapshot
       switch answer {
       case .success(let row):
@@ -395,8 +367,7 @@ final class PresetRenderModel {
       case .ok, .pending, .rendering:
         phase = .pending
       }
-      let elapsed = started.duration(to: clock.now())
-      guard elapsed + interval <= deadline else {
+      guard clock.now().advanced(by: interval) <= end else {
         phase = .timedOut
         return
       }

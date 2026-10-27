@@ -117,8 +117,9 @@ final class ShareExportStore {
     for image: Components.Schemas.ImageSummary, presetName: String,
     render: PresetRenderSnapshot, renderGone: @MainActor () -> Void = {}
   ) async {
-    await run(.preview, .preset(name: presetName, render: render), for: image)
-    if state == .refused(.presetUnavailable) { renderGone() }
+    // This export's own outcome, never the shared `state` a later export may have written.
+    let outcome = await run(.preview, .preset(name: presetName, render: render), for: image)
+    if outcome == .refused(.presetUnavailable) { renderGone() }
   }
 
   /// What one export reads: the photograph's own variant, or a preset render (IMGMGR-658).
@@ -127,10 +128,13 @@ final class ShareExportStore {
     case preset(name: String, render: PresetRenderSnapshot)
   }
 
+  /// Returns the outcome this export published, nil when it was refused as a duplicate or
+  /// superseded before it could publish.
+  @discardableResult
   private func run(
     _ variant: ShareVariant, _ job: Job, for image: Components.Schemas.ImageSummary
-  ) async {
-    guard !isPreparing else { return }
+  ) async -> State? {
+    guard !isPreparing else { return nil }
     generation &+= 1
     let requested = generation
     state = .preparing(variant)
@@ -156,7 +160,7 @@ final class ShareExportStore {
       // individual file path, which a live export could by then be using for a same-named
       // export of its own. `state`, already owned by whatever superseded this, is not touched.
       try? FileManager.default.removeItem(at: destination)
-      return
+      return nil
     }
     guard !Task.isCancelled else {
       // CANCELLED means the view that asked for this export is gone — the loupe closed while the
@@ -168,9 +172,10 @@ final class ShareExportStore {
       // landed `.ready` bytes on disk with no live presenter (diff-gate BLOCKING, IMGMGR-348).
       state = outcome
       finish(ShareExportToken(generation: requested))
-      return
+      return outcome
     }
     state = outcome
+    return outcome
   }
 
   /// The token identifying the export currently on screen. A view captures this when it presents

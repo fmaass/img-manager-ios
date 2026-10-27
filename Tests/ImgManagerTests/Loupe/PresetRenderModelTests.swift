@@ -169,25 +169,17 @@ struct PresetRenderModelTests {
   }
 
   @Test(
-    "The deadline bounds an in-flight fetch: timedOut at 180 s, and the late ok is dropped",
+    "The deadline bounds an in-flight fetch: the timer at 180 s wins, the stalled ok is dropped",
     .timeLimit(.minutes(1)))
   func deadlineBoundsAStalledFetch() async {
     let timedFor = PresetLocked<[Duration]>([])
-    let release = PresetLocked<CheckedContinuation<Void, Never>?>(nil)
     let delivered = PresetLocked(false)
     let clock = PresetPollClock(
-      now: { ContinuousClock.now },
-      sleep: { _ in },
-      timeout: { duration in
-        // The timer fires only once the fetch is on the wire: the fetch is stalled past it.
-        while release.withLock({ $0 == nil }) { await Task.yield() }
-        timedFor.withLock { $0.append(duration) }
-      })
+      now: { ContinuousClock.now }, sleep: { _ in },
+      timeout: { duration in timedFor.withLock { $0.append(duration) } })
     let model = PresetRenderModel(
       request: { imageID, presetID in
-        await withCheckedContinuation { continuation in
-          release.withLock { $0 = continuation }
-        }
+        try? await Task.sleep(for: .seconds(3600))
         delivered.withLock { $0 = true }
         return PresetRenderSnapshot(
           imageID: imageID, presetID: presetID, generation: 1, status: .ok, renderHash: "late")
@@ -199,13 +191,71 @@ struct PresetRenderModelTests {
     await model.settle()
 
     #expect(model.phase == .timedOut)
-    #expect(timedFor.withLock { $0.count } == 1)
     #expect((timedFor.withLock { $0.first } ?? .zero) > .seconds(179))
-    // The stalled request answers ok now; it must not change the state.
-    release.withLock { $0 }?.resume()
-    while !delivered.withLock({ $0 }) { await Task.yield() }
-    for _ in 0..<10 { await Task.yield() }
+    // The task group waited for the cancelled fetch, which answered ok on its way out.
+    #expect(delivered.withLock { $0 })
     #expect(model.phase == .timedOut)
+    #expect(model.shownRender(imageID: 1) == nil)
+  }
+
+  @Test(
+    "A fetch that answers after the clock passed the deadline times out, the timer not fired",
+    .timeLimit(.minutes(1)))
+  func answerPastTheDeadlineIsDropped() async {
+    let offset = PresetLocked(Duration.zero)
+    let origin = ContinuousClock.now
+    let clock = PresetPollClock(
+      now: { origin.advanced(by: offset.withLock { $0 }) }, sleep: { _ in },
+      timeout: { _ in try await Task.sleep(for: .seconds(3600)) })
+    let model = PresetRenderModel(
+      request: { imageID, presetID in
+        offset.withLock { $0 = .seconds(181) }
+        return PresetRenderSnapshot(
+          imageID: imageID, presetID: presetID, generation: 1, status: .ok, renderHash: "late")
+      },
+      status: { _, _ in throw PresetRenderError.gone },
+      clock: clock)
+
+    model.start(imageID: 1, presetID: "p")
+    await model.settle()
+
+    #expect(model.phase == .timedOut)
+    #expect(model.shownRender(imageID: 1) == nil)
+  }
+
+  @Test(
+    "A cancelled poll cancels its stalled fetch and returns at once, changing nothing",
+    .timeLimit(.minutes(1)))
+  func cancelledPollCancelsTheFetch() async {
+    let entered = PresetLocked(false)
+    let sawCancel = PresetLocked(false)
+    let clock = PresetPollClock(
+      now: { ContinuousClock.now }, sleep: { _ in },
+      timeout: { _ in try await Task.sleep(for: .seconds(3600)) })
+    let model = PresetRenderModel(
+      request: { imageID, presetID in
+        entered.withLock { $0 = true }
+        do {
+          try await Task.sleep(for: .seconds(3600))
+        } catch {
+          sawCancel.withLock { $0 = true }
+        }
+        return PresetRenderSnapshot(
+          imageID: imageID, presetID: presetID, generation: 1, status: .ok, renderHash: "late")
+      },
+      status: { _, _ in throw PresetRenderError.gone },
+      clock: clock)
+
+    model.start(imageID: 1, presetID: "p")
+    while !entered.withLock({ $0 }) { await Task.yield() }
+    model.focusChanged(to: 2)
+    await model.settle()
+
+    #expect(sawCancel.withLock { $0 })
+    #expect(model.phase == .idle)
+    #expect(model.target == nil)
+    for _ in 0..<10 { await Task.yield() }
+    #expect(model.phase == .idle)
     #expect(model.shownRender(imageID: 1) == nil)
   }
 
