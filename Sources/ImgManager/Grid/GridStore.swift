@@ -970,13 +970,18 @@ final class GridStore {
   ///
   /// A mode switch is a SCOPE change of the strongest kind: a different endpoint, a different row
   /// vocabulary, a different cursor namespace, and no 1:1 mapping between the two row sequences.
-  /// So it takes `selectShoot`'s full reset — Pick Lock exited, selection reset, focus cleared,
-  /// the undo slot cleared, any live conflict recovery abandoned — and not `applyFilterChange`'s
-  /// lighter one, which deliberately leaves Pick Lock and Undo standing because a filter edit
-  /// keeps the same photographs addressable. Here they are not: an id selected among loose rows
-  /// may be inside a collapsed card after the switch, and an undo entry's priors would name
-  /// photographs the new window cannot show. Zero-leak over zero-loss, the same adjudication the
-  /// web made for the identical switch.
+  /// So it takes most of `selectShoot`'s reset — selection reset, focus cleared, the undo slot
+  /// cleared, any live conflict recovery abandoned — and not `applyFilterChange`'s lighter one,
+  /// which leaves Undo standing because a filter edit keeps the same photographs addressable.
+  /// Here they are not: an id selected among loose rows may be inside a collapsed card after the
+  /// switch, and an undo entry's priors would name photographs the new window cannot show.
+  /// Zero-leak over zero-loss, the same adjudication the web made for the identical switch.
+  ///
+  /// Pick Lock is the exception, and it STAYS: the latch is a mode of the reader's hand, not a
+  /// reference into the window, and the design record's R3-17 (BookStack page 4336) says it
+  /// "survives scroll, grouping, filter and size changes and a scene round trip; it ends with
+  /// Done, leaving the folder, or Select" (IMGMGR-552 R1). A latched tap on a scene card still
+  /// writes nothing — `tapCell` routes a card to `enterScene`, never to the latched mark.
   ///
   /// It ALSO suspends and restores the sort/group presentation — ADR-0005 decision 6, reachable
   /// for the first time in WP13 P5b (IMGMGR-221 part 2). This doc comment used to say the
@@ -1005,7 +1010,6 @@ final class GridStore {
     }
     leaveScene(.scopeChanged)
     adoptDisplayMode(next)
-    pickLock.exit()
     selection.reset(.shootChange)
     focusedImageID = nil
     undo.clear()

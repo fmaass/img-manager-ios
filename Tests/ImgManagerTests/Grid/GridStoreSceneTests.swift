@@ -281,7 +281,7 @@ struct GridStoreSceneTests {
   // MARK: - Scene enter / leave scope semantics (gate correction 6)
 
   @Test(
-    "Entering Scene mode is a full scope reset: flat cursor discarded, selection, Pick Lock, undo and focus cleared"
+    "Entering Scene mode is a scope reset: flat cursor, selection, undo and focus cleared; Pick Lock kept (R3-17)"
   )
   func enteringSceneModeIsAFullReset() async {
     let (store, transport) = makeStore()
@@ -291,7 +291,8 @@ struct GridStoreSceneTests {
     #expect(store.nextCursor == "flat-cursor")
 
     // Build up exactly the state a filter change would deliberately PRESERVE, so this test can
-    // only pass if Scene entry takes `selectShoot`'s stronger reset instead.
+    // only pass if Scene entry takes `selectShoot`'s stronger reset instead — all but Pick Lock,
+    // which R3-17 (BookStack page 4336) keeps across a scene round trip (IMGMGR-552 R1).
     store.enterSelectExplicitly()
     store.selection.toggle(1)
     store.focusedImageID = 2
@@ -308,7 +309,7 @@ struct GridStoreSceneTests {
     #expect(store.images.isEmpty)
     #expect(store.selection.members.isEmpty)
     #expect(store.selection.mode == .browse)
-    #expect(store.pickLock.latchedVerb == nil)
+    #expect(store.pickLock.latchedVerb == .pick)  // R3-17: the latch survives a scene round trip
     #expect(!store.undo.canUndo)
     #expect(store.focusedImageID == nil)
   }
