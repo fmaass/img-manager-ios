@@ -48,7 +48,6 @@ struct PresetStripTests {
     let sections = PresetStripSections.sections(catalogue: [
       Self.preset("a", rank: 1), Self.preset("b", group: "Film"), Self.preset("c", group: "Mono"),
     ])
-    #expect(PresetStripSections.defaultScope == .favourites)
     #expect(PresetStripSections.visible(sections, scope: .favourites).map(\.kind) == [.favourites])
     #expect(PresetStripSections.offersAll(sections, scope: .favourites))
     #expect(PresetStripSections.visible(sections, scope: .all) == sections)
@@ -97,6 +96,38 @@ struct PresetStripTests {
     #expect(PresetChipLabel.accessibilityLabel(plain) == "Preset a")
     let bare = Self.preset("b", approximate: true)
     #expect(PresetChipLabel.accessibilityLabel(bare) == "Preset b, approximate")
+  }
+
+  @Test("The row opens on Favourites when any preset is ranked, on the groups when none is")
+  func defaultScopeFollowsRanks() {
+    let ranked = [Self.preset("a", group: "Film"), Self.preset("b", group: "Mono", rank: 1)]
+    let unranked = [Self.preset("a", group: "Film"), Self.preset("b", group: "Mono")]
+    #expect(PresetStripSections.defaultScope(catalogue: ranked) == .favourites)
+    #expect(PresetStripSections.defaultScope(catalogue: unranked) == .all)
+    #expect(PresetStripSections.defaultScope(catalogue: []) == .all)
+    let rankedSections = PresetStripSections.sections(catalogue: ranked)
+    let opened = PresetStripSections.visible(
+      rankedSections, scope: PresetStripSections.defaultScope(catalogue: ranked))
+    #expect(opened.map(\.kind) == [.favourites])
+    let unrankedSections = PresetStripSections.sections(catalogue: unranked)
+    let groups = PresetStripSections.visible(
+      unrankedSections, scope: PresetStripSections.defaultScope(catalogue: unranked))
+    #expect(groups.map(\.kind) == [.group("Film"), .group("Mono")])
+  }
+
+  @MainActor
+  @Test("The loaded catalogue sets the model's scope: Favourites when ranked, all when not")
+  func modelDefaultScope() async {
+    for ranked in [true, false] {
+      let model = PresetModel(
+        fetchCatalogue: { [Self.preset("a", rank: ranked ? 1 : nil), Self.preset("b")] },
+        fetchFile: { _, _, _ in .notFound },
+        render: PresetRenderModel(
+          request: { _, _ in throw PresetRenderError.gone },
+          status: { _, _ in throw PresetRenderError.gone }))
+      await model.loadCatalogueIfNeeded()
+      #expect(model.scope == (ranked ? .favourites : .all))
+    }
   }
 
   @MainActor

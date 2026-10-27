@@ -36,9 +36,11 @@ enum PresetStripSections {
     case all
   }
 
-  /// The row's scope when the loupe first builds it — THE one place a later slice changes the
-  /// row's default (`PresetModel.init(initialScope:)` reads it).
-  static let defaultScope: Scope = .favourites
+  /// The row's scope when its catalogue arrives (IMGMGR-660): collapsed to the favourites
+  /// section when any preset is ranked, every section — the groups — when none is.
+  static func defaultScope(catalogue: [Preset]) -> Scope {
+    catalogue.contains { $0.favouriteRank != nil } ? .favourites : .all
+  }
 
   static func sections(catalogue: [Preset]) -> [Section] {
     var result: [Section] = []
@@ -126,13 +128,17 @@ final class PresetModel {
     fetchCatalogue: @escaping @Sendable () async throws -> [Preset],
     fetchFile: @escaping @Sendable (Int, String, String) async throws -> PresetFileFetchResult,
     render: PresetRenderModel,
-    initialScope: PresetStripSections.Scope = PresetStripSections.defaultScope
+    initialScope: PresetStripSections.Scope? = nil
   ) {
     self.fetchCatalogue = fetchCatalogue
     self.fetchFile = fetchFile
     self.render = render
-    self.scope = initialScope
+    self.pinnedScope = initialScope
+    self.scope = initialScope ?? .all
   }
+
+  /// A scope the caller fixed at init; nil lets the loaded catalogue pick the default.
+  private let pinnedScope: PresetStripSections.Scope?
 
   var isRowHidden: Bool { PresetStripSections.isRowHidden(catalogue: catalogue) }
 
@@ -148,6 +154,7 @@ final class PresetModel {
     catalogueState = .loading
     do {
       catalogue = try await fetchCatalogue()
+      scope = pinnedScope ?? PresetStripSections.defaultScope(catalogue: catalogue)
       catalogueState = .loaded
     } catch {
       catalogue = []

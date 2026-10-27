@@ -590,7 +590,8 @@ struct GridService: Sendable {
       return body
     case .undocumented(let statusCode, _) where statusCode == 404:
       return []
-    case .undocumented:
+    case .unprocessableContent, .undocumented:
+      // 422 answers only an invalid `favourites` filter, which this call never sends.
       throw GridServiceError.unreachable
     }
   }

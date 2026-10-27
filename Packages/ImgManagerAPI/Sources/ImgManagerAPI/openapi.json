@@ -1790,6 +1790,12 @@
             "title": "Reasons",
             "type": "array"
           },
+          "seed_uses": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Seed Uses",
+            "type": "integer"
+          },
           "xmp_sha256": {
             "pattern": "^[0-9a-f]{64}$",
             "title": "Xmp Sha256",
@@ -8662,7 +8668,7 @@
     },
     "/api/lane/presets/catalogue": {
       "put": {
-        "description": "Replace the catalogue with the lane's manifest. Every listed preset is upserted active\n(its ``use_count`` kept); every active preset the manifest leaves out is deactivated, never\ndeleted, so its renders and usage survive a re-sync that brings it back. 422 on an entry\nwhose ``preset_id`` is not its digest's prefix, on a duplicate id, and on an empty list.",
+        "description": "Replace the catalogue with the lane's manifest. Every listed preset is upserted active\n(its ``use_count`` raised to the entry's ``seed_uses`` when that is higher, never lowered);\nevery active preset the manifest leaves out is deactivated, never deleted, so its renders,\nrank and usage survive a re-sync that brings it back. 422 on an entry whose ``preset_id`` is\nnot its digest's prefix, on a duplicate id, on a negative seed and on an empty list.",
         "operationId": "put_catalogue_api_lane_presets_catalogue_put",
         "requestBody": {
           "content": {
@@ -9142,6 +9148,20 @@
       "get": {
         "description": "Active presets, most used first, then the favourites' seed rank, then name. ``[]``\nwhile no lane is provisioned, so a client shows no preset section at all.",
         "operationId": "list_presets_api_presets_get",
+        "parameters": [
+          {
+            "description": "Only the presets the favourites seed ranks, same order.",
+            "in": "query",
+            "name": "favourites",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Only the presets the favourites seed ranks, same order.",
+              "title": "Favourites",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -9156,6 +9176,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "The preset catalogue",
