@@ -717,6 +717,12 @@ actor GridStubTransport: ClientTransport {
     /// `current: nil` sends a 409 whose body is NOT a `LookVersionConflictError`, so the
     /// generated client fails to decode it inside the call.
     case versionConflict(current: String?)
+    /// IMGMGR-652: a 422 whose JSON body is not the declared shape, so the generated client fails
+    /// to decode it inside the call, and a 404 with a stray JSON body. The PUT declares no 404
+    /// body, so the client answers `.notFound` without decoding it; the 404 case pins that the
+    /// stray body changes nothing, and the status classifier backs it if a body is ever declared.
+    case malformedRefusal
+    case malformedNotFound
   }
 
   var lookWriteOutcomes: [LookWriteOutcome] = []
@@ -798,6 +804,10 @@ actor GridStubTransport: ClientTransport {
       ]
       let json = try JSONSerialization.data(withJSONObject: ["detail": detail])
       return jsonBytes(.conflict, String(decoding: json, as: UTF8.self))
+    case .malformedRefusal:
+      return jsonBytes(.unprocessableContent, #"{"unexpected": true}"#)
+    case .malformedNotFound:
+      return jsonBytes(.notFound, #"{"unexpected": true}"#)
     }
   }
 

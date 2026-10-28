@@ -129,7 +129,7 @@ struct LookPersistenceTests {
     arguments: [
       GridStubTransport.LookWriteOutcome.ok, .notFound, .refused(code: "unknown_look"),
       .transportFailure, .undecodable, .versionConflict(current: "v2-warm-film"),
-      .versionConflict(current: nil),
+      .versionConflict(current: nil), .malformedRefusal, .malformedNotFound,
     ])
   func savingClearedOnEveryPath(outcome: GridStubTransport.LookWriteOutcome) async {
     let (store, transport) = await Self.store()
@@ -428,6 +428,44 @@ struct LookPersistenceTests {
     #expect(await transport.callCount(Operations.ListLooksApiLooksGet.id) == 2)
     #expect(summary(store)?.look == nil)
     #expect(store.looks.draft?.lookID == "warm-film")
+  }
+
+  @Test("A 409 over a different saved look keeps that saved look and the draft's strength")
+  func versionConflictKeepsTheSavedLookAndDraftStrength() async {
+    let saved = Self.savedLook("classic-mono", 150)
+    let (store, transport) = await Self.store(saved: saved)
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    store.looks.setStrength(60)
+    await transport.enqueueLookWriteOutcomes([.versionConflict(current: "v2-warm-film")])
+    await store.applyLook()
+    #expect(await transport.recordedLookWrites.count == 1)
+    #expect(store.looks.visibleSaveFailure(for: 1) == .versionChanged)
+    #expect(summary(store)?.look == saved)
+    #expect(store.looks.draft?.lookID == "warm-film")
+    #expect(store.looks.draft?.strength == 60)
+  }
+
+  @Test(
+    "IMGMGR-652: a 422 or 404 whose body does not decode is definite, never reconciled",
+    arguments: [
+      (GridStubTransport.LookWriteOutcome.malformedRefusal, LookModel.SaveFailure.refused),
+      (.malformedNotFound, .gone),
+    ])
+  func malformedRefusalIsDefinite(
+    outcome: GridStubTransport.LookWriteOutcome, failure: LookModel.SaveFailure
+  ) async {
+    let saved = Self.savedLook("classic-mono", 150)
+    let (store, transport) = await Self.store(saved: saved)
+    store.toggleLooksStrip()
+    store.looks.select("warm-film")
+    await transport.enqueueLookWriteOutcomes([outcome])
+    await store.applyLook()
+    #expect(await transport.recordedLookWrites.count == 1)
+    #expect(store.looks.visibleSaveFailure(for: 1) == failure)
+    #expect(await transport.callCount(Operations.GetImageApiImagesImageIdGet.id) == 0)
+    #expect(summary(store)?.look == saved)
+    #expect(store.looks.saving.isEmpty)
   }
 
   @Test("Scope: after a 409 only tiles whose catalogue version moved are asked again")

@@ -703,9 +703,9 @@ struct GridService: Sendable {
   ///
   /// `lookVersion` (IMGMGR-642) is the catalogue `version` of the look the strip previewed; nil
   /// leaves `look_version` out of the body. A 409 says the catalogue serves another version now.
-  /// The generated client decodes a JSON body inside the call, so a 409 whose body does not
-  /// decode arrives as a `ClientError` carrying the 409 response; it is classified by that status
-  /// before the catch-all, and stays definite.
+  /// The generated client decodes a JSON body inside the call, so a 409, 422 or 404 whose body
+  /// does not decode arrives as a `ClientError` carrying that response; it is classified by its
+  /// status before the catch-all (`undecodedLookWrite`), and stays definite.
   func putLook(imageID: Int, lookID: String, strength: Int, lookVersion: String?) async throws
     -> Components.Schemas.ImageLookView
   {
@@ -715,8 +715,8 @@ struct GridService: Sendable {
     do {
       output = try await client.putImageLookApiImagesImageIdLookPut(
         .init(path: .init(imageId: imageID), body: .json(body)))
-    } catch let error as ClientError where error.response?.status.code == 409 {
-      throw LookWriteError.versionConflict(current: nil)
+    } catch let error as ClientError {
+      throw Self.undecodedLookWrite(error)
     } catch {
       throw LookWriteError.uncertain
     }
@@ -743,6 +743,8 @@ struct GridService: Sendable {
     do {
       output = try await client.deleteImageLookApiImagesImageIdLookDelete(
         .init(path: .init(imageId: imageID)))
+    } catch let error as ClientError {
+      throw Self.undecodedLookWrite(error)
     } catch {
       throw LookWriteError.uncertain
     }
@@ -755,6 +757,19 @@ struct GridService: Sendable {
       throw LookWriteError.refused(Self.refusalCode(try? refusal.body.json))
     case .undocumented:
       throw LookWriteError.uncertain
+    }
+  }
+
+  /// A look-write response the generated client could not decode, classified by its status
+  /// alone (IMGMGR-652): a 409, 422 or 404 is definite whatever its body holds, so nothing was
+  /// written. No response (a transport failure) or any other status, an undecodable 200 among
+  /// them, stays `.uncertain`.
+  private static func undecodedLookWrite(_ error: ClientError) -> LookWriteError {
+    switch error.response?.status.code {
+    case 409: .versionConflict(current: nil)
+    case 422: .refused(.invalidRequest)
+    case 404: .gone
+    default: .uncertain
     }
   }
 
