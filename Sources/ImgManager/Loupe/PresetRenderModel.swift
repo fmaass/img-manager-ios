@@ -286,23 +286,32 @@ final class PresetRenderModel {
 
   private func isCurrent(_ token: Int) -> Bool { token == generation }
 
-  /// `fetch(_:reissue:)` raced against `remaining` on the clock's deadline timer, in a task
-  /// group: the first to finish wins and the other is cancelled, and a cancelled poll cancels
-  /// both. nil when the timer wins.
+  /// `fetch(_:reissue:)` raced against `remaining` on the clock's deadline timer, as two
+  /// unstructured tasks: the first to finish answers and the other is cancelled, and a cancelled
+  /// poll cancels both and answers nil at once. nil when the timer wins — at once, even when the
+  /// fetch ignores its cancellation and never returns (IMGMGR-676: a task group would wait for
+  /// it to drain). The abandoned fetch's late answer goes nowhere.
   private func fetch(_ target: Target, reissue: Bool, within remaining: Duration) async
     -> Answer?
   {
     let timeout = clock.timeout
-    return await withTaskGroup(of: Answer?.self) { group in
-      group.addTask { await self.fetch(target, reissue: reissue) }
-      group.addTask {
-        _ = try? await timeout(remaining)
-        return nil
-      }
-      let first = await group.next() ?? nil
-      group.cancelAll()
-      return first
+    let race = PresetFetchRace()
+    let fetcher = Task {
+      let answer = await self.fetch(target, reissue: reissue)
+      race.offer(answer)
     }
+    let timer = Task {
+      _ = try? await timeout(remaining)
+      race.offer(nil)
+    }
+    let first = await withTaskCancellationHandler {
+      await race.first()
+    } onCancel: {
+      race.offer(nil)
+    }
+    fetcher.cancel()
+    timer.cancel()
+    return first
   }
 
   /// One request (`reissue`) or status read, its error in this client's vocabulary.
@@ -378,5 +387,53 @@ final class PresetRenderModel {
       }
       guard isCurrent(token) else { return }
     }
+  }
+}
+
+/// The first answer of `PresetRenderModel`'s fetch-versus-timer race (IMGMGR-676), delivered
+/// exactly once: whichever offers first — the fetch, the timer, or the poll's cancellation —
+/// resumes the waiting poll, and every later offer is dropped. A lock rather than an actor, so
+/// the synchronous cancellation handler can offer too.
+private final class PresetFetchRace: @unchecked Sendable {
+  private enum State {
+    case open
+    case waiting(CheckedContinuation<PresetRenderModel.Answer?, Never>)
+    case answered(PresetRenderModel.Answer?)
+    case delivered
+  }
+
+  private let lock = NSLock()
+  private var state = State.open
+
+  /// The first offer, at once when it is already in.
+  func first() async -> PresetRenderModel.Answer? {
+    await withCheckedContinuation { continuation in
+      let ready = lock.withLock { () -> PresetRenderModel.Answer?? in
+        guard case .answered(let answer) = state else {
+          state = .waiting(continuation)
+          return nil
+        }
+        state = .delivered
+        return .some(answer)
+      }
+      if let ready { continuation.resume(returning: ready) }
+    }
+  }
+
+  /// Offers an answer (nil: the timer, or a cancelled poll); only the first offer counts.
+  func offer(_ answer: PresetRenderModel.Answer?) {
+    let waiting = lock.withLock { () -> CheckedContinuation<PresetRenderModel.Answer?, Never>? in
+      switch state {
+      case .open:
+        state = .answered(answer)
+        return nil
+      case .waiting(let continuation):
+        state = .delivered
+        return continuation
+      case .answered, .delivered:
+        return nil
+      }
+    }
+    waiting?.resume(returning: answer)
   }
 }

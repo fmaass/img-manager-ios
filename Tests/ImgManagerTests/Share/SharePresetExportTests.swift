@@ -4,6 +4,12 @@ import Testing
 
 @testable import ImgManager
 
+/// Which exports' `renderGone` ran, in order (IMGMGR-676).
+@MainActor
+private final class PresetGoneLog {
+  var exports: [String] = []
+}
+
 /// IMGMGR-658: a preset render shares as its full-size `/file` JPEG, `<stem>-<preset>.jpg`,
 /// bounded, and a superseded generation never delivers into the newer one.
 @MainActor
@@ -28,9 +34,9 @@ struct SharePresetExportTests {
       presetByteCap: presetByteCap)
   }
 
-  private func image() -> Components.Schemas.ImageSummary {
+  private func image(id: Int = 1) -> Components.Schemas.ImageSummary {
     Components.Schemas.ImageSummary(
-      aspectRatio: 1.5, ext: "arw", filename: "DSC01234.ARW", folderId: 1, id: 1,
+      aspectRatio: 1.5, ext: "arw", filename: "DSC01234.ARW", folderId: 1, id: id,
       lightroom: .init(sidecarPresent: false), mark: .init(revision: "r0"),
       proxies: .init(additionalProperties: [:]), sourceTier: "local")
   }
@@ -132,6 +138,53 @@ struct SharePresetExportTests {
     #expect(model.phase(imageID: render.imageID, presetID: render.presetID) == .idle)
     model.start(imageID: render.imageID, presetID: render.presetID)
     #expect(model.phase == .requested)
+  }
+
+  /// The overlap the store allows: `run` refuses a second export while one is preparing, so B
+  /// can only start once A is superseded (the loupe's focus moved) with A's bytes still on the
+  /// wire. B's render answers 404 and B publishes the refusal; A's bytes land after that, into a
+  /// generation that moved on, so A must not take B's refusal for its own.
+  @Test(
+    "Two overlapping preset exports: only the one whose render is gone invalidates it",
+    .timeLimit(.minutes(1)))
+  func overlappingExportsInvalidateOnlyTheGoneRender() async {
+    let directory = scratchDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let transport = PresetStubTransport()
+    await transport.holdEachFile()
+    let store = makeStore(transport, directory: directory)
+    let gone = PresetGoneLog()
+    let renderB = PresetRenderSnapshot(
+      imageID: 2, presetID: "a1b2c3d4e5f6", generation: 1, status: .ok, renderHash: "h2", size: 8)
+
+    let exportA = Task {
+      await store.preparePreset(
+        for: image(id: 1), presetName: "Warm Matte", render: Self.render,
+        renderGone: { gone.exports.append("A") })
+    }
+    await transport.waitForHeldFiles(1)
+    store.supersede()
+    let exportB = Task {
+      await store.preparePreset(
+        for: image(id: 2), presetName: "Warm Matte", render: renderB,
+        renderGone: { gone.exports.append("B") })
+    }
+    await transport.waitForHeldFiles(2)
+    #expect(await transport.fileRequestPaths.count == 2)
+
+    #expect(await transport.answerFile(containing: "file?v=h2", with: .notFound))
+    await exportB.value
+    #expect(store.state == .refused(.presetUnavailable))
+    #expect(gone.exports == ["B"])
+
+    #expect(await transport.answerFile(containing: "file?v=h1", with: .ok(Self.jpeg)))
+    await exportA.value
+    #expect(gone.exports == ["B"])
+    #expect(store.state == .refused(.presetUnavailable))
+    let leftovers =
+      (try? FileManager.default.subpathsOfDirectory(atPath: directory.path(percentEncoded: false)))
+      ?? []
+    #expect(leftovers.filter { $0.hasSuffix(".jpg") }.isEmpty)
   }
 
   @Test("Bounded transfer: a render past the cap refuses as too large, before or after asking")

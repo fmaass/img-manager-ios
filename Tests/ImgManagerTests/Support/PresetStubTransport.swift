@@ -6,7 +6,9 @@ import OpenAPIRuntime
 /// IMGMGR-658: the preset routes, routed by the real generated `operationID` like
 /// `GridStubTransport`. Records every request path it is sent, so a test reads the exact URL the
 /// generated client built (`?v=<render_hash>` included). The `/file` answer can be HELD until
-/// the test releases it, to put a supersede between the request and its bytes.
+/// the test releases it, to put a supersede between the request and its bytes — or, with
+/// `holdEachFile()`, every `/file` request is held on its own and answered individually, so two
+/// can be in flight at once (IMGMGR-676).
 actor PresetStubTransport: ClientTransport {
   enum FileOutcome: Sendable {
     case ok(Data)
@@ -24,6 +26,11 @@ actor PresetStubTransport: ClientTransport {
   private var fileStarted: CheckedContinuation<Void, Never>?
   private var fileHasStarted = false
   private var fileRelease: CheckedContinuation<Void, Never>?
+
+  private var holdsEachFile = false
+  private var heldFiles: [(path: String, answer: CheckedContinuation<FileOutcome, Never>)] = []
+  private var heldFileCount = 0
+  private var heldFileWaiters: [(count: Int, ready: CheckedContinuation<Void, Never>)] = []
 
   func setCatalogue(status: Int, json: String = "[]") {
     catalogueStatus = status
@@ -46,6 +53,26 @@ actor PresetStubTransport: ClientTransport {
     holdsFile = false
     fileRelease?.resume()
     fileRelease = nil
+  }
+
+  /// Arms the per-request hold: every later `/file` request suspends, under its own path, until
+  /// `answerFile(containing:with:)` answers it.
+  func holdEachFile() { holdsEachFile = true }
+
+  /// Returns once `count` `/file` requests in all have been held.
+  func waitForHeldFiles(_ count: Int) async {
+    if heldFileCount >= count { return }
+    await withCheckedContinuation { heldFileWaiters.append((count, $0)) }
+  }
+
+  /// Answers the held `/file` request whose path contains `fragment`; false when none is held.
+  @discardableResult
+  func answerFile(containing fragment: String, with outcome: FileOutcome) -> Bool {
+    guard let index = heldFiles.firstIndex(where: { $0.path.contains(fragment) }) else {
+      return false
+    }
+    heldFiles.remove(at: index).answer.resume(returning: outcome)
+    return true
   }
 
   var fileRequestPaths: [String] {
@@ -72,21 +99,36 @@ actor PresetStubTransport: ClientTransport {
          "requested_at": "2026-10-26T12:00:00Z"}
         """)
     case Operations.PresetRenderFileApiImagesImageIdPresetsPresetIdFileGet.id:
+      if holdsEachFile {
+        let path = request.path ?? ""
+        let outcome: FileOutcome = await withCheckedContinuation { answer in
+          heldFiles.append((path, answer))
+          heldFileCount += 1
+          let ready = heldFileWaiters.filter { $0.count <= heldFileCount }
+          heldFileWaiters.removeAll { $0.count <= heldFileCount }
+          for waiter in ready { waiter.ready.resume() }
+        }
+        return fileResponse(outcome)
+      }
       if holdsFile {
         fileHasStarted = true
         fileStarted?.resume()
         fileStarted = nil
         await withCheckedContinuation { fileRelease = $0 }
       }
-      switch fileOutcome {
-      case .ok(let data):
-        var response = HTTPResponse(status: .ok)
-        response.headerFields[.contentType] = "image/jpeg"
-        return (response, HTTPBody(data))
-      case .notFound:
-        return (HTTPResponse(status: .notFound), nil)
-      }
+      return fileResponse(fileOutcome)
     default:
+      return (HTTPResponse(status: .notFound), nil)
+    }
+  }
+
+  private func fileResponse(_ outcome: FileOutcome) -> (HTTPResponse, HTTPBody?) {
+    switch outcome {
+    case .ok(let data):
+      var response = HTTPResponse(status: .ok)
+      response.headerFields[.contentType] = "image/jpeg"
+      return (response, HTTPBody(data))
+    case .notFound:
       return (HTTPResponse(status: .notFound), nil)
     }
   }

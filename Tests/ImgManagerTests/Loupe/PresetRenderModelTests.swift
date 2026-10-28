@@ -66,6 +66,31 @@ private final class PresetScript: Sendable {
   }
 }
 
+/// A fetch that parks until the test releases it and ignores cancellation meanwhile: its
+/// continuation has no cancellation handler, so cancelling the task it runs in changes nothing.
+private final class PresetParkedFetch: Sendable {
+  private let parked = PresetLocked<CheckedContinuation<Void, Never>?>(nil)
+  private let didEnter = PresetLocked(false)
+
+  var entered: Bool { didEnter.withLock { $0 } }
+
+  func park() async {
+    await withCheckedContinuation { continuation in
+      parked.withLock { $0 = continuation }
+      didEnter.withLock { $0 = true }
+    }
+  }
+
+  /// Ends the park, so no hung task outlives the test.
+  func release() {
+    let continuation = parked.withLock { value in
+      defer { value = nil }
+      return value
+    }
+    continuation?.resume()
+  }
+}
+
 /// IMGMGR-658: `PresetRenderModel`'s transitions — `idle → requested → pending → ok | failed |
 /// timedOut` — run on a virtual clock, so the 3 s poll and the 180 s deadline cost nothing.
 @MainActor
@@ -192,8 +217,51 @@ struct PresetRenderModelTests {
 
     #expect(model.phase == .timedOut)
     #expect((timedFor.withLock { $0.first } ?? .zero) > .seconds(179))
-    // The task group waited for the cancelled fetch, which answered ok on its way out.
-    #expect(delivered.withLock { $0 })
+    // The race does not wait for the cancelled fetch; it answers ok on its way out, and nothing
+    // applies it.
+    while !delivered.withLock({ $0 }) { await Task.yield() }
+    for _ in 0..<10 { await Task.yield() }
+    #expect(model.phase == .timedOut)
+    #expect(model.shownRender(imageID: 1) == nil)
+  }
+
+  @Test(
+    "A fetch that ignores its cancellation and never returns still times out at the deadline",
+    .timeLimit(.minutes(1)))
+  func deadlineBoundsAFetchThatNeverReturns() async {
+    let parked = PresetParkedFetch()
+    let delivered = PresetLocked(false)
+    let timedFor = PresetLocked<[Duration]>([])
+    let clock = PresetPollClock(
+      now: { ContinuousClock.now }, sleep: { _ in },
+      timeout: { duration in
+        timedFor.withLock { $0.append(duration) }
+        // The timer fires only once the fetch is in flight, so it is the fetch it outruns.
+        while !parked.entered { await Task.yield() }
+      })
+    let model = PresetRenderModel(
+      request: { imageID, presetID in
+        await parked.park()
+        delivered.withLock { $0 = true }
+        return PresetRenderSnapshot(
+          imageID: imageID, presetID: presetID, generation: 1, status: .ok, renderHash: "late")
+      },
+      status: { _, _ in throw PresetRenderError.gone },
+      clock: clock)
+
+    model.start(imageID: 1, presetID: "p")
+    // Watched rather than `settle()`d: a race that waited for its fetch to drain would hang
+    // there past the time limit, where this loop ends on the time limit's cancellation instead.
+    while model.phase != .timedOut, !Task.isCancelled { await Task.yield() }
+
+    #expect(model.phase == .timedOut)
+    #expect((timedFor.withLock { $0.first } ?? .zero) > .seconds(179))
+    #expect(!delivered.withLock { $0 })
+    // The abandoned fetch answers ok long after the deadline; nothing applies it.
+    parked.release()
+    await model.settle()
+    while !delivered.withLock({ $0 }) { await Task.yield() }
+    for _ in 0..<10 { await Task.yield() }
     #expect(model.phase == .timedOut)
     #expect(model.shownRender(imageID: 1) == nil)
   }
@@ -251,7 +319,8 @@ struct PresetRenderModelTests {
     model.focusChanged(to: 2)
     await model.settle()
 
-    #expect(sawCancel.withLock { $0 })
+    // The race does not wait for the fetch to drain, but its cancellation reaches the fetch.
+    while !sawCancel.withLock({ $0 }) { await Task.yield() }
     #expect(model.phase == .idle)
     #expect(model.target == nil)
     for _ in 0..<10 { await Task.yield() }
