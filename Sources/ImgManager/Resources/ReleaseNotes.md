@@ -6,6 +6,14 @@ refuses to upload when that section is missing, empty or duplicated; Settings �
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.16.0 (29)
+
+- In the photo view, the open Looks panel has a new Presets row under the looks. Tap one of your Lightroom presets to see the photo through it once it has rendered; Original and Preset switch between the two. The row says when a render is still on its way, Check Again asks once more when it takes long, and a long-press on a preset that failed says why. A preset the app can only apply approximately is marked as approximate. Share sends the photo through the preset, for example to Files.
+- The Presets row opens on your favourite presets when you have any, with All to show every group. Without favourites it shows all groups.
+- When a look changed on the server after you previewed it, Apply now saves nothing and asks you to preview the look again. Preview it again, then Apply.
+- The line under the photo view's title adds updated after a saved look that has changed on the server since you applied it.
+- Pick Lock now stays on when you change Arrange > Group, for example to Scene. It ends only with Done, when you leave the folder, or with Select.
+
 ## 0.15.6 (28)
 
 - In the photo view, Looks now opens a strip in the filmstrip's place, each tile showing the photo through one look: None first, then Favourites, Film, Camera, Mono and Other. Long-press a look to add it to Favourites, which are kept on this device. Set the strength under the strip, from 0 to 200 %, then press Apply or Cancel. With a keyboard, ← and → choose a look, ↑ and ↓ change the strength by 10 %, and Esc cancels.
