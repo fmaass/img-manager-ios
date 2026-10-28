@@ -91,7 +91,16 @@ struct LoupeView: View {
   /// IMGMGR-658: the `ok` preset render's full-size bytes, decoded, for the render it was
   /// fetched for — held in memory only, never written to disk.
   @State private var presetImage: (render: PresetRenderSnapshot, image: PlatformImage)?
+  /// IMGMGR-650: the unlooked preview hold-to-original paints, for the photograph it was fetched
+  /// for — fetched when the strip opens, so a hold shows it at once.
+  @State private var original: (imageID: Int, image: PlatformImage)?
+  /// IMGMGR-650: a finger is holding the image (`originalHold`). A `@GestureState`, so SwiftUI
+  /// resets it when the gesture ends in ANY way — lifted, cancelled, the view gone.
+  @GestureState private var isHoldingOriginal = false
+  /// IMGMGR-650: this loupe's ownership of `\` (`OriginalKeyMonitor.attach`), while mounted.
+  @State private var originalKeyToken: Int?
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.scenePhase) private var scenePhase
 
   init(
     store: GridStore, layoutMode: LayoutMode, share: ShareExportStore,
@@ -266,6 +275,43 @@ struct LoupeView: View {
       let data = await store.presets.overlayData(for: render)
       guard !Task.isCancelled, shownPresetRender == render else { return }
       presetImage = data.flatMap { PlatformImage(data: $0) }.map { (render: render, image: $0) }
+    }
+    // IMGMGR-650: hold-to-original's unlooked preview, fetched while the strip is open on the
+    // focused photograph and dropped with it.
+    .task(id: originalRequest) {
+      guard let request = originalRequest else {
+        original = nil
+        return
+      }
+      let data = await store.originalPreview(
+        imageID: request.imageID, identityToken: request.token)
+      guard !Task.isCancelled, originalRequest == request else { return }
+      original = data.flatMap { PlatformImage(data: $0) }.map {
+        (imageID: request.imageID, image: $0)
+      }
+    }
+    // IMGMGR-650: the finger's hold, and `\` held on a hardware keyboard (`OriginalKeyMonitor`),
+    // both into the one store gate. Leaving the foreground ends every hold: a release that
+    // happens while the app is away never arrives.
+    .onChange(of: isHoldingOriginal) { _, held in
+      store.holdOriginal(.touch, isHeld: held)
+    }
+    .onAppear {
+      if let token = originalKeyToken { OriginalKeyMonitor.shared.detach(token) }
+      originalKeyToken = OriginalKeyMonitor.shared.attach { pressed in
+        store.holdOriginal(.key, isHeld: pressed)
+      }
+    }
+    // Going away releases this loupe's holds: the key's through the monitor (only when this
+    // loupe holds it), the finger's here — a loupe replaced while the strip stays open must not
+    // leave the original on.
+    .onDisappear {
+      if let token = originalKeyToken { OriginalKeyMonitor.shared.detach(token) }
+      originalKeyToken = nil
+      store.holdOriginal(.touch, isHeld: false)
+    }
+    .onChange(of: scenePhase) { _, phase in
+      if phase != .active { store.looks.endOriginalHolds() }
     }
     // The main image reloads on a frame change AND on a look change (IMGMGR-382). Its own task,
     // so choosing a look neither supersedes a prepared export (the share is never looked) nor
@@ -511,7 +557,12 @@ struct LoupeView: View {
       zoomControls.attachGestures(
         AnyView(
           Group {
-            if let shown = shownPresetImage {
+            if let held = shownOriginalImage {
+              // IMGMGR-650: the unlooked preview while the original is held, over a look and
+              // over a preset render alike.
+              PlatformImageView(image: held)
+                .aspectRatio(contentMode: .fit)
+            } else if let shown = shownPresetImage {
               // IMGMGR-658: the preset render, in place of the preview while toggled on.
               PlatformImageView(image: shown)
                 .aspectRatio(contentMode: .fit)
@@ -548,9 +599,32 @@ struct LoupeView: View {
           onDragEnded: { translation in handleDragEnded(translation) }
         )
       )
+      // IMGMGR-650: while the strip is open a long press HOLDS THE ORIGINAL. Simultaneous with
+      // the zoom gestures, and off (`.subviews`) without the strip. The classic hold pattern —
+      // a long press, then a drag that lasts until the finger lifts — so `isHoldingOriginal` is
+      // true from the press's success to the lift, and a quick tap never flashes the original.
+      .simultaneousGesture(originalHold, including: holdsOriginal ? .all : .subviews)
       // WP30 P2 (IMGMGR-457): the photograph's context menu (long press; secondary click with a
-      // pointer). The loupe image has no long press of its own, unlike a grid tile.
-      .contextMenu { photoContextMenu }
+      // pointer). The loupe image has no long press of its own, unlike a grid tile. IMGMGR-650:
+      // not while the strip is open — the long press is hold-to-original there, and a menu that
+      // lifts the image would cancel the hold. Every row is a twin of a control the loupe keeps.
+      .modifier(PhotoContextMenu(isEnabled: !holdsOriginal) { photoContextMenu })
+
+      // IMGMGR-650: the label on the held original, outside the zoomed image so it neither
+      // scales nor pans with it.
+      if shownOriginalImage != nil {
+        Text(LoupeOriginal.label)
+          .font(.caption.weight(.semibold))
+          .padding(.horizontal, 8)
+          .padding(.vertical, 4)
+          .background(.thinMaterial, in: Capsule())
+          .padding(8)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier(LoupeOriginal.identifier)
+          .onAppear { LoupeOriginal.noteShown() }
+      }
+      originalProbe
 
       // Chrome prev/next controls ALONGSIDE swipe (spec: "never gesture-only") — overlaid on
       // the image, never the sole way to advance.
@@ -619,6 +693,57 @@ struct LoupeView: View {
       break
     }
   }
+
+  /// IMGMGR-650: whether a long press on the image holds the original — while the strip is open
+  /// on the focused photograph.
+  private var holdsOriginal: Bool {
+    store.looks.isStripOpen(for: store.focusedImageID)
+  }
+
+  private var originalHold: some Gesture {
+    LongPressGesture(minimumDuration: 0.25, maximumDistance: 10)
+      .sequenced(before: DragGesture(minimumDistance: 0))
+      .updating($isHoldingOriginal) { value, state, _ in
+        if case .second(true, _) = value { state = true }
+      }
+  }
+
+  /// IMGMGR-650: the fetch hold-to-original's preview is keyed by — the focused photograph and
+  /// its `.preview` token, while the strip is open on it.
+  var originalRequest: LoupeOriginalRequest? {
+    guard let image = focusedImage, store.looks.isStripOpen(for: image.id) else { return nil }
+    return LoupeOriginalRequest(
+      imageID: image.id,
+      token: ProxyIdentity.token(
+        from: image.proxies.additionalProperties[ProxyTier.preview.rawValue]?.url))
+  }
+
+  private var shownOriginalImage: PlatformImage? {
+    LoupeOriginal.shown(
+      showOriginal: store.looks.showOriginal, focusedImageID: store.focusedImageID,
+      original: original)
+  }
+
+  /// EVIDENCE, fixture-only (`GridView.debugProbeElement`'s pattern): every "Original" label the
+  /// loupe showed. XCUITest's press is synchronous — it returns after the lift — so a UI test
+  /// cannot look at the label DURING its own long press; it reads this record after it. Only
+  /// while a hold is possible, so no other loupe test meets it.
+  #if DEBUG
+    @ViewBuilder private var originalProbe: some View {
+      if DebugStubLaunch.isActive, holdsOriginal {
+        Text("debugProbeOriginal")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .frame(width: 1, height: 1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("debugProbe.original")
+          .accessibilityValue(
+            "original=" + DebugProbe.shared.originalLabels.joined(separator: ","))
+      }
+    }
+  #else
+    private var originalProbe: some View { EmptyView() }
+  #endif
 
   /// IMGMGR-658: the `ok` preset render the loupe paints over the preview — only while the
   /// Looks panel that holds its toggle is open on this photograph.
@@ -695,6 +820,53 @@ struct LoupeView: View {
       proxyImage = nil
       renderedAs = nil
       paintedImageID = nil
+    }
+  }
+}
+
+/// IMGMGR-650: what hold-to-original's unlooked preview is fetched for.
+struct LoupeOriginalRequest: Hashable, Sendable {
+  let imageID: Int
+  let token: String?
+}
+
+/// IMGMGR-650: hold-to-original's paint decision and its label, pure so a test reads them
+/// without a view.
+enum LoupeOriginal {
+  /// The label on the held original — exactly this word.
+  static let label = "Original"
+  static let identifier = "loupeOriginalLabel"
+
+  /// The original the loupe paints: only while a hold is on (`LookModel.showOriginal`) and only
+  /// bytes fetched for the photograph in the loupe NOW — never a previous photograph's.
+  static func shown<Image>(
+    showOriginal: Bool, focusedImageID: Int?, original: (imageID: Int, image: Image)?
+  ) -> Image? {
+    guard showOriginal, let original, original.imageID == focusedImageID else { return nil }
+    return original.image
+  }
+
+  /// The DEBUG fixture's record of a label shown (`debugProbe.original`); nothing otherwise.
+  @MainActor
+  static func noteShown() {
+    #if DEBUG
+      if DebugStubLaunch.isActive { DebugProbe.shared.originalLabels.append(label) }
+    #endif
+  }
+}
+
+/// IMGMGR-650: the photograph's context menu, attached only while `isEnabled`. A modifier rather
+/// than an empty menu: an attached menu's long press would still lift the image.
+private struct PhotoContextMenu<Menu: View>: ViewModifier {
+  let isEnabled: Bool
+  @ViewBuilder let menu: () -> Menu
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content.contextMenu { menu() }
+    } else {
+      content
     }
   }
 }

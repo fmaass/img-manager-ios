@@ -144,12 +144,18 @@ struct LooksStripView: View {
 
 /// One tile's image: the photograph's `.grid` proxy through `lookID` (or unlooked for None),
 /// asked once per strip session (`GridStore.lookTile`).
+///
+/// IMGMGR-650: while a look's render is pending — waiting for one of the four render slots, or
+/// on the wire — the tile shows the photograph's unlooked grid tile
+/// (`GridStore.lookTilePlaceholder`) above the look's name, never an empty square. A render that
+/// fails leaves the empty square, as before: the placeholder is not a look.
 private struct LookTileImage: View {
   let store: GridStore
   let image: Components.Schemas.ImageSummary
   let lookID: String?
   let session: Int
   @State private var rendered: PlatformImage?
+  @State private var placeholder: PlatformImage?
 
   /// What one render answers for: the strip session, the photograph, the look and (IMGMGR-544)
   /// the look's tile generation, so an invalidated tile is asked for again.
@@ -160,17 +166,24 @@ private struct LookTileImage: View {
   var body: some View {
     ZStack {
       Rectangle().fill(.quaternary)
-      if let rendered {
-        PlatformImageView(image: rendered)
+      if let shown = rendered ?? placeholder {
+        PlatformImageView(image: shown)
           .scaledToFill()
       }
     }
     .task(id: renderID) {
       rendered = nil
+      placeholder = nil
       let token = ProxyIdentity.token(
         from: image.proxies.additionalProperties[ProxyTier.grid.rawValue]?.url)
+      if lookID != nil {
+        let unlooked = await store.lookTilePlaceholder(imageID: image.id, identityToken: token)
+        guard !Task.isCancelled else { return }
+        placeholder = unlooked.flatMap { PlatformImage(data: $0) }
+      }
       let data = await store.lookTile(imageID: image.id, lookID: lookID, identityToken: token)
       guard !Task.isCancelled else { return }
+      placeholder = nil
       rendered = data.flatMap { PlatformImage(data: $0) }
     }
   }

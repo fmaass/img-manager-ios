@@ -4457,17 +4457,31 @@ final class GridStore {
   /// The strip's tile renders, for the open strip only: keyed by session, photograph and look.
   @ObservationIgnored private var lookTiles: [LookTileKey: Data] = [:]
 
+  /// IMGMGR-650: the in-flight cap on the strip's LOOKED tile renders (`LookTileSlots`). None's
+  /// tile and the placeholders are unlooked proxies and never take a slot.
+  let lookTileSlots = LookTileSlots(capacity: 4)
+
   /// One tile of the open strip: the focused photograph's `.grid` proxy through `lookID` at the
   /// look's authored strength (100), or unlooked for None. A render that finishes after its strip
   /// was cancelled — or cancelled and reopened on the same photograph — is dropped, never cached,
   /// and so is one that finishes after its tile was invalidated (IMGMGR-544: the generation is
   /// captured before the request and checked after it).
+  ///
+  /// IMGMGR-650: a looked render first waits for one of `lookTileSlots`' four slots, and gives it
+  /// back on every exit. One that waited past its strip (cancelled, closed, reopened) or its own
+  /// task's cancellation makes no request at all.
   func lookTile(imageID: Int, lookID: String?, identityToken: String?) async -> Data? {
     guard looks.isStripOpen(for: imageID) else { return nil }
     guard let lookID else {
       return await proxyData(imageID: imageID, tier: .grid, identityToken: identityToken)
     }
     let key = LookTileKey(session: looks.stripSession, imageID: imageID, lookID: lookID)
+    if let cached = lookTiles[key] { return cached }
+    guard await lookTileSlots.acquire() else { return nil }
+    defer { lookTileSlots.release() }
+    guard !Task.isCancelled, looks.stripSession == key.session,
+      looks.isStripOpen(for: imageID)
+    else { return nil }
     if let cached = lookTiles[key] { return cached }
     let generation = looks.tileToken(for: lookID)
     let data = await lookedProxyData(
@@ -4479,6 +4493,14 @@ final class GridStore {
     lookTiles = lookTiles.filter { $0.key.session == key.session }
     if let data { lookTiles[key] = data }
     return data
+  }
+
+  /// IMGMGR-650: what a strip tile shows while its looked render is pending — the photograph's
+  /// UNLOOKED `.grid` tile, the very bytes None's tile is (`lookTile(lookID: nil)`), under the
+  /// look's name. Never a looked request, and never a slot: it answers while renders wait.
+  func lookTilePlaceholder(imageID: Int, identityToken: String?) async -> Data? {
+    guard looks.isStripOpen(for: imageID) else { return nil }
+    return await proxyData(imageID: imageID, tier: .grid, identityToken: identityToken)
   }
 
   /// IMGMGR-544: drop `lookID`'s rendered tile in the open strip and bump its generation, so the
@@ -4499,6 +4521,30 @@ final class GridStore {
       let saved = actionableImages.first { $0.id == focused }?.look
       looks.openStrip(imageID: focused, saved: saved)
     }
+  }
+
+  // MARK: - Hold to original (IMGMGR-650)
+
+  /// Press-and-hold on the loupe image, or `\` held on a hardware keyboard: while either is held
+  /// the loupe paints the CURRENT photograph's unlooked preview labelled "Original"
+  /// (`looks.showOriginal`, `originalPreview`). A hold starts only while the open strip owns the
+  /// loupe (`looksKeyOwner == .strip`: never under a sheet, never without a draft to compare);
+  /// a release always ends it, whatever changed meanwhile, so the original never sticks. The
+  /// draft and the saved look are not touched.
+  func holdOriginal(_ hold: LookModel.OriginalHold, isHeld: Bool) {
+    guard isHeld else {
+      looks.endOriginalHold(hold)
+      return
+    }
+    guard looksKeyOwner == .strip else { return }
+    looks.beginOriginalHold(hold)
+  }
+
+  /// IMGMGR-650: the bytes hold-to-original paints — `imageID`'s UNLOOKED `.preview`, the proxy
+  /// the loupe paints with no look (`loupePreview`'s no-look path), whatever the draft or the
+  /// saved look is. Never a looked request.
+  func originalPreview(imageID: Int, identityToken: String?) async -> Data? {
+    await proxyData(imageID: imageID, tier: .preview, identityToken: identityToken)
   }
 
   // MARK: - Saved look (IMGMGR-544)

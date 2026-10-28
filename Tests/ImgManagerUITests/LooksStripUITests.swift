@@ -134,6 +134,40 @@ final class LooksStripUITests: LooksStripUITestCase {
     attach(app, name: "looks-strip-cancelled")
   }
 
+  /// IMGMGR-650 (c): a long press on the image holds the original — the unlooked preview under
+  /// the "Original" label — and the lift ends it, leaving the draft as it was. XCUITest's press
+  /// returns only after the lift, so the label shown DURING the hold is read back from the DEBUG
+  /// probe (`debugProbe.original`, appended when the label appears), and its absence after the
+  /// lift from the tree itself.
+  func testLongPressOnTheImageShowsTheOriginal() throws {
+    let app = launchIntoTheLoupe()
+    let image = element(app, "loupeImage")
+    openStrip(app)
+    let warm = element(app, "loupeLookTile-warm-film")
+    XCTAssertTrue(warm.waitForExistence(timeout: 10), "The strip has no Warm Film tile.")
+    press(warm)
+    XCTAssertTrue(
+      waitFor(image, "label == %@", "Photograph, look Warm Film", timeout: 15),
+      "The loupe never painted the looked preview: '\(image.label)'.")
+    let probe = element(app, "debugProbe.original")
+    XCTAssertTrue(probe.waitForExistence(timeout: 10), "The loupe has no Original probe.")
+    XCTAssertEqual(probe.value as? String, "original=", "An Original label showed unasked.")
+
+    image.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.5)
+
+    XCTAssertTrue(
+      waitFor(probe, "value BEGINSWITH %@", "original=Original"),
+      "The long press never showed the Original label: '\(probe.value as? String ?? "")'.")
+    XCTAssertTrue(
+      waitFor(element(app, "loupeOriginalLabel"), "exists == false"),
+      "The Original label outlived the lift.")
+    XCTAssertTrue(
+      waitFor(image, "label == %@", "Photograph, look Warm Film"),
+      "After the lift the loupe does not show the look again: '\(image.label)'.")
+    XCTAssertTrue(waitFor(warm, "value == %@", "Selected"), "The hold changed the draft.")
+    attach(app, name: "looks-strip-after-hold")
+  }
+
   private func attach(_ app: XCUIApplication, name: String) {
     let shot = XCTAttachment(screenshot: app.screenshot())
     shot.name = name

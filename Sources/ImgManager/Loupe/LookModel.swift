@@ -97,6 +97,13 @@ final class LookModel {
     let reason: SaveFailure
   }
 
+  /// IMGMGR-650: a finger on the loupe image, or `\` on a hardware keyboard. Both may hold at
+  /// once; the original shows until the LAST of them lets go.
+  enum OriginalHold: Hashable, Sendable {
+    case touch
+    case key
+  }
+
   enum Step: Sendable {
     case previous
     case next
@@ -120,6 +127,9 @@ final class LookModel {
   /// (`GridStore.invalidateLookTile`). The tile view's task id carries it, so a bump re-renders
   /// the tile; `GridStore.lookTile` drops a render that was asked for under an older one.
   private(set) var tileGeneration: [String: Int] = [:]
+  /// IMGMGR-650: what holds the original on screen right now (`GridStore.holdOriginal`). Only
+  /// while the strip is open: every open and cancel empties it.
+  private(set) var originalHolds: Set<OriginalHold> = []
   let favourites: LookFavourites
 
   private let fetchCatalogue: @Sendable () async throws -> [Look]
@@ -143,6 +153,26 @@ final class LookModel {
   func isStripOpen(for imageID: Int?) -> Bool {
     guard let imageID else { return false }
     return draft?.imageID == imageID
+  }
+
+  /// IMGMGR-650: hold-to-original — the loupe paints the unlooked preview, labelled "Original",
+  /// in place of the look while this is true.
+  var showOriginal: Bool { !originalHolds.isEmpty }
+
+  /// IMGMGR-650: a hold starts; nothing without an open strip.
+  func beginOriginalHold(_ hold: OriginalHold) {
+    guard draft != nil else { return }
+    originalHolds.insert(hold)
+  }
+
+  /// IMGMGR-650: a hold ends — always honoured.
+  func endOriginalHold(_ hold: OriginalHold) {
+    originalHolds.remove(hold)
+  }
+
+  /// IMGMGR-650: every hold ends at once (the app left the foreground: a release may never come).
+  func endOriginalHolds() {
+    originalHolds = []
   }
 
   /// The control is offered only when there is something to choose.
@@ -219,6 +249,7 @@ final class LookModel {
     unavailableImageIDs = []
     saveFailure = nil
     tileGeneration = [:]
+    originalHolds = []
   }
 
   /// Cancel: the strip closes and the photograph shows its saved look (or none) again. A save
@@ -230,6 +261,7 @@ final class LookModel {
     unavailableImageIDs = []
     saveFailure = nil
     tileGeneration = [:]
+    originalHolds = []
   }
 
   /// Whether `imageID`'s save is on the wire.

@@ -702,6 +702,51 @@ actor GridStubTransport: ClientTransport {
     lookedProxyHasStarted = false
   }
 
+  /// IMGMGR-650: hold EVERY looked request (not just one) until released oldest-first, and count
+  /// how many are on the wire — the strip's in-flight cap is read here, at the wire.
+  private var lookedProxyQueueHoldEnabled = false
+  private var heldLookedProxies: [CheckedContinuation<Void, Never>] = []
+  private struct HeldCountWaiter {
+    let count: Int
+    let continuation: CheckedContinuation<Void, Never>
+  }
+  private var heldLookedProxyWaiters: [HeldCountWaiter] = []
+  /// Looked requests between their arrival and their answer, now and at the most.
+  private(set) var lookedProxyInFlight = 0
+  private(set) var lookedProxyPeakInFlight = 0
+
+  func holdEveryLookedProxyRequest(_ hold: Bool) { lookedProxyQueueHoldEnabled = hold }
+
+  var heldLookedProxyCount: Int { heldLookedProxies.count }
+
+  /// Returns once at least `count` looked requests are held.
+  func waitUntilLookedProxiesHeld(_ count: Int) async {
+    if heldLookedProxies.count >= count { return }
+    await withCheckedContinuation { continuation in
+      self.heldLookedProxyWaiters.append(HeldCountWaiter(count: count, continuation: continuation))
+    }
+  }
+
+  /// Answers the OLDEST held looked request.
+  func releaseOneLookedProxy() {
+    guard !heldLookedProxies.isEmpty else { return }
+    heldLookedProxies.removeFirst().resume()
+  }
+
+  private func holdInQueue() async {
+    await withCheckedContinuation { continuation in
+      self.heldLookedProxies.append(continuation)
+      self.resumeHeldCountWaiters()
+    }
+  }
+
+  private func resumeHeldCountWaiters() {
+    let held = heldLookedProxies.count
+    let ready = heldLookedProxyWaiters.filter { $0.count <= held }
+    heldLookedProxyWaiters.removeAll { $0.count <= held }
+    for waiter in ready { waiter.continuation.resume() }
+  }
+
   // MARK: - IMGMGR-544: PUT / DELETE /api/images/{id}/look
 
   /// The saved-look write's outcomes at the WIRE level. `.ok` echoes the request's own look id
@@ -1219,6 +1264,10 @@ actor GridStubTransport: ClientTransport {
 
     case Operations.GetLookedProxyApiImagesImageIdProxyTierLookLookIdGet.id:
       recordedLookedProxyRequests.append(request.path ?? "")
+      lookedProxyInFlight += 1
+      lookedProxyPeakInFlight = max(lookedProxyPeakInFlight, lookedProxyInFlight)
+      defer { lookedProxyInFlight -= 1 }
+      if lookedProxyQueueHoldEnabled { await holdInQueue() }
       if lookedProxyHoldEnabled {
         lookedProxyHasStarted = true
         lookedProxyStartedContinuation?.resume()

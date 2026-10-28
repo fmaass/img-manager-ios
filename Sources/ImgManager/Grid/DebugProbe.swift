@@ -117,6 +117,10 @@
     /// a UI test reads this one to require the dismissal BEFORE the open.
     var routeEvents = ""
 
+    /// IMGMGR-650: every hold-to-original label the loupe showed, in order (`LoupeOriginal`). A UI
+    /// test's long press returns only after the lift, so the label is read back from here.
+    var originalLabels: [String] = []
+
     /// IMGMGR-501 (gate on 1676195): this process's identity. A UI test reads it before and
     /// after a mid-session step; a different value means the app was relaunched in between, and
     /// whatever the probes say afterwards describes a fresh process.
