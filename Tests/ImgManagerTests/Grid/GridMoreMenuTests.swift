@@ -857,6 +857,7 @@ struct GridPreferencesTests {
     /// IMGMGR-560: a fixture launch forgets the four Tile overlays keys, so a toggle an earlier
     /// or interrupted suite left behind never reaches the next one. Each key is stored as the
     /// OPPOSITE of its default first, so reading the default back can only come from the reset.
+    /// IMGMGR-647: Filename plates, the fifth toggle of the same submenu, is forgotten with them.
     @MainActor
     @Test("A fixture launch forgets the Tile overlays keys and nothing else")
     func fixtureLaunchForgetsTheTileOverlaysKeys() {
@@ -868,15 +869,17 @@ struct GridPreferencesTests {
         forKey: GridPreferences.overlayLightroomRatingKey)
       defaults.set(
         !GridPreferences.overlaySourceKindDefault, forKey: GridPreferences.overlaySourceKindKey)
+      defaults.set(
+        !GridPreferences.filenamePlatesDefault, forKey: GridPreferences.filenamePlatesKey)
       // Positive control: the suite really holds the flipped values before the reset.
       let before = GridPreferences(defaults: defaults)
       #expect(before.overlayMarks != GridPreferences.overlayMarksDefault)
       #expect(before.overlaySourceKind != GridPreferences.overlaySourceKindDefault)
+      #expect(before.filenamePlates != GridPreferences.filenamePlatesDefault)
 
       let kept = [
-        GridPreferences.filenamePlatesKey, GridPreferences.autoAdvanceOnMarkKey,
-        GridPreferences.picksInGroupsKey, GridPreferences.pruneMirroredArchiveKey,
-        SidebarVisibilityMemory.hiddenKey,
+        GridPreferences.autoAdvanceOnMarkKey, GridPreferences.picksInGroupsKey,
+        GridPreferences.pruneMirroredArchiveKey, SidebarVisibilityMemory.hiddenKey,
       ]
       for key in kept {
         defaults.set("kept", forKey: key)
@@ -889,6 +892,10 @@ struct GridPreferencesTests {
       #expect(after.overlayEdited == GridPreferences.overlayEditedDefault)
       #expect(after.overlayLightroomRating == GridPreferences.overlayLightroomRatingDefault)
       #expect(after.overlaySourceKind == GridPreferences.overlaySourceKindDefault)
+      #expect(after.filenamePlates == GridPreferences.filenamePlatesDefault)
+      #expect(
+        defaults.object(forKey: GridPreferences.filenamePlatesKey) == nil,
+        "Filename plates was overwritten, not forgotten")
       for key in kept {
         #expect(defaults.string(forKey: key) == "kept", "\(key) was reset")
       }
