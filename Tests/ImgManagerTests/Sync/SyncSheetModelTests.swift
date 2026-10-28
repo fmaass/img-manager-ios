@@ -240,6 +240,64 @@ struct SyncSheetModelTests {
     #expect(model.watched?.origin == .submitted)
   }
 
+  // MARK: - IMGMGR-641: a failed submission re-reads a status it dropped
+
+  @Test(
+    "A submission that fails while the opening status read is held re-reads the status once",
+    arguments: [
+      SyncStubTransport.Reply(status: 422, json: SyncWire.coded("lightroom_not_confirmed")),
+      SyncStubTransport.Reply.transportFailure,
+    ])
+  func failedSubmissionRereadsADroppedStatus(_ reply: SyncStubTransport.Reply) async {
+    let transport = SyncStubTransport()
+    await transport.reply(Stub.status, .ok(SyncWire.status()))
+    await transport.reply(Stub.create, reply)
+    await transport.suspendNext(Stub.status)
+    let model = model(transport)
+    let start = Task { await model.start() }
+    await transport.waitUntilSuspended(Stub.status)
+    await submit(model)
+    await transport.release(Stub.status)
+    await start.value
+    #expect(model.notice != nil, "the refusal is still shown")
+    #expect(model.status != nil)
+    #expect(model.statusLine != SyncCopy.readingStatusLine)
+    #expect(await transport.count(Stub.status) == 2, "the held read plus ONE re-read")
+  }
+
+  @Test("A failed submission re-reads nothing when the status is already loaded")
+  func failedSubmissionKeepsALoadedStatus() async {
+    let transport = SyncStubTransport()
+    await transport.reply(Stub.status, .ok(SyncWire.status()))
+    await transport.reply(
+      Stub.create, .init(status: 422, json: SyncWire.coded("lightroom_not_confirmed")))
+    let model = model(transport)
+    await model.start()
+    #expect(model.status != nil)
+    await submit(model)
+    #expect(model.notice != nil)
+    #expect(await transport.count(Stub.status) == 1)
+  }
+
+  @Test("Closing the form during a POST that then fails re-reads nothing")
+  func cancelledFailedSubmissionRereadsNothing() async {
+    let transport = SyncStubTransport()
+    await transport.reply(Stub.status, .ok(SyncWire.status()))
+    await transport.reply(
+      Stub.create, .init(status: 422, json: SyncWire.coded("lightroom_not_confirmed")))
+    await transport.suspendNext(Stub.create)
+    let model = model(transport)
+    model.lightroomClosed = true
+    model.syncNow()
+    await transport.waitUntilSuspended(Stub.create)
+    model.cancel()
+    await transport.release(Stub.create)
+    await model.submission?.value
+    #expect(await transport.count(Stub.status) == 0)
+    #expect(model.status == nil)
+    #expect(model.notice == nil)
+  }
+
   @Test("A terminal refresh that answers after a new submission is dropped")
   func refreshAfterANewSubmissionIsDropped() async {
     let transport = SyncStubTransport()
