@@ -717,6 +717,35 @@ struct GridStoreMarkGroupTests {
     }
   }
 
+  // IMGMGR-648: the third recovery path — the loupe's advance at the loaded stream tail pages
+  // the stream's own cursor and recovers it while still owning paging.
+  @Test("Loupe-advance cursor recovery keeps paging ownership: no tail request starts mid-recovery")
+  func loupeAdvanceRecoveryKeepsPagingOwnership() async {
+    let (store, transport) = await keysetGrouped(by: .mark, marks: Self.longStreamSeed)
+    #expect(store.nextCursor == "mg-pick-9100")
+    store.openLoupe(on: 9100)
+    await transport.armListImagesRejectNonNilCursorOnce()
+    await transport.holdNextListImagesRequest()
+    let first = Task { await store.loupeNext() }
+    await transport.waitUntilListImagesStarted()
+    let issued = await listCursors(transport)
+    #expect(Array(issued.suffix(2)) == ["mg-pick-9100", nil], "refused, then page one")
+    #expect(store.isLoadingPage, "the recovery's page-one request runs without owning paging")
+    await store.loadMoreIfNeeded(currentItemID: 9100)
+    #expect(await listCursors(transport) == issued, "a second tail request started mid-recovery")
+    await store.loupeNext()
+    #expect(await listCursors(transport) == issued, "a second loupe advance paged mid-recovery")
+    #expect(store.focusedImageID == 9100)
+    await transport.releaseListImages()
+    await first.value
+    #expect(!store.isLoadingPage)
+    #expect(store.focusedImageID == 9101, "the held advance lands exactly one photograph on")
+    #expect(store.images.map(\.id) == Array(9001...9150))
+    #expect(store.nextCursor == nil)
+    #expect(store.remainderImages.map(\.id) == Array(9151...9200))
+    #expect(await transport.recordedNeighboursQueries.isEmpty)
+  }
+
   // MARK: - IMGMGR-626: a reconcile whose stream reload fails
 
   @Test("A failed stream reload at the reconcile never vouches fresh counts over the old rows")
