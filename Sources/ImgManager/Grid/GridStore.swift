@@ -2018,6 +2018,7 @@ final class GridStore {
       } catch GridServiceError.cursorInvalid {
         guard generation == loadGeneration else { return .stale }
         // IMGMGR-626: paging stays owned through the recovery (the `defer` releases it).
+        isLoadingPage = false  // IMGMGR-648 mutant: drop ownership before the recovery
         await recoverGroupedCursor(for: .stream)
         outcome = .merged
       } catch {
