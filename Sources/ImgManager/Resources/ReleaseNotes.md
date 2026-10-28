@@ -6,6 +6,13 @@ refuses to upload when that section is missing, empty or duplicated; Settings â€
 opens the same notes in the app. Written for the person testing: what changed on screen, one
 point per line, no ticket keys and no host names. TestFlight shows them as plain text.
 
+## 0.16.1 (30)
+
+- In the photo view's Looks strip, a tile that is still rendering now shows the plain photo instead of an empty grey square. Only four looked tiles render at once; the rest fill in as they finish.
+- While the Looks strip is open, press and hold the photo to see it without the look: an Original label appears at the top left and the look comes back when you let go. On a hardware keyboard, holding the backslash key does the same. The long-press menu stays off while the strip is open.
+- The Presets row now shows Still rendering with Check Again after 3 minutes even when the server stalls, instead of waiting on the stalled request.
+- Saving a look that fails with an unreadable server reply now says Couldn't save the look. Try again. When the photo is gone it says This photo is no longer in the library.
+
 ## 0.16.0 (29)
 
 - In the photo view, the open Looks panel has a new Presets row under the looks. Tap one of your Lightroom presets to see the photo through it once it has rendered; Original and Preset switch between the two. The row says when a render is still on its way, Check Again asks once more when it takes long, and a long-press on a preset that failed says why. A preset the app can only apply approximately is marked as approximate. Share sends the photo through the preset, for example to Files.
