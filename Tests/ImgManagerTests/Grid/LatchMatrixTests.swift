@@ -233,14 +233,16 @@ struct LatchMatrixTests {
 
   /// R3-17's survival list on one Mark-grouped folder: scroll, grouping, a push into the
   /// remainder and Back, filter, size, layout — after each, still latched, and a latched tap
-  /// still writes exactly one request.
+  /// still writes exactly one request. The folder is served as two pages, so the scroll really
+  /// loads page two and the latched tap after it lands on a page-two photograph.
   @Test("The latch survives scroll, grouping, a push and Back, filter, size and layout")
   func latchSurvivesEveryNonExitTransition() async {
-    let (store, transport) = await Fixtures.markStore()
+    let (store, transport) = await Fixtures.pagedMarkStore()
     let fixture = LatchFixture(
       store: store, transport: transport, focus: 1, tap: 2, corner: 1, cornerWrites: "none")
     store.toggleTapToPick()
     #expect(store.pickLock.latchedVerb == .pick, "precondition: Tap to Pick latched")
+    #expect(store.images.map(\.id) == [1, 2, 3], "precondition: only page one is loaded")
 
     func stillLatched(_ after: String, tapping id: Int) async {
       #expect(store.pickLock.latchedVerb == .pick, "\(after) ended the latch")
@@ -252,12 +254,16 @@ struct LatchMatrixTests {
         "after \(after): one latched tap on \(id)")
     }
 
-    await store.loadMoreIfNeeded(currentItemID: 5)
-    await stillLatched("scroll", tapping: 2)
+    await store.loadMoreIfNeeded(currentItemID: 3)
+    #expect(store.images.map(\.id) == [1, 2, 3, 4, 5], "the scroll did not load page two")
+    #expect(store.remainderImages.map(\.id) == Array(6...12), "page two's null bucket")
+    await stillLatched("scroll", tapping: 4)
     await store.selectGrouping(.key(.rating))
     await store.selectGrouping(.key(.mark))
     await store.refreshGroupHeaders()
     await stillLatched("a grouping change", tapping: 3)
+    // The regroup re-read page one alone; page on again so the remainder can open.
+    await store.loadMoreIfNeeded(currentItemID: 3)
     store.enterRemainder()
     #expect(store.enteredRemainder == .mark, "precondition: the remainder opened")
     await stillLatched("the push into the remainder", tapping: 8)
@@ -308,4 +314,33 @@ struct LatchMatrixTests {
     await store.selectShoot(folderID: 2)
     #expect(store.pickLock.latchedVerb == nil)
   }
+
+  // MARK: - IMGMGR-671: the debug launch's mode flags on the Flat fallback
+
+  #if DEBUG
+    /// A folder with scenes that the reader left in Flat is the path where the Scene flag's mode
+    /// change is real — and a real mode change clears Select. The folder opens in Scene by itself
+    /// (IMGMGR-557), so each test first switches it to Flat.
+    @Test("The Scene and Select launch flags together end in Select, in Scene")
+    func sceneAndSelectFlagsEndInSelect() async {
+      let (store, _) = await Fixtures.flatStoreWithScenes()
+      await store.setDisplayMode(.flat)
+      #expect(store.displayMode == .flat, "precondition: the folder is in Flat")
+      await DebugStubLaunch.applyModeFlags(
+        to: store, scene: true, select: true, latchDislike: false)
+      #expect(store.displayMode == .scene, "the Scene flag did not enter Scene")
+      #expect(store.selection.mode == .select, "the Scene flag's mode change undid Select")
+    }
+
+    @Test("The Scene and Dislike-Lock launch flags together end latched, in Scene")
+    func sceneAndLatchFlagsEndLatched() async {
+      let (store, _) = await Fixtures.flatStoreWithScenes()
+      await store.setDisplayMode(.flat)
+      #expect(store.displayMode == .flat, "precondition: the folder is in Flat")
+      await DebugStubLaunch.applyModeFlags(
+        to: store, scene: true, select: false, latchDislike: true)
+      #expect(store.displayMode == .scene, "the Scene flag did not enter Scene")
+      #expect(store.pickLock.latchedVerb == .dislike, "the mode change undid the latch")
+    }
+  #endif
 }

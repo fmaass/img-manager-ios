@@ -399,28 +399,16 @@ struct RootView: View {
           // WP28 P1: the fixture's shoot is hosted by the Compact Library tab, so a Compact
           // launch lands on the populated grid exactly as it did in the collapsed split.
           navigation.showSelectedShoot(in: .library)
-          // WP13 P1: applied AFTER the shoot loads, because `selectShoot` resets the selection
-          // by design (a scope change leaves Select). See the flag's own doc comment.
-          if DebugStubLaunch.enterSelectMode {
-            gridStore.enterSelectExplicitly()
-          }
-          // WP14 lane B: likewise after the shoot loads — entering Scene mode reloads the window
-          // for the CURRENT scope, so doing it first would only be undone. The preference is set
-          // BEFORE the mode change so the first card that appears already knows whether to read
-          // its inline picks, rather than reading them one body pass late.
-          // Kept although the folder now opens in Scene by itself: it is a no-op then, and it
-          // still enters Scene should the folder default ever fall back to Flat.
-          if DebugStubLaunch.enterSceneMode {
-            await gridStore.setDisplayMode(.scene)
-          }
-          // WP13 P2: likewise applied after the shoot loads — `selectShoot` calls
-          // `pickLock.exit()`, so latching before it would be silently undone (`setDisplayMode`
-          // keeps the latch since IMGMGR-552 R1, R3-17). Mutually exclusive with the Select flag by
-          // construction: `lockFromMenu` refuses while Select is active, so passing both leaves
-          // Select, exactly as the shipped rule does.
-          if DebugStubLaunch.latchDislikeLock {
-            gridStore.lockFromMenu(.dislike)
-          }
+          // WP13 P1, P2 and WP14 lane B: the Scene, Select and Dislike-Lock flags are applied
+          // AFTER the shoot loads — `selectShoot` resets the selection and exits the latch by
+          // design (a scope change leaves both), and Scene reloads the CURRENT scope, so any of
+          // them applied first would be undone. Among themselves they go Scene, then Select,
+          // then the latch (IMGMGR-671): a real mode change clears Select, so Select must come
+          // after Scene. The helper's own comments carry each step's reason.
+          await DebugStubLaunch.applyModeFlags(
+            to: gridStore, scene: DebugStubLaunch.enterSceneMode,
+            select: DebugStubLaunch.enterSelectMode,
+            latchDislike: DebugStubLaunch.latchDislikeLock)
         }
         // WP31 P2 (IMGMGR-461): an incoming Handoff, simulated — after the fixture's own shoot
         // has loaded, through the SAME decode-and-route function `.onContinueUserActivity` calls.

@@ -131,6 +131,33 @@ enum LatchMatrixFixtures {
     return (store, transport)
   }
 
+  /// The `markStore` folder served as two pages, so a load-more has a real page to fetch: page
+  /// one is the picks 1…3 with a next cursor, page two the dislikes 4…5 and the null bucket
+  /// 6…12. Until page two lands the stream holds only 1…3 and the remainder is not reached.
+  static func pagedMarkStore() async -> (GridStore, GridStubTransport) {
+    let (store, transport) = makeStore()
+    let rows = (1...12).map { id -> Components.Schemas.ImageSummary in
+      let mark: MarkStateValue = id <= 3 ? .pick : id <= 5 ? .dislike : .none
+      return image(id, groupKey: id <= 5 ? mark.rawValue : nil, mark: mark)
+    }
+    await transport.setListImagesPage(
+      .init(items: Array(rows[0..<3]), limit: 100, nextCursor: "mark-2"))
+    await transport.setListImagesPage(
+      .init(items: Array(rows[3...]), limit: 100, nextCursor: nil), forCursor: "mark-2")
+    await transport.setImageGroupsResult(
+      Components.Schemas.ImageGroups(
+        costHint: .standard, groupBy: .mark,
+        headers: [
+          .init(count: 3, key: "pick", label: "Pick"),
+          .init(count: 2, key: "dislike", label: "Dislike"),
+          .init(count: 7, key: nil, label: "Unknown"),
+        ], timezone: nil, total: 12))
+    await store.selectShoot(folderID: 1)
+    await store.selectGrouping(.key(.mark))
+    await store.refreshGroupHeaders()
+    return (store, transport)
+  }
+
   /// Twelve unmarked photographs grouped by Rating: 1…3 rated 5, 4…5 rated 3, 6…12 unrated.
   private static func ratingStore() async -> (GridStore, GridStubTransport) {
     let (store, transport) = makeStore()

@@ -428,16 +428,18 @@ final class LatchMatrixUITests: OrientationPinnedUITestCase {
     }
   }
 
-  /// One cell: reset, run, clean up, report. The cleanup runs after the body whatever it
-  /// recorded, is itself checked (latch off, nothing presented, back on the scope the cell began
-  /// on), and the PASS/FAIL line is printed only after it, so a stranded state fails its cell.
+  /// One cell: reset, run, clean up, report. The failure count is sampled before the setup, so
+  /// a setup that fails (a reset that leaves the latch on or a presentation open) fails its cell
+  /// rather than printing PASS. The cleanup runs after the body whatever it recorded, is itself
+  /// checked (latch off, nothing presented, back on the scope the cell began on), and the
+  /// PASS/FAIL line is printed only after it, so a stranded state fails its cell.
   private func cell(_ name: String, _ app: XCUIApplication, _ body: () -> Void) {
+    let failuresBefore = testRun?.totalFailureCount ?? 0
     currentCell = "\(name) · setup"
     reset(app)
     assertClean(app, scope: nil)
     let scope = scopeValue(app)
     currentCell = name
-    let failuresBefore = testRun?.totalFailureCount ?? 0
     defer {
       currentCell = "\(name) · cleanup"
       reset(app)

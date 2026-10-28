@@ -1359,6 +1359,37 @@
       enterSceneMode || ProcessInfo.processInfo.arguments.contains("-UITestFolderHasScenes")
     }
 
+    /// IMGMGR-671: the three mode flags (`enterSceneMode`, `enterSelectMode`,
+    /// `latchDislikeLock`), applied to a store whose shoot has loaded, in the ONE order that keeps
+    /// each: Scene, then Select, then the latch. Pure over its arguments so a unit test drives it
+    /// against a stub transport; `RootView` passes the launch arguments.
+    @MainActor
+    static func applyModeFlags(
+      to store: GridStore, scene: Bool, select: Bool, latchDislike: Bool
+    ) async {
+      // Scene first: a real mode change resets the selection (`setDisplayMode` leaves Select
+      // like any rebuild of the sequence), so Select entered before it would be undone. It is a
+      // no-op when the folder already opened in Scene by itself (IMGMGR-557), and it still
+      // enters Scene should the folder default fall back to Flat. The picks-in-groups
+      // preference is set before `selectShoot`, so the first card already reads its inline
+      // picks.
+      if scene {
+        await store.setDisplayMode(.scene)
+      }
+      // Select second, through the More menu's own command, once no mode change is left to
+      // clear it.
+      if select {
+        store.enterSelectExplicitly()
+      }
+      // The latch last, through the "Lock Dislike" menu command: a mode change would keep it
+      // (`setDisplayMode` keeps the latch since IMGMGR-552 R1, R3-17), but Select ends it, and
+      // `lockFromMenu` refuses while Select is active — so passing both flags leaves Select,
+      // exactly as the shipped rule does.
+      if latchDislike {
+        store.lockFromMenu(.dislike)
+      }
+    }
+
     /// A SEVENTH, independent launch argument — the INVERSE of the one WP16 P2 (IMGMGR-298)
     /// shipped, which is retired with this story and understood by nothing any more. That one
     /// hid the inspector, because the Regular-3 inspector was up at launch and a test that needed
