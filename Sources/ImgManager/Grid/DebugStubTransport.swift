@@ -1472,7 +1472,10 @@
     /// IMGMGR-560: the four Tile overlays keys (`GridPreferences.overlay*Key`) are forgotten the
     /// same way, so every fixture launch draws the default badges — an aborted or failed run of
     /// `testTileOverlaysChangeTheDrawnBadges` cannot leave its toggles on for the suites after it.
-    /// No relaunch test reads an overlay back, so there is no keep argument.
+    /// IMGMGR-647: Filename plates (`GridPreferences.filenamePlatesKey`) is forgotten with them —
+    /// it is the fifth toggle of the same Tile overlays submenu, and an aborted
+    /// `testFilenamePlatesToggleOnAndOff` would otherwise leave plates on every later fixture.
+    /// No relaunch test reads an overlay or the plates back, so there is no keep argument.
     @MainActor
     static func resetTileOverlays(defaults: UserDefaults = .standard) {
       guard isActive else { return }
@@ -1485,6 +1488,7 @@
       for key in [
         GridPreferences.overlayMarksKey, GridPreferences.overlayEditedKey,
         GridPreferences.overlayLightroomRatingKey, GridPreferences.overlaySourceKindKey,
+        GridPreferences.filenamePlatesKey,
       ] {
         defaults.removeObject(forKey: key)
       }
