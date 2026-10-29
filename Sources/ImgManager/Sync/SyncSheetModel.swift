@@ -151,6 +151,14 @@ final class SyncSheetModel {
     } catch let failure as SyncFailure {
       guard !Task.isCancelled else { return }
       notice = SyncCopy.message(for: failure, during: .create)
+      // IMGMGR-641: this submission moved the epoch, so an opening status read still in
+      // flight is dropped — and a failure leaves no watched run to refresh the status at its
+      // end. Read it once more under the current epoch, unless a status (or its failure) is
+      // already shown. A success and an adopted 409 leave that refresh to the watched run's
+      // `poll()`.
+      if status == nil, statusFailure == nil {
+        await readStatus(observingActiveRun: false)
+      }
     } catch {
       return
     }
